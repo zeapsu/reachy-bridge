@@ -48,8 +48,9 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
 - **`reachy_chat` TTS:** pyttsx3's `save_to_file` is broken on Apple Silicon (`nsss` driver) →
   produces no decodable audio. We synthesize with the native macOS **`say`** command instead
   (pyttsx3 kept as the non-macOS fallback). See `src/reachy_chat/openrouter_chat.py`.
-- **`reachy_chat` LLM:** OpenRouter (OpenAI-compatible), default model `deepseek/deepseek-v4-flash`,
-  overridable via `OPENROUTER_MODEL`. Key comes from `OPENROUTER_API_KEY` in the **environment**,
+- **`reachy_chat` LLM:** OpenRouter (OpenAI-compatible), default model `minimax/minimax-m3`
+  (multimodal: text/image/video). Visual questions attach the current camera frame;
+  `OPENROUTER_MODEL` overrides the default. Key comes from `OPENROUTER_API_KEY` in the **environment**,
   OR the app's Settings UI at `http://localhost:7860` (persists to a per-instance `.env`). A plain
   `.env` dropped in the app folder is **not** auto-loaded. First run downloads faster-whisper
   `base.en` (~200 MB). Talk, then **pause ~0.8 s** to finalize a turn.

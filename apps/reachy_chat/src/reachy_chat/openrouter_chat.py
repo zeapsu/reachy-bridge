@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 import os
+import re
 import sys
 import time
+import base64
 import asyncio
 import logging
 import tempfile
@@ -21,12 +23,25 @@ from reachy_chat.config import OPENAI_BACKEND, config
 from reachy_chat.prompts import get_session_instructions
 from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.conversation_handler import AudioFrame, HandlerOutput, ConversationHandler
+from reachy_chat.camera_frame_encoding import encode_bgr_frame_as_jpeg
 
 
 logger = logging.getLogger(__name__)
 
 Role = Literal["user", "assistant"]
 Message = dict[str, str]
+
+
+_VISUAL_REQUEST_PATTERN = re.compile(
+    r"\b(?:see|look|looking|this|that|read|colou?r|describe|holding|camera)\b"
+    r"|\bin\s+front\s+of\b|\bshow\s+you\b|\bwhat\s+is\b",
+    re.IGNORECASE,
+)
+
+
+def looks_visual(transcript: str) -> bool:
+    """Return whether a transcript conservatively asks about the camera view."""
+    return _VISUAL_REQUEST_PATTERN.search(transcript) is not None
 
 
 class OpenRouterChatHandler(ConversationHandler):
@@ -248,11 +263,13 @@ class OpenRouterChatHandler(ConversationHandler):
                 return
 
             self._record_message("user", transcript)
+            want_vision = looks_visual(transcript)
+            image_jpeg = await self._capture_frame_jpeg() if want_vision else None
             await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
             self._mark_activity("user_transcription_completed")
 
             try:
-                reply = await self._request_completion()
+                reply = await self._request_completion(image_jpeg=image_jpeg)
             except Exception as exc:
                 logger.exception("OpenRouter chat completion failed: %s", exc)
                 reply = self.FALLBACK_REPLY
@@ -276,7 +293,23 @@ class OpenRouterChatHandler(ConversationHandler):
             self._processing_turn = False
             self._reset_input_buffer()
 
-    async def _request_completion(self) -> str:
+    async def _capture_frame_jpeg(self) -> bytes | None:
+        """Capture and encode the latest camera frame without failing the turn."""
+        try:
+            camera_worker = self.deps.camera_worker
+            if camera_worker is None:
+                logger.debug("OpenRouter vision requested without a camera worker")
+                return None
+            frame = camera_worker.get_latest_frame()
+            if frame is None:
+                logger.debug("OpenRouter vision requested without an available camera frame")
+                return None
+            return cast(bytes, await self._run_blocking(encode_bgr_frame_as_jpeg, frame))
+        except Exception:
+            logger.debug("Unable to capture camera frame for OpenRouter", exc_info=True)
+            return None
+
+    async def _request_completion(self, image_jpeg: bytes | None = None) -> str:
         client = self._ensure_client()
         if self._system_prompt is None:
             self._system_prompt = get_session_instructions(self.instance_path)
@@ -284,9 +317,21 @@ class OpenRouterChatHandler(ConversationHandler):
             {"role": "system", "content": self._system_prompt},
             *self.conversation_history,
         ]
+        request_messages: list[Message] | list[dict[str, Any]] = messages
+        if image_jpeg is not None and messages[-1]["role"] == "user":
+            request_messages = [message.copy() for message in messages]
+            original_text = messages[-1]["content"]
+            encoded_image = base64.b64encode(image_jpeg).decode("ascii")
+            request_messages[-1]["content"] = [
+                {"type": "text", "text": original_text},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"},
+                },
+            ]
         response = await client.chat.completions.create(
             model=config.MODEL_NAME,
-            messages=messages,
+            messages=request_messages,
         )
         content = response.choices[0].message.content
         if not isinstance(content, str) or not content.strip():
@@ -550,4 +595,4 @@ class OpenRouterChatHandler(ConversationHandler):
                 break
 
 
-__all__ = ["OpenRouterChatHandler"]
+__all__ = ["OpenRouterChatHandler", "looks_visual"]

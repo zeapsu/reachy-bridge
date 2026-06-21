@@ -5,7 +5,7 @@ import subprocess
 from types import SimpleNamespace
 from typing import Any
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
@@ -20,10 +20,15 @@ from reachy_chat.conversation_handler import ConversationHandler
 
 
 PROJECT_ROOT = Path(__file__).parents[1]
+JPEG_BYTES = b"jpeg-bytes"
 
 
-def _build_handler() -> OpenRouterChatHandler:
-    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+def _build_handler(camera_worker: Any | None = None) -> OpenRouterChatHandler:
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+        camera_worker=camera_worker,
+    )
     return OpenRouterChatHandler(deps)
 
 
@@ -127,6 +132,64 @@ async def test_chat_completion_uses_openrouter_model_and_bounded_history(monkeyp
     ]
 
 
+def test_looks_visual() -> None:
+    """Only requests that need a camera image should be classified as visual."""
+    from reachy_chat.openrouter_chat import looks_visual
+
+    assert looks_visual("what do you see?") is True
+    assert looks_visual("can you read this?") is True
+    assert looks_visual("what color is this?") is True
+    assert looks_visual("how are you?") is False
+    assert looks_visual("tell me a joke") is False
+
+
+@pytest.mark.asyncio
+async def test_request_completion_with_image_jpeg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A captured JPEG must be sent with the current text without changing stored history."""
+    calls: list[dict[str, Any]] = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="I see a person."))])
+
+    handler = _build_handler()
+    handler._client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+    handler._system_prompt = "You are Reachy."
+    handler.conversation_history = [
+        {"role": "assistant", "content": "What would you like to know?"},
+        {"role": "user", "content": "What do you see?"},
+    ]
+    original_history = [message.copy() for message in handler.conversation_history]
+    monkeypatch.setattr(config, "MODEL_NAME", "vision-model")
+
+    reply = await handler._request_completion(image_jpeg=JPEG_BYTES)
+
+    assert reply == "I see a person."
+    assert calls == [
+        {
+            "model": "vision-model",
+            "messages": [
+                {"role": "system", "content": "You are Reachy."},
+                {"role": "assistant", "content": "What would you like to know?"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What do you see?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/jpeg;base64,anBlZy1ieXRlcw=="},
+                        },
+                    ],
+                },
+            ],
+        }
+    ]
+    assert handler.conversation_history == original_history
+
+
 @pytest.mark.asyncio
 async def test_receive_finalizes_a_turn_after_trailing_silence() -> None:
     """Trailing silence must finalize buffered SDK microphone samples."""
@@ -161,7 +224,11 @@ async def test_process_turn_emits_transcripts_and_audio(monkeypatch: pytest.Monk
     """A completed turn must emit both transcripts and synthesized audio."""
     handler = _build_handler()
     monkeypatch.setattr(handler, "_transcribe", lambda _audio: asyncio.sleep(0, result="hello reachy"))
-    monkeypatch.setattr(handler, "_request_completion", lambda: asyncio.sleep(0, result="hello human"))
+    monkeypatch.setattr(
+        handler,
+        "_request_completion",
+        lambda *, image_jpeg=None: asyncio.sleep(0, result="hello human"),
+    )
     monkeypatch.setattr(
         handler,
         "_synthesize",
@@ -186,6 +253,33 @@ async def test_process_turn_emits_transcripts_and_audio(monkeypatch: pytest.Monk
         {"role": "user", "content": "hello reachy"},
         {"role": "assistant", "content": "hello human"},
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("camera_worker_available", [False, True])
+async def test_graceful_degradation_when_camera_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    camera_worker_available: bool,
+) -> None:
+    """A missing camera or frame must degrade to a text-only completion."""
+    camera_worker = MagicMock() if camera_worker_available else None
+    if camera_worker is not None:
+        camera_worker.get_latest_frame.return_value = None
+    handler = _build_handler(camera_worker=camera_worker)
+    completion = AsyncMock(return_value="I cannot inspect the scene right now.")
+    monkeypatch.setattr(handler, "_transcribe", AsyncMock(return_value="What do you see?"))
+    monkeypatch.setattr(handler, "_request_completion", completion)
+    monkeypatch.setattr(
+        handler,
+        "_synthesize",
+        AsyncMock(return_value=(16_000, np.array([], dtype=np.int16))),
+    )
+
+    await handler._process_turn(np.ones(320, dtype=np.float32))
+
+    completion.assert_awaited_once_with(image_jpeg=None)
+    if camera_worker is not None:
+        camera_worker.get_latest_frame.assert_called_once_with()
 
 
 @pytest.mark.asyncio
