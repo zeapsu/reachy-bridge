@@ -21,7 +21,9 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
   - Real hardware (Lite over USB): `uv run reachy-mini-daemon`
 - Run an app: `cd apps/<app> && uv run python -m <app>.main` (e.g. `reachy_dance.main`).
   Only **one app uses the robot at a time** — stop the current one first:
-  `curl -X POST localhost:8000/api/apps/stop-current-app`.
+  `curl -X POST localhost:8000/api/apps/stop-current-app`. **That endpoint only stops
+  daemon-managed apps;** an app you launched directly with `uv run python -m <app>.main` returns
+  `{"detail":"No app is currently running"}` — stop those with **Ctrl-C** instead.
 
 ## Apps (`apps/`)
 - `reachy_dance` — beat-synced head/antenna choreography + idle breathing.
@@ -37,14 +39,23 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
 - **SDK/daemon versions must match.** The Reachy *desktop app* bundles an older daemon (was 1.8.0)
   while our env is SDK 1.8.3 — the mismatch breaks the audio pipeline. Fix: quit the desktop app
   and run our own `uv run reachy-mini-daemon` (1.8.3), or otherwise align versions.
-- **Microphone:**
+- **Microphone — both causes below were diagnosed and RESOLVED on this unit (2026-06-21):
+  mic permission granted + ribbon reinstalled correctly; mic is confirmed working. Treat these
+  as historical reference, NOT current suspects — only revisit if `mic_test.py` shows RMS = 0 again.**
   - The terminal app (Ghostty) needs macOS **mic permission** (System Settings → Privacy &
     Security → Microphone); a denied stream returns correctly-shaped buffers full of **zeros**.
   - The robot's mic **ribbon cable can be installed reversed** → also pure silence. Symptom: device
     "Reachy Mini Audio" present, frames flow, but RMS = 0.
   - Diagnose with `uv run python mic_test.py` (RMS probe) or, independent of the daemon,
     `ffmpeg -f avfoundation -i ":0" -t 5 -af volumedetect -f null -` (run with daemon OFF so the
-    device is free).
+    device is free). If `ffmpeg` also shows silence the fault is below the daemon (permission/ribbon);
+    if `ffmpeg` has signal but the SDK path is silent, suspect XVF3800 DSP state (next bullet).
+  - **DSP-state mute:** ad-hoc / out-of-sequence `PP_*` control writes (via
+    `python -m reachy_mini.media.audio_control_utils <PARAM> --values ...`) can leave the XVF3800
+    DSP in a bad state → frames flow but RMS = 0, even though permission + hardware are fine.
+    Recover with a soft reset: `uv run python -m reachy_mini.media.audio_control_utils REBOOT --values 1`
+    (restores factory defaults, e.g. `PP_MGSCALE` first value 1000.0). The app's own
+    `AUDIO_STARTUP_CONFIG` (incl. `PP_MGSCALE=4.0`) is fine — verified mic RMS ~0.2 after a normal app start.
 - **`reachy_chat` TTS:** pyttsx3's `save_to_file` is broken on Apple Silicon (`nsss` driver) →
   produces no decodable audio. We synthesize with the native macOS **`say`** command instead
   (pyttsx3 kept as the non-macOS fallback). See `src/reachy_chat/openrouter_chat.py`.

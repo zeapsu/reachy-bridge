@@ -881,7 +881,11 @@ class LocalStream:
         self._robot.media.start_recording()
         self._robot.media.start_playing()
         time.sleep(1)  # give some time to the pipelines to start
-        apply_audio_startup_config(self._robot, logger=logger)
+        # XVF3800 firmware (v0.2.1.2 on this unit) has an unreliable control-channel
+        # read-back: parameter WRITES succeed but verification READS return retry/unknown
+        # status, so verify=True wrongly reports every tuned param as failed. Writes are
+        # applied either way; skip the broken read-back. (Confirmed via direct device probe.)
+        apply_audio_startup_config(self._robot, logger=logger, verify=False)
 
         async def runner() -> None:
             # Capture loop for cross-thread personality actions
