@@ -1,6 +1,7 @@
 from __future__ import annotations
 import sys
 import asyncio
+import subprocess
 from types import SimpleNamespace
 from typing import Any
 from pathlib import Path
@@ -209,3 +210,161 @@ def test_main_uses_discrete_handler_for_openai_backend() -> None:
     assert "from reachy_chat.openrouter_chat import OpenRouterChatHandler" in source
     assert "return OpenRouterChatHandler(" in source
     assert "openai_realtime" not in source
+
+
+def test_macos_synthesis_uses_say_with_selected_voice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Darwin synthesis must invoke say without initializing pyttsx3."""
+    handler = _build_handler()
+    handler._voice_override = "samantha"
+    expected = np.array([1, -2, 3], dtype=np.int16)
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+        commands.append(command)
+        if command == ["say", "-v", "?"]:
+            return SimpleNamespace(stdout="Samantha            en_US    # Hello!\n", stderr="")
+        output_path = Path(command[command.index("-o") + 1])
+        output_path.write_bytes(b"AIFF")
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr("reachy_chat.openrouter_chat.subprocess.run", fake_run)
+    monkeypatch.setattr(handler, "_decode_audio_blocking", lambda path: (16_000, expected))
+    monkeypatch.setattr(
+        handler,
+        "_ensure_tts_engine_blocking",
+        MagicMock(side_effect=AssertionError("pyttsx3 must stay lazy on macOS")),
+    )
+
+    sample_rate, samples = handler._synthesize_blocking("Hello, this is a test.")
+
+    assert sample_rate == 16_000
+    assert np.array_equal(samples, expected)
+    assert commands[0] == ["say", "-v", "?"]
+    assert commands[1][:4] == ["say", "-v", "Samantha", "-o"]
+    assert commands[1][-1] == "Hello, this is a test."
+    assert Path(commands[1][4]).suffix == ".aiff"
+
+
+def test_macos_synthesis_retries_as_wav_when_aiff_decode_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Darwin synthesis must retry with WAV when AV cannot decode AIFF."""
+    handler = _build_handler()
+    expected = np.array([4, 5, 6], dtype=np.int16)
+    generated_paths: list[Path] = []
+
+    def fake_run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+        output_path = Path(command[command.index("-o") + 1])
+        generated_paths.append(output_path)
+        output_path.write_bytes(b"audio")
+        return SimpleNamespace(stdout="", stderr="")
+
+    def fake_decode(path: Path) -> tuple[int, np.ndarray[Any, np.dtype[np.int16]]]:
+        if path.suffix == ".aiff":
+            raise RuntimeError("undecodable AIFF")
+        return 16_000, expected
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr("reachy_chat.openrouter_chat.subprocess.run", fake_run)
+    monkeypatch.setattr(handler, "_decode_audio_blocking", fake_decode)
+
+    sample_rate, samples = handler._synthesize_blocking("Fallback test")
+
+    assert sample_rate == 16_000
+    assert np.array_equal(samples, expected)
+    assert [path.suffix for path in generated_paths] == [".aiff", ".wav"]
+
+
+def test_macos_available_voices_parses_multiword_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Voice enumeration must preserve multi-word say voice names."""
+    handler = _build_handler()
+    output = (
+        "Albert              en_US    # Hello! My name is Albert.\n"
+        "Bad News            en_US    # Hello! My name is Bad News.\n"
+        "Amélie              fr_CA    # Bonjour!\n"
+    )
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        "reachy_chat.openrouter_chat.subprocess.run",
+        MagicMock(return_value=SimpleNamespace(stdout=output, stderr="")),
+    )
+
+    assert handler._available_voices_blocking() == ["Albert", "Bad News", "Amélie"]
+
+
+def test_macos_voice_selection_returns_canonical_say_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Voice selection must validate case-insensitively and retain canonical spelling."""
+    handler = _build_handler()
+    output = "Samantha            en_US    # Hello!\nBad News            en_US    # Hello!\n"
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        "reachy_chat.openrouter_chat.subprocess.run",
+        MagicMock(return_value=SimpleNamespace(stdout=output, stderr="")),
+    )
+
+    assert handler._select_voice_blocking("bad news") == "Bad News"
+    with pytest.raises(ValueError, match="Unknown voice: Missing"):
+        handler._select_voice_blocking("Missing")
+
+
+def test_macos_voice_enumeration_falls_back_when_say_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Voice enumeration must use pyttsx3 if say cannot be executed."""
+    handler = _build_handler()
+    engine = MagicMock()
+    engine.getProperty.return_value = [SimpleNamespace(id="fallback-id")]
+    run = MagicMock(side_effect=FileNotFoundError)
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr("reachy_chat.openrouter_chat.subprocess.run", run)
+    monkeypatch.setattr(handler, "_ensure_tts_engine_blocking", MagicMock(return_value=engine))
+
+    assert handler._available_voices_blocking() == ["fallback-id"]
+    run.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (FileNotFoundError(), "macOS 'say' command is unavailable"),
+        (
+            subprocess.CalledProcessError(1, ["say"], stderr="Voice not found"),
+            "macOS 'say' command failed: Voice not found",
+        ),
+    ],
+)
+def test_macos_synthesis_reports_clear_say_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+    message: str,
+) -> None:
+    """Darwin synthesis must explain missing and failed say commands."""
+    handler = _build_handler()
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr("reachy_chat.openrouter_chat.subprocess.run", MagicMock(side_effect=failure))
+
+    with pytest.raises(RuntimeError, match=message):
+        handler._synthesize_blocking("Hello")
+
+
+def test_non_macos_synthesis_keeps_pyttsx3_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-Darwin synthesis must retain the existing pyttsx3 path."""
+    handler = _build_handler()
+    engine = MagicMock()
+    expected = np.array([7, 8], dtype=np.int16)
+
+    def save_to_file(_text: str, filename: str) -> None:
+        Path(filename).write_bytes(b"WAVE")
+
+    engine.save_to_file.side_effect = save_to_file
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(handler, "_ensure_tts_engine_blocking", MagicMock(return_value=engine))
+    monkeypatch.setattr(handler, "_decode_audio_blocking", lambda path: (16_000, expected))
+
+    sample_rate, samples = handler._synthesize_blocking("Hello")
+
+    assert sample_rate == 16_000
+    assert np.array_equal(samples, expected)
+    engine.save_to_file.assert_called_once()
+    engine.runAndWait.assert_called_once_with()

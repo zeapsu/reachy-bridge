@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 import os
+import sys
 import time
 import asyncio
 import logging
 import tempfile
+import subprocess
 from typing import Any, Literal, cast
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -28,7 +30,7 @@ Message = dict[str, str]
 
 
 class OpenRouterChatHandler(ConversationHandler):
-    """Discrete microphone -> Whisper -> OpenRouter -> pyttsx3 pipeline."""
+    """Discrete microphone -> Whisper -> OpenRouter -> local TTS pipeline."""
 
     BACKEND_PROVIDER = OPENAI_BACKEND
     SAMPLE_RATE = 16_000
@@ -194,11 +196,11 @@ class OpenRouterChatHandler(ConversationHandler):
             return f"Failed to apply personality: {exc}"
 
     async def get_available_voices(self) -> list[str]:
-        """Return pyttsx3 voice identifiers, loading the engine on first request."""
+        """Return local voice identifiers, loading pyttsx3 only when needed."""
         try:
             voices = await self._run_blocking(self._available_voices_blocking)
         except Exception as exc:
-            logger.warning("Unable to enumerate pyttsx3 voices: %s", exc)
+            logger.warning("Unable to enumerate local voices: %s", exc)
             return [self.SYSTEM_DEFAULT_VOICE]
         return [self.SYSTEM_DEFAULT_VOICE, *voices]
 
@@ -207,14 +209,14 @@ class OpenRouterChatHandler(ConversationHandler):
         return self._voice_override or self.SYSTEM_DEFAULT_VOICE
 
     async def change_voice(self, voice: str) -> str:
-        """Validate and select a local pyttsx3 voice."""
+        """Validate and select a local voice."""
         requested = voice.strip()
         if not requested:
             return "Voice change failed: voice cannot be empty."
         try:
             resolved = await self._run_blocking(self._select_voice_blocking, requested)
         except Exception as exc:
-            logger.warning("Unable to change pyttsx3 voice to %r: %s", requested, exc)
+            logger.warning("Unable to change local voice to %r: %s", requested, exc)
             return f"Voice change failed: {exc}"
         self._voice_override = None if resolved == self.SYSTEM_DEFAULT_VOICE else resolved
         return f"Voice changed to {resolved}."
@@ -321,6 +323,9 @@ class OpenRouterChatHandler(ConversationHandler):
         )
 
     def _synthesize_blocking(self, text: str) -> tuple[int, NDArray[np.int16]]:
+        if sys.platform == "darwin":
+            return self._synthesize_with_say_blocking(text)
+
         engine = self._ensure_tts_engine_blocking()
         self._apply_voice_override_blocking(engine)
         descriptor, filename = tempfile.mkstemp(prefix="reachy-chat-", suffix=".wav")
@@ -335,6 +340,50 @@ class OpenRouterChatHandler(ConversationHandler):
         finally:
             audio_path.unlink(missing_ok=True)
 
+    def _synthesize_with_say_blocking(self, text: str) -> tuple[int, NDArray[np.int16]]:
+        self._apply_voice_override_blocking()
+        decode_error: Exception | None = None
+
+        for suffix, format_options in (
+            (".aiff", []),
+            (".wav", ["--file-format=WAVE", "--data-format=LEI16@16000"]),
+        ):
+            descriptor, filename = tempfile.mkstemp(prefix="reachy-chat-", suffix=suffix)
+            os.close(descriptor)
+            audio_path = Path(filename)
+            command = ["say"]
+            if self._voice_override:
+                command.extend(["-v", self._voice_override])
+            command.extend(["-o", str(audio_path), *format_options, text])
+            try:
+                try:
+                    subprocess.run(command, check=True, capture_output=True, text=True)
+                except FileNotFoundError as exc:
+                    raise RuntimeError(
+                        "macOS 'say' command is unavailable; expected it at /usr/bin/say"
+                    ) from exc
+                except subprocess.CalledProcessError as exc:
+                    detail = (exc.stderr or exc.stdout or "").strip()
+                    message = "macOS 'say' command failed"
+                    if detail:
+                        message = f"{message}: {detail}"
+                    else:
+                        message = f"{message} with exit code {exc.returncode}"
+                    raise RuntimeError(message) from exc
+
+                if not audio_path.exists() or audio_path.stat().st_size == 0:
+                    raise RuntimeError(f"macOS 'say' did not produce a non-empty {suffix} audio file")
+                try:
+                    return self._decode_audio_blocking(audio_path)
+                except Exception as exc:
+                    decode_error = exc
+                    if suffix == ".aiff":
+                        logger.warning("Unable to decode macOS say AIFF output; retrying as WAV: %s", exc)
+            finally:
+                audio_path.unlink(missing_ok=True)
+
+        raise RuntimeError("macOS 'say' output could not be decoded as AIFF or WAV") from decode_error
+
     def _decode_audio_blocking(self, audio_path: Path) -> tuple[int, NDArray[np.int16]]:
         import av
 
@@ -348,7 +397,7 @@ class OpenRouterChatHandler(ConversationHandler):
             for converted in resampler.resample(None):
                 chunks.append(np.asarray(converted.to_ndarray(), dtype=np.int16).reshape(-1))
         if not chunks:
-            raise RuntimeError("pyttsx3 produced no decodable audio")
+            raise RuntimeError("Speech synthesizer produced no decodable audio")
         return self.SAMPLE_RATE, np.concatenate(chunks)
 
     def _ensure_tts_engine_blocking(self) -> Any:
@@ -366,10 +415,59 @@ class OpenRouterChatHandler(ConversationHandler):
             self._tts_engine = None
 
     def _available_voices_blocking(self) -> list[str]:
+        if sys.platform == "darwin":
+            try:
+                return self._say_voices_blocking()
+            except FileNotFoundError:
+                logger.warning("macOS 'say' command is unavailable; falling back to pyttsx3 voice enumeration")
+
         engine = self._ensure_tts_engine_blocking()
         return [str(voice.id) for voice in engine.getProperty("voices")]
 
+    def _say_voices_blocking(self) -> list[str]:
+        try:
+            result = subprocess.run(
+                ["say", "-v", "?"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or "").strip()
+            message = "macOS 'say -v ?' command failed"
+            if detail:
+                message = f"{message}: {detail}"
+            else:
+                message = f"{message} with exit code {exc.returncode}"
+            raise RuntimeError(message) from exc
+
+        voices: list[str] = []
+        for line in result.stdout.splitlines():
+            metadata, separator, _description = line.partition("#")
+            if not separator:
+                continue
+            fields = metadata.strip().rsplit(maxsplit=1)
+            if len(fields) == 2 and fields[0]:
+                voices.append(fields[0])
+        if not voices:
+            raise RuntimeError("macOS 'say -v ?' returned no voice names")
+        return voices
+
     def _select_voice_blocking(self, requested: str) -> str:
+        if sys.platform == "darwin":
+            if requested == self.SYSTEM_DEFAULT_VOICE:
+                return self.SYSTEM_DEFAULT_VOICE
+            try:
+                voices = self._say_voices_blocking()
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    "macOS 'say' command is unavailable; expected it at /usr/bin/say"
+                ) from exc
+            for voice_name in voices:
+                if requested.casefold() == voice_name.casefold():
+                    return voice_name
+            raise ValueError(f"Unknown voice: {requested}")
+
         engine = self._ensure_tts_engine_blocking()
         if requested == self.SYSTEM_DEFAULT_VOICE:
             if self._default_voice_id:
@@ -383,15 +481,15 @@ class OpenRouterChatHandler(ConversationHandler):
                 return voice_id
         raise ValueError(f"Unknown voice: {requested}")
 
-    def _apply_voice_override_blocking(self, engine: Any) -> None:
+    def _apply_voice_override_blocking(self, engine: Any | None = None) -> None:
         if not self._voice_override:
             return
         try:
             resolved = self._select_voice_blocking(self._voice_override)
         except ValueError:
-            logger.warning("Configured pyttsx3 voice %r was not found; using system default", self._voice_override)
+            logger.warning("Configured local voice %r was not found; using system default", self._voice_override)
             self._voice_override = None
-            if self._default_voice_id:
+            if sys.platform != "darwin" and engine is not None and self._default_voice_id:
                 engine.setProperty("voice", self._default_voice_id)
         else:
             self._voice_override = resolved
