@@ -1,5 +1,13 @@
 # Session Log
 
+## [2026-06-21] reachy_chat — XVF3800 audio config + mic-silence debug
+Traced the startup "7 failed audio parameter(s)" warnings to a broken control-channel read-back on
+this unit's XVF3800 firmware (writes succeed, verify-reads return retry/unknown status) → fixed by
+applying `AUDIO_STARTUP_CONFIG` with `verify=False`. Separately, ad-hoc `PP_*` probe writes during
+debugging corrupted the DSP state (mic frames flowed but RMS=0); recovered with
+`audio_control_utils REBOOT --values 1` (verified mic RMS ~0.2 after a normal app start). Documented
+both + the stop-current-app/Ctrl-C gotcha in AGENTS.md. Main artifact: `apps/reachy_chat/src/reachy_chat/console.py`.
+
 ## [2026-06-21] reachy_chat — camera vision context for OpenRouter backend
 Added live-camera visual context to the OpenRouter chat path: a `looks_visual` intent heuristic
 captures the current frame and injects it as a base64 `image_url` into the user turn (history stays
