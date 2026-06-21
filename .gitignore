@@ -1,0 +1,37 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+*.so
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Secrets & local config (keep the examples) ---
+.env
+*.local.env
+!.env.example
+
+# --- Model / data caches (e.g. faster-whisper downloads) ---
+.cache/
+models/
+*.bin
+*.pt
+*.onnx
+
+# --- Reachy daemon machine-specific app metadata ---
+.app_metadata/
+
+# --- OS noise ---
+.DS_Store
+Thumbs.db
+
+# --- Third-party upstream clones (cloned for reference; not this project's source) ---
+/reachy_mini/
+/reachy_mini_conversation_app/

@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Reachy Mini Lite — Field Manual</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --paper:#f4efe4;
+    --paper-2:#ece5d6;
+    --ink:#14202e;
+    --ink-soft:#3c4a5a;
+    --line:#c8bda6;
+    --coral:#e2552f;
+    --coral-deep:#bc3f1f;
+    --teal:#1c7a6b;
+    --gold:#c98a1e;
+    --shadow: 18px 18px 0 rgba(20,32,46,.08);
+    --maxw: 1080px;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:"Newsreader",Georgia,serif;
+    font-size:18px;
+    line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size:32px 32px;
+    background-position:-1px -1px;
+    background-attachment:fixed;
+    background-blend-mode:multiply;
+    position:relative;
+  }
+  body::before{
+    /* subtle paper grain via radial noise */
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:radial-gradient(circle at 50% 0%, rgba(226,85,47,.06), transparent 60%);
+  }
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px;position:relative;z-index:1;}
+
+  /* ---- progress bar ---- */
+  #progress{position:fixed;top:0;left:0;height:4px;width:0;background:var(--coral);z-index:50;transition:width .1s linear;}
+
+  /* ---- top tag ---- */
+  .topbar{
+    position:fixed;top:0;left:0;right:0;z-index:40;
+    display:flex;justify-content:space-between;align-items:center;
+    padding:10px 24px;font-family:"JetBrains Mono",monospace;font-size:11px;
+    letter-spacing:.18em;text-transform:uppercase;color:var(--ink-soft);
+    background:rgba(244,239,228,.82);backdrop-filter:blur(6px);
+    border-bottom:1px solid var(--line);
+  }
+  .topbar a{color:var(--coral-deep);text-decoration:none;}
+  .topbar .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--teal);margin-right:7px;vertical-align:middle;animation:pulse 2.4s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+
+  /* ---- hero ---- */
+  header.hero{padding:118px 0 54px;position:relative;}
+  .kicker{font-family:"JetBrains Mono",monospace;font-size:12px;letter-spacing:.32em;
+    text-transform:uppercase;color:var(--coral-deep);margin-bottom:22px;}
+  h1{
+    font-family:"Bricolage Grotesque",sans-serif;font-weight:800;
+    font-size:clamp(48px,9vw,108px);line-height:.93;letter-spacing:-.02em;
+    margin:0 0 8px;color:var(--ink);
+  }
+  h1 .thin{font-weight:400;color:var(--ink-soft);}
+  .hero .sub{font-size:clamp(19px,2.4vw,26px);max-width:48ch;color:var(--ink-soft);
+    font-style:italic;margin:18px 0 34px;}
+  .chips{display:flex;flex-wrap:wrap;gap:10px;}
+  .chip{font-family:"JetBrains Mono",monospace;font-size:12px;letter-spacing:.04em;
+    border:1.5px solid var(--ink);border-radius:999px;padding:7px 14px;background:var(--paper);
+    box-shadow:3px 3px 0 var(--ink);}
+  .chip.coral{border-color:var(--coral-deep);color:var(--coral-deep);box-shadow:3px 3px 0 var(--coral-deep);}
+  .chip.teal{border-color:var(--teal);color:var(--teal);box-shadow:3px 3px 0 var(--teal);}
+
+  /* robot mark */
+  .mark{position:absolute;top:96px;right:6px;width:172px;height:172px;opacity:.92;}
+  @media(max-width:780px){.mark{display:none;}}
+
+  /* ---- layout w/ side nav ---- */
+  .shell{display:grid;grid-template-columns:200px 1fr;gap:54px;padding-top:18px;}
+  @media(max-width:900px){.shell{grid-template-columns:1fr;gap:0;}}
+  nav.toc{position:sticky;top:74px;align-self:start;height:max-content;
+    font-family:"JetBrains Mono",monospace;font-size:12px;letter-spacing:.04em;
+    border-left:2px solid var(--line);padding-left:0;}
+  @media(max-width:900px){nav.toc{display:none;}}
+  nav.toc a{display:block;color:var(--ink-soft);text-decoration:none;padding:7px 0 7px 16px;
+    border-left:2px solid transparent;margin-left:-2px;transition:.18s;}
+  nav.toc a:hover{color:var(--ink);}
+  nav.toc a.active{color:var(--coral-deep);border-left-color:var(--coral);font-weight:700;}
+
+  /* ---- sections ---- */
+  section{padding:46px 0;border-top:1px dashed var(--line);position:relative;}
+  section:first-of-type{border-top:none;}
+  .sec-no{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--coral-deep);
+    letter-spacing:.2em;text-transform:uppercase;display:block;margin-bottom:6px;}
+  h2{font-family:"Bricolage Grotesque",sans-serif;font-weight:800;font-size:clamp(28px,4vw,42px);
+    line-height:1.02;letter-spacing:-.015em;margin:0 0 18px;}
+  h3{font-family:"Bricolage Grotesque",sans-serif;font-weight:600;font-size:21px;margin:30px 0 8px;letter-spacing:-.01em;}
+  p{margin:0 0 16px;max-width:68ch;}
+  a.inline{color:var(--coral-deep);text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:1px;}
+  strong{font-weight:600;}
+  .lead{font-size:21px;color:var(--ink-soft);}
+
+  /* registration crosshair decoration */
+  .cross{position:absolute;right:0;top:40px;width:18px;height:18px;opacity:.5;}
+  .cross::before,.cross::after{content:"";position:absolute;background:var(--ink-soft);}
+  .cross::before{left:8px;top:0;width:2px;height:18px;}
+  .cross::after{top:8px;left:0;height:2px;width:18px;}
+
+  /* code blocks */
+  .code{position:relative;background:var(--ink);color:#e9e2d2;border-radius:10px;
+    font-family:"JetBrains Mono",monospace;font-size:13.5px;line-height:1.7;
+    padding:18px 20px;margin:14px 0 22px;overflow-x:auto;box-shadow:var(--shadow);}
+  .code .c{color:#8aa0a8;}      /* comment */
+  .code .p{color:#e2552f;font-weight:500;} /* prompt/key */
+  .code .g{color:#7fc6a6;}      /* good/value */
+  .code b{color:#f4cf7a;font-weight:500;}
+  .copy{position:absolute;top:9px;right:9px;font-family:"JetBrains Mono",monospace;font-size:10px;
+    letter-spacing:.1em;text-transform:uppercase;background:transparent;color:#8aa0a8;
+    border:1px solid #3a4a52;border-radius:6px;padding:4px 8px;cursor:pointer;transition:.15s;}
+  .copy:hover{color:#e9e2d2;border-color:#6b7e86;}
+  .copy.done{color:#7fc6a6;border-color:#7fc6a6;}
+
+  /* spec table */
+  table{width:100%;border-collapse:collapse;margin:8px 0 22px;font-size:15px;}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top;}
+  th{font-family:"JetBrains Mono",monospace;font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--ink-soft);border-bottom:2px solid var(--ink);}
+  td code{font-family:"JetBrains Mono",monospace;font-size:13px;background:var(--paper-2);padding:1px 6px;border-radius:4px;}
+  tr:hover td{background:rgba(226,85,47,.04);}
+
+  /* app cards */
+  .cards{display:grid;grid-template-columns:repeat(2,1fr);gap:22px;margin-top:10px;}
+  @media(max-width:760px){.cards{grid-template-columns:1fr;}}
+  .card{border:2px solid var(--ink);border-radius:14px;background:var(--paper);
+    padding:22px 22px 20px;box-shadow:8px 8px 0 var(--ink);position:relative;overflow:hidden;transition:.2s;}
+  .card:hover{transform:translate(-2px,-2px);box-shadow:11px 11px 0 var(--coral-deep);}
+  .card .num{position:absolute;top:-14px;right:6px;font-family:"Bricolage Grotesque",sans-serif;
+    font-weight:800;font-size:80px;color:rgba(20,32,46,.06);}
+  .card h3{margin:0 0 4px;font-size:23px;}
+  .card .mono{font-family:"JetBrains Mono",monospace;font-size:11.5px;color:var(--teal);letter-spacing:.03em;margin-bottom:12px;}
+  .card p{font-size:15.5px;margin-bottom:14px;}
+  .card .run{font-family:"JetBrains Mono",monospace;font-size:12px;background:var(--ink);color:#e9e2d2;
+    padding:9px 12px;border-radius:7px;overflow-x:auto;white-space:nowrap;}
+  .pill{display:inline-block;font-family:"JetBrains Mono",monospace;font-size:10px;letter-spacing:.08em;
+    text-transform:uppercase;padding:3px 9px;border-radius:999px;margin:0 6px 10px 0;font-weight:700;}
+  .pill.sim{background:#1c7a6b;color:#eafff7;}
+  .pill.hw{background:#c98a1e;color:#fff8e8;}
+
+  /* pipeline flow */
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:0;margin:18px 0 24px;}
+  .step{flex:1;min-width:120px;border:2px solid var(--ink);background:var(--paper);border-radius:10px;
+    padding:14px 12px;text-align:center;position:relative;box-shadow:4px 4px 0 var(--ink);margin:0 12px 14px 0;}
+  .step .ic{font-size:22px;display:block;margin-bottom:6px;}
+  .step .t{font-family:"Bricolage Grotesque",sans-serif;font-weight:600;font-size:15px;}
+  .step .d{font-family:"JetBrains Mono",monospace;font-size:10.5px;color:var(--ink-soft);margin-top:3px;}
+  .step.cloud{border-color:var(--coral-deep);box-shadow:4px 4px 0 var(--coral-deep);}
+  .step.cloud .t{color:var(--coral-deep);}
+
+  /* callout */
+  .note{border-left:4px solid var(--coral);background:var(--paper-2);padding:14px 18px;border-radius:0 8px 8px 0;margin:18px 0;font-size:16px;}
+  .note.teal{border-left-color:var(--teal);}
+  .note .lbl{font-family:"JetBrains Mono",monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--coral-deep);display:block;margin-bottom:3px;}
+  .note.teal .lbl{color:var(--teal);}
+
+  ul.clean{list-style:none;padding:0;margin:0 0 16px;}
+  ul.clean li{padding:6px 0 6px 26px;position:relative;max-width:66ch;}
+  ul.clean li::before{content:"▸";position:absolute;left:4px;color:var(--coral);font-size:15px;}
+
+  footer{border-top:2px solid var(--ink);margin-top:30px;padding:34px 0 60px;
+    font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--ink-soft);letter-spacing:.04em;}
+  footer .big{font-family:"Bricolage Grotesque",sans-serif;font-weight:800;font-size:30px;color:var(--ink);letter-spacing:-.01em;margin-bottom:10px;}
+
+  /* load animation */
+  .reveal{opacity:0;transform:translateY(22px);transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1);}
+  .reveal.in{opacity:1;transform:none;}
+</style>
+</head>
+<body>
+<div id="progress"></div>
+<div class="topbar">
+  <span><span class="dot"></span>REACHY MINI LITE · FIELD MANUAL</span>
+  <span>REV 2026.06.20 · <a href="#cheat">CHEAT SHEET ↓</a></span>
+</div>
+
+<div class="wrap">
+  <header class="hero">
+    <svg class="mark" viewBox="0 0 100 100" fill="none" stroke="#14202e" stroke-width="2.4">
+      <!-- antennae -->
+      <line x1="36" y1="22" x2="30" y2="8"/><circle cx="29" cy="6" r="3.4" fill="#e2552f" stroke="none"/>
+      <line x1="64" y1="22" x2="70" y2="8"/><circle cx="71" cy="6" r="3.4" fill="#1c7a6b" stroke="none"/>
+      <!-- head -->
+      <rect x="26" y="22" width="48" height="40" rx="13"/>
+      <circle cx="42" cy="42" r="5" fill="#14202e" stroke="none"/>
+      <circle cx="58" cy="42" r="5" fill="#14202e" stroke="none"/>
+      <!-- body/base -->
+      <path d="M30 62 Q50 56 70 62 L74 84 Q50 92 26 84 Z"/>
+      <line x1="34" y1="72" x2="66" y2="72" stroke-dasharray="3 4"/>
+    </svg>
+    <div class="kicker reveal">// desktop humanoid · pollen robotics × hugging face</div>
+    <h1 class="reveal">Reachy&nbsp;Mini<br><span class="thin">Lite — Field Manual</span></h1>
+    <p class="sub reveal">A complete operator's guide to the software stack, imported programs, and four custom apps built for your robot — designed to run in simulation today and on hardware the moment it's plugged in.</p>
+    <div class="chips reveal">
+      <span class="chip">Python 3.12</span>
+      <span class="chip">reachy-mini 1.8.3</span>
+      <span class="chip teal">simulation-first</span>
+      <span class="chip coral">4 custom apps</span>
+      <span class="chip">OpenRouter · DeepSeek</span>
+    </div>
+  </header>
+
+  <div class="shell">
+    <nav class="toc">
+      <a href="#overview">01 · Overview</a>
+      <a href="#stack">02 · The Stack</a>
+      <a href="#start">03 · Quick Start</a>
+      <a href="#apps">04 · The Apps</a>
+      <a href="#chat">05 · Voice Pipeline</a>
+      <a href="#imports">06 · Imported</a>
+      <a href="#hardware">07 · To Hardware</a>
+      <a href="#trouble">08 · Troubleshoot</a>
+      <a href="#cheat">09 · Cheat Sheet</a>
+    </nav>
+
+    <main>
+      <!-- 01 -->
+      <section id="overview" class="reveal">
+        <span class="cross"></span>
+        <span class="sec-no">Section 01</span>
+        <h2>What you're holding</h2>
+        <p class="lead">The Reachy Mini Lite is the tethered desktop robot: it plugs into your Mac over USB and borrows your computer's brain. This workspace turns that hardware into something programmable.</p>
+        <p>Because the robot was still being assembled while this was built, everything was developed <strong>simulation-first</strong> against a headless MuJoCo physics daemon. The crucial property: <strong>the same code runs unchanged on the real robot</strong> — you only swap which daemon is running.</p>
+        <p>The Lite carries a 120° / 12 MP camera, a 5 W speaker, and 2 microphones (it lacks the wireless version's onboard compute, battery, Wi-Fi, and IMU). That hardware set is exactly what the four custom apps were designed around.</p>
+        <div class="note teal"><span class="lbl">Everything lives here</span> <code>~/reachy/</code> — a single git repository. Custom apps under <code>apps/</code>, the SDK clone and reference apps are kept alongside for study.</div>
+      </section>
+
+      <!-- 02 -->
+      <section id="stack" class="reveal">
+        <span class="cross"></span>
+        <span class="sec-no">Section 02</span>
+        <h2>The stack that's installed</h2>
+        <p>A self-contained <code>uv</code> virtual environment holds the whole runtime. Nothing here touches your system Python.</p>
+        <table>
+          <tr><th>Component</th><th>Version / path</th><th>Notes</th></tr>
+          <tr><td>Python</td><td><code>3.12.11</code> · <code>~/reachy/.venv</code></td><td>uv-managed venv</td></tr>
+          <tr><td>reachy-mini SDK</td><td><code>1.8.3</code></td><td>the <code>ReachyMini</code> client + app framework</td></tr>
+          <tr><td>MuJoCo</td><td><code>3.3.7</code></td><td>physics for the sim (3.2.x had an XML regression)</td></tr>
+          <tr><td>Daemon</td><td>port <code>:8000</code></td><td>bridges your code ↔ motors / sensors</td></tr>
+        </table>
+        <h3>The daemon, explained</h3>
+        <p>The <strong>daemon</strong> is a background service that owns the low-level link to the robot (or the simulator). Your scripts never talk to motors directly — they connect to the daemon via <code>ReachyMini()</code>. It must be running for anything to move.</p>
+        <div class="note"><span class="lbl">Mac caveat</span> The MuJoCo <em>GUI viewer</em> won't launch on this Apple-Silicon Mac (a known limitation). The sim therefore runs <strong>headless</strong> — full physics, no on-screen window. That's all the custom apps need to be verified.</div>
+      </section>
+
+      <!-- 03 -->
+      <section id="start" class="reveal">
+        <span class="cross"></span>
+        <span class="sec-no">Section 03</span>
+        <h2>Quick start</h2>
+        <p>Three terminals' worth of ritual. The daemon stays running in its own window; your scripts run in another.</p>
+
+        <h3>1 — Start the daemon</h3>
+        <div class="code"><button class="copy">copy</button><span class="c"># Simulation (no robot needed) — headless on this Mac</span>
+~/reachy/.venv/bin/python -m reachy_mini.daemon.app.main <b>--sim --headless</b>
+
+<span class="c"># Real Reachy Mini Lite (USB)</span>
+<b>reachy-mini-daemon</b></div>
+        <p>Verify it's alive: open <a class="inline" href="http://localhost:8000/docs">localhost:8000/docs</a> (API) or <a class="inline" href="http://localhost:8000/">localhost:8000</a> (dashboard).</p>
+
+        <h3>2 — Smoke test the SDK</h3>
+        <div class="code"><button class="copy">copy</button><span class="c"># wiggles the antennas — proves code → daemon → robot works</span>
+~/reachy/.venv/bin/python ~/reachy/hello.py</div>
+
+        <h3>3 — The control primitives</h3>
+        <ul class="clean">
+          <li><code>goto_target(...)</code> — move smoothly to a pose over a duration (blocking, choreographed).</li>
+          <li><code>set_target(head=, antennas=)</code> — push a target every tick in a real-time loop (~50 Hz).</li>
+          <li><code>create_head_pose(yaw=, pitch=, roll=)</code> — build a head pose from angles.</li>
+        </ul>
+      </section>
+
+      <!-- 04 -->
+      <section id="apps" class="reveal">
+        <span class="cross"></span>
+        <span class="sec-no">Section 04</span>
+        <h2>The four custom apps</h2>
+        <p>Each is a proper <code>ReachyMiniApp</code> — it appears in the dashboard, can be started/stopped by the daemon, and is publishable to Hugging Face later. Run any of them directly with <code>python -m &lt;name&gt;.main</code> while the daemon is up.</p>
+        <div class="cards">
+
+          <div class="card">
+            <span class="num">A</span>
+            <span class="pill sim">sim-verified</span>
+            <h3>reachy_dance</h3>
+            <div class="mono">reachy_dance.main:ReachyDance</div>
+            <p>Beat-synced choreography: head yaw/pitch/roll and antennas driven by sine/phase math at musical frequencies, plus a gentle idle <em>breathing</em> behavior as a reusable building block. All motion clamped to safe limits.</p>
+            <div class="run">cd apps/reachy_dance &amp;&amp; …python -m reachy_dance.main</div>
+          </div>
+
+          <div class="card">
+            <span class="num">B</span>
+            <span class="pill sim">sim-verified</span><span class="pill hw">input on HW</span>
+            <h3>reachy_simon</h3>
+            <div class="mono">reachy_simon.main:ReachySimon</div>
+            <p>A Simon-style memory game with no screen — the robot plays a growing sequence of antenna flicks and head turns; you repeat it using the antennas as buttons. Win/lose animations included. Auto-mode lets it demo headless.</p>
+            <div class="run">cd apps/reachy_simon &amp;&amp; …python -m reachy_simon.main</div>
+          </div>
+
+          <div class="card">
+            <span class="num">C</span>
+            <span class="pill sim">sim-verified</span><span class="pill hw">camera on HW</span>
+            <h3>reachy_lookat</h3>
+            <div class="mono">reachy_lookat.main:ReachyLookat</div>
+            <p>A "look at me" control loop: grabs camera frames, runs OpenCV Haar-cascade face detection, and smoothly steers the head toward the largest face (EMA smoothing, clamped angles). Degrades gracefully to neutral when no camera is present.</p>
+            <div class="run">cd apps/reachy_lookat &amp;&amp; …python -m reachy_lookat.main</div>
+          </div>
+
+          <div class="card">
+            <span class="num">D</span>
+            <span class="pill hw">mic/speaker on HW</span>
+            <h3>reachy_chat</h3>
+            <div class="mono">reachy_chat.main:ReachyChat</div>
+            <p>A full voice conversation: microphone → local speech-to-text → an LLM over OpenRouter → local text-to-speech → speaker, with expressive motion while it talks. See the next section for the pipeline.</p>
+            <div class="run">cd apps/reachy_chat &amp;&amp; …python -m reachy_chat.main</div>
+          </div>
+
+        </div>
+        <div class="note teal"><span class="lbl">Tip</span> You can also install/start apps from the dashboard, or via REST: <code>POST /api/apps/start-app/&lt;name&gt;</code> and <code>POST /api/apps/stop-current-app</code>. Only one app runs at a time.</div>
+      </section>
+
+      <!-- 05 -->
+      <section id="chat" class="reveal">
+        <span class="cross"></span>
+        <span class="sec-no">Section 05</span>
+        <h2>Inside the voice pipeline</h2>
+        <p>The stock conversation template was built on OpenAI's <em>Realtime</em> API, which OpenRouter cannot proxy. So <code>reachy_chat</code> was refactored into a discrete, turn-based pipeline where <strong>only the LLM step uses the network</strong> (your OpenRouter credits) and both speech ends run locally — no extra API keys.</p>
+        <div class="flow">
+          <div class="step"><span class="ic">🎙️</span><span class="t">Mic</span><span class="d">SDK media</span></div>
+          <div class="step"><span class="ic">📝</span><span class="t">STT</span><span class="d">faster-whisper</span></div>
+          <div class="step cloud"><span class="ic">🧠</span><span class="t">LLM</span><span class="d">OpenRouter</span></div>
+          <div class="step"><span class="ic">🔊</span><span class="t">TTS</span><span class="d">pyttsx3</span></div>
+          <div class="step"><span class="ic">📣</span><span class="t">Speaker</span><span class="d">SDK media</span></div>
+        </div>
+        <h3>Configuration</h3>
+        <p>Copy the example env file and drop in your key. The default model is set; override it if you like.</p>
+        <div class="code"><button class="copy">copy</button>cd ~/reachy/apps/reachy_chat
+cp .env.example .env
+
+<span class="c"># .env</span>
+<span class="p">OPENROUTER_API_KEY</span>=<span class="g">sk-or-...your key...</span>
+<span class="p">OPENROUTER_MODEL</span>=<span class="g">deepseek/deepseek-v4-flash</span>   <span class="c"># default; any OpenRouter slug works</span></div>
+        <ul class="clean">
+          <li><strong>STT</strong> — <code>faster-whisper</code> (<code>base.en</code>, ~200 MB, auto-downloads to <code>~/.cache/huggingface/</code> on first run, then cached). Loads lazily, not at import.</li>
+          <li><strong>LLM</strong> — OpenAI-compatible client pointed at <code>https://openrouter.ai/api/v1</code>, bounded 10-message history, default <code>deepseek/deepseek-v4-flash</code>.</li>
+          <li><strong>TTS</strong> — <code>pyttsx3</code> using macOS system voices (offline, no download).</li>
+          <li><strong>Fallbacks</strong> — silent on STT miss, an apology line on LLM timeout, skipped audio on TTS failure. It won't crash mid-conversation.</li>
+        </ul>
+        <div class="note"><span class="lbl">Want a cloud voice?</span> Both speech ends are local by choice (keeps everything on OpenRouter credits). Swap <code>faster-whisper</code> or <code>pyttsx3</code> for a cloud STT/TTS later if you prefer higher quality — only the handler in <code>src/reachy_chat/openrouter_chat.py</code> changes.</div>
+      </section>
+
+      <!-- 06 -->
+      <section id="imports" class="reveal">
+        <span class="cross"></span>
+        <span class="sec-no">Section 06</span>
+        <h2>Imported reference programs</h2>
+        <p>Learning material that came with the setup — clones and one-click installs to read and run.</p>
+        <ul class="clean">
+          <li><strong>SDK + examples</strong> — <code>~/reachy/reachy_mini/</code> (the <code>pollen-robotics/reachy_mini</code> repo). Read <code>AGENTS.md</code> and the <code>skills/</code> guides; the <code>examples/</code> folder has runnable scripts (<code>goto_interpolation_playground.py</code> is a good first one).</li>
+          <li><strong>Community apps</strong> — <em>Radio</em>, <em>Simon</em>, and <em>Hand Tracker</em> are installed in the daemon (great patterns for antenna interaction, no-GUI games, and camera control loops).</li>
+          <li><strong>Conversation app</strong> — <code>~/reachy/reachy_mini_conversation_app/</code>, the upstream reference that informed <code>reachy_chat</code>.</li>
+        </ul>
+        <div class="note teal"><span class="lbl">Building your own</span> Always scaffold with the CLI — never hand-create folders: <code>reachy-mini-app-assistant create &lt;name&gt; ~/reachy/apps</code> (add <code>--template conversation</code> for voice apps). Validate with <code>reachy-mini-app-assistant check &lt;path&gt;</code>.</div>
+      </section>
+
+      <!-- 07 -->
+      <section id="hardware" class="reveal">
+        <span class="cross"></span>
+        <span class="sec-no">Section 07</span>
+        <h2>Going to hardware</h2>
+        <p class="lead">No code changes. Just change the daemon.</p>
+        <div class="code"><button class="copy">copy</button><span class="c"># Stop the sim daemon, plug in the Lite over USB, then:</span>
+<b>reachy-mini-daemon</b>
+
+<span class="c"># Everything else is identical:</span>
+cd ~/reachy/apps/reachy_dance &amp;&amp; ~/reachy/.venv/bin/python -m reachy_dance.main</div>
+        <p>What activates automatically once the robot's sensors are live:</p>
+        <ul class="clean">
+          <li><strong>reachy_dance</strong> — already complete; now moves real servos.</li>
+          <li><strong>reachy_simon</strong> — the antenna/head <em>input</em> half becomes playable.</li>
+          <li><strong>reachy_lookat</strong> — the camera feeds real frames; face tracking comes alive.</li>
+          <li><strong>reachy_chat</strong> — set <code>OPENROUTER_API_KEY</code> in <code>.env</code>; the mic/speaker drive the conversation (first run downloads the Whisper model).</li>
+        </ul>
+      </section>
+
+      <!-- 08 -->
+      <section id="trouble" class="reveal">
+        <span class="cross"></span>
+        <span class="sec-no">Section 08</span>
+        <h2>Troubleshooting &amp; notes</h2>
+        <table>
+          <tr><th>Symptom</th><th>Fix</th></tr>
+          <tr><td>"An app is already running"</td><td><code>curl -X POST localhost:8000/api/apps/stop-current-app</code></td></tr>
+          <tr><td>MuJoCo GUI won't open</td><td>Expected on this Mac — use <code>--sim --headless</code>. Not a hardware issue.</td></tr>
+          <tr><td><code>site1</code> / XML schema error</td><td>Wrong MuJoCo version. Pin <code>mujoco==3.3.7</code> in the venv.</td></tr>
+          <tr><td>Daemon in a bad state</td><td>Restart it; wait ~30 s before starting an app.</td></tr>
+          <tr><td>Code changes not picked up</td><td>Restart the app; clear <code>__pycache__</code> if installed manually.</td></tr>
+          <tr><td>reachy_chat: no LLM reply</td><td>Check <code>OPENROUTER_API_KEY</code> in <code>.env</code> and that the model slug exists on OpenRouter.</td></tr>
+        </table>
+        <div class="note"><span class="lbl">First-run download</span> <code>reachy_chat</code> fetches the faster-whisper <code>base.en</code> model (~200 MB) once. Subsequent runs are offline for STT/TTS.</div>
+      </section>
+
+      <!-- 09 -->
+      <section id="cheat" class="reveal">
+        <span class="cross"></span>
+        <span class="sec-no">Section 09</span>
+        <h2>Command cheat sheet</h2>
+        <div class="code"><button class="copy">copy</button><span class="c"># ── DAEMON ──────────────────────────────</span>
+<span class="c"># sim (headless)</span>
+~/reachy/.venv/bin/python -m reachy_mini.daemon.app.main --sim --headless
+<span class="c"># hardware</span>
+reachy-mini-daemon
+
+<span class="c"># ── RUN AN APP ──────────────────────────</span>
+cd ~/reachy/apps/<b>reachy_dance</b>  &amp;&amp; ~/reachy/.venv/bin/python -m reachy_dance.main
+cd ~/reachy/apps/<b>reachy_simon</b>  &amp;&amp; ~/reachy/.venv/bin/python -m reachy_simon.main
+cd ~/reachy/apps/<b>reachy_lookat</b> &amp;&amp; ~/reachy/.venv/bin/python -m reachy_lookat.main
+cd ~/reachy/apps/<b>reachy_chat</b>   &amp;&amp; ~/reachy/.venv/bin/python -m reachy_chat.main
+
+<span class="c"># ── APPS VIA REST ───────────────────────</span>
+curl localhost:8000/api/apps/list
+curl -X POST localhost:8000/api/apps/start-app/<b>reachy_dance</b>
+curl -X POST localhost:8000/api/apps/stop-current-app
+
+<span class="c"># ── SCAFFOLD / VALIDATE ─────────────────</span>
+reachy-mini-app-assistant create <b>my_app</b> ~/reachy/apps
+reachy-mini-app-assistant check  ~/reachy/apps/<b>my_app</b></div>
+
+        <h3>File map</h3>
+        <div class="code"><span class="c">~/reachy/</span>
+├── .venv/                          <span class="c"># uv venv (gitignored)</span>
+├── hello.py                        <span class="c"># SDK smoke test</span>
+├── apps/
+│   ├── <b>reachy_dance</b>/    reachy_dance/main.py
+│   ├── <b>reachy_simon</b>/    reachy_simon/main.py
+│   ├── <b>reachy_lookat</b>/   reachy_lookat/main.py
+│   └── <b>reachy_chat</b>/     src/reachy_chat/{main,openrouter_chat}.py
+├── docs/USER_GUIDE.html            <span class="c"># you are here</span>
+├── reachy_mini/                    <span class="c"># SDK clone (gitignored)</span>
+└── reachy_mini_conversation_app/   <span class="c"># reference (gitignored)</span></div>
+      </section>
+
+      <footer>
+        <div class="big">Plug in. Start the daemon. Go.</div>
+        REACHY MINI LITE FIELD MANUAL · Pollen Robotics × Hugging Face<br>
+        Stack: Python 3.12.11 · reachy-mini 1.8.3 · MuJoCo 3.3.7 · OpenRouter (deepseek/deepseek-v4-flash)<br>
+        Generated 2026-06-20 · ~/reachy
+      </footer>
+    </main>
+  </div>
+</div>
+
+<script>
+  // progress bar
+  const prog=document.getElementById('progress');
+  const onScroll=()=>{const h=document.documentElement;const sc=(h.scrollTop)/(h.scrollHeight-h.clientHeight);prog.style.width=(sc*100)+'%';};
+  document.addEventListener('scroll',onScroll,{passive:true});onScroll();
+
+  // reveal on scroll + staggered hero
+  const io=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:.12});
+  document.querySelectorAll('.reveal').forEach((el,i)=>{io.observe(el);});
+  // hero items stagger immediately
+  document.querySelectorAll('header .reveal').forEach((el,i)=>{el.style.transitionDelay=(i*0.09)+'s';setTimeout(()=>el.classList.add('in'),60);});
+
+  // active toc
+  const links=[...document.querySelectorAll('nav.toc a')];
+  const secs=links.map(l=>document.querySelector(l.getAttribute('href')));
+  const spy=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){const id='#'+e.target.id;links.forEach(l=>l.classList.toggle('active',l.getAttribute('href')===id));}});},{rootMargin:'-40% 0px -55% 0px'});
+  secs.forEach(s=>s&&spy.observe(s));
+
+  // copy buttons
+  document.querySelectorAll('.copy').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const code=btn.parentElement;const text=code.innerText.replace(/^copy\n?/,'').trim();
+      navigator.clipboard.writeText(text).then(()=>{btn.textContent='copied';btn.classList.add('done');setTimeout(()=>{btn.textContent='copy';btn.classList.remove('done');},1400);});
+    });
+  });
+</script>
+</body>
+</html>
