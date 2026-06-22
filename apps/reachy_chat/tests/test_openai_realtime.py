@@ -1,3 +1,4 @@
+import base64
 import random
 import asyncio
 import logging
@@ -6,6 +7,7 @@ from typing import Any, Callable
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 from fastrtc import AdditionalOutputs
 
@@ -29,6 +31,68 @@ def _build_handler(loop: asyncio.AbstractEventLoop) -> OpenaiRealtimeHandler:
     asyncio.set_event_loop(loop)
     deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
     return OpenaiRealtimeHandler(deps)
+
+
+def _build_audio_receive_handler() -> tuple[OpenaiRealtimeHandler, AsyncMock]:
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    handler = OpenaiRealtimeHandler(deps)
+    append = AsyncMock()
+    handler.connection = SimpleNamespace(
+        input_audio_buffer=SimpleNamespace(append=append),
+    )
+    return handler, append
+
+
+@pytest.mark.asyncio
+async def test_receive_drops_mic_frames_while_assistant_speaks_and_gate_is_closed() -> None:
+    handler, append = _build_audio_receive_handler()
+    handler._assistant_is_speaking = True
+    handler.address_gate.fast_check = MagicMock(
+        return_value=AddressResult(False, 0.0, "no_address_cues")
+    )
+    frame = (handler.input_sample_rate, np.zeros(160, dtype=np.int16))
+
+    await handler.receive(frame)
+    await handler.receive(frame)
+
+    append.assert_not_awaited()
+    handler.address_gate.fast_check.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_receive_forwards_mic_frame_while_assistant_speaks_and_gate_is_open() -> None:
+    handler, append = _build_audio_receive_handler()
+    handler._assistant_is_speaking = True
+    handler.address_gate.fast_check = MagicMock(
+        return_value=AddressResult(True, 0.5, "front_facing")
+    )
+
+    await handler.receive((handler.input_sample_rate, np.zeros(160, dtype=np.int16)))
+
+    append.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_receive_forwards_mic_frame_while_assistant_is_idle() -> None:
+    handler, append = _build_audio_receive_handler()
+    handler._assistant_is_speaking = False
+    handler.address_gate.fast_check = MagicMock()
+
+    await handler.receive((handler.input_sample_rate, np.zeros(160, dtype=np.int16)))
+
+    append.assert_awaited_once()
+    handler.address_gate.fast_check.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_receive_forwards_mic_frame_when_address_gate_errors() -> None:
+    handler, append = _build_audio_receive_handler()
+    handler._assistant_is_speaking = True
+    handler.address_gate.fast_check = MagicMock(side_effect=RuntimeError("gate unavailable"))
+
+    await handler.receive((handler.input_sample_rate, np.zeros(160, dtype=np.int16)))
+
+    append.assert_awaited_once()
 
 
 async def _run_openai_handler_with_events(
@@ -116,6 +180,37 @@ async def _run_openai_handler_with_events(
 
     await handler._run_realtime_session()
     return handler
+
+
+@pytest.mark.asyncio
+async def test_output_audio_delta_marks_assistant_as_speaking(monkeypatch: Any) -> None:
+    audio_delta = base64.b64encode(b"\x00\x00").decode("ascii")
+
+    handler = await _run_openai_handler_with_events(
+        monkeypatch,
+        [SimpleNamespace(type="response.output_audio.delta", delta=audio_delta)],
+    )
+
+    assert handler._assistant_is_speaking is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("done_event", ["response.output_audio.done", "response.done"])
+async def test_output_audio_completion_marks_assistant_as_idle(
+    monkeypatch: Any,
+    done_event: str,
+) -> None:
+    audio_delta = base64.b64encode(b"\x00\x00").decode("ascii")
+
+    handler = await _run_openai_handler_with_events(
+        monkeypatch,
+        [
+            SimpleNamespace(type="response.output_audio.delta", delta=audio_delta),
+            SimpleNamespace(type=done_event),
+        ],
+    )
+
+    assert handler._assistant_is_speaking is False
 
 
 @pytest.mark.asyncio

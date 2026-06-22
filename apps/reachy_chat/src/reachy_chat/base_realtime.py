@@ -44,6 +44,8 @@ from reachy_chat.tools.background_tool_manager import (
 
 logger = logging.getLogger(__name__)
 
+MIC_GATE_CHECK_INTERVAL_SECONDS: Final = 0.2
+
 _RESPONSE_DONE_TIMEOUT: Final[float] = 30.0
 _RESPONSE_REJECTION_RETRY_DELAY: Final[float] = 0.5
 
@@ -164,6 +166,33 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         self._turn_user_done_at: float | None = None
         self._turn_response_created_at: float | None = None
         self._turn_first_audio_at: float | None = None
+        self._assistant_is_speaking = False
+        self._last_gate_check_time = 0.0
+        self._last_gate_decision: bool | None = None
+
+    def _should_forward_mic_frame(self) -> bool:
+        """Return whether mic audio should reach the backend, failing open."""
+        if not self._assistant_is_speaking:
+            return True
+
+        now = time.monotonic()
+        if (
+            self._last_gate_decision is not None
+            and now - self._last_gate_check_time < MIC_GATE_CHECK_INTERVAL_SECONDS
+        ):
+            return self._last_gate_decision
+
+        try:
+            decision = self.address_gate.fast_check().is_open
+            if not isinstance(decision, bool):
+                raise ValueError(f"uncertain address gate decision: {decision!r}")
+        except Exception:
+            logger.debug("Address gate mic check failed; forwarding audio", exc_info=True)
+            decision = True
+
+        self._last_gate_check_time = now
+        self._last_gate_decision = decision
+        return decision
 
     @staticmethod
     def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
@@ -761,6 +790,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                         logger.debug("User speech stopped - server will auto-commit with VAD")
 
                     if event.type == "response.output_audio.done":
+                        self._assistant_is_speaking = False
                         logger.debug("response completed")
 
                     if event.type == "response.output_text.delta":
@@ -781,6 +811,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
 
                     if event.type == "response.done":
                         # Doesn't mean the audio is done playing
+                        self._assistant_is_speaking = False
                         self._response_done_event.set()
                         self._response_started_or_rejected_event.set()
                         logger.debug("Response done")
@@ -845,6 +876,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
 
                     # Handle audio delta
                     if event.type == "response.output_audio.delta":
+                        self._assistant_is_speaking = True
                         decoded_pcm_bytes = base64.b64decode(event.delta)
                         decoded_pcm = np.frombuffer(decoded_pcm_bytes, dtype=np.int16).reshape(1, -1)
                         self._mark_activity("assistant_audio_delta")
@@ -958,6 +990,9 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
 
         """
         if not self.connection:
+            return
+
+        if not self._should_forward_mic_frame():
             return
 
         input_sample_rate, audio_frame = frame

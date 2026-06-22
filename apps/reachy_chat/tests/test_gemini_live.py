@@ -95,6 +95,67 @@ class _FakeLiveClient:
         self.aio = SimpleNamespace(live=SimpleNamespace(connect=lambda **_kwargs: _FakeConnectContext(session)))
 
 
+def _build_audio_receive_handler() -> tuple[GeminiLiveHandler, _FakeSession]:
+    handler = GeminiLiveHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    )
+    session = _FakeSession([], handler._stop_event)
+    handler.session = session
+    return handler, session
+
+
+@pytest.mark.asyncio
+async def test_receive_drops_mic_frames_while_assistant_speaks_and_gate_is_closed() -> None:
+    handler, session = _build_audio_receive_handler()
+    handler._assistant_is_speaking = True
+    handler.address_gate.fast_check = MagicMock(
+        return_value=AddressResult(False, 0.0, "no_address_cues")
+    )
+    frame = (handler.input_sample_rate, np.zeros(160, dtype=np.int16))
+
+    await handler.receive(frame)
+    await handler.receive(frame)
+
+    assert session.realtime_inputs == []
+    handler.address_gate.fast_check.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_receive_forwards_mic_frame_while_assistant_speaks_and_gate_is_open() -> None:
+    handler, session = _build_audio_receive_handler()
+    handler._assistant_is_speaking = True
+    handler.address_gate.fast_check = MagicMock(
+        return_value=AddressResult(True, 0.5, "front_facing")
+    )
+
+    await handler.receive((handler.input_sample_rate, np.zeros(160, dtype=np.int16)))
+
+    assert len(session.realtime_inputs) == 1
+
+
+@pytest.mark.asyncio
+async def test_receive_forwards_mic_frame_while_assistant_is_idle() -> None:
+    handler, session = _build_audio_receive_handler()
+    handler._assistant_is_speaking = False
+    handler.address_gate.fast_check = MagicMock()
+
+    await handler.receive((handler.input_sample_rate, np.zeros(160, dtype=np.int16)))
+
+    assert len(session.realtime_inputs) == 1
+    handler.address_gate.fast_check.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_receive_forwards_mic_frame_when_address_gate_errors() -> None:
+    handler, session = _build_audio_receive_handler()
+    handler._assistant_is_speaking = True
+    handler.address_gate.fast_check = MagicMock(side_effect=RuntimeError("gate unavailable"))
+
+    await handler.receive((handler.input_sample_rate, np.zeros(160, dtype=np.int16)))
+
+    assert len(session.realtime_inputs) == 1
+
+
 @pytest.mark.asyncio
 async def test_unaddressed_interruption_does_not_clear_gemini_playback() -> None:
     """Gemini interruptions should preserve playback when the gate is closed."""
@@ -150,6 +211,16 @@ async def test_gemini_turn_buffers_transcripts_and_schedules_motion_reset(
     handler = GeminiLiveHandler(deps)
     monkeypatch.setattr(type(handler.tool_manager), "start_up", MagicMock())
     monkeypatch.setattr(type(handler.tool_manager), "shutdown", AsyncMock())
+
+    speaking_states_during_audio_output: list[bool] = []
+
+    class RecordingOutputQueue(asyncio.Queue[Any]):
+        async def put(self, item: Any) -> None:
+            if isinstance(item, tuple):
+                speaking_states_during_audio_output.append(handler._assistant_is_speaking)
+            await super().put(item)
+
+    handler.output_queue = RecordingOutputQueue()
 
     audio_bytes = b"\x00\x00\x10\x00" * 256
     session = _FakeSession(
@@ -211,6 +282,8 @@ async def test_gemini_turn_buffers_transcripts_and_schedules_motion_reset(
         {"role": "assistant", "content": "Doing great."},
     ]
     assert any(isinstance(output, tuple) for output in outputs), "audio output was not emitted"
+    assert speaking_states_during_audio_output == [True]
+    assert handler._assistant_is_speaking is False
     movement_manager.set_listening.assert_has_calls([call(True), call(False)])
     assert movement_manager.set_listening.call_args_list[-1] == call(False)
 

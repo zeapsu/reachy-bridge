@@ -49,6 +49,8 @@ from reachy_chat.tools.background_tool_manager import (
 
 logger = logging.getLogger(__name__)
 
+MIC_GATE_CHECK_INTERVAL_SECONDS: Final = 0.2
+
 GEMINI_INPUT_SAMPLE_RATE: Final[int] = 16000
 GEMINI_OUTPUT_SAMPLE_RATE: Final[int] = 24000
 
@@ -183,6 +185,9 @@ class GeminiLiveHandler(ConversationHandler):
         self._pending_user_transcript_chunks: list[str] = []
         self._pending_assistant_transcript_chunks: list[str] = []
         self._listening_state = False
+        self._assistant_is_speaking = False
+        self._last_gate_check_time = 0.0
+        self._last_gate_decision: bool | None = None
 
     def copy(self) -> "GeminiLiveHandler":
         """Return a fresh handler, preserving deps and voice override."""
@@ -198,6 +203,30 @@ class GeminiLiveHandler(ConversationHandler):
             return
         self._listening_state = listening
         self.deps.movement_manager.set_listening(listening)
+
+    def _should_forward_mic_frame(self) -> bool:
+        """Return whether mic audio should reach Gemini, failing open."""
+        if not self._assistant_is_speaking:
+            return True
+
+        now = time.monotonic()
+        if (
+            self._last_gate_decision is not None
+            and now - self._last_gate_check_time < MIC_GATE_CHECK_INTERVAL_SECONDS
+        ):
+            return self._last_gate_decision
+
+        try:
+            decision = self.address_gate.fast_check().is_open
+            if not isinstance(decision, bool):
+                raise ValueError(f"uncertain address gate decision: {decision!r}")
+        except Exception:
+            logger.debug("Address gate mic check failed; forwarding audio", exc_info=True)
+            decision = True
+
+        self._last_gate_check_time = now
+        self._last_gate_decision = decision
+        return decision
 
     async def _flush_transcript_chunks(self, role: str, chunks: list[str]) -> None:
         """Emit one finalized transcript message for the current turn."""
@@ -578,6 +607,7 @@ class GeminiLiveHandler(ConversationHandler):
 
                                 # Handle interruption / barge-in
                                 if content.interrupted is True:
+                                    self._assistant_is_speaking = False
                                     await self._handle_interruption()
 
                                 # Handle audio output from model
@@ -602,6 +632,7 @@ class GeminiLiveHandler(ConversationHandler):
                                             if len(audio_array) == 0:
                                                 continue
 
+                                            self._assistant_is_speaking = True
                                             self._mark_activity("assistant_audio_delta")
 
                                             await self.output_queue.put(
@@ -625,6 +656,7 @@ class GeminiLiveHandler(ConversationHandler):
 
                                 # Turn complete
                                 if content.turn_complete:
+                                    self._assistant_is_speaking = False
                                     self._mark_activity("assistant_transcript_done")
                                     await self._handle_turn_complete()
 
@@ -651,6 +683,9 @@ class GeminiLiveHandler(ConversationHandler):
     async def receive(self, frame: Tuple[int, NDArray[np.int16]]) -> None:
         """Receive audio frame from microphone and send to Gemini."""
         if not self.session:
+            return
+
+        if not self._should_forward_mic_frame():
             return
 
         input_sample_rate, audio_frame = frame
