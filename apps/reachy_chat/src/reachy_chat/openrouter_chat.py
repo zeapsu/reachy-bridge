@@ -20,6 +20,7 @@ from fastrtc import AdditionalOutputs
 from numpy.typing import NDArray
 
 from reachy_chat.config import OPENAI_BACKEND, config
+from reachy_chat.address_gate import AddressGate
 from reachy_chat.prompts import get_session_instructions
 from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.conversation_handler import AudioFrame, HandlerOutput, ConversationHandler
@@ -71,6 +72,7 @@ class OpenRouterChatHandler(ConversationHandler):
             input_sample_rate=self.SAMPLE_RATE,
         )
         self.deps = deps
+        self.address_gate = AddressGate(self.deps.reachy_mini, self.deps.camera_worker)
         self.instance_path = instance_path
         self.output_queue: asyncio.Queue[AudioFrame | AdditionalOutputs] = asyncio.Queue()
         self.conversation_history: list[Message] = []
@@ -260,6 +262,22 @@ class OpenRouterChatHandler(ConversationHandler):
                 return
             if not transcript:
                 logger.debug("Ignoring empty transcription")
+                return
+
+            address_result = self.address_gate.semantic_check(transcript)
+            logger.debug(
+                "Address gate semantic check: open=%s confidence=%.1f reason=%s",
+                address_result.is_open,
+                address_result.confidence,
+                address_result.reason,
+            )
+            if not address_result.is_open:
+                logger.info(
+                    "filtered_overheard_speech confidence=%.1f reason=%s transcript=%r",
+                    address_result.confidence,
+                    address_result.reason,
+                    transcript,
+                )
                 return
 
             self._record_message("user", transcript)

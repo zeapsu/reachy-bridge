@@ -14,6 +14,7 @@ from fastrtc import AdditionalOutputs
 
 from reachy_chat import config as config_module
 from reachy_chat.config import config
+from reachy_chat.address_gate import AddressResult
 from reachy_chat.openrouter_chat import OpenRouterChatHandler
 from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.conversation_handler import ConversationHandler
@@ -253,6 +254,25 @@ async def test_process_turn_emits_transcripts_and_audio(monkeypatch: pytest.Monk
         {"role": "user", "content": "hello reachy"},
         {"role": "assistant", "content": "hello human"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_process_turn_filters_unaddressed_speech(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A closed semantic gate should discard an overheard discrete turn."""
+    handler = _build_handler()
+    completion = AsyncMock()
+    monkeypatch.setattr(handler, "_transcribe", AsyncMock(return_value="Background conversation"))
+    monkeypatch.setattr(handler, "_request_completion", completion)
+    handler.address_gate.semantic_check = MagicMock(
+        return_value=AddressResult(False, 0.0, "no_address_cues")
+    )
+
+    await handler._process_turn(np.ones(320, dtype=np.float32))
+
+    handler.address_gate.semantic_check.assert_called_once_with("Background conversation")
+    completion.assert_not_awaited()
+    assert handler.conversation_history == []
+    assert handler.output_queue.empty()
 
 
 @pytest.mark.asyncio

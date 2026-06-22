@@ -26,6 +26,7 @@ from websockets.exceptions import ConnectionClosedError
 from openai.resources.realtime.realtime import AsyncRealtimeConnection
 
 from reachy_chat.tools import core_tools
+from reachy_chat.address_gate import AddressGate
 from reachy_chat.config import (
     config,
     get_default_voice_for_backend,
@@ -122,6 +123,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         )
 
         self.deps = deps
+        self.address_gate = AddressGate(self.deps.reachy_mini, self.deps.camera_worker)
 
         self.output_sample_rate = sample_rate
         self.input_sample_rate = sample_rate
@@ -735,8 +737,21 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                         self._turn_user_done_at = None
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
-                        if self._clear_queue:
+                        address_result = self.address_gate.fast_check()
+                        logger.debug(
+                            "Address gate interruption check: open=%s confidence=%.1f reason=%s",
+                            address_result.is_open,
+                            address_result.confidence,
+                            address_result.reason,
+                        )
+                        if address_result.is_open and self._clear_queue:
                             self._clear_queue()
+                        elif not address_result.is_open:
+                            logger.info(
+                                "suppressed_interruption confidence=%.1f reason=%s",
+                                address_result.confidence,
+                                address_result.reason,
+                            )
                         self.deps.movement_manager.set_listening(True)
                         logger.debug("User speech started")
 

@@ -31,6 +31,7 @@ from reachy_chat.config import (
     DEFAULT_VOICE_BY_BACKEND,
     config,
 )
+from reachy_chat.address_gate import AddressGate
 from reachy_chat.prompts import get_session_voice, get_session_instructions
 from reachy_chat.idle_policy import start_idle_tool_call
 from reachy_chat.tools.core_tools import (
@@ -156,6 +157,7 @@ class GeminiLiveHandler(ConversationHandler):
         )
 
         self.deps = deps
+        self.address_gate = AddressGate(self.deps.reachy_mini, self.deps.camera_worker)
         self.instance_path = instance_path
         self._voice_override: str | None = _resolve_gemini_startup_voice(startup_voice)
 
@@ -230,8 +232,21 @@ class GeminiLiveHandler(ConversationHandler):
         """Stop current playback and preserve any transcript already spoken."""
         logger.debug("Gemini: user interrupted")
         await self._flush_transcript_chunks("assistant", self._pending_assistant_transcript_chunks)
-        if self._clear_queue:
+        address_result = self.address_gate.fast_check()
+        logger.debug(
+            "Address gate interruption check: open=%s confidence=%.1f reason=%s",
+            address_result.is_open,
+            address_result.confidence,
+            address_result.reason,
+        )
+        if address_result.is_open and self._clear_queue:
             self._clear_queue()
+        elif not address_result.is_open:
+            logger.info(
+                "suppressed_interruption confidence=%.1f reason=%s",
+                address_result.confidence,
+                address_result.reason,
+            )
         self._set_listening_state(True)
 
     async def _handle_turn_complete(self) -> None:

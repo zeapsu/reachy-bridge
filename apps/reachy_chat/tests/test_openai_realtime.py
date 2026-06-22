@@ -14,6 +14,7 @@ import reachy_chat.base_realtime as base_rt_mod
 import reachy_chat.openai_realtime as rt_mod
 import reachy_chat.tools.core_tools as ct_mod
 import reachy_chat.tools.background_tool_manager as btm_mod
+from reachy_chat.address_gate import AddressResult
 from reachy_chat.config import OPENAI_REALTIME_BACKEND, config, get_default_voice_for_backend
 from reachy_chat.openai_realtime import OpenaiRealtimeHandler
 from reachy_chat.tools.core_tools import ToolDependencies
@@ -418,6 +419,48 @@ async def test_user_speech_events_reset_idle_timer(monkeypatch: Any) -> None:
 
     assert handler.last_activity_time > previous_activity_time
     movement_manager.set_listening.assert_any_call(True)
+
+
+@pytest.mark.asyncio
+async def test_unaddressed_speech_does_not_clear_realtime_playback(monkeypatch: Any) -> None:
+    """A closed address gate should suppress realtime barge-in."""
+    clear_queue = MagicMock()
+
+    def configure_gate(handler: OpenaiRealtimeHandler) -> None:
+        handler._clear_queue = clear_queue
+        handler.address_gate.fast_check = MagicMock(
+            return_value=AddressResult(False, 0.0, "no_address_cues")
+        )
+
+    handler = await _run_openai_handler_with_events(
+        monkeypatch,
+        [SimpleNamespace(type="input_audio_buffer.speech_started")],
+        handler_setup=configure_gate,
+    )
+
+    handler.address_gate.fast_check.assert_called_once_with()
+    clear_queue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_addressed_speech_clears_realtime_playback(monkeypatch: Any) -> None:
+    """An open address gate should retain the existing barge-in behavior."""
+    clear_queue = MagicMock()
+
+    def configure_gate(handler: OpenaiRealtimeHandler) -> None:
+        handler._clear_queue = clear_queue
+        handler.address_gate.fast_check = MagicMock(
+            return_value=AddressResult(True, 0.5, "front_facing")
+        )
+
+    handler = await _run_openai_handler_with_events(
+        monkeypatch,
+        [SimpleNamespace(type="input_audio_buffer.speech_started")],
+        handler_setup=configure_gate,
+    )
+
+    handler.address_gate.fast_check.assert_called_once_with()
+    clear_queue.assert_called_once_with()
 
 
 @pytest.mark.asyncio

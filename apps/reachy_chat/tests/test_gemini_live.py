@@ -13,6 +13,7 @@ from fastrtc import AdditionalOutputs
 import reachy_chat.gemini_live as gemini_mod
 import reachy_chat.idle_policy as idle_policy_mod
 import reachy_chat.tools.core_tools as ct_mod
+from reachy_chat.address_gate import AddressResult
 from reachy_chat.gemini_live import GeminiLiveHandler
 from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.tools.tool_constants import ToolState
@@ -92,6 +93,42 @@ class _FakeConnectContext:
 class _FakeLiveClient:
     def __init__(self, session: _FakeSession) -> None:
         self.aio = SimpleNamespace(live=SimpleNamespace(connect=lambda **_kwargs: _FakeConnectContext(session)))
+
+
+@pytest.mark.asyncio
+async def test_unaddressed_interruption_does_not_clear_gemini_playback() -> None:
+    """Gemini interruptions should preserve playback when the gate is closed."""
+    handler = GeminiLiveHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    )
+    clear_queue = MagicMock()
+    handler._clear_queue = clear_queue
+    handler.address_gate.fast_check = MagicMock(
+        return_value=AddressResult(False, 0.0, "no_address_cues")
+    )
+
+    await handler._handle_interruption()
+
+    handler.address_gate.fast_check.assert_called_once_with()
+    clear_queue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_addressed_interruption_clears_gemini_playback() -> None:
+    """Gemini interruptions should clear playback when the gate is open."""
+    handler = GeminiLiveHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    )
+    clear_queue = MagicMock()
+    handler._clear_queue = clear_queue
+    handler.address_gate.fast_check = MagicMock(
+        return_value=AddressResult(True, 0.5, "face_detected")
+    )
+
+    await handler._handle_interruption()
+
+    handler.address_gate.fast_check.assert_called_once_with()
+    clear_queue.assert_called_once_with()
 
 
 @pytest.mark.asyncio
