@@ -1,0 +1,20 @@
+[project]
+name = "reachy-workspace"
+version = "0.1.0"
+description = "Reachy Mini Lite workspace root: pins the daemon/SDK so a fresh clone can run the daemon and the root diagnostic scripts. Apps under apps/ have their own independent uv projects."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # Brings the ReachyMini SDK + the `reachy-mini-daemon` entry point.
+    # Pinned: SDK/daemon versions must match our apps (see CLAUDE.md).
+    "reachy-mini==1.8.3",
+    # 3.2.x throws `unrecognized attribute: site1` on the Reachy model (see CLAUDE.md).
+    "mujoco==3.3.7",
+    # Used directly by mic_test.py (RMS probe).
+    "numpy",
+]
+
+[tool.uv]
+# Workspace root is not an installable package; we only use it to resolve the
+# daemon + root scripts. Apps each manage their own env via apps/<app>/pyproject.toml.
+package = false
