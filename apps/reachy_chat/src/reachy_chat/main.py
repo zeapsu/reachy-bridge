@@ -48,6 +48,7 @@ def run(
     from reachy_chat.moves import MovementManager
     from reachy_chat.config import (
         HF_BACKEND,
+        OPENAI_REALTIME_BACKEND,
         HF_LOCAL_CONNECTION_MODE,
         config,
         is_gemini_model,
@@ -183,6 +184,18 @@ def run(
                 transport_label,
             )
             return HuggingFaceRealtimeHandler(
+                deps,
+                instance_path=instance_path,
+                startup_voice=startup_voice,
+            )
+        if config.BACKEND_PROVIDER == OPENAI_REALTIME_BACKEND:
+            from reachy_chat.openai_realtime import OpenaiRealtimeHandler
+
+            logger.info(
+                "Using %s via OpenaiRealtimeHandler",
+                get_backend_label(config.BACKEND_PROVIDER),
+            )
+            return OpenaiRealtimeHandler(
                 deps,
                 instance_path=instance_path,
                 startup_voice=startup_voice,

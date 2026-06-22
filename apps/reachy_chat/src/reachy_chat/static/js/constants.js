@@ -3,6 +3,7 @@
 export const BACKENDS = Object.freeze({
   HUGGINGFACE: "huggingface",
   OPENAI: "openai",
+  OPENAI_REALTIME: "openai_realtime",
   GEMINI: "gemini",
 });
 

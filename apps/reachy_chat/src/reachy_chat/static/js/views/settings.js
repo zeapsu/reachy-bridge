@@ -22,13 +22,15 @@ const DEFAULT_HF_PORT = 8765;
 
 const BACKEND_LABELS = Object.freeze({
   [BACKENDS.HUGGINGFACE]: "Hugging Face",
-  [BACKENDS.OPENAI]: "OpenAI Realtime",
+  [BACKENDS.OPENAI]: "OpenRouter Chat",
+  [BACKENDS.OPENAI_REALTIME]: "OpenAI Realtime",
   [BACKENDS.GEMINI]: "Gemini Live",
 });
 
 const BACKEND_HINTS = Object.freeze({
   [BACKENDS.HUGGINGFACE]: "Choose the hosted service or a local realtime backend.",
-  [BACKENDS.OPENAI]: "Bring your own OPENAI_API_KEY.",
+  [BACKENDS.OPENAI]: "Bring your own OPENROUTER_API_KEY.",
+  [BACKENDS.OPENAI_REALTIME]: "Bring your own OPENAI_API_KEY.",
   [BACKENDS.GEMINI]: "Bring your own GEMINI_API_KEY.",
 });
 

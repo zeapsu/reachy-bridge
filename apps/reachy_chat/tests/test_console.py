@@ -132,10 +132,12 @@ def test_backend_config_persists_gemini_selection_and_status(
     monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
     monkeypatch.setattr(config, "MODEL_NAME", "gpt-realtime-2")
     monkeypatch.setattr(config, "OPENAI_API_KEY", None)
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", None)
     monkeypatch.setattr(config, "GEMINI_API_KEY", None)
     monkeypatch.setenv("BACKEND_PROVIDER", "openai")
     monkeypatch.setenv("MODEL_NAME", "gpt-realtime-2")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     app = FastAPI()
@@ -230,10 +232,12 @@ def test_backend_config_preserves_explicit_model_override_when_saving_key(
     monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
     monkeypatch.setattr(config, "MODEL_NAME", custom_model)
     monkeypatch.setattr(config, "OPENAI_API_KEY", None)
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", None)
     monkeypatch.setattr(config, "GEMINI_API_KEY", None)
     monkeypatch.setenv("BACKEND_PROVIDER", "openai")
     monkeypatch.setenv("MODEL_NAME", custom_model)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     app = FastAPI()
@@ -259,7 +263,7 @@ def test_backend_config_preserves_explicit_model_override_when_saving_key(
     assert "BACKEND_PROVIDER=openai" in env_text
     assert f"MODEL_NAME={custom_model}" in env_text
     assert "MODEL_NAME=gpt-realtime-2" not in env_text
-    assert "OPENAI_API_KEY=openai-test-key" in env_text
+    assert "OPENROUTER_API_KEY=openai-test-key" in env_text
 
 
 def test_backend_config_persists_local_hf_selection_and_status(

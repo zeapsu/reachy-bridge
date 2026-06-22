@@ -61,11 +61,11 @@ def test_config_raises_when_selected_external_profile_is_missing(
         config_mod.Config()
 
 
-def test_backend_provider_defaults_to_hf_when_unset() -> None:
-    """Non-Gemini models should default to the Hugging Face backend."""
-    assert config_mod._normalize_backend_provider(None, None) == config_mod.HF_BACKEND
-    assert config_mod._normalize_backend_provider("", None) == config_mod.HF_BACKEND
-    assert config_mod._normalize_backend_provider(None, "gpt-realtime-2") == config_mod.HF_BACKEND
+def test_backend_provider_defaults_to_openai_realtime_when_unset() -> None:
+    """Non-Gemini models should default to the OpenAI Realtime backend."""
+    assert config_mod._normalize_backend_provider(None, None) == config_mod.OPENAI_REALTIME_BACKEND
+    assert config_mod._normalize_backend_provider("", None) == config_mod.OPENAI_REALTIME_BACKEND
+    assert config_mod._normalize_backend_provider(None, "gpt-realtime-2") == config_mod.OPENAI_REALTIME_BACKEND
     assert config_mod._normalize_backend_provider(None, "gemini-3.1-flash-live-preview") == config_mod.GEMINI_BACKEND
 
 

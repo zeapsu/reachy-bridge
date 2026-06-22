@@ -18,3 +18,12 @@ os.environ["REACHY_MINI_SKIP_DOTENV"] = "1"
 os.environ.pop("REACHY_MINI_CUSTOM_PROFILE", None)
 os.environ.pop("REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY", None)
 os.environ.pop("REACHY_MINI_EXTERNAL_TOOLS_DIRECTORY", None)
+# Remove API keys from environment to ensure test isolation before config is imported
+os.environ.pop("OPENAI_API_KEY", None)
+os.environ.pop("OPENROUTER_API_KEY", None)
+os.environ.pop("GEMINI_API_KEY", None)
+os.environ.pop("GOOGLE_API_KEY", None)
+
+# Now import and refresh config with clean environment
+from reachy_chat.config import config, refresh_runtime_config_from_env
+refresh_runtime_config_from_env()

@@ -89,9 +89,10 @@ GEMINI_AVAILABLE_VOICES: list[str] = [
 ]
 
 OPENAI_BACKEND = "openai"
+OPENAI_REALTIME_BACKEND = "openai_realtime"
 GEMINI_BACKEND = "gemini"
 HF_BACKEND = "huggingface"
-DEFAULT_BACKEND_PROVIDER = OPENAI_BACKEND
+DEFAULT_BACKEND_PROVIDER = OPENAI_REALTIME_BACKEND
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_DEFAULT_MODEL = "minimax/minimax-m3"
 HF_REALTIME_CONNECTION_MODE_ENV = "HF_REALTIME_CONNECTION_MODE"
@@ -119,16 +120,19 @@ class HFBackendDefaults:
 
 HF_DEFAULTS = HFBackendDefaults()
 DEFAULT_MODEL_NAME_BY_BACKEND = {
+    OPENAI_REALTIME_BACKEND: "gpt-realtime",
     OPENAI_BACKEND: OPENROUTER_DEFAULT_MODEL,
     GEMINI_BACKEND: "gemini-3.1-flash-live-preview",
     HF_BACKEND: HF_DEFAULTS.model_name,
 }
 BACKEND_LABEL_BY_PROVIDER = {
+    OPENAI_REALTIME_BACKEND: "OpenAI Realtime",
     OPENAI_BACKEND: "OpenRouter Chat",
     GEMINI_BACKEND: "Gemini Live",
     HF_BACKEND: "Hugging Face",
 }
 DEFAULT_VOICE_BY_BACKEND = {
+    OPENAI_REALTIME_BACKEND: OPENAI_DEFAULT_VOICE,
     OPENAI_BACKEND: OPENAI_DEFAULT_VOICE,
     GEMINI_BACKEND: "Kore",
     HF_BACKEND: HF_DEFAULTS.voice,
@@ -166,7 +170,9 @@ def _resolve_model_name(
     if normalized_backend == HF_BACKEND:
         return DEFAULT_MODEL_NAME_BY_BACKEND[HF_BACKEND]
 
-    if normalized_backend == OPENAI_BACKEND:
+    if normalized_backend == OPENAI_REALTIME_BACKEND:
+        candidate = (os.getenv("OPENAI_REALTIME_MODEL") or model_name or "").strip()
+    elif normalized_backend == OPENAI_BACKEND:
         candidate = (os.getenv("OPENROUTER_MODEL") or model_name or "").strip()
     else:
         candidate = (model_name or "").strip()
@@ -364,7 +370,7 @@ class Config:
 
     # Required (one of these depending on BACKEND_PROVIDER)
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-    OPENAI_API_KEY = OPENROUTER_API_KEY  # Backward-compatible internal name for the OpenAI-compatible handler.
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     OPENROUTER_BASE_URL = OPENROUTER_BASE_URL
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
@@ -485,7 +491,7 @@ config = Config()
 def refresh_runtime_config_from_env() -> None:
     """Refresh mutable runtime config fields from the current environment."""
     config.OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-    config.OPENAI_API_KEY = config.OPENROUTER_API_KEY
+    config.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     config.GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     config.BACKEND_PROVIDER = _normalize_backend_provider(
         os.getenv("BACKEND_PROVIDER"),

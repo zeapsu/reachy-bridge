@@ -12,7 +12,7 @@ from openai.types.realtime import (
 from openai.types.realtime.realtime_audio_formats_param import AudioPCM
 from openai.types.realtime.realtime_audio_input_turn_detection_param import ServerVad
 
-from reachy_chat.config import OPENAI_BACKEND, config, get_default_voice_for_backend
+from reachy_chat.config import OPENAI_REALTIME_BACKEND, config, get_default_voice_for_backend
 from reachy_chat.prompts import get_session_voice, get_session_instructions
 from reachy_chat.base_realtime import BaseRealtimeHandler, to_realtime_tools_config
 from reachy_chat.tools.core_tools import get_active_tool_specs
@@ -26,7 +26,7 @@ __all__ = ["OpenaiRealtimeHandler"]
 class OpenaiRealtimeHandler(BaseRealtimeHandler):
     """Realtime handler for the direct OpenAI Realtime API."""
 
-    BACKEND_PROVIDER = OPENAI_BACKEND
+    BACKEND_PROVIDER = OPENAI_REALTIME_BACKEND
     SAMPLE_RATE = 24000
     REFRESH_CLIENT_ON_RECONNECT = False
     AUDIO_INPUT_COST_PER_1M = 32.0
@@ -128,12 +128,12 @@ class OpenaiRealtimeHandler(BaseRealtimeHandler):
             return fallback
 
     async def _build_realtime_client(self) -> AsyncOpenAI:
-        """Build the OpenAI-compatible realtime SDK client for OpenRouter."""
+        """Build the OpenAI Realtime SDK client."""
         self._realtime_connect_query = {}
-        resolved_api_key = (config.OPENROUTER_API_KEY or "").strip()
+        resolved_api_key = (config.OPENAI_API_KEY or "").strip()
         if not resolved_api_key:
             # In headless console mode, LocalStream blocks startup until the key is provided.
             # Unit tests may invoke this handler directly with a stubbed client.
-            logger.warning("OPENROUTER_API_KEY missing. Proceeding with a placeholder (tests/offline).")
+            logger.warning("OPENAI_API_KEY missing. Proceeding with a placeholder (tests/offline).")
             resolved_api_key = "DUMMY"
-        return AsyncOpenAI(api_key=resolved_api_key, base_url=config.OPENROUTER_BASE_URL)
+        return AsyncOpenAI(api_key=resolved_api_key)

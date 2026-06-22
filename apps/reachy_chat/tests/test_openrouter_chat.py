@@ -298,12 +298,13 @@ async def test_apply_personality_replaces_system_prompt(monkeypatch: pytest.Monk
 
 
 def test_main_uses_discrete_handler_for_openai_backend() -> None:
-    """The active OpenAI backend path must no longer import Realtime code."""
+    """The OpenRouter (openai) and OpenAI Realtime backends should have separate handlers."""
     source = (PROJECT_ROOT / "src/reachy_chat/main.py").read_text(encoding="utf-8")
 
     assert "from reachy_chat.openrouter_chat import OpenRouterChatHandler" in source
     assert "return OpenRouterChatHandler(" in source
-    assert "openai_realtime" not in source
+    assert "from reachy_chat.openai_realtime import OpenaiRealtimeHandler" in source
+    assert "OPENAI_REALTIME_BACKEND" in source
 
 
 def test_macos_synthesis_uses_say_with_selected_voice(monkeypatch: pytest.MonkeyPatch) -> None:

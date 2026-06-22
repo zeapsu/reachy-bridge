@@ -14,14 +14,14 @@ import reachy_chat.base_realtime as base_rt_mod
 import reachy_chat.openai_realtime as rt_mod
 import reachy_chat.tools.core_tools as ct_mod
 import reachy_chat.tools.background_tool_manager as btm_mod
-from reachy_chat.config import OPENAI_BACKEND, config, get_default_voice_for_backend
+from reachy_chat.config import OPENAI_REALTIME_BACKEND, config, get_default_voice_for_backend
 from reachy_chat.openai_realtime import OpenaiRealtimeHandler
 from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.tools.tool_constants import ToolState
 from reachy_chat.tools.background_tool_manager import ToolCallRoutine, ToolNotification
 
 
-OPENAI_DEFAULT_VOICE = get_default_voice_for_backend(OPENAI_BACKEND)
+OPENAI_DEFAULT_VOICE = get_default_voice_for_backend(OPENAI_REALTIME_BACKEND)
 
 
 def _build_handler(loop: asyncio.AbstractEventLoop) -> OpenaiRealtimeHandler:

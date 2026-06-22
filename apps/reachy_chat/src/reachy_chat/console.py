@@ -24,6 +24,7 @@ from reachy_chat.config import (
     GEMINI_BACKEND,
     LOCKED_PROFILE,
     OPENAI_BACKEND,
+    OPENAI_REALTIME_BACKEND,
     HF_REALTIME_WS_URL_ENV,
     HF_LOCAL_CONNECTION_MODE,
     HF_DEPLOYED_CONNECTION_MODE,
@@ -350,7 +351,9 @@ class LocalStream:
             return self._has_key(config.GEMINI_API_KEY)
         if backend == HF_BACKEND:
             return has_hf_realtime_target()
-        return self._has_key(config.OPENAI_API_KEY)
+        if backend == OPENAI_REALTIME_BACKEND:
+            return self._has_key(config.OPENAI_API_KEY)
+        return self._has_key(config.OPENROUTER_API_KEY)
 
     @staticmethod
     def _requirement_name(backend: str) -> str:
@@ -359,6 +362,8 @@ class LocalStream:
             return "GEMINI_API_KEY"
         if backend == HF_BACKEND:
             return HF_REALTIME_WS_URL_ENV
+        if backend == OPENAI_REALTIME_BACKEND:
+            return "OPENAI_API_KEY"
         return "OPENROUTER_API_KEY"
 
     def _persist_env_value(self, env_name: str, value: str) -> None:
@@ -450,9 +455,12 @@ class LocalStream:
         self._persist_env_value(HF_REALTIME_CONNECTION_MODE_ENV, HF_DEPLOYED_CONNECTION_MODE)
         self._remove_persisted_env_values(("HF_REALTIME_SESSION_URL",))
 
-    def _persist_api_key(self, key: str) -> None:
-        """Persist OPENROUTER_API_KEY to environment and instance `.env`."""
-        self._persist_env_value("OPENROUTER_API_KEY", key)
+    def _persist_api_key(self, key: str, backend: str | None = None) -> None:
+        """Persist API key for the appropriate backend to environment and instance `.env`."""
+        if backend == OPENAI_REALTIME_BACKEND:
+            self._persist_env_value("OPENAI_API_KEY", key)
+        else:
+            self._persist_env_value("OPENROUTER_API_KEY", key)
 
     def _persist_gemini_api_key(self, key: str) -> None:
         """Persist GEMINI_API_KEY to environment and instance `.env`."""
@@ -705,7 +713,7 @@ class LocalStream:
         @self._settings_app.post("/backend_config")
         def _set_backend(payload: BackendPayload) -> JSONResponse:
             backend = payload.backend.strip().lower()
-            if backend not in {OPENAI_BACKEND, GEMINI_BACKEND, HF_BACKEND}:
+            if backend not in {OPENAI_BACKEND, OPENAI_REALTIME_BACKEND, GEMINI_BACKEND, HF_BACKEND}:
                 return JSONResponse({"ok": False, "error": "invalid_backend"}, status_code=400)
 
             api_key = (payload.api_key or "").strip()
@@ -713,7 +721,9 @@ class LocalStream:
                 return JSONResponse({"ok": False, "error": "empty_key"}, status_code=400)
 
             if backend == OPENAI_BACKEND and api_key:
-                self._persist_api_key(api_key)
+                self._persist_api_key(api_key, backend=OPENAI_BACKEND)
+            if backend == OPENAI_REALTIME_BACKEND and api_key:
+                self._persist_api_key(api_key, backend=OPENAI_REALTIME_BACKEND)
             if backend == GEMINI_BACKEND and api_key:
                 self._persist_gemini_api_key(api_key)
             if backend == HF_BACKEND:
