@@ -93,10 +93,19 @@ class CameraWorker:
 
         neutral_pose = np.eye(4)
         self.previous_head_tracking_state = self.is_head_tracking_enabled
+        camera_unavailable_logged = False
 
         while not self._stop_event.is_set():
             try:
                 current_time = time.time()
+                # Check if camera is initialized before polling (avoids warning spam)
+                if self.reachy_mini.media.camera is None:
+                    if not camera_unavailable_logged:
+                        logger.info("Camera is not available; head tracking disabled")
+                        camera_unavailable_logged = True
+                    time.sleep(0.1)
+                    continue
+
                 frame = self.reachy_mini.media.get_frame()
 
                 if frame is not None:

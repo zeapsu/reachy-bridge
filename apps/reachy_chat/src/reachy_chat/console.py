@@ -14,6 +14,7 @@ from typing import List, Optional
 from pathlib import Path
 from collections.abc import Callable, AsyncGenerator
 
+import numpy as np
 from fastrtc import AdditionalOutputs, audio_to_float32
 from scipy.signal import resample
 
@@ -1024,34 +1025,49 @@ class LocalStream:
                         )
 
             elif isinstance(handler_output, tuple):
-                input_sample_rate, audio_data = handler_output
-                output_sample_rate = self._robot.media.get_output_audio_samplerate()
+                handler_output_sample_rate, audio_data = handler_output
+                device_output_sample_rate = self._robot.media.get_output_audio_samplerate()
 
                 # Skip empty audio frames
                 if audio_data.size == 0:
                     continue
 
-                # Reshape if needed
+                # Flatten to 1D mono if needed
                 if audio_data.ndim == 2:
-                    # Scipy channels last convention
+                    # Handler sends (1, N) shape; flatten to (N,)
                     if audio_data.shape[1] > audio_data.shape[0]:
-                        audio_data = audio_data.T
-                    # Multiple channels -> Mono channel
+                        audio_data = audio_data.T  # (1, N) -> (N, 1)
+                    # Take first channel if multi-channel
                     if audio_data.shape[1] > 1:
                         audio_data = audio_data[:, 0]
+                    else:
+                        audio_data = audio_data.ravel()  # (N, 1) -> (N,)
+                elif audio_data.ndim > 2:
+                    # Flatten anything higher-dimensional to 1D
+                    audio_data = audio_data.ravel()
 
-                # Cast if needed
+                # Cast to float32
                 audio_frame = audio_to_float32(audio_data)
 
-                # Resample if needed
-                if input_sample_rate != output_sample_rate:
-                    num_samples = int(len(audio_frame) * output_sample_rate / input_sample_rate)
+                # Resample if needed: convert from handler output rate to device output rate
+                if handler_output_sample_rate != device_output_sample_rate:
+                    num_samples = int(len(audio_frame) * device_output_sample_rate / handler_output_sample_rate)
                     if num_samples == 0:
                         continue
                     audio_frame = resample(
                         audio_frame,
                         num_samples,
                     )
+
+                # Ensure 1D mono array, then convert to stereo for the 2-channel appsrc
+                if audio_frame.ndim > 1:
+                    audio_frame = audio_frame.ravel()
+
+                # Convert mono to stereo by duplicating the mono channel
+                # The appsrc caps specify CHANNELS=2 (stereo)
+                if len(audio_frame.shape) == 1:
+                    # Duplicate mono to stereo: (N,) -> (N, 2)
+                    audio_frame = np.column_stack((audio_frame, audio_frame))
 
                 self._robot.media.push_audio_sample(audio_frame)
 

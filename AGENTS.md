@@ -17,8 +17,11 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
   From an app dir, `uv run python -m <pkg>.main` builds/uses that app's own env.
 - Python 3.12, `reachy-mini` 1.8.3, `mujoco` 3.3.7.
 - **Daemon** (must be running; bridges code ↔ motors/sensors, serves `:8000`):
-  - Simulation on this Mac: `uv run python -m reachy_mini.daemon.app.main --sim --headless`
-  - Real hardware (Lite over USB): `uv run reachy-mini-daemon`
+  - Simulation: `uv run python -m reachy_mini.daemon.app.main --sim --headless`
+  - **Jetson hardware (current host — Lite over USB): `uv run python tools/reachy_mini_daemon_jetson.py`**
+    (NOT plain `reachy-mini-daemon` — the wrapper aliases `unixfd*→nvunixfd*` so the camera socket
+    is created; stock launcher = no camera). See "Jetson / Ubuntu 24.04 gotchas" below.
+  - Other real hardware (non-Jetson, Lite over USB): `uv run reachy-mini-daemon`
 - Run an app: `cd apps/<app> && uv run python -m <app>.main` (e.g. `reachy_dance.main`).
   Only **one app uses the robot at a time** — stop the current one first:
   `curl -X POST localhost:8000/api/apps/stop-current-app`. **That endpoint only stops
@@ -68,6 +71,36 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
 - **Camera exposure is NOT controllable** via the SDK/daemon on macOS — AVFoundation
   (`avfvideosrc`) doesn't expose exposure/gain to GStreamer, and the daemon only serves read-only
   `/api/camera/specs`. (Exposure via v4l2 is only available on the Linux/wireless robot.)
+
+## Hard-won gotchas (Jetson / Ubuntu 24.04) — current host, READ before debugging
+The workspace now runs on an **NVIDIA Jetson Orin Nano**, migrated 2026-06-23 to **Jetpack 7.2 /
+Ubuntu 24.04 (GStreamer 1.24.2)**. The macOS section above is stale for this host.
+- **Launch the daemon via the Jetson wrapper** (`uv run python tools/reachy_mini_daemon_jetson.py`),
+  never stock `reachy-mini-daemon`. The wrapper aliases `unixfd*→nvunixfd*`; without it the camera
+  IPC socket `/tmp/reachymini_camera_socket` is never created → no camera frames.
+- **`reachy_chat` uses the LOCAL media backend** (`REACHY_MINI_MEDIA_BACKEND=local`, default in
+  `main.py`), NOT WebRTC. The daemon's `GstWebRTCSink ... 'run-signalling-server'` error at startup
+  is therefore **harmless** — the custom `libgstrswebrtc.so` (0.10.11, built vs GStreamer 1.20) is
+  version-mismatched under 1.24.2, but the app never touches WebRTC. Only matters for remote streaming.
+- **Client processes must call `apply_nvidia_unixfd_patch()` before connecting** (the app does at
+  `main.py:26`). Standalone SDK scripts that skip it get `Internal data stream error` on the camera.
+- **`dialout` group:** after an OS reinstall the user can lose `dialout` → daemon finds
+  `/dev/ttyACM0` but dies with `Failed to start daemon: Permission denied`. Fix:
+  `sudo usermod -aG dialout <user>` then **reboot** (restarting just the terminal does NOT refresh
+  groups — verify with `grep Groups /proc/<daemon-pid>/status`; dialout gid is 20).
+- **Speaker silence was a VOLUME/routing bug (RESOLVED 2026-06-23), not a pipeline issue.**
+  The app always pushed valid audio; it was just inaudibly quiet. Two stacked causes:
+  (1) **ALSA card numbering is NOT stable** — after the migration the Reachy USB audio moved
+  to **card 0** (NVIDIA APE took card 2). The wrapper used to hardcode `amixer -c 2`, so it set
+  volume on the wrong card and logged `Unable to find simple control 'PCM'`. The wrapper now
+  discovers the Reachy card by name (`_find_reachy_audio_card()` in
+  `tools/reachy_mini_daemon_jetson.py`) and sets `PCM,1` to 100%.
+  (2) The **PipeWire** Reachy sink defaults to ~0.40 — raise it with
+  `wpctl set-volume @DEFAULT_AUDIO_SINK@ 1.0` (WirePlumber persists per-device state).
+  Verify hardware vol: `amixer -c 0 sget 'PCM,1'`; verify routing/level: `wpctl status`.
+  Re-verify audibly after any OS/driver migration — don't trust pre-migration tone proofs.
+- **Smoke test** for vision/mic/speaker: `apps/reachy_chat/scratchpad/migration_smoke_test.py`
+  (run with `REACHY_MINI_MEDIA_BACKEND=local`). Vision + mic + speaker verified working post-migration.
 
 ## Dev workflow
 Implementation is delegated to the **Codex CLI** (`codex exec --yolo "<prompt>"`) and verified by an

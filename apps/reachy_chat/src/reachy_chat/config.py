@@ -354,15 +354,24 @@ _skip_dotenv = _env_flag("REACHY_MINI_SKIP_DOTENV", default=False)
 if _skip_dotenv:
     logger.info("Skipping .env loading because REACHY_MINI_SKIP_DOTENV is set")
 else:
-    # Locate .env file (search upward from current working directory)
-    dotenv_path = find_dotenv(usecwd=True)
+    # First, try loading from app root (.../apps/reachy_chat/.env) deterministically
+    # regardless of current working directory. PROJECT_ROOT = Path(__file__).parents[2]
+    app_root_dotenv = PROJECT_ROOT / ".env"
+    dotenv_path = None
 
-    if dotenv_path:
-        # Load .env and override environment variables
+    if app_root_dotenv.exists():
+        dotenv_path = str(app_root_dotenv)
         load_dotenv(dotenv_path=dotenv_path, override=True)
         logger.info(f"Configuration loaded from {dotenv_path}")
     else:
-        logger.warning("No .env file found, using environment variables")
+        # Fallback: search upward from current working directory
+        fallback_dotenv = find_dotenv(usecwd=True)
+        if fallback_dotenv:
+            dotenv_path = fallback_dotenv
+            load_dotenv(dotenv_path=dotenv_path, override=True)
+            logger.info(f"Configuration loaded from {dotenv_path}")
+        else:
+            logger.warning("No .env file found, using environment variables")
 
 
 class Config:

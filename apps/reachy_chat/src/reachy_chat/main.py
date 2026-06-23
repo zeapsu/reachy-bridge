@@ -1,5 +1,6 @@
 """Entrypoint for the Reachy Mini conversation app."""
 
+import os
 import sys
 import time
 import asyncio
@@ -12,6 +13,7 @@ from collections.abc import Callable, Awaitable
 from fastapi import FastAPI, Request, Response
 
 from reachy_mini import ReachyMini, ReachyMiniApp
+from reachy_chat.gstreamer_nvidia_patch import apply_nvidia_unixfd_patch
 from reachy_chat.utils import (
     CameraVisionInitializationError,
     parse_args,
@@ -19,6 +21,9 @@ from reachy_chat.utils import (
     initialize_camera_and_vision,
     log_connection_troubleshooting,
 )
+
+# Apply NVIDIA Jetson GStreamer plugin patch before any SDK initialization
+apply_nvidia_unixfd_patch()
 
 
 def main() -> None:
@@ -303,6 +308,11 @@ def run(
 
 class ReachyChat(ReachyMiniApp):  # type: ignore[misc]
     """Reachy Mini Apps entry point for the conversation app."""
+
+    # Default to LOCAL media backend; Lite daemon doesn't expose WebRTC signalling (:8443),
+    # so auto-detect's WebRTC fallback would crash. Override via REACHY_MINI_MEDIA_BACKEND env var
+    # to use WebRTC for wireless robot setups.
+    request_media_backend = os.getenv("REACHY_MINI_MEDIA_BACKEND", "local")
 
     custom_app_url = "http://0.0.0.0:7860/"
     dont_start_webserver = False
