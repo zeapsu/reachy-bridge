@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 import pytest
@@ -64,6 +65,33 @@ async def test_daemon_proxy_snapshot_helpers_return_none_on_error() -> None:
         assert await proxy.get_daemon_status() is None
     finally:
         await proxy.close()
+
+
+@pytest.mark.asyncio
+async def test_daemon_proxy_state_stream_requests_doa(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen_urls: list[str] = []
+
+    class FakeWebSocket:
+        async def __aenter__(self) -> "FakeWebSocket":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def __aiter__(self) -> AsyncIterator[str]:
+            yield '{"doa": {"angle": 1.57, "speech_detected": true}}'
+
+    def fake_connect(url: str, *_: Any, **__: Any) -> FakeWebSocket:
+        seen_urls.append(url)
+        return FakeWebSocket()
+
+    monkeypatch.setattr("reachy_controller.daemon_proxy.websockets.connect", fake_connect)
+    proxy = DaemonProxy("http://daemon.local:8000")
+
+    events = [event async for event in proxy.ws_stream_full_state()]
+
+    assert events == [{"doa": {"angle": 1.57, "speech_detected": True}}]
+    assert seen_urls == ["ws://daemon.local:8000/api/state/ws/full?with_doa=true"]
 
 
 @pytest.mark.asyncio

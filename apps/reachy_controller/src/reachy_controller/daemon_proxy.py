@@ -171,7 +171,7 @@ class DaemonProxy:
         """
         # Convert http:// to ws://
         ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
-        ws_url = f"{ws_url}/api/state/ws/full"
+        ws_url = f"{ws_url}/api/state/ws/full?with_doa=true"
 
         try:
             async with websockets.connect(ws_url) as websocket:

@@ -173,3 +173,25 @@ async def test_root_serves_controller_ui() -> None:
     assert "reachy·controller" in response.text
     assert "/static/style.css" in response.text
     assert "/static/main.js" in response.text
+
+
+def test_static_ui_wires_liquid_glass_to_live_controller_endpoints() -> None:
+    static_dir = main_module.STATIC_DIR
+    index = (static_dir / "index.html").read_text(encoding="utf-8")
+    script = (static_dir / "main.js").read_text(encoding="utf-8")
+    styles = (static_dir / "style.css").read_text(encoding="utf-8")
+
+    assert "liquid glass" in index
+    assert "id=\"vp-switch\"" in index
+    assert "id=\"camera-stream\"" in index
+    assert ".glass::before" in styles
+    assert ".vp-switch" in styles
+    assert "/telemetry/state-stream" in script
+    assert "/api/system/stats-stream" in script
+    assert "/api/audio/levels-stream" in script
+    assert "/api/camera/availability" in script
+    assert "/api/apps/start/" in script
+    assert "/api/apps/stop/" in script
+    assert "/api/volume/set" in script
+    assert "/api/volume/microphone/set" in script
+    assert "/api/motors/set_mode/" in script
