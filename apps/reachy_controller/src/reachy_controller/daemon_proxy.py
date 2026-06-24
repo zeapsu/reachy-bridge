@@ -150,6 +150,18 @@ class DaemonProxy:
     async def stop_sound(self) -> dict[str, Any] | None:
         return await self._post_json("media/stop_sound")
 
+    async def release_media(self) -> dict[str, Any] | None:
+        return await self._post_json("media/release")
+
+    async def acquire_media(self) -> dict[str, Any] | None:
+        return await self._post_json("media/acquire")
+
+    async def get_media_status(self) -> dict[str, Any] | None:
+        try:
+            return await self.get_json("media/status")
+        except (httpx.HTTPError, ValueError):
+            return None
+
     async def ws_stream_full_state(self) -> AsyncGenerator[dict[str, Any], None]:
         """Stream full robot state from daemon via WebSocket.
 

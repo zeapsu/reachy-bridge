@@ -8,7 +8,8 @@ import os
 import signal
 import subprocess
 import time
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,7 @@ class LocalApp:
 
     name: str
     module: str
+    uses_camera: bool = True
     process: subprocess.Popen[str] | None = None
     pid: int | None = None
     status: str = "stopped"  # "stopped", "running", "stopping", "error"
@@ -47,6 +49,7 @@ class LocalApp:
         return {
             "name": self.name,
             "module": self.module,
+            "uses_camera": self.uses_camera,
             "pid": self.pid,
             "status": self.status,
             "error": self.error,
@@ -57,11 +60,11 @@ class LocalApp:
 class AppSupervisor:
     """Supervise local Python apps launched via uv run."""
 
-    APPS = {
-        "reachy_chat": "reachy_chat",
-        "reachy_dance": "reachy_dance",
-        "reachy_lookat": "reachy_lookat",
-        "reachy_simon": "reachy_simon",
+    APPS: dict[str, dict[str, Any]] = {
+        "reachy_chat": {"module": "reachy_chat", "uses_camera": True},
+        "reachy_dance": {"module": "reachy_dance", "uses_camera": False},
+        "reachy_lookat": {"module": "reachy_lookat", "uses_camera": True},
+        "reachy_simon": {"module": "reachy_simon", "uses_camera": False},
     }
 
     def __init__(self, daemon_proxy: Any | None = None) -> None:
@@ -73,11 +76,42 @@ class AppSupervisor:
         self.daemon_proxy = daemon_proxy
         self._lock = asyncio.Lock()
         self._apps: dict[str, LocalApp] = {
-            name: LocalApp(name=name, module=module)
-            for name, module in self.APPS.items()
+            name: LocalApp(
+                name=name,
+                module=config["module"],
+                uses_camera=config.get("uses_camera", True),
+            )
+            for name, config in self.APPS.items()
         }
         self._reaper_tasks: dict[str, asyncio.Task[None]] = {}
+        self._camera_release_hook: Callable[[], Awaitable[None]] | None = None
         self._workspace_root = _get_workspace_root()
+
+    def set_camera_release_hook(
+        self, callback: Callable[[], Awaitable[None]] | None
+    ) -> None:
+        """Register a callback that releases dashboard-owned camera resources."""
+        self._camera_release_hook = callback
+
+    def camera_available(self) -> bool:
+        """Return whether no running app currently owns the camera."""
+        return self.camera_holder() is None
+
+    def camera_holder(self) -> str | None:
+        """Return the running camera-using app name, if any."""
+        for app in self._apps.values():
+            if app.status == "running" and app.uses_camera:
+                return app.name
+        return None
+
+    async def _release_dashboard_camera(self) -> None:
+        """Ask the dashboard camera reader to yield ownership if registered."""
+        if self._camera_release_hook is None:
+            return
+        try:
+            await self._camera_release_hook()
+        except Exception as e:
+            logger.error(f"Dashboard camera release hook failed: {e}")
 
     async def start_app(self, name: str) -> dict[str, Any]:
         """Start an app. Returns status dict or error dict."""
@@ -105,6 +139,9 @@ class AppSupervisor:
                         "name": name,
                         "status": "refused",
                     }
+
+            if app.uses_camera:
+                await self._release_dashboard_camera()
 
             # Launch app
             app_dir = self._workspace_root / "apps" / name
@@ -173,6 +210,8 @@ class AppSupervisor:
             app.error = None
             app.pid = None
             app.process = None
+            if app.uses_camera:
+                logger.info(f"Camera available after stopping app {name}")
             return {"name": name, "status": "stopped"}
 
     def stop_all(self) -> None:
@@ -214,7 +253,7 @@ class AppSupervisor:
 
     def reconcile_orphans(self) -> None:
         """Adopt orphaned app processes on startup."""
-        for name, module in self.APPS.items():
+        for name in self.APPS:
             app = self._apps[name]
             # Scan for processes matching "uv run python -m <name>.main"
             for proc in psutil.process_iter(["pid", "cmdline"]):

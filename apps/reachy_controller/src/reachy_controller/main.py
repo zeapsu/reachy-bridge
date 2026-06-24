@@ -20,6 +20,7 @@ from reachy_controller.daemon_proxy import DaemonProxy
 from reachy_controller.daemon_proxy import router as daemon_router
 from reachy_controller.routes.apps import router as apps_router
 from reachy_controller.routes.audio import router as audio_router
+from reachy_controller.routes.camera import router as camera_router
 from reachy_controller.routes.controls import router as controls_router
 from reachy_controller.routes.system_stats import router as system_stats_router
 from reachy_controller.routes.telemetry import (
@@ -77,6 +78,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     app.include_router(system_stats_router)
     app.include_router(controls_router)
     app.include_router(audio_router)
+    app.include_router(camera_router)
     app.include_router(daemon_router)
     return app
 
