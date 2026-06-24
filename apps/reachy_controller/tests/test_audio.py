@@ -22,15 +22,15 @@ def parse_sse_data(event: str) -> dict:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("state", "expected_level"),
+    ("state", "expected_speech_detected"),
     [
-        ({"doa": {"speech_detected": True}}, 0.7),
-        ({"doa": {"speech_detected": False}}, 0.0),
-        ({}, 0.0),
+        ({"doa": {"speech_detected": True}}, True),
+        ({"doa": {"speech_detected": False}}, False),
+        ({}, False),
     ],
 )
-async def test_audio_stream_maps_real_speech_signal_to_level(
-    state: dict, expected_level: float
+async def test_audio_stream_reports_honest_speech_detected_signal(
+    state: dict, expected_speech_detected: bool
 ) -> None:
     from reachy_controller.routes.audio import _audio_level_stream_generator
 
@@ -40,7 +40,7 @@ async def test_audio_stream_maps_real_speech_signal_to_level(
 
     assert event.startswith("event: audio-level\n")
     payload = parse_sse_data(event)
-    assert payload["level"] == expected_level
+    assert payload["speech_detected"] == expected_speech_detected
     timestamp = datetime.fromisoformat(payload["timestamp"])
     assert timestamp.utcoffset() is not None
     assert timestamp.utcoffset().total_seconds() == 0
@@ -65,7 +65,7 @@ async def test_audio_stream_reports_offline_then_keeps_polling(
     await stream.aclose()
 
     assert offline == "event: daemon-unavailable\ndata: {}\n\n"
-    assert parse_sse_data(recovered)["level"] == 0.7
+    assert parse_sse_data(recovered)["speech_detected"] is True
 
 
 @pytest.mark.asyncio
