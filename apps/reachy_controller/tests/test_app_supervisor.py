@@ -6,6 +6,7 @@ import asyncio
 import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import psutil
 import pytest
 
 from reachy_controller.app_supervisor import AppSupervisor, LocalApp
@@ -245,3 +246,63 @@ async def test_stop_app_uses_thread_for_wait() -> None:
     assert wait_called, "Process.wait() was not called"
     assert supervisor._apps["reachy_chat"].status == "stopped"
     mock_process.send_signal.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_stop_adopted_orphan() -> None:
+    """Test stopping an adopted orphaned process (pid set, process=None).
+
+    This simulates a process that survived from a previous run and was
+    adopted by reconcile_orphans(). The supervisor must kill it even though
+    it has no subprocess.Popen handle.
+    """
+    supervisor = AppSupervisor()
+
+    # Mock psutil.Process for the orphaned process
+    mock_psutil_proc = MagicMock()
+    mock_psutil_proc.pid = 99999
+    mock_psutil_proc.cmdline.return_value = ["uv", "run", "python", "-m", "reachy_lookat.main"]
+
+    def quick_wait(timeout):
+        """Mock wait that succeeds immediately."""
+        return 0  # Exit code
+
+    mock_psutil_proc.wait = quick_wait
+
+    # Manually set up the adopted app state (process=None, pid set, status=running)
+    supervisor._apps["reachy_lookat"].process = None
+    supervisor._apps["reachy_lookat"].pid = 99999
+    supervisor._apps["reachy_lookat"].status = "running"
+
+    with patch("reachy_controller.app_supervisor.psutil.Process", return_value=mock_psutil_proc):
+        result = await supervisor.stop_app("reachy_lookat")
+
+    assert result["status"] == "stopped"
+    assert supervisor._apps["reachy_lookat"].status == "stopped"
+    assert supervisor._apps["reachy_lookat"].pid is None
+    # Verify signals were sent via psutil
+    mock_psutil_proc.send_signal.assert_called_once()
+
+
+def test_get_all_status_detects_dead_process() -> None:
+    """Test that get_all_status() detects and transitions dead processes to stopped."""
+    supervisor = AppSupervisor()
+
+    # Manually set up a "running" app with a PID that doesn't exist
+    supervisor._apps["reachy_dance"].pid = 99999
+    supervisor._apps["reachy_dance"].status = "running"
+
+    # Mock psutil.Process to raise NoSuchProcess
+    with patch(
+        "reachy_controller.app_supervisor.psutil.Process",
+        side_effect=psutil.NoSuchProcess(99999),
+    ):
+        status = supervisor.get_all_status()
+
+    # Find the reachy_dance entry in the returned status
+    dance_status = next(s for s in status if s["name"] == "reachy_dance")
+
+    # Verify it transitioned to stopped
+    assert dance_status["status"] == "stopped"
+    assert dance_status["pid"] is None
+    assert supervisor._apps["reachy_dance"].status == "stopped"
