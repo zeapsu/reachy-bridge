@@ -1,5 +1,15 @@
 # Session Log
 
+## [2026-06-24] reachy_controller — Liquid Glass control console (M1–M6a)
+Built a new `apps/reachy_controller/` webapp: a FastAPI + vanilla-JS "Liquid Glass" control console
+for the Reachy Mini (binds 127.0.0.1:7861, exposed tailnet-only via tailscale serve, never grabs the
+robot lock). Landed M1 telemetry SSE, M2 app launcher, M3 Jetson stats, M4 controls + audio equalizer,
+M5 camera-ownership coordination, and M6a the Liquid Glass UI port wired to live endpoints (65 tests
+pass; each milestone verified against the running app — caught a 0.0.0.0 bind, a self-HTTP call, and a
+wpctl parse bug that agent summaries hid). Also removed a stale public Tailscale funnel. Remaining:
+viewport CSS distortion, M6b settings/docs, M5b live camera reader, and full daemon-up functional
+verification. Main artifact: `apps/reachy_controller/` (+ `UI_POLISH_HANDOFF.md`, `mockup.html`).
+
 ## [2026-06-21] reachy_chat — XVF3800 audio config + mic-silence debug
 Traced the startup "7 failed audio parameter(s)" warnings to a broken control-channel read-back on
 this unit's XVF3800 firmware (writes succeed, verify-reads return retry/unknown status) → fixed by
