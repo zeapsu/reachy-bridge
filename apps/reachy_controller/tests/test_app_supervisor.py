@@ -172,3 +172,76 @@ def test_local_app_to_dict() -> None:
     assert data["pid"] == 12345
     assert data["status"] == "running"
     assert data["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_reap_app_uses_thread_for_wait() -> None:
+    """Test that _reap_app uses asyncio.to_thread for wait() call.
+
+    This ensures the event loop is not blocked while waiting for the child.
+    We verify this by checking that the reaper task completes quickly even
+    with a mocked slow wait() when wrapped in asyncio.to_thread.
+    """
+    supervisor = AppSupervisor()
+
+    # Create a mock process with a wait that records it was called
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+    wait_called = False
+
+    def slow_wait():
+        """Mock wait that returns quickly when called in a thread."""
+        nonlocal wait_called
+        wait_called = True
+        return 0  # Exit code
+
+    mock_process.wait = slow_wait
+
+    # Manually set up the app state
+    supervisor._apps["reachy_chat"].process = mock_process
+    supervisor._apps["reachy_chat"].status = "running"
+
+    # Run the reaper - should complete without blocking
+    reaper_task = asyncio.create_task(supervisor._reap_app("reachy_chat"))
+
+    # Give the reaper time to complete
+    await asyncio.wait_for(reaper_task, timeout=5.0)
+
+    # Verify wait was called and app transitioned to stopped
+    assert wait_called, "Process.wait() was not called"
+    assert supervisor._apps["reachy_chat"].status == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_stop_app_uses_thread_for_wait() -> None:
+    """Test that stop_app uses asyncio.to_thread for wait() calls.
+
+    This ensures the event loop is not blocked during shutdown sequence.
+    """
+    supervisor = AppSupervisor()
+
+    # Create a mock process with signal/wait tracking
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+    wait_called = False
+
+    def quick_wait(timeout):
+        """Mock wait that succeeds immediately."""
+        nonlocal wait_called
+        wait_called = True
+        return 0  # Exit code
+
+    mock_process.wait = quick_wait
+
+    # Manually set up the app state
+    supervisor._apps["reachy_chat"].process = mock_process
+    supervisor._apps["reachy_chat"].status = "running"
+
+    # Call stop_app - should complete without blocking the event loop
+    result = await supervisor.stop_app("reachy_chat")
+
+    # Verify the stop completed and signals were sent
+    assert result["status"] == "stopped"
+    assert wait_called, "Process.wait() was not called"
+    assert supervisor._apps["reachy_chat"].status == "stopped"
+    mock_process.send_signal.assert_called_once()

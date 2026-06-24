@@ -151,8 +151,8 @@ class AppSupervisor:
                 app.process = subprocess.Popen(
                     argv,
                     cwd=app_dir,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                     text=True,
                 )
                 app.pid = app.process.pid
@@ -191,16 +191,16 @@ class AppSupervisor:
                 # Try SIGINT first (Ctrl-C)
                 app.process.send_signal(signal.SIGINT)
                 try:
-                    app.process.wait(timeout=3.0)
+                    await asyncio.to_thread(app.process.wait, 3.0)
                 except subprocess.TimeoutExpired:
                     # Escalate to SIGTERM
                     app.process.terminate()
                     try:
-                        app.process.wait(timeout=2.0)
+                        await asyncio.to_thread(app.process.wait, 2.0)
                     except subprocess.TimeoutExpired:
                         # Final escalation: SIGKILL
                         app.process.kill()
-                        app.process.wait(timeout=1.0)
+                        await asyncio.to_thread(app.process.wait, 1.0)
 
                 logger.info(f"Stopped app {name}")
             except Exception as e:
@@ -234,7 +234,7 @@ class AppSupervisor:
             return
 
         try:
-            exit_code = app.process.wait()
+            exit_code = await asyncio.to_thread(app.process.wait)
             async with self._lock:
                 if app.status == "running":
                     if exit_code == 0:
