@@ -181,7 +181,7 @@ def test_static_ui_wires_liquid_glass_to_live_controller_endpoints() -> None:
     script = (static_dir / "main.js").read_text(encoding="utf-8")
     styles = (static_dir / "style.css").read_text(encoding="utf-8")
 
-    assert "liquid glass" in index
+    assert "class=\"glass" in index
     assert "id=\"vp-switch\"" in index
     assert "id=\"camera-stream\"" in index
     assert ".glass::before" in styles

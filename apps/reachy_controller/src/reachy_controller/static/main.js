@@ -330,7 +330,9 @@
   function gauge(element, label, color) {
     const radius = 34;
     const circumference = TAU * radius;
-    element.innerHTML = `<svg viewBox="0 0 84 84"><circle cx="42" cy="42" r="${radius}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="7"></circle>
+    element.setAttribute("role", "img");
+    element.setAttribute("aria-label", `${label} —`);
+    element.innerHTML = `<svg viewBox="0 0 84 84" aria-hidden="true"><circle cx="42" cy="42" r="${radius}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="7"></circle>
       <circle cx="42" cy="42" r="${radius}" fill="none" stroke="${color}" stroke-width="7" stroke-linecap="round" transform="rotate(-90 42 42)" stroke-dasharray="${circumference}" stroke-dashoffset="${circumference}" class="arc"></circle>
       <text x="42" y="40" text-anchor="middle" class="gv">—</text><text x="42" y="55" text-anchor="middle" class="gu"></text></svg><span class="gl">${label}</span>`;
     const arc = element.querySelector(".arc");
@@ -342,6 +344,7 @@
       arc.style.strokeDashoffset = String(circumference * (1 - normalized / 100));
       value.textContent = text;
       unit.textContent = suffix;
+      element.setAttribute("aria-label", `${label} ${text}${suffix}`.trim());
     };
   }
 

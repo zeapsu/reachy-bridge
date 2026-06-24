@@ -33,6 +33,9 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
 - `reachy_simon` — Simon-style memory game (antennas as buttons).
 - `reachy_lookat` — OpenCV face-tracking head control loop.
 - `reachy_chat` — voice: mic → faster-whisper (local) → OpenRouter → macOS `say` (local) → speaker.
+- `reachy_controller` — FastAPI + **vanilla-JS, no build step** "Liquid Glass" web control console
+  (binds `127.0.0.1:7861`). Talks to the daemon over HTTP/WS and **never** instantiates `ReachyMini()`.
+  Don't add a framework/bundler. Visual QA is done on a browser-capable machine (see Dev workflow).
 
 ## Hard-won gotchas (macOS / Apple Silicon) — READ before debugging
 - **No MuJoCo GUI** on this Mac → always use `--sim --headless` for simulation. Headless is enough
@@ -107,3 +110,19 @@ Implementation is delegated to the **Codex CLI** (`codex exec --yolo "<prompt>"`
 Opus review loop (see the `codex-implement-review-loop` agent). If `codex exec` hits a
 credit/quota/auth limit, **pause** and re-auth (`codex logout`/`login`) — do not retry or hand-write
 the code. Diagnostic scripts live at the repo root (`mic_test.py`).
+
+### Issue-driven workflow (adopted 2026-06-24)
+For multi-session work, **open GitHub issues for what's next** (a parent/epic issue + child issues)
+and update **memory + this AGENTS.md** in the same pass — issues track *what's next*, memory/AGENTS.md
+track *what we learned*. PRs reference their issues (`Closes #N`) and may ship in parts (e.g. part 1
+visual/QA → part 2 functional verification). Repo: `zeapsu/reachy`; PR base is the default branch
+`feat/reachy-chat-vision`. End sessions with `/close` (do **not** recreate `SESSION_LOG.md` — removed,
+git history + memory replace it).
+
+### reachy_controller UI gotchas
+- **Visual QA runs on a browser-capable machine** (Mac/laptop w/ Playwright), not the headless Jetson.
+  Serve via `uv run python -m reachy_controller.main`; daemon-offline panels are the expected state.
+- **Never put `filter: url(#…)` (feDisplacementMap) on `.vp-stage`** — it warps the live camera/sim/
+  schematic *content* (the original "distortion" bug). Liquid-glass refraction belongs on the panel
+  **backdrop** (`backdrop-filter: url(#lg-refract)`, behind `@supports`) — Chromium-only, with a
+  CSS-only rim/frost fallback for Safari/Firefox. Verify backdrop refraction in the actual kiosk browser.

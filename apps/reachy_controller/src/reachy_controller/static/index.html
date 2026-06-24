@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#070810">
-  <title>Reachy Controller · Liquid Glass</title>
+  <title>Reachy Controller</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -14,13 +14,28 @@
 <body>
   <div class="atmosphere" aria-hidden="true"><span class="blob a"></span><span class="blob b"></span><span class="blob c"></span></div>
 
+  <!-- Liquid Glass refraction filter. Applied ONLY to the panel *backdrop*
+       (via `backdrop-filter: url(#lg-refract)` behind an @supports guard, see
+       style.css), never to live content. It bends the drifting atmosphere
+       glows behind the glass like a thick refractive pane, with a subtle
+       chromatic split at high-contrast edges. Chromium-only; other engines
+       fall back to the CSS-only glass material. -->
   <svg width="0" height="0" class="liquid-filter" aria-hidden="true">
-    <filter id="lg-distort" x="-20%" y="-20%" width="140%" height="140%">
-      <feTurbulence type="fractalNoise" baseFrequency="0.013 0.016" numOctaves="2" seed="7" result="noise">
-        <animate attributeName="baseFrequency" dur="20s" values="0.013 0.016;0.017 0.012;0.013 0.016" repeatCount="indefinite"></animate>
+    <filter id="lg-refract" x="-12%" y="-12%" width="124%" height="124%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.006 0.009" numOctaves="2" seed="11" result="noise">
+        <animate attributeName="baseFrequency" dur="26s" values="0.006 0.009;0.009 0.006;0.006 0.009" repeatCount="indefinite"></animate>
       </feTurbulence>
-      <feGaussianBlur in="noise" stdDeviation="1.4" result="blurred-noise"></feGaussianBlur>
-      <feDisplacementMap in="SourceGraphic" in2="blurred-noise" scale="16" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
+      <feGaussianBlur in="noise" stdDeviation="1.1" result="smoothNoise"></feGaussianBlur>
+      <!-- Green channel carries the vertical (base) displacement. -->
+      <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale="12" xChannelSelector="R" yChannelSelector="G" result="disp"></feDisplacementMap>
+      <feColorMatrix in="disp" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="gChan"></feColorMatrix>
+      <!-- Red displaced a touch further, blue a touch less => chromatic fringe. -->
+      <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale="16" xChannelSelector="R" yChannelSelector="G" result="dispR"></feDisplacementMap>
+      <feColorMatrix in="dispR" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="rChan"></feColorMatrix>
+      <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale="8" xChannelSelector="R" yChannelSelector="G" result="dispB"></feDisplacementMap>
+      <feColorMatrix in="dispB" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="bChan"></feColorMatrix>
+      <feBlend in="rChan" in2="gChan" mode="screen" result="rg"></feBlend>
+      <feBlend in="rg" in2="bChan" mode="screen"></feBlend>
     </filter>
   </svg>
 
@@ -28,7 +43,6 @@
     <header class="glass statusbar">
       <div class="brand" aria-label="reachy·controller">
         <span class="mark">reachy<b>·</b>controller</span>
-        <span class="sub">liquid glass</span>
       </div>
       <span class="pill"><span class="dot" id="daemon-dot"></span>daemon <span class="val" id="daemon-value">connecting</span></span>
       <span class="pill"><span class="dot" id="robot-dot"></span>robot <span class="val" id="robot-value">unknown</span></span>
