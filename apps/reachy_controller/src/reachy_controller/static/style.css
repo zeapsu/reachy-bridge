@@ -118,17 +118,45 @@ input:focus-visible {
 .glass {
   position: relative;
   border-radius: var(--r-lg);
-  background: var(--glass-fill);
+  /* Directional fill: brighter at the top-left, fading out — reads as a lit
+     pane of glass rather than a flat translucent rectangle. */
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.03) 42%, rgba(255, 255, 255, 0.015) 100%),
+    var(--glass-fill);
   backdrop-filter: blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
   -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
   border: 1px solid var(--glass-edge);
+  /* Directional specular rim: light catches the top-left edge, shadow gathers
+     bottom-right, with an inner top glow and bottom depth for thickness. */
   box-shadow:
+    inset 1.5px 1.5px 0 rgba(255, 255, 255, 0.5),
+    inset -1.5px -1.5px 0 rgba(0, 0, 0, 0.28),
     inset 0 1.5px 0 var(--rim),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
-    inset 0 -18px 40px -30px rgba(0, 0, 0, 0.8),
+    inset 0 10px 26px -20px rgba(255, 255, 255, 0.22),
+    inset 0 -22px 48px -34px rgba(0, 0, 0, 0.82),
     0 32px 70px -40px rgba(0, 0, 0, 0.95);
   overflow: hidden;
   isolation: isolate;
+}
+
+/* Continuous-radius (squircle) corners where supported — softer, more
+   Apple-like than a plain border-radius; falls back to --r-lg elsewhere. */
+@supports (corner-shape: squircle) {
+  .glass {
+    corner-shape: squircle;
+  }
+}
+
+/* Real background refraction (Chromium): bend the drifting atmosphere glows
+   through the glass via the SVG filter. Other engines ignore url() in
+   backdrop-filter and keep the CSS-only material above. */
+@supports (backdrop-filter: url("#lg-refract")) or (-webkit-backdrop-filter: url("#lg-refract")) {
+  .glass {
+    /* Displace the backdrop first (so the glow shapes actually bend), then
+       frost it — order matters; blur-then-displace washes the refraction out. */
+    backdrop-filter: url("#lg-refract") blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+    -webkit-backdrop-filter: url("#lg-refract") blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+  }
 }
 
 .glass::before {
@@ -154,7 +182,7 @@ input:focus-visible {
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background: radial-gradient(220px circle at var(--mx, 50%) var(--my, 0%), rgba(255, 255, 255, 0.12), transparent 60%);
+  background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 0%), rgba(255, 255, 255, 0.16), transparent 62%);
   opacity: 0;
   transition: opacity 0.4s var(--ease);
 }
@@ -287,7 +315,23 @@ input:focus-visible {
   border-radius: var(--r-lg) var(--r-lg) 0 0;
   overflow: hidden;
   background: #05060c;
-  filter: url("#lg-distort");
+  /* NOTE: do not apply `filter: url(#...)` here — it warps the live camera/
+     sim/schematic content. Refraction lives on the glass rim (.vp-stage::after)
+     and panel backdrop, never on the content layers. */
+}
+
+/* Decorative liquid-glass rim for the viewport (no effect on content). */
+.vp-stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow:
+    inset 0 1.5px 0 var(--rim),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+    inset 0 -40px 70px -50px rgba(0, 0, 0, 0.9);
 }
 
 .vp-layer {
@@ -524,10 +568,16 @@ input:focus-visible {
   border-color: rgba(255, 107, 107, 0.42);
 }
 
+/* Let the middle (text) grid cell shrink so long names can ellipsize. */
+.app-card > div { min-width: 0; }
+
 .app-name {
   font-family: "Space Grotesk", sans-serif;
   font-weight: 600;
   font-size: 14.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .app-state {
@@ -536,6 +586,7 @@ input:focus-visible {
   color: var(--muted);
   margin-top: 2px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .app-state .up { color: var(--amber); }
@@ -876,6 +927,12 @@ input[type=range]::-moz-range-thumb {
     flex-direction: column;
   }
   .hud-readout { font-size: 10px; }
+  /* On a narrow stage the centered offline note collides with the bottom-left
+     HUD readout — float it into the open space above the robot instead. */
+  .rig-note {
+    top: 48px;
+    bottom: auto;
+  }
   .gauges { gap: 4px; }
   .gauge svg {
     width: 72px;
@@ -887,6 +944,12 @@ input[type=range]::-moz-range-thumb {
   .app-card .btn {
     grid-column: 1 / -1;
   }
+  /* Perf: the animated refraction filter is GPU-heavy across stacked panels on
+     phones — drop to a lighter frost; the CSS rim keeps the glass read. */
+  .glass {
+    backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
+    -webkit-backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -897,7 +960,28 @@ input[type=range]::-moz-range-thumb {
     animation: none;
   }
 
+  /* The refraction filter animates its turbulence — swap to the static frost. */
+  .glass {
+    backdrop-filter: blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+    -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+  }
+
   * {
     transition: none !important;
   }
+}
+
+/* Solidify the glass for users who ask for reduced transparency: opaque panels,
+   no blur/refraction, no decorative sheen/pointer layers, dimmed backdrop. */
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    background: rgba(18, 21, 32, 0.97);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .glass::before,
+  .glass::after {
+    display: none;
+  }
+  .atmosphere { opacity: 0.18; }
 }
