@@ -1,0 +1,16 @@
+# Reachy Mini Audio (XVF3800 mic array, Pollen Robotics USB 38fb:1001).
+#
+# The daemon reads Direction-of-Arrival (DOA) via raw libusb control transfers
+# on this device (backend.doa.get_DoA -> _respeaker.read("DOA_VALUE_RADIANS")).
+# Audio (speaker/mic) goes through the kernel USB-audio driver (/dev/snd, `audio`
+# group) and works without this rule, but the libusb DOA path needs access to the
+# /dev/bus/usb node, which defaults to root:root 0664. Without this rule,
+# `GET /api/state/full?with_doa=true` returns HTTP 500 with
+# `usb.core.USBError: [Errno 13] Access denied`, and the controller's telemetry +
+# audio-level streams falsely report the daemon offline.
+#
+# Install (recurs after an OS reinstall, like the dialout fix):
+#   sudo cp tools/udev/99-reachy-mini-doa.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   # (or replug the robot). The user must be in the `plugdev` group.
+SUBSYSTEM=="usb", ATTR{idVendor}=="38fb", ATTR{idProduct}=="1001", MODE="0660", GROUP="plugdev"
