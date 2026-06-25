@@ -13,6 +13,7 @@ from collections.abc import Callable, Awaitable
 from fastapi import FastAPI, Request, Response
 
 from reachy_mini import ReachyMini, ReachyMiniApp
+from reachy_mini.utils import create_head_pose
 from reachy_chat.gstreamer_nvidia_patch import apply_nvidia_unixfd_patch
 from reachy_chat.utils import (
     CameraVisionInitializationError,
@@ -24,6 +25,36 @@ from reachy_chat.utils import (
 
 # Apply NVIDIA Jetson GStreamer plugin patch before any SDK initialization
 apply_nvidia_unixfd_patch()
+
+RETURN_HOME_DURATION_S = 2.5
+SLEEP_CUE_SETTLE_S = 1.0
+
+
+def _return_home(robot: ReachyMini, logger) -> None:
+    try:
+        robot.goto_target(
+            head=create_head_pose(degrees=True),
+            body_yaw=0.0,
+            duration=RETURN_HOME_DURATION_S,
+        )
+    except (AttributeError, TypeError) as exc:
+        logger.warning("chat: graceful return-home unavailable; snapping home: %s", exc)
+        try:
+            robot.set_target(head=create_head_pose(degrees=True), body_yaw=0.0)
+        except (AttributeError, TypeError) as set_exc:
+            logger.warning("chat: failed to snap home on exit: %s", set_exc)
+        except Exception as set_exc:
+            logger.debug("chat: failed to snap home on exit: %s", set_exc)
+    except Exception as exc:
+        logger.debug("chat: failed to return home on exit: %s", exc)
+
+    try:
+        robot.media.play_sound("go_sleep.wav")
+        time.sleep(SLEEP_CUE_SETTLE_S)
+    except AttributeError as exc:
+        logger.warning("chat: sleep cue unavailable on exit: %s", exc)
+    except Exception as exc:
+        logger.debug("chat: sleep cue failed on exit: %s", exc)
 
 
 def main() -> None:
@@ -286,11 +317,15 @@ def run(
         if own_ui_server is not None:
             own_ui_server.should_exit = True
 
-        movement_manager.stop()
+        try:
+            movement_manager.stop()
+        except Exception as e:
+            logger.debug(f"Error stopping movement manager during shutdown: {e}")
         try:
             robot.disable_wobbling()
         except Exception as e:
             logger.debug(f"Error disabling wobbling during shutdown: {e}")
+        _return_home(robot, logger)
         if camera_worker:
             camera_worker.stop()
 

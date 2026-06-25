@@ -33,6 +33,8 @@ def _warn_once(key: str, message: str, exc: Exception | None = None) -> None:
 CONTROL_PERIOD_SECONDS = 0.02
 SMOOTHING_ALPHA = 0.4
 TRACKING_RANGE_DEGREES = 30.0
+RETURN_HOME_DURATION_SECONDS = 2.5
+SLEEP_CUE_SETTLE_SECONDS = 1.0
 YAW_LIMITS = (-180.0, 180.0)
 PITCH_LIMITS = (-40.0, 40.0)
 
@@ -200,9 +202,34 @@ class ReachyLookat(ReachyMiniApp):
     def _return_to_neutral(reachy_mini: ReachyMini) -> None:
         """Recenter the head on exit so the robot isn't left stuck mid-motion (#9)."""
         try:
-            reachy_mini.set_target(head=create_head_pose(degrees=True), body_yaw=0.0)
+            reachy_mini.goto_target(
+                head=create_head_pose(degrees=True),
+                body_yaw=0.0,
+                duration=RETURN_HOME_DURATION_SECONDS,
+            )
+        except (AttributeError, TypeError) as exc:
+            logger.warning(
+                "lookat: graceful return-home unavailable; snapping home: %s", exc
+            )
+            try:
+                reachy_mini.set_target(
+                    head=create_head_pose(degrees=True),
+                    body_yaw=0.0,
+                )
+            except (AttributeError, TypeError) as set_exc:
+                logger.warning("lookat: failed to snap home on exit: %s", set_exc)
+            except Exception as set_exc:
+                logger.debug("lookat: failed to snap home on exit: %s", set_exc)
         except Exception as exc:
-            logger.warning("lookat: failed to recenter head on exit: %s", exc)
+            logger.debug("lookat: failed to return home on exit: %s", exc)
+
+        try:
+            reachy_mini.media.play_sound("go_sleep.wav")
+            time.sleep(SLEEP_CUE_SETTLE_SECONDS)
+        except AttributeError as exc:
+            logger.warning("lookat: sleep cue unavailable on exit: %s", exc)
+        except Exception as exc:
+            logger.debug("lookat: sleep cue failed on exit: %s", exc)
 
 
 if __name__ == "__main__":

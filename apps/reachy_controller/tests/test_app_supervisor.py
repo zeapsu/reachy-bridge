@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import psutil
 import pytest
 
-from reachy_controller.app_supervisor import AppSupervisor, LocalApp
+from reachy_controller.app_supervisor import (
+    _STOP_SIGINT_GRACE_S,
+    AppSupervisor,
+    LocalApp,
+)
 
 
 @pytest.mark.asyncio
@@ -225,11 +229,13 @@ async def test_stop_app_uses_thread_for_wait() -> None:
     mock_process = MagicMock()
     mock_process.pid = 12345
     wait_called = False
+    wait_timeouts = []
 
     def quick_wait(timeout):
         """Mock wait that succeeds immediately."""
         nonlocal wait_called
         wait_called = True
+        wait_timeouts.append(timeout)
         return 0  # Exit code
 
     mock_process.wait = quick_wait
@@ -244,6 +250,7 @@ async def test_stop_app_uses_thread_for_wait() -> None:
     # Verify the stop completed and signals were sent
     assert result["status"] == "stopped"
     assert wait_called, "Process.wait() was not called"
+    assert wait_timeouts == [_STOP_SIGINT_GRACE_S]
     assert supervisor._apps["reachy_chat"].status == "stopped"
     mock_process.send_signal.assert_called_once()
 
@@ -262,9 +269,11 @@ async def test_stop_adopted_orphan() -> None:
     mock_psutil_proc = MagicMock()
     mock_psutil_proc.pid = 99999
     mock_psutil_proc.cmdline.return_value = ["uv", "run", "python", "-m", "reachy_lookat.main"]
+    wait_timeouts = []
 
     def quick_wait(timeout):
         """Mock wait that succeeds immediately."""
+        wait_timeouts.append(timeout)
         return 0  # Exit code
 
     mock_psutil_proc.wait = quick_wait
@@ -280,6 +289,7 @@ async def test_stop_adopted_orphan() -> None:
     assert result["status"] == "stopped"
     assert supervisor._apps["reachy_lookat"].status == "stopped"
     assert supervisor._apps["reachy_lookat"].pid is None
+    assert wait_timeouts == [_STOP_SIGINT_GRACE_S]
     # Verify signals were sent via psutil
     mock_psutil_proc.send_signal.assert_called_once()
 

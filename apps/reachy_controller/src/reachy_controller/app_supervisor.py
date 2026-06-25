@@ -17,6 +17,8 @@ import psutil
 
 logger = logging.getLogger(__name__)
 
+_STOP_SIGINT_GRACE_S = 5.0
+
 
 def _get_workspace_root() -> Path:
     """Resolve workspace root robustly: walk up from __file__ or env WORKSPACE_ROOT."""
@@ -204,7 +206,7 @@ class AppSupervisor:
                     # Try SIGINT first (Ctrl-C)
                     app.process.send_signal(signal.SIGINT)
                     try:
-                        await asyncio.to_thread(app.process.wait, 3.0)
+                        await asyncio.to_thread(app.process.wait, _STOP_SIGINT_GRACE_S)
                     except subprocess.TimeoutExpired:
                         # Escalate to SIGTERM
                         app.process.terminate()
@@ -224,7 +226,7 @@ class AppSupervisor:
                         if f"{name}.main" in cmdline:
                             proc.send_signal(signal.SIGINT)
                             try:
-                                await asyncio.to_thread(proc.wait, 3.0)
+                                await asyncio.to_thread(proc.wait, _STOP_SIGINT_GRACE_S)
                             except psutil.TimeoutExpired:
                                 proc.terminate()
                                 try:
