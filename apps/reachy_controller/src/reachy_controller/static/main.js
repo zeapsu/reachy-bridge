@@ -750,6 +750,9 @@
     if (!button) return;
     const move = button.dataset.move;
     void performControl("power", async () => {
+      if (move === "wake_up") {
+        await apiJson("/api/motors/set_mode/enabled", { method: "POST" });
+      }
       const result = await apiJson(`/api/move/play/${encodeURIComponent(move)}`, { method: "POST" });
       pollMoveRunning();
       return result;
