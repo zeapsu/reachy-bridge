@@ -42,6 +42,13 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
   a Mac-tunnel controller can't manage a remote daemon, so the button disables itself). The daemon is
   spawned detached (`start_new_session=True`) and kept out of the controller's `stop_all`, so it
   survives controller restarts. Authoritative on/off = the daemon's `:8000` reachability.
+  **Known limitation (#27):** the button can *Start* but **can't Stop a daemon it didn't launch** — an
+  externally-started (adopted) daemon's internal status is stuck `"stopped"`, so `stop()` short-circuits.
+  For on-device dev, manage the lifecycle from the shell instead: an operator-local `reachy-up` /
+  `reachy-down` zsh pair (in `~/.zshrc`, **not in-repo**) starts the daemon (Jetson wrapper) + controller
+  (`REACHY_MANAGE_DAEMON=1`) detached, and tears them down by **listening port** (`:7861`, `:8000`) —
+  never `pkill -f <launch string>` (it matches the function itself and self-kills the shell) — escalating
+  SIGINT→SIGTERM→SIGKILL so the daemon releases torque first.
 
 ## Hard-won gotchas (macOS / Apple Silicon) — READ before debugging
 - **No MuJoCo GUI** on this Mac → always use `--sim --headless` for simulation. Headless is enough
@@ -128,6 +135,12 @@ credit/quota/auth limit, **pause** and re-auth (`codex logout`/`login`) — do n
 the code. Diagnostic scripts live at the repo root (`mic_test.py`).
 
 ### Issue-driven workflow (adopted 2026-06-24)
+**Start every session by reloading prior context — context does NOT carry across sessions, so
+re-orient before acting:** (1) read agent **memory** (the `MEMORY.md` index + any relevant files);
+(2) skim recent **git history** (`git log --oneline -20`, and `git log` on files you'll touch);
+(3) check open **GitHub issues** (`gh issue list`) for what's next. Doing this first prevents
+re-deriving decisions, re-doing finished work, or contradicting an earlier choice.
+
 For multi-session work, **open GitHub issues for what's next** (a parent/epic issue + child issues)
 and update **memory + this AGENTS.md** in the same pass — issues track *what's next*, memory/AGENTS.md
 track *what we learned*. PRs reference their issues (`Closes #N`) and may ship in parts (e.g. part 1
