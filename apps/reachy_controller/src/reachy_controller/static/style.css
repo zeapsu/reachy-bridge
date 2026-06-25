@@ -272,6 +272,12 @@ input:focus-visible {
   animation: pulse 2.6s var(--ease) infinite;
 }
 
+.dot.stopping {
+  background: var(--muted);
+  box-shadow: 0 0 8px 1px rgba(138, 146, 166, 0.5);
+  animation: pulse 2.6s var(--ease) infinite;
+}
+
 @keyframes pulse {
   50% { opacity: 0.45; }
 }
@@ -631,6 +637,11 @@ input:focus-visible {
   background: rgba(111, 227, 255, 0.07);
 }
 
+.app-card.stopping {
+  border-color: rgba(138, 146, 166, 0.3);
+  background: rgba(138, 146, 166, 0.04);
+}
+
 /* Let the middle (text) grid cell shrink so long names can ellipsize. */
 .app-card > div { min-width: 0; }
 
@@ -655,6 +666,7 @@ input:focus-visible {
 .app-state .up { color: var(--amber); }
 .app-state .err { color: var(--coral); }
 .app-state .loading-frag { color: var(--cyan); }
+.app-state .stopping-label { color: var(--muted); }
 .app-state .spinner-glyph {
   display: inline-block;
   vertical-align: middle;
@@ -701,6 +713,15 @@ input:focus-visible {
 }
 
 .btn.stop:hover { background: rgba(255, 107, 107, 0.12); }
+
+.btn.pending {
+  color: var(--muted);
+  background: rgba(138, 146, 166, 0.15);
+  border-color: rgba(138, 146, 166, 0.3);
+  cursor: not-allowed;
+}
+
+.btn.pending:hover { transform: none; }
 
 .btn:disabled,
 input:disabled,

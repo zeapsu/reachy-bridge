@@ -265,26 +265,35 @@
   }
 
   function renderApps(statuses = Array.from(appState.values())) {
-    const active = statuses.find((app) => app.status === "running" || app.status === "loading") || null;
+    const active = statuses.find((app) => app.status === "running" || app.status === "loading" || app.status === "stopping") || null;
     $("apps").innerHTML = APP_NAMES.map((name) => {
       const app = statuses.find((item) => item.name === name) || { name, status: "stopped" };
       const isRunning = app.status === "running";
       const isLoading = app.status === "loading";
+      const isStopping = app.status === "stopping";
       const isError = app.status === "error";
-      const statusClass = isRunning ? "running" : isLoading ? "loading" : isError ? "error" : "";
+      const statusClass = isRunning ? "running" : isLoading ? "loading" : isStopping ? "stopping" : isError ? "error" : "";
       const uptime = isRunning && app.start_time ? ` · ${formatUptime(Date.now() / 1000 - Number(app.start_time))}` : "";
       const pid = isRunning && app.pid ? ` · pid ${app.pid}` : "";
       const external = isRunning && app.external ? ` · external` : "";
       const error = app.error ? `<br><span class="err">${escapeHtml(app.error)}</span>` : "";
-      const isActive = isRunning || isLoading;
-      const button = isActive
-        ? `<button class="btn stop" data-app="${name}" data-action="stop" ${state.appBusy ? "disabled" : ""}>Stop</button>`
-        : `<button class="btn start" data-app="${name}" data-action="start" ${(active || state.appBusy) ? "disabled" : ""}>Start</button>`;
+      const isActive = isRunning || isLoading || isStopping;
+      let button;
+      if (isRunning) {
+        button = `<button class="btn stop" data-app="${name}" data-action="stop" ${state.appBusy ? "disabled" : ""}>Stop</button>`;
+      } else if (isLoading) {
+        button = `<button class="btn pending" disabled>Loading</button>`;
+      } else if (isStopping) {
+        button = `<button class="btn pending" disabled>Stopping</button>`;
+      } else {
+        button = `<button class="btn start" data-app="${name}" data-action="start" ${(active || state.appBusy) ? "disabled" : ""}>Start</button>`;
+      }
       const frag = LOADING_FRAGMENTS[loadingTick % LOADING_FRAGMENTS.length];
       const spinnerMarkup = isLoading ? `<span class="spinner-glyph" aria-hidden="true"></span><span class="loading-frag">${escapeHtml(frag)}</span>` : "";
-      const stateContent = isRunning ? `<span class="up">running</span>${external}${pid}${uptime}` : isLoading ? spinnerMarkup : escapeHtml(app.status || "stopped");
+      const stoppingMarkup = isStopping ? `<span class="spinner-glyph" aria-hidden="true"></span><span class="stopping-label">Stopping…</span>` : "";
+      const stateContent = isRunning ? `<span class="up">running</span>${external}${pid}${uptime}` : isLoading ? spinnerMarkup : isStopping ? stoppingMarkup : escapeHtml(app.status || "stopped");
       return `<div class="app-card ${statusClass}">
-        <span class="dot ${isRunning ? "live" : isLoading ? "loading" : isError ? "error" : ""}"></span>
+        <span class="dot ${isRunning ? "live" : isLoading ? "loading" : isStopping ? "stopping" : isError ? "error" : ""}"></span>
         <div><div class="app-name">${escapeHtml(name)}</div>
         <div class="app-state">${stateContent}${error}</div></div>
         ${button}
