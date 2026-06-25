@@ -916,3 +916,43 @@ async def test_readiness_monitor_process_death_during_loading_errors() -> None:
 
             # Status should still be error, not promoted to running
             assert supervisor._apps["reachy_chat"].status == "error"
+
+
+@pytest.mark.asyncio
+async def test_stop_app_sets_stopping_status_during_wait() -> None:
+    """Test that stop_app sets status to "stopping" while the wait is in progress.
+
+    This verifies that pollers can observe the intermediate "stopping" status
+    while the app is shutting down gracefully (during the ~3.5s wait period).
+    """
+    supervisor = AppSupervisor()
+
+    # Track the status when wait is called
+    status_during_wait = {}
+
+    # Create a mock process with signal/wait tracking
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+
+    def wait_with_status_check(timeout):
+        """Mock wait that records app status when called."""
+        # Record the status at the moment wait() is called
+        status_during_wait['value'] = supervisor._apps["reachy_chat"].status
+        return 0  # Exit code
+
+    mock_process.wait = wait_with_status_check
+
+    # Manually set up the app state (running, so stop will proceed)
+    supervisor._apps["reachy_chat"].process = mock_process
+    supervisor._apps["reachy_chat"].status = "running"
+
+    # Call stop_app
+    result = await supervisor.stop_app("reachy_chat")
+
+    # Verify the stop completed successfully
+    assert result["status"] == "stopped"
+    assert supervisor._apps["reachy_chat"].status == "stopped"
+
+    # Verify the status was "stopping" while wait was in progress
+    assert status_during_wait.get('value') == "stopping", \
+        f"Expected status to be 'stopping' during wait, but got '{status_during_wait.get('value')}'"

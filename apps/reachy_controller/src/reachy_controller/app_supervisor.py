@@ -229,6 +229,8 @@ class AppSupervisor:
             if app.status == "stopped":
                 return {"name": name, "status": "stopped"}
 
+            app.status = "stopping"
+
             # Cancel pending readiness monitor if present
             if name in self._readiness_tasks:
                 task = self._readiness_tasks.pop(name)
