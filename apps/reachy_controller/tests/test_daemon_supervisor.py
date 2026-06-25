@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import signal
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import psutil
 import pytest
 
+from reachy_controller.app_supervisor import _get_workspace_root
 from reachy_controller.daemon_supervisor import DaemonSupervisor
 
 
@@ -34,8 +36,21 @@ async def test_start_when_manageable() -> None:
         with patch(
             "reachy_controller.daemon_supervisor.subprocess.Popen",
             return_value=mock_process,
-        ):
+        ) as mock_popen:
             result = await supervisor.start()
+
+        # Assert the Popen call arguments
+        mock_popen.assert_called_once()
+        call_args = mock_popen.call_args
+
+        # Check argv (first positional argument)
+        assert call_args.args[0] == ["uv", "run", "python", "tools/reachy_mini_daemon_jetson.py"]
+
+        # Check keyword arguments
+        assert call_args.kwargs["cwd"] == _get_workspace_root()
+        assert call_args.kwargs["stdout"] == subprocess.DEVNULL
+        assert call_args.kwargs["stderr"] == subprocess.DEVNULL
+        assert call_args.kwargs["start_new_session"] is True
 
     assert result["status"] == "starting"
     assert result["pid"] == 12345
