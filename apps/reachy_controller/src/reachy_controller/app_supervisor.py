@@ -7,7 +7,9 @@ import logging
 import os
 import signal
 import subprocess
+import tempfile
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,8 +20,8 @@ import psutil
 logger = logging.getLogger(__name__)
 
 _STOP_SIGINT_GRACE_S = 5.0
-_APP_BOOT_GRACE_S = 4.0  # Grace period for app startup before promoting loading → running
 _APP_READINESS_POLL_S = 0.5  # Polling interval for readiness monitor
+_APP_READINESS_TIMEOUT_S = 60.0  # Ceiling timeout for app startup before promoting loading → running
 
 
 def _get_workspace_root() -> Path:
@@ -49,6 +51,7 @@ class LocalApp:
     start_time: float | None = None
     external: bool = False
     log_handle: TextIO | None = None
+    ready_file: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to serializable dict."""
@@ -164,6 +167,10 @@ class AppSupervisor:
             app_dir = self._workspace_root / "apps" / name
             argv = ["uv", "run", "python", "-m", f"{name}.main"]
 
+            # Generate unique ready file path for this app launch
+            ready_path = Path(tempfile.gettempdir()) / f"reachy_ready_{name}_{uuid.uuid4().hex}"
+            app.ready_file = ready_path
+
             # Open log file for app output
             log_dir = self._workspace_root / ".reachy-logs"
             try:
@@ -185,6 +192,7 @@ class AppSupervisor:
                     stdout=stdout_target,
                     stderr=stderr_target,
                     text=True,
+                    env={**os.environ, "REACHY_READY_FILE": str(ready_path)},
                 )
                 app.pid = app.process.pid
                 app.status = "loading"
@@ -298,6 +306,14 @@ class AppSupervisor:
                     logger.error(f"Failed to close log handle for {name}: {close_err}")
                 app.log_handle = None
 
+            # Clean up ready file
+            if app.ready_file is not None:
+                try:
+                    app.ready_file.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"Failed to clean up ready file for {name}: {e}")
+                app.ready_file = None
+
             if app.uses_camera:
                 logger.info(f"Camera available after stopping app {name}")
             return {"name": name, "status": "stopped"}
@@ -321,24 +337,28 @@ class AppSupervisor:
                         except Exception as close_err:
                             logger.error(f"Failed to close log handle for {app.name}: {close_err}")
                         app.log_handle = None
+                    # Clean up ready file
+                    if app.ready_file is not None:
+                        try:
+                            app.ready_file.unlink(missing_ok=True)
+                        except Exception as e:
+                            logger.debug(f"Failed to clean up ready file for {app.name}: {e}")
+                        app.ready_file = None
 
     async def _monitor_readiness(self, name: str) -> None:
         """Monitor app readiness and promote from loading to running.
 
-        Uses a dual strategy:
-        1. Primary: boot-grace timeout (_APP_BOOT_GRACE_S). This is necessary because
-           directly-launched SDK client apps bypass the daemon's robot_app_lock entirely
-           (see #15, daemon/robot_app_lock.py docstring). The lock-based strategy is kept
-           as a best-effort early-promote but will not fire for our launch path.
-        2. Best-effort early-promote via daemon lock: if the daemon reports this app holds
-           the lock before grace elapses, promote immediately.
+        Uses a multi-strategy approach:
+        1. Primary: ready file signal. Apps write to REACHY_READY_FILE when truly ready.
+        2. Secondary: daemon lock (best-effort early-promote, won't fire for direct launches).
+        3. Ceiling: timeout (_APP_READINESS_TIMEOUT_S) as fallback, logs WARNING if hit.
         """
         app = self._apps[name]
         if app.start_time is None:
             logger.error(f"_monitor_readiness for {name}: start_time is None")
             return
 
-        # Measure the boot-grace window with a monotonic clock, not wall-clock
+        # Measure the readiness window with a monotonic clock, not wall-clock
         # start_time: an NTP step / DST change mid-boot must not distort `elapsed`.
         # (app.start_time stays wall-clock — the frontend reads it as a timestamp.)
         start_mono = time.monotonic()
@@ -347,7 +367,12 @@ class AppSupervisor:
             while True:
                 elapsed = time.monotonic() - start_mono
 
-                # Try early-promote via daemon lock (best-effort, won't fire for us)
+                # Check primary: ready file signal
+                if app.ready_file is not None and app.ready_file.exists():
+                    logger.info(f"App {name} signalled ready")
+                    break
+
+                # Try secondary: daemon lock (best-effort, won't fire for direct launches)
                 if self.daemon_proxy is not None:
                     try:
                         lock_status = await self.daemon_proxy.get_robot_app_lock_status()
@@ -362,10 +387,10 @@ class AppSupervisor:
                         # Best-effort; swallow exceptions
                         logger.debug(f"Lock check for {name} failed (best-effort): {e}")
 
-                # Check timeout
-                if elapsed >= _APP_BOOT_GRACE_S:
-                    logger.info(
-                        f"App {name} boot grace ({_APP_BOOT_GRACE_S}s) elapsed, promoting to running"
+                # Check ceiling timeout
+                if elapsed >= _APP_READINESS_TIMEOUT_S:
+                    logger.warning(
+                        f"App {name} readiness signal never arrived within {_APP_READINESS_TIMEOUT_S}s, promoting by fallback ceiling"
                     )
                     break
 
@@ -379,6 +404,14 @@ class AppSupervisor:
                     # Reset start_time to measure running duration, not boot duration (issue #15 requirement)
                     app.start_time = time.time()
                     logger.info(f"App {name} promoted to running")
+
+            # Clean up ready file after promotion (served its purpose)
+            if app.ready_file is not None:
+                try:
+                    app.ready_file.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"Failed to clean up ready file for {name}: {e}")
+                app.ready_file = None
         except asyncio.CancelledError:
             # Task was cancelled during stop_app; expected
             logger.debug(f"Readiness monitor for {name} cancelled")
@@ -420,6 +453,13 @@ class AppSupervisor:
                 except Exception as close_err:
                     logger.error(f"Failed to close log handle for {name}: {close_err}")
                 app.log_handle = None
+            # Clean up ready file
+            if app.ready_file is not None:
+                try:
+                    app.ready_file.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"Failed to clean up ready file for {name}: {e}")
+                app.ready_file = None
 
     def _scan_for_live_apps(self) -> dict[str, tuple[int, float]]:
         """Scan process table for live apps matching known patterns.

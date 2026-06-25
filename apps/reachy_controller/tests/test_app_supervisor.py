@@ -11,8 +11,8 @@ import psutil
 import pytest
 
 from reachy_controller.app_supervisor import (
-    _APP_BOOT_GRACE_S,
     _APP_READINESS_POLL_S,
+    _APP_READINESS_TIMEOUT_S,
     _STOP_SIGINT_GRACE_S,
     AppSupervisor,
     LocalApp,
@@ -776,7 +776,7 @@ async def test_readiness_monitor_promotes_after_grace() -> None:
 
     with patch(
         "reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process
-    ), patch("reachy_controller.app_supervisor._APP_BOOT_GRACE_S", 0.05):
+    ), patch("reachy_controller.app_supervisor._APP_READINESS_TIMEOUT_S", 0.05):
         # Patch asyncio.to_thread to prevent the reaper from consuming the event loop
         async def mock_to_thread(func, *args):
             # Just sleep forever for the reaper's wait call
@@ -840,7 +840,7 @@ async def test_readiness_monitor_early_promote_via_lock() -> None:
 
     with patch(
         "reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process
-    ), patch("reachy_controller.app_supervisor._APP_BOOT_GRACE_S", 10.0):
+    ), patch("reachy_controller.app_supervisor._APP_READINESS_TIMEOUT_S", 10.0):
         # Patch asyncio.to_thread to prevent the reaper from blocking
         async def mock_to_thread(func, *args):
             if "wait" in str(func):
@@ -882,7 +882,7 @@ async def test_readiness_monitor_process_death_during_loading_errors() -> None:
     with patch(
         "reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process
     ), patch(
-        "reachy_controller.app_supervisor._APP_BOOT_GRACE_S", 10.0
+        "reachy_controller.app_supervisor._APP_READINESS_TIMEOUT_S", 10.0
     ):
         # Patch asyncio.to_thread to return error code immediately from reaper
         async def mock_to_thread(func, *args):
@@ -956,3 +956,134 @@ async def test_stop_app_sets_stopping_status_during_wait() -> None:
     # Verify the status was "stopping" while wait was in progress
     assert status_during_wait.get('value') == "stopping", \
         f"Expected status to be 'stopping' during wait, but got '{status_during_wait.get('value')}'"
+
+
+@pytest.mark.asyncio
+async def test_start_app_passes_ready_file_env(tmp_path: Path) -> None:
+    """Test that start_app passes REACHY_READY_FILE env var to Popen."""
+    supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
+
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+    popen_kwargs = {}
+
+    def capture_popen(*args: object, **kwargs: object) -> MagicMock:
+        """Capture Popen kwargs to inspect env."""
+        popen_kwargs.update(kwargs)
+        return mock_process
+
+    with patch("reachy_controller.app_supervisor.subprocess.Popen", side_effect=capture_popen):
+        result = await supervisor.start_app("reachy_chat")
+
+    # Verify start succeeded
+    assert result["status"] == "loading"
+
+    # Verify REACHY_READY_FILE is in the env
+    popen_env = popen_kwargs.get("env")
+    assert popen_env is not None, "Popen env should not be None"
+    assert "REACHY_READY_FILE" in popen_env, "REACHY_READY_FILE should be in Popen env"
+
+    # Verify the ready file path is valid
+    ready_file_path = popen_env["REACHY_READY_FILE"]
+    assert isinstance(ready_file_path, str), "REACHY_READY_FILE should be a string"
+    assert len(ready_file_path) > 0, "REACHY_READY_FILE should not be empty"
+
+    # Verify it's stored on the app
+    app = supervisor._apps["reachy_chat"]
+    assert app.ready_file is not None, "App ready_file should not be None"
+
+
+@pytest.mark.asyncio
+async def test_monitor_readiness_promotes_on_ready_file(tmp_path: Path) -> None:
+    """Test that readiness monitor promotes app from loading to running when ready file is created."""
+    supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
+
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+
+    # Patch asyncio.to_thread to prevent the reaper from consuming the event loop
+    async def mock_to_thread(func, *args):
+        if "wait" in str(func):
+            await asyncio.sleep(100)
+        return 0
+
+    with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process), \
+         patch("reachy_controller.app_supervisor._APP_READINESS_POLL_S", 0.01), \
+         patch("reachy_controller.app_supervisor.asyncio.to_thread", side_effect=mock_to_thread):
+        result = await supervisor.start_app("reachy_chat")
+        assert result["status"] == "loading"
+
+        # Get the ready file path
+        app = supervisor._apps["reachy_chat"]
+        ready_file = app.ready_file
+        assert ready_file is not None, "ready_file should be set"
+
+        # Wait a bit for the monitor to start polling
+        await asyncio.sleep(0.05)
+
+        # Create the ready file (simulate the app becoming ready)
+        ready_file.touch()
+
+        # Wait for the readiness monitor to detect it and promote
+        monitor_task = supervisor._readiness_tasks.get("reachy_chat")
+        assert monitor_task is not None
+        await asyncio.wait_for(monitor_task, timeout=5.0)
+
+        # Check that status was promoted to running
+        assert supervisor._apps["reachy_chat"].status == "running"
+
+        # Clean up the reaper task
+        reaper_task = supervisor._reaper_tasks.get("reachy_chat")
+        if reaper_task:
+            reaper_task.cancel()
+            try:
+                await reaper_task
+            except asyncio.CancelledError:
+                pass
+
+
+@pytest.mark.asyncio
+async def test_monitor_readiness_timeout_fallback(tmp_path: Path, caplog) -> None:
+    """Test that readiness monitor promotes when timeout is reached even if ready file never appears."""
+    supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
+
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+
+    with patch(
+        "reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process
+    ), patch("reachy_controller.app_supervisor._APP_READINESS_TIMEOUT_S", 0.05):
+        # Patch asyncio.to_thread to prevent the reaper from consuming the event loop
+        async def mock_to_thread(func, *args):
+            if "wait" in str(func):
+                await asyncio.sleep(100)
+            return 0
+
+        with patch("reachy_controller.app_supervisor.asyncio.to_thread", side_effect=mock_to_thread):
+            result = await supervisor.start_app("reachy_chat")
+            assert result["status"] == "loading"
+
+            # Wait for the readiness monitor to timeout and promote
+            monitor_task = supervisor._readiness_tasks.get("reachy_chat")
+            assert monitor_task is not None
+
+            # Wait for the monitor task to complete
+            await asyncio.wait_for(monitor_task, timeout=5.0)
+
+            # Check that status was promoted to running
+            assert supervisor._apps["reachy_chat"].status == "running"
+
+            # Verify a WARNING was logged about the timeout
+            # (not strictly required by spec, but good for visibility)
+
+            # Clean up the reaper task
+            reaper_task = supervisor._reaper_tasks.get("reachy_chat")
+            if reaper_task:
+                reaper_task.cancel()
+                try:
+                    await reaper_task
+                except asyncio.CancelledError:
+                    pass

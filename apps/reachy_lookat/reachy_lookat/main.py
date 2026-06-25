@@ -1,7 +1,9 @@
 import logging
+import os
 import threading
 import time
 from collections.abc import Sequence
+from pathlib import Path
 
 import cv2
 from reachy_mini import ReachyMini, ReachyMiniApp
@@ -169,6 +171,13 @@ class ReachyLookat(ReachyMiniApp):
                         frame.shape[1],
                         frame.shape[0],
                     )
+                    # Signal readiness after first frame received
+                    _ready_file = os.getenv("REACHY_READY_FILE")
+                    if _ready_file:
+                        try:
+                            Path(_ready_file).touch()
+                        except Exception as exc:
+                            logger.debug("could not write readiness file: %s", exc)
                 if frame is not None and detector is not None:
                     face = select_largest_face(self.detect_faces(detector, frame))
                     if face is not None:

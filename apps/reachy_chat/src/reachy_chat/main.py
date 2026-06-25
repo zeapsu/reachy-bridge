@@ -306,6 +306,32 @@ def run(
         threading.Thread(target=poll_stop_event, daemon=True).start()
 
     try:
+        # Pre-warm the whisper model SYNCHRONOUSLY (OpenRouter handler only) before
+        # signalling readiness, so the controller's "loading" spinner stays up through
+        # the (first-run ~200 MB) model load instead of flipping to "running" while the
+        # model is still loading. A load failure degrades gracefully — whisper then
+        # loads lazily on the first utterance, and we still signal ready (a chat that
+        # can't load whisper is still "running", just degraded). This runs inside the
+        # try so a stop (SIGINT) during the load still reaches the shutdown finally; and
+        # because launch() (which drives transcription) only starts after this returns,
+        # there is no concurrent second load. The controller's 60 s readiness ceiling
+        # covers a cold first-run download that runs longer.
+        if hasattr(handler, "ensure_whisper_loaded"):
+            try:
+                handler.ensure_whisper_loaded()
+                logger.info("Whisper model pre-warmed")
+            except Exception as e:
+                logger.warning("Failed to pre-warm whisper model: %s", e)
+
+        # Signal readiness (touch the ready file) only after whisper is loaded.
+        _ready_file = os.getenv("REACHY_READY_FILE")
+        if _ready_file:
+            try:
+                Path(_ready_file).touch()
+                logger.debug("Signalled app readiness via %s", _ready_file)
+            except Exception as exc:
+                logger.debug("could not write readiness file: %s", exc)
+
         stream_manager.launch()
     except KeyboardInterrupt:
         logger.info("Keyboard interruption in main thread... closing server.")

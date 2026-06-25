@@ -1,7 +1,9 @@
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from reachy_mini import ReachyMini, ReachyMiniApp
@@ -183,6 +185,16 @@ class ReachyDance(ReachyMiniApp):
             variation = Variation.seeded(time.time_ns() % (2**32))
 
             while not stop_event.is_set():
+                # Signal readiness on first loop iteration
+                _ready_file = os.getenv("REACHY_READY_FILE")
+                if _ready_file:
+                    try:
+                        Path(_ready_file).touch()
+                    except Exception as exc:
+                        logger.debug("could not write readiness file: %s", exc)
+                    # Clear env var to avoid touching the file on every iteration
+                    os.environ.pop("REACHY_READY_FILE", None)
+
                 now = time.monotonic()
                 t = now - start
 
