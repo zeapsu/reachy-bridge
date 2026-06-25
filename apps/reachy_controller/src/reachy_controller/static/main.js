@@ -12,6 +12,9 @@
     controlBusy: false,
     appBusy: false,
     mode: "schematic",
+    robotControlMode: null,
+    daemonStatusTimer: null,
+    daemonStatusInflight: false,
     simLoop: null,
   };
 
@@ -103,11 +106,13 @@
       state.controlsLoaded = false;
       $("control-status").textContent = "offline";
       $("control-hint").textContent = "Controls enable when the daemon is online.";
+      $("control-hint").className = "panel-hint";
       renderOfflinePose();
       renderEqualizer(false, "no audio signal");
     } else if (changed || !state.controlsLoaded) {
       $("control-status").textContent = "online";
       $("control-hint").textContent = "";
+      $("control-hint").className = "panel-hint";
       void loadControls();
     }
   }
@@ -166,6 +171,9 @@
     const doa = payload.doa;
     const doaDeg = doaDegrees(doa);
     const speechDetected = Boolean(doa && typeof doa === "object" && doa.speech_detected === true);
+    if ("control_mode" in payload && payload.control_mode !== state.robotControlMode) {
+      selectMotorMode(payload.control_mode);
+    }
 
     $("r-rpy").textContent = [rollDeg, pitchDeg, yawDeg].map((value) => (value == null ? "—" : value.toFixed(0))).join("/");
     $("r-yaw").textContent = dash(bodyYaw, 2);
@@ -433,10 +441,12 @@
   }
 
   function selectMotorMode(mode) {
+    state.robotControlMode = typeof mode === "string" ? mode : null;
     document.querySelectorAll("#motor-seg button").forEach((button) => {
       button.classList.toggle("active", button.dataset.mode === mode);
     });
   }
+
 
   function debounce(fn, delay) {
     let timer = 0;
@@ -459,6 +469,7 @@
       const result = await operation();
       $("control-status").textContent = "ok";
       $("control-hint").textContent = "";
+      $("control-hint").className = "panel-hint";
       return result;
     } catch (error) {
       $("control-status").textContent = "error";
@@ -645,9 +656,11 @@
   $("motor-seg").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-mode]");
     if (!button) return;
+    const mode = button.dataset.mode;
+    if (mode === "disabled" && !window.confirm("Disable motors? The robot will go limp. Use Wake to recover.")) return;
     void performControl("motor", async () => {
-      const result = await apiJson(`/api/motors/set_mode/${encodeURIComponent(button.dataset.mode)}`, { method: "POST" });
-      selectMotorMode(button.dataset.mode);
+      const result = await apiJson(`/api/motors/set_mode/${encodeURIComponent(mode)}`, { method: "POST" });
+      selectMotorMode(mode);
       return result;
     });
   });
@@ -659,6 +672,12 @@
       return result;
     }).then((result) => {
       if (result == null) event.target.checked = !checked;
+      const hintEl = $("wobble-hint");
+      if (checked && result != null) {
+        hintEl.removeAttribute("hidden");
+      } else {
+        hintEl.setAttribute("hidden", "");
+      }
     });
   });
 
@@ -669,6 +688,86 @@
       button.textContent = "Play test sound";
     });
   });
+
+  async function pollDaemonStatus() {
+    if (state.daemonStatusInflight) return;
+    state.daemonStatusInflight = true;
+    try {
+      const status = await apiJson("/api/daemon/status");
+      const vpPower = $("vp-power");
+      const button = $("daemon-power");
+
+      vpPower.classList.remove("running", "starting", "disabled");
+
+      if (!status.manageable) {
+        vpPower.classList.add("disabled");
+        button.title = "Daemon managed on device";
+        button.setAttribute("aria-label", "Daemon managed on device");
+        button.disabled = true;
+      } else if (status.running) {
+        vpPower.classList.add("running");
+        button.title = "Stop daemon";
+        button.setAttribute("aria-label", "Stop daemon");
+        button.disabled = false;
+      } else if (status.status === "starting") {
+        vpPower.classList.add("starting");
+        button.title = "Daemon starting…";
+        button.setAttribute("aria-label", "Daemon starting…");
+        button.disabled = true;
+      } else {
+        button.title = "Start daemon";
+        button.setAttribute("aria-label", "Start daemon");
+        button.disabled = false;
+      }
+    } catch (_) {
+      // Silent fail — let the daemon online/offline mechanism handle it
+    } finally {
+      state.daemonStatusInflight = false;
+    }
+  }
+
+  $("daemon-power").addEventListener("click", async (event) => {
+    const button = event.target.closest("button");
+    if (!button || button.disabled) return;
+
+    const vpPower = $("vp-power");
+    const isRunning = vpPower.classList.contains("running");
+
+    if (isRunning) {
+      state.controlBusy = true;
+      $("control-status").textContent = "stopping";
+      try {
+        await apiJson("/api/daemon/stop", { method: "POST" });
+      } catch (error) {
+        $("control-status").textContent = "error";
+        $("control-hint").textContent = error.message || "Failed to stop daemon";
+        $("control-hint").className = "panel-hint error";
+      } finally {
+        state.controlBusy = false;
+        void pollDaemonStatus();
+      }
+    } else {
+      state.controlBusy = true;
+      $("control-status").textContent = "starting";
+      vpPower.classList.add("starting");
+      button.disabled = true;
+      try {
+        await apiJson("/api/daemon/start", { method: "POST" });
+      } catch (error) {
+        $("control-status").textContent = "error";
+        $("control-hint").textContent = error.message || "Failed to start daemon";
+        $("control-hint").className = "panel-hint error";
+        vpPower.classList.remove("starting");
+        button.disabled = false;
+      } finally {
+        state.controlBusy = false;
+      }
+    }
+  });
+
+  // Poll daemon status on the same cadence as the daemon connectivity check
+  void pollDaemonStatus();
+  setInterval(() => void pollDaemonStatus(), 1000);
 
   bindEventSource("/telemetry/state-stream", {
     "state-update": (event) => {

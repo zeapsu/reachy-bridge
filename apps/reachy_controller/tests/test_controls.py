@@ -53,27 +53,38 @@ async def test_daemon_proxy_control_helpers_use_expected_requests() -> None:
         {"volume": 37},
         {"file": "hello.wav"},
     ]
-    assert all(not request.content for request in (seen[0], seen[2], *seen[4:8], seen[9]))
+    assert all(
+        not request.content
+        for request in (seen[0], seen[2], *seen[4:8], seen[9])
+    )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("response", [httpx.Response(500), httpx.Response(200, content=b"bad")])
+@pytest.mark.parametrize(("status_code", "content"), [(500, b""), (200, b"bad")])
 async def test_daemon_proxy_control_helpers_return_none_for_bad_responses(
-    response: httpx.Response,
+    status_code: int,
+    content: bytes,
 ) -> None:
     proxy = DaemonProxy(
         "http://daemon.local:8000",
-        transport=httpx.MockTransport(lambda _: response),
+        transport=httpx.MockTransport(lambda _: httpx.Response(status_code, content=content)),
     )
     try:
         assert await proxy.get_speaker_volume() is None
+        assert await proxy.get_motor_status() is None
     finally:
         await proxy.close()
 
 
 class ControlProxy:
-    def __init__(self, result: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        result: dict[str, object] | None = None,
+        running_moves: list[str] | None = None,
+    ) -> None:
         self.result = {"ok": True} if result is None else result
+        self.running_moves = [] if running_moves is None else running_moves
+        self.acquire_media = AsyncMock(return_value=self.result)
         self.get_speaker_volume = AsyncMock(return_value=self.result)
         self.set_speaker_volume = AsyncMock(return_value=self.result)
         self.get_microphone_volume = AsyncMock(return_value=self.result)
@@ -111,11 +122,56 @@ async def test_control_routes_delegate_and_forward_request_bodies() -> None:
         ]
 
     assert all(response.status_code == 200 for response in responses)
-    assert all(response.json() == {"ok": True} for response in responses)
+    assert [response.json() for response in responses] == [{"ok": True}] * 10
     proxy.set_speaker_volume.assert_awaited_once_with(42)
     proxy.set_microphone_volume.assert_awaited_once_with(37)
     proxy.set_motor_mode.assert_awaited_once_with("gravity_compensation")
     proxy.play_sound.assert_awaited_once_with("hello.wav")
+
+
+@pytest.mark.asyncio
+async def test_wobble_enable_acquires_media_before_enabling() -> None:
+    proxy = ControlProxy()
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+    calls: list[str] = []
+
+    async def acquire_media() -> dict[str, object]:
+        calls.append("acquire")
+        return proxy.result
+
+    async def enable_wobbling() -> dict[str, object]:
+        calls.append("enable")
+        return proxy.result
+
+    proxy.acquire_media.side_effect = acquire_media
+    proxy.enable_wobbling.side_effect = enable_wobbling
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/media/wobbling/enable")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    proxy.acquire_media.assert_awaited_once()
+    proxy.enable_wobbling.assert_awaited_once()
+    assert calls == ["acquire", "enable"]
+
+
+@pytest.mark.asyncio
+async def test_wobble_disable_does_not_acquire_media() -> None:
+    proxy = ControlProxy()
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/media/wobbling/disable")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    proxy.acquire_media.assert_not_awaited()
+    proxy.disable_wobbling.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -181,3 +237,5 @@ async def test_motor_route_rejects_invalid_mode() -> None:
 
     assert response.status_code == 400
     proxy.set_motor_mode.assert_not_awaited()
+
+
