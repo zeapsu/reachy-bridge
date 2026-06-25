@@ -37,16 +37,12 @@ def _return_home(robot: ReachyMini, logger) -> None:
             body_yaw=0.0,
             duration=RETURN_HOME_DURATION_S,
         )
-    except (AttributeError, TypeError) as exc:
+    except Exception as exc:
         logger.warning("chat: graceful return-home unavailable; snapping home: %s", exc)
         try:
             robot.set_target(head=create_head_pose(degrees=True), body_yaw=0.0)
-        except (AttributeError, TypeError) as set_exc:
-            logger.warning("chat: failed to snap home on exit: %s", set_exc)
         except Exception as set_exc:
-            logger.debug("chat: failed to snap home on exit: %s", set_exc)
-    except Exception as exc:
-        logger.debug("chat: failed to return home on exit: %s", exc)
+            logger.warning("chat: failed to snap home on exit: %s", set_exc)
 
     try:
         robot.media.play_sound("go_sleep.wav")

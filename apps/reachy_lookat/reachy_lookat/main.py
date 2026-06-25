@@ -207,7 +207,7 @@ class ReachyLookat(ReachyMiniApp):
                 body_yaw=0.0,
                 duration=RETURN_HOME_DURATION_SECONDS,
             )
-        except (AttributeError, TypeError) as exc:
+        except Exception as exc:
             logger.warning(
                 "lookat: graceful return-home unavailable; snapping home: %s", exc
             )
@@ -216,12 +216,8 @@ class ReachyLookat(ReachyMiniApp):
                     head=create_head_pose(degrees=True),
                     body_yaw=0.0,
                 )
-            except (AttributeError, TypeError) as set_exc:
-                logger.warning("lookat: failed to snap home on exit: %s", set_exc)
             except Exception as set_exc:
-                logger.debug("lookat: failed to snap home on exit: %s", set_exc)
-        except Exception as exc:
-            logger.debug("lookat: failed to return home on exit: %s", exc)
+                logger.warning("lookat: failed to snap home on exit: %s", set_exc)
 
         try:
             reachy_mini.media.play_sound("go_sleep.wav")

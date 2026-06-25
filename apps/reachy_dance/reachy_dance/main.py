@@ -203,7 +203,7 @@ class ReachyDance(ReachyMiniApp):
                 body_yaw=0.0,
                 duration=RETURN_HOME_DURATION_S,
             )
-        except (AttributeError, TypeError) as exc:
+        except Exception as exc:
             logger.warning(
                 "dance: graceful return-home unavailable; snapping home: %s", exc
             )
@@ -213,12 +213,8 @@ class ReachyDance(ReachyMiniApp):
                     antennas=np.array([0.0, 0.0], dtype=float),
                     body_yaw=0.0,
                 )
-            except (AttributeError, TypeError) as set_exc:
-                logger.warning("dance: failed to snap home on exit: %s", set_exc)
             except Exception as set_exc:
-                logger.debug("dance: failed to snap home on exit: %s", set_exc)
-        except Exception as exc:
-            logger.debug("dance: failed to return home on exit: %s", exc)
+                logger.warning("dance: failed to snap home on exit: %s", set_exc)
 
         try:
             reachy_mini.media.play_sound("go_sleep.wav")
