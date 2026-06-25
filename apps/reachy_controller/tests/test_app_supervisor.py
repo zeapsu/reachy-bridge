@@ -18,9 +18,10 @@ from reachy_controller.app_supervisor import (
 
 
 @pytest.mark.asyncio
-async def test_start_app_success() -> None:
+async def test_start_app_success(tmp_path: Path) -> None:
     """Test successful app start."""
     supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
 
     # Mock subprocess.Popen
     mock_process = MagicMock()
@@ -120,9 +121,10 @@ async def test_start_app_unknown_app() -> None:
 
 
 @pytest.mark.asyncio
-async def test_single_app_lock() -> None:
+async def test_single_app_lock(tmp_path: Path) -> None:
     """Test that only one app can run at a time."""
     supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
 
     mock_process = MagicMock()
     mock_process.pid = 12345
@@ -164,13 +166,14 @@ async def test_stop_app_unknown() -> None:
 
 
 @pytest.mark.asyncio
-async def test_daemon_lock_check() -> None:
+async def test_daemon_lock_check(tmp_path: Path) -> None:
     """Test that start is refused if daemon reports lock held."""
     mock_proxy = AsyncMock()
     mock_proxy.get_robot_app_lock_status = AsyncMock(
         return_value={"state": "local_app", "holder_name": "other_app"}
     )
     supervisor = AppSupervisor(daemon_proxy=mock_proxy)
+    supervisor._workspace_root = tmp_path
 
     mock_process = MagicMock()
     mock_process.pid = 12345
@@ -657,9 +660,10 @@ def test_get_all_status_dead_adopted_app_resets_external() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_app_refuses_external_live_app() -> None:
+async def test_start_app_refuses_external_live_app(tmp_path: Path) -> None:
     """Test that start_app refuses to start if an external app is running."""
     supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
 
     # Mock psutil.process_iter to report a live app
     mock_proc = MagicMock()
@@ -686,9 +690,10 @@ async def test_start_app_refuses_external_live_app() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_app_succeeds_when_no_external_app() -> None:
+async def test_start_app_succeeds_when_no_external_app(tmp_path: Path) -> None:
     """Test that start_app succeeds when no external app is running."""
     supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
 
     mock_popen = MagicMock()
     mock_popen.pid = 9999

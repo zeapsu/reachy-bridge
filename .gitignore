@@ -40,4 +40,5 @@ Thumbs.db
 # --- Agent scratch / local QA artifacts (not committed) ---
 /.superpowers/
 /.playwright-mcp/
+/.reachy-logs/
 /issue23-*.png
