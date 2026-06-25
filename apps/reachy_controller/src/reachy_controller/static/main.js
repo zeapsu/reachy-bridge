@@ -12,6 +12,10 @@
     controlBusy: false,
     appBusy: false,
     mode: "schematic",
+    robotControlMode: null,
+    movePollTimer: null,
+    movePollInflight: false,
+    movePollActive: false,
     simLoop: null,
   };
 
@@ -101,13 +105,17 @@
 
     if (!online) {
       state.controlsLoaded = false;
+      stopMovePolling();
+      setPowerState("idle", "");
       $("control-status").textContent = "offline";
       $("control-hint").textContent = "Controls enable when the daemon is online.";
+      $("control-hint").className = "panel-hint";
       renderOfflinePose();
       renderEqualizer(false, "no audio signal");
     } else if (changed || !state.controlsLoaded) {
       $("control-status").textContent = "online";
       $("control-hint").textContent = "";
+      $("control-hint").className = "panel-hint";
       void loadControls();
     }
   }
@@ -117,7 +125,7 @@
       const element = $(id);
       if (element) element.disabled = !enabled;
     });
-    document.querySelectorAll("#motor-seg button").forEach((button) => {
+    document.querySelectorAll("#motor-seg button, #power-seg button").forEach((button) => {
       button.disabled = !enabled;
     });
   }
@@ -166,6 +174,9 @@
     const doa = payload.doa;
     const doaDeg = doaDegrees(doa);
     const speechDetected = Boolean(doa && typeof doa === "object" && doa.speech_detected === true);
+    if ("control_mode" in payload && payload.control_mode !== state.robotControlMode) {
+      selectMotorMode(payload.control_mode);
+    }
 
     $("r-rpy").textContent = [rollDeg, pitchDeg, yawDeg].map((value) => (value == null ? "—" : value.toFixed(0))).join("/");
     $("r-yaw").textContent = dash(bodyYaw, 2);
@@ -433,9 +444,88 @@
   }
 
   function selectMotorMode(mode) {
+    state.robotControlMode = typeof mode === "string" ? mode : null;
     document.querySelectorAll("#motor-seg button").forEach((button) => {
       button.classList.toggle("active", button.dataset.mode === mode);
     });
+    const hint = $("motor-hint");
+    if (hint) hint.hidden = mode !== "disabled";
+  }
+
+  function setPowerState(label, dotClass = "") {
+    $("power-label").textContent = label;
+    $("power-dot").className = `dot ${dotClass}`.trim();
+  }
+
+  function runningMoveNames(payload) {
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload.filter(Boolean).map(String);
+    if (typeof payload !== "object") return [];
+
+    const running = payload.running;
+    if (Array.isArray(running)) return running.filter(Boolean).map(String);
+    if (typeof running === "string") return running ? [running] : [];
+    if (running && typeof running === "object") {
+      const name = running.name || running.move || running.id;
+      return name ? [String(name)] : ["running"];
+    }
+    if (running === true) {
+      const name = payload.name || payload.move || payload.current_move;
+      return name ? [String(name)] : ["running"];
+    }
+
+    const current = payload.current_move || payload.move || payload.name;
+    if (current && running !== false) return [String(current)];
+    return [];
+  }
+
+  function stopMovePolling() {
+    state.movePollActive = false;
+    if (state.movePollTimer) {
+      window.clearTimeout(state.movePollTimer);
+      state.movePollTimer = null;
+    }
+  }
+
+  function scheduleMovePoll(delay = 500) {
+    if (!state.movePollActive) return;
+    if (state.movePollTimer) window.clearTimeout(state.movePollTimer);
+    state.movePollTimer = window.setTimeout(() => {
+      state.movePollTimer = null;
+      void pollMoveTick();
+    }, delay);
+  }
+
+  async function pollMoveTick() {
+    if (!state.movePollActive) return;
+    if (state.movePollInflight) {
+      scheduleMovePoll();
+      return;
+    }
+
+    state.movePollInflight = true;
+    try {
+      const payload = await apiJson("/api/move/running");
+      const running = runningMoveNames(payload);
+      if (running.length === 0) {
+        stopMovePolling();
+        setPowerState("idle", "ok");
+      } else {
+        setPowerState("moving…", "live");
+        scheduleMovePoll();
+      }
+    } catch (_) {
+      stopMovePolling();
+      setPowerState("unavailable", "error");
+    } finally {
+      state.movePollInflight = false;
+    }
+  }
+
+  function pollMoveRunning() {
+    state.movePollActive = true;
+    setPowerState("moving…", "live");
+    void pollMoveTick();
   }
 
   function debounce(fn, delay) {
@@ -459,6 +549,7 @@
       const result = await operation();
       $("control-status").textContent = "ok";
       $("control-hint").textContent = "";
+      $("control-hint").className = "panel-hint";
       return result;
     } catch (error) {
       $("control-status").textContent = "error";
@@ -645,9 +736,22 @@
   $("motor-seg").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-mode]");
     if (!button) return;
+    const mode = button.dataset.mode;
+    if (mode === "disabled" && !window.confirm("Disable motors? The robot will go limp. Use Wake to recover.")) return;
     void performControl("motor", async () => {
-      const result = await apiJson(`/api/motors/set_mode/${encodeURIComponent(button.dataset.mode)}`, { method: "POST" });
-      selectMotorMode(button.dataset.mode);
+      const result = await apiJson(`/api/motors/set_mode/${encodeURIComponent(mode)}`, { method: "POST" });
+      selectMotorMode(mode);
+      return result;
+    });
+  });
+
+  $("power-seg").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-move]");
+    if (!button) return;
+    const move = button.dataset.move;
+    void performControl("power", async () => {
+      const result = await apiJson(`/api/move/play/${encodeURIComponent(move)}`, { method: "POST" });
+      pollMoveRunning();
       return result;
     });
   });

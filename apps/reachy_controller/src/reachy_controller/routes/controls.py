@@ -12,6 +12,7 @@ from reachy_controller.daemon_proxy import DaemonProxy
 router = APIRouter(prefix="/api", tags=["controls"])
 
 VALID_MOTOR_MODES = {"enabled", "disabled", "gravity_compensation"}
+VALID_MOVES = {"wake_up", "goto_sleep"}
 
 
 class VolumeSetRequest(BaseModel):
@@ -73,6 +74,20 @@ async def set_motor_mode(mode: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Invalid motor mode")
     proxy: DaemonProxy = request.app.state.daemon_proxy
     return _result_or_unavailable(await proxy.set_motor_mode(mode))
+
+
+@router.post("/move/play/{move}")
+async def play_move(move: str, request: Request) -> dict[str, Any]:
+    if move not in VALID_MOVES:
+        raise HTTPException(status_code=400, detail="Invalid move")
+    proxy: DaemonProxy = request.app.state.daemon_proxy
+    return _result_or_unavailable(await proxy.play_move(move))
+
+
+@router.get("/move/running")
+async def get_move_running(request: Request) -> dict[str, Any]:
+    proxy: DaemonProxy = request.app.state.daemon_proxy
+    return _result_or_unavailable(await proxy.get_move_running())
 
 
 @router.post("/media/wobbling/enable")

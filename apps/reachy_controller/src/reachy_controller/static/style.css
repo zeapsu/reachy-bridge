@@ -765,6 +765,8 @@ input:disabled,
 .panel-hint.error { color: var(--coral); }
 .panel-hint.ok { color: var(--mint); }
 
+.power-state { display: flex; align-items: center; gap: 8px; font-size: 0.875rem; color: var(--muted); margin-top: 6px; }
+
 .control { margin-bottom: 16px; }
 .control:last-child { margin-bottom: 0; }
 

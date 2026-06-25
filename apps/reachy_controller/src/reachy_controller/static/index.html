@@ -135,6 +135,9 @@
           <div class="control"><label for="vol-spk">Speaker volume</label><div class="with-val"><input type="range" id="vol-spk" min="0" max="100" value="80"><span class="ctl-val" id="vol-spk-v">80</span></div></div>
           <div class="control"><label for="vol-mic">Microphone volume</label><div class="with-val"><input type="range" id="vol-mic" min="0" max="100" value="60"><span class="ctl-val" id="vol-mic-v">60</span></div></div>
           <div class="control"><label>Motor mode</label><div class="segmented" id="motor-seg"><button data-mode="enabled">Enabled</button><button data-mode="gravity_compensation">Gravity-comp</button><button data-mode="disabled">Disabled</button></div></div>
+          <div class="control"><label>Power</label><div class="segmented" id="power-seg"><button data-move="wake_up">Wake</button><button data-move="wake_up">Home</button><button data-move="goto_sleep">Sleep</button></div></div>
+          <div class="power-state"><span class="dot" id="power-dot"></span><span id="power-label">idle</span></div>
+          <p class="panel-hint" id="motor-hint" hidden>Robot is limp — press <b>Wake</b> to bring it home.</p>
           <div class="control toggle-row"><label for="wobble">Audio-reactive wobble</label><span class="switch"><input type="checkbox" id="wobble"><span class="slider"></span></span></div>
           <div class="control action"><button class="btn wide" id="testsound">Play test sound</button></div>
         </section>

@@ -72,7 +72,7 @@ async def test_daemon_proxy_state_stream_requests_doa(monkeypatch: pytest.Monkey
     seen_urls: list[str] = []
 
     class FakeWebSocket:
-        async def __aenter__(self) -> "FakeWebSocket":
+        async def __aenter__(self) -> FakeWebSocket:
             return self
 
         async def __aexit__(self, *_: object) -> None:

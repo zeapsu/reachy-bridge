@@ -31,11 +31,13 @@ async def test_daemon_proxy_control_helpers_use_expected_requests() -> None:
             await proxy.disable_wobbling(),
             await proxy.play_sound("hello.wav"),
             await proxy.play_test_sound(),
+            await proxy.play_move("wake_up"),
+            await proxy.get_move_running(),
         ]
     finally:
         await proxy.close()
 
-    assert results == [{"ok": True}] * 10
+    assert results == [{"ok": True}] * 12
     assert [(request.method, request.url.path) for request in seen] == [
         ("GET", "/api/volume/current"),
         ("POST", "/api/volume/set"),
@@ -47,26 +49,34 @@ async def test_daemon_proxy_control_helpers_use_expected_requests() -> None:
         ("POST", "/api/media/wobbling/disable"),
         ("POST", "/api/media/play_sound"),
         ("POST", "/api/volume/test-sound"),
+        ("POST", "/api/move/play/wake_up"),
+        ("GET", "/api/move/running"),
     ]
     assert [json.loads(request.content) for request in (seen[1], seen[3], seen[8])] == [
         {"volume": 42},
         {"volume": 37},
         {"file": "hello.wav"},
     ]
-    assert all(not request.content for request in (seen[0], seen[2], *seen[4:8], seen[9]))
+    assert all(
+        not request.content
+        for request in (seen[0], seen[2], *seen[4:8], seen[9], seen[10], seen[11])
+    )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("response", [httpx.Response(500), httpx.Response(200, content=b"bad")])
+@pytest.mark.parametrize(("status_code", "content"), [(500, b""), (200, b"bad")])
 async def test_daemon_proxy_control_helpers_return_none_for_bad_responses(
-    response: httpx.Response,
+    status_code: int,
+    content: bytes,
 ) -> None:
     proxy = DaemonProxy(
         "http://daemon.local:8000",
-        transport=httpx.MockTransport(lambda _: response),
+        transport=httpx.MockTransport(lambda _: httpx.Response(status_code, content=content)),
     )
     try:
         assert await proxy.get_speaker_volume() is None
+        assert await proxy.play_move("wake_up") is None
+        assert await proxy.get_move_running() is None
     finally:
         await proxy.close()
 
@@ -84,6 +94,8 @@ class ControlProxy:
         self.disable_wobbling = AsyncMock(return_value=self.result)
         self.play_sound = AsyncMock(return_value=self.result)
         self.play_test_sound = AsyncMock(return_value=self.result)
+        self.play_move = AsyncMock(return_value=self.result)
+        self.get_move_running = AsyncMock(return_value=self.result)
 
     async def close(self) -> None:
         return None
@@ -108,6 +120,8 @@ async def test_control_routes_delegate_and_forward_request_bodies() -> None:
             await client.post("/api/media/wobbling/disable"),
             await client.post("/api/media/play_sound", json={"file": "hello.wav"}),
             await client.post("/api/volume/test-sound"),
+            await client.post("/api/move/play/wake_up"),
+            await client.get("/api/move/running"),
         ]
 
     assert all(response.status_code == 200 for response in responses)
@@ -116,6 +130,8 @@ async def test_control_routes_delegate_and_forward_request_bodies() -> None:
     proxy.set_microphone_volume.assert_awaited_once_with(37)
     proxy.set_motor_mode.assert_awaited_once_with("gravity_compensation")
     proxy.play_sound.assert_awaited_once_with("hello.wav")
+    proxy.play_move.assert_awaited_once_with("wake_up")
+    proxy.get_move_running.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -132,6 +148,8 @@ async def test_control_routes_delegate_and_forward_request_bodies() -> None:
         ("POST", "/api/media/wobbling/disable", None),
         ("POST", "/api/media/play_sound", {"file": "hello.wav"}),
         ("POST", "/api/volume/test-sound", None),
+        ("POST", "/api/move/play/wake_up", None),
+        ("GET", "/api/move/running", None),
     ],
 )
 async def test_control_routes_map_offline_to_json_503(
@@ -181,3 +199,17 @@ async def test_motor_route_rejects_invalid_mode() -> None:
 
     assert response.status_code == 400
     proxy.set_motor_mode.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_move_play_route_rejects_invalid_move() -> None:
+    proxy = ControlProxy()
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/move/play/dance")
+
+    assert response.status_code == 400
+    proxy.play_move.assert_not_awaited()

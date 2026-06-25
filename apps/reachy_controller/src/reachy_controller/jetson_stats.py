@@ -86,7 +86,7 @@ def collect_host_metrics() -> dict[str, Any]:
 def _find_reachy_audio_card() -> int | None:
     """Return ALSA card number for Reachy Mini Audio by searching /proc/asound/cards."""
     try:
-        with open("/proc/asound/cards", "r") as f:
+        with open("/proc/asound/cards") as f:
             lines = f.readlines()
     except OSError:
         return None
