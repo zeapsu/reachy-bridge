@@ -42,10 +42,11 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
   a Mac-tunnel controller can't manage a remote daemon, so the button disables itself). The daemon is
   spawned detached (`start_new_session=True`) and kept out of the controller's `stop_all`, so it
   survives controller restarts. Authoritative on/off = the daemon's `:8000` reachability.
-  **Known limitation (#27):** the button can *Start* but **can't Stop a daemon it didn't launch** — an
-  externally-started (adopted) daemon's internal status is stuck `"stopped"`, so `stop()` short-circuits.
-  For on-device dev, manage the lifecycle from the shell instead: an operator-local `reachy-up` /
-  `reachy-down` zsh pair (in `~/.zshrc`, **not in-repo**) starts the daemon (Jetson wrapper) + controller
+  The button also **stops a daemon it adopted** (one started externally, not launched by this
+  controller): an adopted daemon's status is promoted `"stopped" → "running"` once it's reachable with a
+  live pid, so `stop()` reaches the adopted-pid kill path (#27, fixed). As an alternative for on-device
+  dev, you can manage the lifecycle from the shell: an operator-local `reachy-up` / `reachy-down` zsh pair
+  (in `~/.zshrc`, **not in-repo**) starts the daemon (Jetson wrapper) + controller
   (`REACHY_MANAGE_DAEMON=1`) detached, and tears them down by **listening port** (`:7861`, `:8000`) —
   never `pkill -f <launch string>` (it matches the function itself and self-kills the shell) — escalating
   SIGINT→SIGTERM→SIGKILL so the daemon releases torque first.
