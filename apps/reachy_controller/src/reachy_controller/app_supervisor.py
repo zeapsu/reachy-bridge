@@ -151,8 +151,8 @@ class AppSupervisor:
                 app.process = subprocess.Popen(
                     argv,
                     cwd=app_dir,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                     text=True,
                 )
                 app.pid = app.process.pid
@@ -184,25 +184,50 @@ class AppSupervisor:
         async with self._lock:
             app = self._apps[name]
 
-            if app.process is None or app.status == "stopped":
+            if app.status == "stopped":
                 return {"name": name, "status": "stopped"}
 
             try:
-                # Try SIGINT first (Ctrl-C)
-                app.process.send_signal(signal.SIGINT)
-                try:
-                    app.process.wait(timeout=3.0)
-                except subprocess.TimeoutExpired:
-                    # Escalate to SIGTERM
-                    app.process.terminate()
+                # Handle subprocess.Popen handle (started by this supervisor)
+                if app.process is not None:
+                    # Try SIGINT first (Ctrl-C)
+                    app.process.send_signal(signal.SIGINT)
                     try:
-                        app.process.wait(timeout=2.0)
+                        await asyncio.to_thread(app.process.wait, 3.0)
                     except subprocess.TimeoutExpired:
-                        # Final escalation: SIGKILL
-                        app.process.kill()
-                        app.process.wait(timeout=1.0)
-
-                logger.info(f"Stopped app {name}")
+                        # Escalate to SIGTERM
+                        app.process.terminate()
+                        try:
+                            await asyncio.to_thread(app.process.wait, 2.0)
+                        except subprocess.TimeoutExpired:
+                            # Final escalation: SIGKILL
+                            app.process.kill()
+                            await asyncio.to_thread(app.process.wait, 1.0)
+                    logger.info(f"Stopped app {name} (via subprocess handle)")
+                elif app.pid is not None:
+                    # Handle adopted orphaned process (reconcile_orphans set pid, process=None)
+                    try:
+                        proc = psutil.Process(app.pid)
+                        # Verify it's still the right process
+                        cmdline = " ".join(proc.cmdline() or [])
+                        if f"{name}.main" in cmdline:
+                            proc.send_signal(signal.SIGINT)
+                            try:
+                                await asyncio.to_thread(proc.wait, 3.0)
+                            except psutil.TimeoutExpired:
+                                proc.terminate()
+                                try:
+                                    await asyncio.to_thread(proc.wait, 2.0)
+                                except psutil.TimeoutExpired:
+                                    proc.kill()
+                                    await asyncio.to_thread(proc.wait, 1.0)
+                            logger.info(f"Stopped adopted app {name} (pid {app.pid})")
+                        else:
+                            logger.warning(
+                                f"PID {app.pid} no longer matches {name}.main (cmdline: {cmdline})"
+                            )
+                    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+                        logger.info(f"Adopted process {name} (pid {app.pid}) already exited: {e}")
             except Exception as e:
                 logger.error(f"Error stopping app {name}: {e}")
 
@@ -234,7 +259,7 @@ class AppSupervisor:
             return
 
         try:
-            exit_code = app.process.wait()
+            exit_code = await asyncio.to_thread(app.process.wait)
             async with self._lock:
                 if app.status == "running":
                     if exit_code == 0:
@@ -276,7 +301,26 @@ class AppSupervisor:
                     pass
 
     def get_all_status(self) -> list[dict[str, Any]]:
-        """Get status for all apps."""
+        """Get status for all apps. Reconciles dead processes to stopped state."""
+        # Liveness check: if a process is marked running but is dead, transition it to stopped
+        for app in self._apps.values():
+            if app.status == "running" and app.pid is not None:
+                try:
+                    proc = psutil.Process(app.pid)
+                    # Verify it's still the right process
+                    cmdline = " ".join(proc.cmdline() or [])
+                    if f"{app.module}.main" not in cmdline:
+                        # PID was reused by a different process; treat as dead
+                        logger.warning(
+                            f"PID {app.pid} no longer runs {app.module}.main; transition to stopped"
+                        )
+                        app.status = "stopped"
+                        app.pid = None
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    # Process is dead; transition to stopped
+                    logger.info(f"App {app.name} (pid {app.pid}) is dead; transition to stopped")
+                    app.status = "stopped"
+                    app.pid = None
         return [app.to_dict() for app in self._apps.values()]
 
     def get_status(self, name: str) -> dict[str, Any] | None:

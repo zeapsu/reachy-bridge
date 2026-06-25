@@ -91,6 +91,16 @@ Ubuntu 24.04 (GStreamer 1.24.2)**. The macOS section above is stale for this hos
   `/dev/ttyACM0` but dies with `Failed to start daemon: Permission denied`. Fix:
   `sudo usermod -aG dialout <user>` then **reboot** (restarting just the terminal does NOT refresh
   groups — verify with `grep Groups /proc/<daemon-pid>/status`; dialout gid is 20).
+- **DOA needs a udev rule for the mic-array USB device (RESOLVED 2026-06-24).** The daemon reads
+  Direction-of-Arrival via raw **libusb** control transfers on the XVF3800 (`Pollen Robotics Reachy
+  Mini Audio`, USB `38fb:1001`). Speaker/mic work without it (kernel USB-audio driver, `audio` group),
+  but the `/dev/bus/usb` node defaults to `root:root 0664`, so libusb DOA reads get
+  `usb.core.USBError: [Errno 13] Access denied` → `GET /api/state/full?with_doa=true` returns **500**,
+  and the controller's telemetry + audio-level streams then **falsely report the daemon offline**
+  (the daemon is fine; only DOA failed). Fix is checked in: `tools/udev/99-reachy-mini-doa.rules`
+  (grants `plugdev` access). Install: `sudo cp tools/udev/99-reachy-mini-doa.rules /etc/udev/rules.d/
+  && sudo udevadm control --reload-rules && sudo udevadm trigger` (recurs after an OS reinstall, like
+  the dialout fix). DOA reads are per-request, so no daemon restart needed once perms change.
 - **Speaker silence was a VOLUME/routing bug (RESOLVED 2026-06-23), not a pipeline issue.**
   The app always pushed valid audio; it was just inaudibly quiet. Two stacked causes:
   (1) **ALSA card numbering is NOT stable** — after the migration the Reachy USB audio moved

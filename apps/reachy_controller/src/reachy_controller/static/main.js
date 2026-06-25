@@ -104,7 +104,7 @@
       $("control-status").textContent = "offline";
       $("control-hint").textContent = "Controls enable when the daemon is online.";
       renderOfflinePose();
-      renderEqualizer(0, "no audio signal");
+      renderEqualizer(false, "no audio signal");
     } else if (changed || !state.controlsLoaded) {
       $("control-status").textContent = "online";
       $("control-hint").textContent = "";
@@ -389,15 +389,15 @@
   const eqState = new Array(NBARS).fill(0);
   const eqProfile = Array.from({ length: NBARS }, (_, index) => 0.24 + Math.sin((index / (NBARS - 1)) * Math.PI) * 0.76);
 
-  function renderEqualizer(level, label = null) {
-    const normalized = clamp(Number(level) || 0, 0, 1);
-    eqEl.classList.toggle("idle", normalized <= 0.01);
+  function renderEqualizer(speechDetected, label = null) {
+    const normalized = speechDetected ? 0.7 : 0.0;
+    eqEl.classList.toggle("idle", !speechDetected);
     bars.forEach((bar, index) => {
       const target = 5 + normalized * 86 * eqProfile[index];
       eqState[index] += (target - eqState[index]) * 0.42;
       bar.style.height = `${Math.max(4, eqState[index]).toFixed(1)}%`;
     });
-    $("eq-peak").textContent = label || (normalized <= 0.01 ? "no audio signal" : `${(-48 + normalized * 42).toFixed(0)} dB`);
+    $("eq-peak").textContent = label || (speechDetected ? "speech detected" : "no audio signal");
   }
 
   function syncSlider(id, value) {
@@ -690,15 +690,15 @@
   bindEventSource("/api/audio/levels-stream", {
     "audio-level": (event) => {
       const payload = readEventPayload(event);
-      const level = payload && finite(payload.level);
-      renderEqualizer(level ?? 0);
+      const speechDetected = payload && payload.speech_detected === true;
+      renderEqualizer(speechDetected);
     },
-    "daemon-unavailable": () => renderEqualizer(0, "no audio signal"),
-    error: () => renderEqualizer(0, "audio stream reconnecting"),
+    "daemon-unavailable": () => renderEqualizer(false, "no audio signal"),
+    error: () => renderEqualizer(false, "audio stream reconnecting"),
   });
 
   renderApps();
-  renderEqualizer(0, "no audio signal");
+  renderEqualizer(false, "no audio signal");
   setDaemonOnline(false);
   void pollAppsStatus();
   setInterval(() => void pollAppsStatus(), 1000);

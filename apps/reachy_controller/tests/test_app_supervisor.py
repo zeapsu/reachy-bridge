@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import psutil
 import pytest
 
 from reachy_controller.app_supervisor import AppSupervisor, LocalApp
@@ -172,3 +174,213 @@ def test_local_app_to_dict() -> None:
     assert data["pid"] == 12345
     assert data["status"] == "running"
     assert data["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_reap_app_uses_thread_for_wait() -> None:
+    """Test that _reap_app uses asyncio.to_thread for wait() call.
+
+    This ensures the event loop is not blocked while waiting for the child.
+    We verify this by checking that the reaper task completes quickly even
+    with a mocked slow wait() when wrapped in asyncio.to_thread.
+    """
+    supervisor = AppSupervisor()
+
+    # Create a mock process with a wait that records it was called
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+    wait_called = False
+
+    def slow_wait():
+        """Mock wait that returns quickly when called in a thread."""
+        nonlocal wait_called
+        wait_called = True
+        return 0  # Exit code
+
+    mock_process.wait = slow_wait
+
+    # Manually set up the app state
+    supervisor._apps["reachy_chat"].process = mock_process
+    supervisor._apps["reachy_chat"].status = "running"
+
+    # Run the reaper - should complete without blocking
+    reaper_task = asyncio.create_task(supervisor._reap_app("reachy_chat"))
+
+    # Give the reaper time to complete
+    await asyncio.wait_for(reaper_task, timeout=5.0)
+
+    # Verify wait was called and app transitioned to stopped
+    assert wait_called, "Process.wait() was not called"
+    assert supervisor._apps["reachy_chat"].status == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_stop_app_uses_thread_for_wait() -> None:
+    """Test that stop_app uses asyncio.to_thread for wait() calls.
+
+    This ensures the event loop is not blocked during shutdown sequence.
+    """
+    supervisor = AppSupervisor()
+
+    # Create a mock process with signal/wait tracking
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+    wait_called = False
+
+    def quick_wait(timeout):
+        """Mock wait that succeeds immediately."""
+        nonlocal wait_called
+        wait_called = True
+        return 0  # Exit code
+
+    mock_process.wait = quick_wait
+
+    # Manually set up the app state
+    supervisor._apps["reachy_chat"].process = mock_process
+    supervisor._apps["reachy_chat"].status = "running"
+
+    # Call stop_app - should complete without blocking the event loop
+    result = await supervisor.stop_app("reachy_chat")
+
+    # Verify the stop completed and signals were sent
+    assert result["status"] == "stopped"
+    assert wait_called, "Process.wait() was not called"
+    assert supervisor._apps["reachy_chat"].status == "stopped"
+    mock_process.send_signal.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_stop_adopted_orphan() -> None:
+    """Test stopping an adopted orphaned process (pid set, process=None).
+
+    This simulates a process that survived from a previous run and was
+    adopted by reconcile_orphans(). The supervisor must kill it even though
+    it has no subprocess.Popen handle.
+    """
+    supervisor = AppSupervisor()
+
+    # Mock psutil.Process for the orphaned process
+    mock_psutil_proc = MagicMock()
+    mock_psutil_proc.pid = 99999
+    mock_psutil_proc.cmdline.return_value = ["uv", "run", "python", "-m", "reachy_lookat.main"]
+
+    def quick_wait(timeout):
+        """Mock wait that succeeds immediately."""
+        return 0  # Exit code
+
+    mock_psutil_proc.wait = quick_wait
+
+    # Manually set up the adopted app state (process=None, pid set, status=running)
+    supervisor._apps["reachy_lookat"].process = None
+    supervisor._apps["reachy_lookat"].pid = 99999
+    supervisor._apps["reachy_lookat"].status = "running"
+
+    with patch("reachy_controller.app_supervisor.psutil.Process", return_value=mock_psutil_proc):
+        result = await supervisor.stop_app("reachy_lookat")
+
+    assert result["status"] == "stopped"
+    assert supervisor._apps["reachy_lookat"].status == "stopped"
+    assert supervisor._apps["reachy_lookat"].pid is None
+    # Verify signals were sent via psutil
+    mock_psutil_proc.send_signal.assert_called_once()
+
+
+def test_get_all_status_detects_dead_process() -> None:
+    """Test that get_all_status() detects and transitions dead processes to stopped."""
+    supervisor = AppSupervisor()
+
+    # Manually set up a "running" app with a PID that doesn't exist
+    supervisor._apps["reachy_dance"].pid = 99999
+    supervisor._apps["reachy_dance"].status = "running"
+
+    # Mock psutil.Process to raise NoSuchProcess
+    with patch(
+        "reachy_controller.app_supervisor.psutil.Process",
+        side_effect=psutil.NoSuchProcess(99999),
+    ):
+        status = supervisor.get_all_status()
+
+    # Find the reachy_dance entry in the returned status
+    dance_status = next(s for s in status if s["name"] == "reachy_dance")
+
+    # Verify it transitioned to stopped
+    assert dance_status["status"] == "stopped"
+    assert dance_status["pid"] is None
+    assert supervisor._apps["reachy_dance"].status == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_stop_adopted_orphan_with_escalation() -> None:
+    """Test escalation path for adopted orphan that ignores SIGINT and SIGTERM.
+
+    This is a regression test for the bug where psutil.TimeoutExpired was not
+    being caught (the code incorrectly caught subprocess.TimeoutExpired instead).
+    When the process ignores SIGINT, proc.wait() should raise psutil.TimeoutExpired,
+    triggering SIGTERM, which also fails, triggering SIGKILL.
+    """
+    supervisor = AppSupervisor()
+
+    # Mock psutil.Process for the orphaned process
+    mock_psutil_proc = MagicMock()
+    mock_psutil_proc.pid = 88888
+    mock_psutil_proc.cmdline.return_value = ["uv", "run", "python", "-m", "reachy_simon.main"]
+
+    # Track which signals were sent and call sequence
+    call_sequence = []
+    wait_call_count = [0]  # Use list to allow modification in nested function
+
+    def wait_with_timeout(timeout):
+        """Simulate process ignoring SIGINT and SIGTERM, then dying on SIGKILL."""
+        # First two calls (after SIGINT and SIGTERM) raise TimeoutExpired
+        # Third call (after SIGKILL) succeeds
+        wait_call_count[0] += 1
+        if wait_call_count[0] <= 2:
+            raise psutil.TimeoutExpired(88888)
+        return 0  # Exit code after SIGKILL
+
+    def send_signal(sig):
+        """Track signal sends."""
+        call_sequence.append(("signal", sig))
+
+    def terminate():
+        """Track terminate calls."""
+        call_sequence.append(("terminate",))
+
+    def kill():
+        """Track kill calls."""
+        call_sequence.append(("kill",))
+
+    mock_psutil_proc.wait = wait_with_timeout
+    mock_psutil_proc.send_signal = send_signal
+    mock_psutil_proc.terminate = terminate
+    mock_psutil_proc.kill = kill
+
+    # Manually set up the adopted app state
+    supervisor._apps["reachy_simon"].process = None
+    supervisor._apps["reachy_simon"].pid = 88888
+    supervisor._apps["reachy_simon"].status = "running"
+
+    with patch("reachy_controller.app_supervisor.psutil.Process", return_value=mock_psutil_proc):
+        result = await supervisor.stop_app("reachy_simon")
+
+    # Verify the stop completed successfully
+    assert result["status"] == "stopped"
+    assert supervisor._apps["reachy_simon"].status == "stopped"
+    assert supervisor._apps["reachy_simon"].pid is None
+
+    # Verify the full escalation path ran:
+    # 1. SIGINT sent
+    # 2. wait() raises TimeoutExpired (process still alive)
+    # 3. terminate() called (sends SIGTERM)
+    # 4. wait() raises TimeoutExpired again (process still alive)
+    # 5. kill() called (sends SIGKILL)
+    # 6. wait() succeeds (process dead)
+    assert ("signal", signal.SIGINT) in call_sequence, "SIGINT not sent"
+    assert ("terminate",) in call_sequence, "SIGTERM not sent"
+    assert ("kill",) in call_sequence, "SIGKILL not sent"
+
+    # Verify ordering: signal -> terminate -> kill
+    signal_idx = call_sequence.index(("signal", signal.SIGINT))
+    terminate_idx = call_sequence.index(("terminate",))
+    kill_idx = call_sequence.index(("kill",))
+    assert signal_idx < terminate_idx < kill_idx, "Escalation order is wrong"

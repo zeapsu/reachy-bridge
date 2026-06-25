@@ -29,7 +29,7 @@ async def _audio_level_stream_generator(proxy: DaemonProxy) -> AsyncGenerator[st
                 doa = state.get("doa")
                 speech_detected = isinstance(doa, dict) and doa.get("speech_detected") is True
                 payload = {
-                    "level": 0.7 if speech_detected else 0.0,
+                    "speech_detected": speech_detected,
                     "timestamp": datetime.now(UTC).isoformat(),
                 }
                 yield f"event: audio-level\ndata: {json.dumps(payload)}\n\n"
