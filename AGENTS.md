@@ -122,10 +122,39 @@ Ubuntu 24.04 (GStreamer 1.24.2)**. The macOS section above is stale for this hos
   (run with `REACHY_MINI_MEDIA_BACKEND=local`). Vision + mic + speaker verified working post-migration.
 
 ## Dev workflow
-Implementation is delegated to the **Codex CLI** (`codex exec --yolo "<prompt>"`) and verified by an
-Opus review loop (see the `codex-implement-review-loop` agent). If `codex exec` hits a
-credit/quota/auth limit, **pause** and re-auth (`codex logout`/`login`) — do not retry or hand-write
-the code. Diagnostic scripts live at the repo root (`mic_test.py`).
+Implementation flows through the **superpowers** skills: `brainstorming` → `writing-plans` (produces
+the plan doc + offers an execution choice) → an **execution scheme** → each task wrapped in
+`test-driven-development` + `requesting-code-review` → `finishing-a-development-branch`. Pick the
+execution scheme by task shape:
+
+| Task shape | Scheme | What it does |
+|---|---|---|
+| Multi-task plan, fast in-session iteration | **`subagent-driven-development`** *(default here)* | In-session controller dispatches a fresh implementer + reviewer subagent per task; two-stage review (per-task + final whole-branch); loops until clean. Specify the model per subagent — cheap for mechanical 1–2 file tasks, most capable for the final review. |
+| Plan execution, but no subagents / want a clean session | **`executing-plans`** | You execute the plan yourself in a separate session, sequential, with review checkpoints. Its own note: *"if subagents are available, use subagent-driven-development instead."* |
+| 2+ **independent** tasks, no shared state/order | **`dispatching-parallel-agents`** | Fan out one subagent per task in a single response → parallel. For unrelated debugging/investigation, **not** sequenced plan steps. |
+
+**Default architecture: `subagent-driven-development` orchestrating, dispatching
+`codex-implement-review-loop` as the per-task worker** — lean in-session orchestrator + cross-model
+gatekeeping + Claude-token offload. **Worker choice is orthogonal to the scheme:** any task-dispatching
+scheme can instead use a plain Claude subagent.
+
+`codex-implement-review-loop` (Agent tool) is a **single-task worker**. Pipeline:
+`orchestrator (Opus) → gatekeeper (Sonnet) → Codex (GPT-5.5, xhigh) → gatekeeper → orchestrator` —
+Codex implements + self-critiques via `codex exec --yolo -m gpt-5.5 -c model_reasoning_effort="xhigh"`,
+a **Sonnet** gatekeeper verifies every rubric item against real test output (≤2 rounds), and only the
+finalized result returns. Reach for it on **one gnarly, well-scoped task** where you want cross-model
+gatekeeping (GPT implementer + Sonnet reviewer don't share blind spots) and to offload the heavy
+implement/self-review tokens onto Codex's pool instead of Claude's.
+
+**Codex caveats:**
+- **Quota → notify + fall back to Claude.** A credit / quota / usage / billing / auth error makes the
+  codex-loop return `BLOCKED: codex credits` (the worker itself still never retries or hand-writes).
+  On that signal, **tell the user Codex is out of credits and continue the task with an all-Claude
+  worker** (plain Claude subagent / `subagent-driven-development`) — no re-auth or credit-pool switching.
+- **More moving parts** (external CLI, background exec, auth) = more failure surface than staying
+  in-Claude; for unattended / autonomous runs, prefer an all-Claude worker from the start.
+
+Diagnostic scripts live at the repo root (`mic_test.py`).
 
 ### Issue-driven workflow (adopted 2026-06-24)
 For multi-session work, **open GitHub issues for what's next** (a parent/epic issue + child issues)
