@@ -383,3 +383,289 @@ async def test_stop_adopted_orphan_with_escalation() -> None:
     terminate_idx = call_sequence.index(("terminate",))
     kill_idx = call_sequence.index(("kill",))
     assert signal_idx < terminate_idx < kill_idx, "Escalation order is wrong"
+
+
+def test_local_app_to_dict_includes_external() -> None:
+    """Test that to_dict() includes external field."""
+    app = LocalApp(
+        name="reachy_chat",
+        module="reachy_chat",
+        external=True,
+    )
+    data = app.to_dict()
+
+    assert "external" in data
+    assert data["external"] is True
+
+    # Test default value
+    app2 = LocalApp(
+        name="reachy_dance",
+        module="reachy_dance",
+    )
+    data2 = app2.to_dict()
+    assert data2["external"] is False
+
+
+def test_scan_for_live_apps_empty() -> None:
+    """Test _scan_for_live_apps with no matching processes."""
+    supervisor = AppSupervisor()
+
+    with patch("reachy_controller.app_supervisor.psutil.process_iter") as mock_iter:
+        mock_iter.return_value = []
+        result = supervisor._scan_for_live_apps()
+
+    assert result == {}
+
+
+def test_scan_for_live_apps_finds_multiple() -> None:
+    """Test _scan_for_live_apps finds multiple matching processes."""
+    supervisor = AppSupervisor()
+
+    # Mock two processes matching the pattern
+    mock_proc1 = MagicMock()
+    mock_proc1.info = {
+        "pid": 1001,
+        "cmdline": ["uv", "run", "python", "-m", "reachy_chat.main"],
+    }
+    mock_proc1.create_time.return_value = 1000.0
+
+    mock_proc2 = MagicMock()
+    mock_proc2.info = {
+        "pid": 1002,
+        "cmdline": ["uv", "run", "python", "-m", "reachy_dance.main"],
+    }
+    mock_proc2.create_time.return_value = 1001.0
+
+    with patch("reachy_controller.app_supervisor.psutil.process_iter") as mock_iter:
+        mock_iter.return_value = [mock_proc1, mock_proc2]
+        result = supervisor._scan_for_live_apps()
+
+    assert len(result) == 2
+    assert "reachy_chat" in result
+    assert "reachy_dance" in result
+    assert result["reachy_chat"] == (1001, 1000.0)
+    assert result["reachy_dance"] == (1002, 1001.0)
+
+
+def test_scan_for_live_apps_ignores_non_matching() -> None:
+    """Test that _scan_for_live_apps ignores non-matching cmdlines."""
+    supervisor = AppSupervisor()
+
+    # Mock a non-matching process
+    mock_proc = MagicMock()
+    mock_proc.info = {
+        "pid": 999,
+        "cmdline": ["python", "some_script.py"],
+    }
+
+    with patch("reachy_controller.app_supervisor.psutil.process_iter") as mock_iter:
+        mock_iter.return_value = [mock_proc]
+        result = supervisor._scan_for_live_apps()
+
+    assert result == {}
+
+
+def test_scan_for_live_apps_handles_no_such_process() -> None:
+    """Test that _scan_for_live_apps handles NoSuchProcess exception."""
+    supervisor = AppSupervisor()
+
+    # Mock a process that raises NoSuchProcess when accessed
+    mock_proc = MagicMock()
+    mock_proc.info = {
+        "pid": 888,
+        "cmdline": ["uv", "run", "python", "-m", "reachy_chat.main"],
+    }
+    mock_proc.create_time.side_effect = psutil.NoSuchProcess(888)
+
+    with patch("reachy_controller.app_supervisor.psutil.process_iter") as mock_iter:
+        mock_iter.return_value = [mock_proc]
+        result = supervisor._scan_for_live_apps()
+
+    # Should catch the exception and return empty dict
+    assert result == {}
+
+
+def test_scan_for_live_apps_handles_access_denied() -> None:
+    """Test that _scan_for_live_apps handles AccessDenied exception."""
+    supervisor = AppSupervisor()
+
+    # Mock a process that raises AccessDenied when accessed
+    mock_proc = MagicMock()
+    mock_proc.info = {
+        "pid": 777,
+        "cmdline": ["uv", "run", "python", "-m", "reachy_chat.main"],
+    }
+    mock_proc.create_time.side_effect = psutil.AccessDenied(777, "test")
+
+    with patch("reachy_controller.app_supervisor.psutil.process_iter") as mock_iter:
+        mock_iter.return_value = [mock_proc]
+        result = supervisor._scan_for_live_apps()
+
+    # Should catch the exception and return empty dict
+    assert result == {}
+
+
+def test_get_all_status_adopts_external_app() -> None:
+    """Test that get_all_status adopts an external running app."""
+    supervisor = AppSupervisor()
+
+    # Mock psutil.process_iter to report a live app
+    mock_proc = MagicMock()
+    mock_proc.info = {
+        "pid": 5000,
+        "cmdline": ["uv", "run", "python", "-m", "reachy_chat.main"],
+    }
+    mock_proc.create_time.return_value = 2000.0
+
+    with patch("reachy_controller.app_supervisor.psutil.process_iter") as mock_iter:
+        mock_iter.return_value = [mock_proc]
+
+        # First call should adopt the app
+        status = supervisor.get_all_status()
+        chat_status = next(s for s in status if s["name"] == "reachy_chat")
+
+        assert chat_status["status"] == "running"
+        assert chat_status["external"] is True
+        assert chat_status["pid"] == 5000
+        assert chat_status["start_time"] == 2000.0
+
+        # Second call (idempotent) should not change anything
+        status2 = supervisor.get_all_status()
+        chat_status2 = next(s for s in status2 if s["name"] == "reachy_chat")
+
+        assert chat_status2["status"] == "running"
+        assert chat_status2["external"] is True
+        assert chat_status2["pid"] == 5000
+
+
+def test_get_all_status_dead_adopted_app_resets_external() -> None:
+    """Test that a dead adopted app is marked stopped with external=False."""
+    supervisor = AppSupervisor()
+
+    # First, adopt a live external app
+    mock_proc = MagicMock()
+    mock_proc.info = {
+        "pid": 4000,
+        "cmdline": ["uv", "run", "python", "-m", "reachy_dance.main"],
+    }
+    mock_proc.create_time.return_value = 1500.0
+
+    with patch("reachy_controller.app_supervisor.psutil.process_iter") as mock_iter:
+        mock_iter.return_value = [mock_proc]
+        status1 = supervisor.get_all_status()
+        dance_status1 = next(s for s in status1 if s["name"] == "reachy_dance")
+        assert dance_status1["status"] == "running"
+        assert dance_status1["external"] is True
+
+    # Now simulate the process dying (empty process list)
+    with patch("reachy_controller.app_supervisor.psutil.process_iter") as mock_iter:
+        # Also mock psutil.Process to handle the liveness check
+        mock_iter.return_value = []
+        with patch("reachy_controller.app_supervisor.psutil.Process") as mock_psutil_proc:
+            # The process lookup should fail, marking it dead
+            mock_psutil_proc.side_effect = psutil.NoSuchProcess(4000)
+            status2 = supervisor.get_all_status()
+            dance_status2 = next(s for s in status2 if s["name"] == "reachy_dance")
+            assert dance_status2["status"] == "stopped"
+            assert dance_status2["external"] is False
+
+
+@pytest.mark.asyncio
+async def test_start_app_refuses_external_live_app() -> None:
+    """Test that start_app refuses to start if an external app is running."""
+    supervisor = AppSupervisor()
+
+    # Mock psutil.process_iter to report a live app
+    mock_proc = MagicMock()
+    mock_proc.info = {
+        "pid": 3000,
+        "cmdline": ["uv", "run", "python", "-m", "reachy_chat.main"],
+    }
+    mock_proc.create_time.return_value = 1000.0
+
+    mock_popen = MagicMock()
+    mock_popen.pid = 9999
+
+    with patch("reachy_controller.app_supervisor.psutil.process_iter") as mock_iter:
+        mock_iter.return_value = [mock_proc]
+        with patch("reachy_controller.app_supervisor.subprocess.Popen") as mock_popen_class:
+            mock_popen_class.return_value = mock_popen
+            result = await supervisor.start_app("reachy_chat")
+
+    # Should be refused
+    assert result["status"] == "refused"
+    assert "already running" in result.get("error", "").lower()
+    # Popen should NOT have been called
+    mock_popen_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_start_app_succeeds_when_no_external_app() -> None:
+    """Test that start_app succeeds when no external app is running."""
+    supervisor = AppSupervisor()
+
+    mock_popen = MagicMock()
+    mock_popen.pid = 9999
+
+    with patch("reachy_controller.app_supervisor.psutil.process_iter") as mock_iter:
+        mock_iter.return_value = []  # No live apps
+        with patch("reachy_controller.app_supervisor.subprocess.Popen") as mock_popen_class:
+            mock_popen_class.return_value = mock_popen
+            result = await supervisor.start_app("reachy_chat")
+
+    # Should succeed
+    assert result["status"] == "running"
+    assert result["pid"] == 9999
+    # Popen should have been called
+    mock_popen_class.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_stop_app_can_kill_external_app() -> None:
+    """Test that stop_app can kill a scan-adopted external app (no Popen handle)."""
+    supervisor = AppSupervisor()
+
+    # First, adopt an external app
+    mock_proc = MagicMock()
+    mock_proc.info = {
+        "pid": 2000,
+        "cmdline": ["uv", "run", "python", "-m", "reachy_simon.main"],
+    }
+    mock_proc.create_time.return_value = 900.0
+
+    with patch("reachy_controller.app_supervisor.psutil.process_iter") as mock_iter:
+        mock_iter.return_value = [mock_proc]
+        supervisor.get_all_status()  # Adopt the app
+
+    # Verify it's adopted
+    simon_app = supervisor._apps["reachy_simon"]
+    assert simon_app.status == "running"
+    assert simon_app.process is None  # No Popen handle
+    assert simon_app.pid == 2000
+    assert simon_app.external is True
+
+    # Now stop it
+    with patch("reachy_controller.app_supervisor.psutil.Process") as mock_psutil_proc:
+        mock_proc_instance = MagicMock()
+        mock_proc_instance.cmdline.return_value = [
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "reachy_simon.main",
+        ]
+
+        def mock_wait(timeout):
+            """Mock wait that returns immediately."""
+            return 0
+
+        mock_proc_instance.wait = mock_wait
+        mock_proc_instance.send_signal = MagicMock()
+        mock_psutil_proc.return_value = mock_proc_instance
+
+        result = await supervisor.stop_app("reachy_simon")
+
+    assert result["status"] == "stopped"
+    assert simon_app.status == "stopped"
+    assert simon_app.external is False
+    assert simon_app.pid is None
