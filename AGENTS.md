@@ -36,6 +36,12 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
 - `reachy_controller` — FastAPI + **vanilla-JS, no build step** "Liquid Glass" web control console
   (binds `127.0.0.1:7861`). Talks to the daemon over HTTP/WS and **never** instantiates `ReachyMini()`.
   Don't add a framework/bundler. Visual QA is done on a browser-capable machine (see Dev workflow).
+  A **daemon power button** in the viewport inset (`#vp-power`) starts/stops the **daemon process**
+  (`DaemonSupervisor` + `/api/daemon/{status,start,stop}`) so you never have to SSH in to start it —
+  it manages a *process*, still never the robot. Gated by `REACHY_MANAGE_DAEMON=1` (**on-device only**;
+  a Mac-tunnel controller can't manage a remote daemon, so the button disables itself). The daemon is
+  spawned detached (`start_new_session=True`) and kept out of the controller's `stop_all`, so it
+  survives controller restarts. Authoritative on/off = the daemon's `:8000` reachability.
 
 ## Hard-won gotchas (macOS / Apple Silicon) — READ before debugging
 - **No MuJoCo GUI** on this Mac → always use `--sim --headless` for simulation. Headless is enough
@@ -132,6 +138,12 @@ git history + memory replace it).
 ### reachy_controller UI gotchas
 - **Visual QA runs on a browser-capable machine** (Mac/laptop w/ Playwright), not the headless Jetson.
   Serve via `uv run python -m reachy_controller.main`; daemon-offline panels are the expected state.
+  A **local, gitignored** Mac dev helper (`*.local.sh`, e.g. `dev_controller_mac.local.sh`) opens an
+  SSH tunnel to the Jetson daemon and runs the controller locally for UI/visual QA (#22). **Caveat:**
+  to QA the *on-device daemon power button*, the controller must run **on the Jetson** with
+  `REACHY_MANAGE_DAEMON=1` (a local controller only manages a local daemon); for that, tunnel the
+  **controller** port instead (`ssh -N -L 7870:localhost:7861 <jetson>`, a distinct local port to
+  dodge a local :7861) and point the browser at `:7870`.
 - **Never put `filter: url(#…)` (feDisplacementMap) on `.vp-stage`** — it warps the live camera/sim/
   schematic *content* (the original "distortion" bug). Liquid-glass refraction belongs on the panel
   **backdrop** (`backdrop-filter: url(#lg-refract)`, behind `@supports`) — Chromium-only, with a
