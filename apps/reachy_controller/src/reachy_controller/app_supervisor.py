@@ -294,7 +294,7 @@ class AppSupervisor:
         """Scan process table for live apps matching known patterns.
 
         Returns dict mapping app_name to (pid, create_time).
-        Single-pass O(procs) iteration; first match per process wins.
+        Single-pass O(procs) iteration; first matching process per app wins.
         Catches psutil.NoSuchProcess/AccessDenied per-process.
         """
         found: dict[str, tuple[int, float]] = {}
@@ -358,6 +358,10 @@ class AppSupervisor:
         found = self._scan_for_live_apps()
         for name, (pid, create_time) in found.items():
             app = self._apps[name]
+            # Adopt when stopped (the common case, after the liveness pass above) OR
+            # when running-but-pid-less (a reconcile_orphans handle that lost its pid).
+            # Keep both conditions: the `pid is None` arm is the recovery path for that
+            # second case and must not be dropped as "redundant".
             if app.status == "stopped" or app.pid is None:
                 app.pid = pid
                 app.status = "running"
