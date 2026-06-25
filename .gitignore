@@ -16,6 +16,7 @@ env/
 # --- Secrets & local config (keep the examples) ---
 .env
 *.local.env
+*.local.sh
 !.env.example
 
 # --- Model / data caches (e.g. faster-whisper downloads) ---
