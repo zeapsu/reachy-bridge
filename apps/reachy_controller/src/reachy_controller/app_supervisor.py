@@ -294,14 +294,18 @@ class AppSupervisor:
            the lock before grace elapses, promote immediately.
         """
         app = self._apps[name]
-        boot_start_time = app.start_time
-        if boot_start_time is None:
+        if app.start_time is None:
             logger.error(f"_monitor_readiness for {name}: start_time is None")
             return
 
+        # Measure the boot-grace window with a monotonic clock, not wall-clock
+        # start_time: an NTP step / DST change mid-boot must not distort `elapsed`.
+        # (app.start_time stays wall-clock — the frontend reads it as a timestamp.)
+        start_mono = time.monotonic()
+
         try:
             while True:
-                elapsed = time.time() - boot_start_time
+                elapsed = time.monotonic() - start_mono
 
                 # Try early-promote via daemon lock (best-effort, won't fire for us)
                 if self.daemon_proxy is not None:
