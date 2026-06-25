@@ -734,7 +734,6 @@
     const isRunning = vpPower.classList.contains("running");
 
     if (isRunning) {
-      if (!window.confirm("Stop the daemon? The robot will go limp.")) return;
       state.controlBusy = true;
       $("control-status").textContent = "stopping";
       try {
