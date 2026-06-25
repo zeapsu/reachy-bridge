@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import psutil
@@ -32,6 +33,81 @@ async def test_start_app_success() -> None:
     assert result["name"] == "reachy_chat"
     assert result["pid"] == 12345
     assert supervisor._apps["reachy_chat"].status == "running"
+
+
+@pytest.mark.asyncio
+async def test_start_app_creates_log_file(tmp_path: Path) -> None:
+    """Test that start_app creates a log file and passes it to Popen."""
+    supervisor = AppSupervisor()
+    # Monkeypatch workspace root to temp directory
+    supervisor._workspace_root = tmp_path
+
+    # Mock subprocess.Popen
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+    popen_kwargs = {}
+
+    def capture_popen(*args: object, **kwargs: object) -> MagicMock:
+        """Capture Popen kwargs to inspect stdout."""
+        popen_kwargs.update(kwargs)
+        return mock_process
+
+    with patch("reachy_controller.app_supervisor.subprocess.Popen", side_effect=capture_popen):
+        result = await supervisor.start_app("reachy_chat")
+
+    # Verify start succeeded
+    assert result["status"] == "running"
+
+    # Verify log file exists
+    log_file = tmp_path / ".reachy-logs" / "reachy_chat.log"
+    assert log_file.exists(), f"Log file not created at {log_file}"
+
+    # Verify stdout was a file handle (not DEVNULL)
+    assert popen_kwargs.get("stdout") is not None
+    assert popen_kwargs["stdout"] != -3  # -3 is DEVNULL
+    assert hasattr(popen_kwargs["stdout"], "close"), "stdout should be a file handle"
+
+    # Verify stderr is redirected to stdout
+    assert popen_kwargs["stderr"] == -2  # -2 is subprocess.STDOUT
+
+    # Verify log_handle is stored on the app
+    app = supervisor._apps["reachy_chat"]
+    assert app.log_handle is not None
+    assert hasattr(app.log_handle, "close")
+
+    # Close the handle to avoid resource leak in test
+    if app.log_handle:
+        app.log_handle.close()
+
+
+@pytest.mark.asyncio
+async def test_stop_app_closes_log_handle(tmp_path: Path) -> None:
+    """Test that stop_app closes the log file handle."""
+    supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
+
+    # Mock subprocess.Popen
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+
+    with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
+        await supervisor.start_app("reachy_chat")
+
+    # Verify log handle is open
+    app = supervisor._apps["reachy_chat"]
+    assert app.log_handle is not None
+    log_handle = app.log_handle
+    assert not log_handle.closed
+
+    # Stop the app
+    result = await supervisor.stop_app("reachy_chat")
+
+    # Verify stop succeeded
+    assert result["status"] == "stopped"
+
+    # Verify log handle is closed
+    assert log_handle.closed
+    assert app.log_handle is None
 
 
 @pytest.mark.asyncio

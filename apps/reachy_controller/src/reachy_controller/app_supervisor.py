@@ -11,7 +11,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import psutil
 
@@ -46,6 +46,7 @@ class LocalApp:
     error: str | None = None
     start_time: float | None = None
     external: bool = False
+    log_handle: TextIO | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to serializable dict."""
@@ -160,12 +161,26 @@ class AppSupervisor:
             app_dir = self._workspace_root / "apps" / name
             argv = ["uv", "run", "python", "-m", f"{name}.main"]
 
+            # Open log file for app output
+            log_dir = self._workspace_root / ".reachy-logs"
+            try:
+                log_dir.mkdir(parents=True, exist_ok=True)
+                log_file_path = log_dir / f"{name}.log"
+                app.log_handle = open(log_file_path, "w")
+                stdout_target = app.log_handle
+                stderr_target = subprocess.STDOUT
+            except Exception as e:
+                logger.warning(f"Failed to open log file for {name}: {e}, falling back to DEVNULL")
+                app.log_handle = None
+                stdout_target = subprocess.DEVNULL
+                stderr_target = subprocess.DEVNULL
+
             try:
                 app.process = subprocess.Popen(
                     argv,
                     cwd=app_dir,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=stdout_target,
+                    stderr=stderr_target,
                     text=True,
                 )
                 app.pid = app.process.pid
@@ -187,6 +202,13 @@ class AppSupervisor:
                 app.status = "error"
                 app.error = str(e)
                 logger.error(f"Failed to start app {name}: {e}")
+                # Close log handle if it's open
+                if app.log_handle is not None:
+                    try:
+                        app.log_handle.close()
+                    except Exception as close_err:
+                        logger.error(f"Failed to close log handle for {name}: {close_err}")
+                    app.log_handle = None
                 return {"error": str(e), "name": name, "status": "error"}
 
     async def stop_app(self, name: str) -> dict[str, Any]:
@@ -249,6 +271,15 @@ class AppSupervisor:
             app.pid = None
             app.process = None
             app.external = False
+
+            # Close log handle if it's open
+            if app.log_handle is not None:
+                try:
+                    app.log_handle.close()
+                except Exception as close_err:
+                    logger.error(f"Failed to close log handle for {name}: {close_err}")
+                app.log_handle = None
+
             if app.uses_camera:
                 logger.info(f"Camera available after stopping app {name}")
             return {"name": name, "status": "stopped"}
@@ -265,6 +296,13 @@ class AppSupervisor:
                 finally:
                     app.status = "stopped"
                     app.process = None
+                    # Close log handle if it's open
+                    if app.log_handle is not None:
+                        try:
+                            app.log_handle.close()
+                        except Exception as close_err:
+                            logger.error(f"Failed to close log handle for {app.name}: {close_err}")
+                        app.log_handle = None
 
     async def _reap_app(self, name: str) -> None:
         """Monitor a child process and update status when it exits."""
@@ -291,6 +329,13 @@ class AppSupervisor:
             logger.error(f"Reaper error for {name}: {e}")
         finally:
             self._reaper_tasks.pop(name, None)
+            # Close log handle if it's open
+            if app.log_handle is not None:
+                try:
+                    app.log_handle.close()
+                except Exception as close_err:
+                    logger.error(f"Failed to close log handle for {name}: {close_err}")
+                app.log_handle = None
 
     def _scan_for_live_apps(self) -> dict[str, tuple[int, float]]:
         """Scan process table for live apps matching known patterns.
