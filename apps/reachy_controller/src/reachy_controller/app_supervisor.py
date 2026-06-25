@@ -43,6 +43,7 @@ class LocalApp:
     status: str = "stopped"  # "stopped", "running", "stopping", "error"
     error: str | None = None
     start_time: float | None = None
+    external: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to serializable dict."""
@@ -54,6 +55,7 @@ class LocalApp:
             "status": self.status,
             "error": self.error,
             "start_time": self.start_time,
+            "external": self.external,
         }
 
 
@@ -120,6 +122,15 @@ class AppSupervisor:
 
         async with self._lock:
             app = self._apps[name]
+
+            # Check for external live app (scan-based)
+            found = self._scan_for_live_apps()
+            if name in found:
+                return {
+                    "error": f"App {name} is already running (external)",
+                    "name": name,
+                    "status": "refused",
+                }
 
             # Refuse if any app is already running
             any_running = any(a.status == "running" for a in self._apps.values())
@@ -235,6 +246,7 @@ class AppSupervisor:
             app.error = None
             app.pid = None
             app.process = None
+            app.external = False
             if app.uses_camera:
                 logger.info(f"Camera available after stopping app {name}")
             return {"name": name, "status": "stopped"}
@@ -264,9 +276,11 @@ class AppSupervisor:
                 if app.status == "running":
                     if exit_code == 0:
                         app.status = "stopped"
+                        app.external = False
                         app.error = None
                     else:
                         app.status = "error"
+                        app.external = False
                         app.error = f"Exited with code {exit_code}"
                     logger.info(
                         f"App {name} exited (code {exit_code}, status {app.status})"
@@ -276,32 +290,48 @@ class AppSupervisor:
         finally:
             self._reaper_tasks.pop(name, None)
 
+    def _scan_for_live_apps(self) -> dict[str, tuple[int, float]]:
+        """Scan process table for live apps matching known patterns.
+
+        Returns dict mapping app_name to (pid, create_time).
+        Single-pass O(procs) iteration; first matching process per app wins.
+        Catches psutil.NoSuchProcess/AccessDenied per-process.
+        """
+        found: dict[str, tuple[int, float]] = {}
+        for proc in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                cmdline = proc.info.get("cmdline") or []
+                # Check if this process matches the pattern: uv run python -m <name>.main
+                if (
+                    len(cmdline) >= 5
+                    and cmdline[0:4] == ["uv", "run", "python", "-m"]
+                ):
+                    # Check which app this matches (first match wins)
+                    for app_name in self.APPS:
+                        if f"{app_name}.main" in " ".join(cmdline):
+                            # Only record if not already found (first match per app)
+                            if app_name not in found:
+                                found[app_name] = (proc.info.get("pid"), proc.create_time())
+                            break
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # Process disappeared or we can't access it; continue scanning
+                pass
+        return found
+
     def reconcile_orphans(self) -> None:
         """Adopt orphaned app processes on startup."""
-        for name in self.APPS:
+        found = self._scan_for_live_apps()
+        for name, (pid, create_time) in found.items():
             app = self._apps[name]
-            # Scan for processes matching "uv run python -m <name>.main"
-            for proc in psutil.process_iter(["pid", "cmdline"]):
-                try:
-                    cmdline = proc.info.get("cmdline") or []
-                    if (
-                        len(cmdline) >= 5
-                        and cmdline[0] == "uv"
-                        and cmdline[1] == "run"
-                        and cmdline[2] == "python"
-                        and cmdline[3] == "-m"
-                        and f"{name}.main" in " ".join(cmdline)
-                    ):
-                        app.process = None  # Don't keep subprocess.Popen handle
-                        app.pid = proc.info.get("pid")
-                        app.status = "running"
-                        logger.info(f"Reconciled orphaned app {name} (pid {app.pid})")
-                        break
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
+            app.process = None  # Don't keep subprocess.Popen handle
+            app.pid = pid
+            app.status = "running"
+            app.start_time = create_time
+            app.external = True
+            logger.info(f"Reconciled orphaned app {name} (pid {pid})")
 
     def get_all_status(self) -> list[dict[str, Any]]:
-        """Get status for all apps. Reconciles dead processes to stopped state."""
+        """Get status for all apps. Reconciles dead processes and adopts live external apps."""
         # Liveness check: if a process is marked running but is dead, transition it to stopped
         for app in self._apps.values():
             if app.status == "running" and app.pid is not None:
@@ -315,12 +345,31 @@ class AppSupervisor:
                             f"PID {app.pid} no longer runs {app.module}.main; transition to stopped"
                         )
                         app.status = "stopped"
+                        app.external = False
                         app.pid = None
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     # Process is dead; transition to stopped
                     logger.info(f"App {app.name} (pid {app.pid}) is dead; transition to stopped")
                     app.status = "stopped"
+                    app.external = False
                     app.pid = None
+
+        # Adoption pass: scan for any stopped/pid-less app that is live in process table
+        found = self._scan_for_live_apps()
+        for name, (pid, create_time) in found.items():
+            app = self._apps[name]
+            # Adopt when stopped (the common case, after the liveness pass above) OR
+            # when running-but-pid-less (a reconcile_orphans handle that lost its pid).
+            # Keep both conditions: the `pid is None` arm is the recovery path for that
+            # second case and must not be dropped as "redundant".
+            if app.status == "stopped" or app.pid is None:
+                app.pid = pid
+                app.status = "running"
+                app.process = None
+                app.start_time = create_time
+                app.external = True
+                logger.info(f"Adopted external app {name} (pid {pid})")
+
         return [app.to_dict() for app in self._apps.values()]
 
     def get_status(self, name: str) -> dict[str, Any] | None:

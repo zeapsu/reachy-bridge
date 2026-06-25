@@ -271,6 +271,7 @@
       const statusClass = isRunning ? "running" : isError ? "error" : "";
       const uptime = isRunning && app.start_time ? ` · ${formatUptime(Date.now() / 1000 - Number(app.start_time))}` : "";
       const pid = isRunning && app.pid ? ` · pid ${app.pid}` : "";
+      const external = isRunning && app.external ? ` · external` : "";
       const error = app.error ? `<br><span class="err">${escapeHtml(app.error)}</span>` : "";
       const button = isRunning
         ? `<button class="btn stop" data-app="${name}" data-action="stop" ${state.appBusy ? "disabled" : ""}>Stop</button>`
@@ -278,7 +279,7 @@
       return `<div class="app-card ${statusClass}">
         <span class="dot ${isRunning ? "live" : isError ? "error" : ""}"></span>
         <div><div class="app-name">${escapeHtml(name)}</div>
-        <div class="app-state">${isRunning ? `<span class="up">running</span>${pid}${uptime}` : escapeHtml(app.status || "stopped")}${error}</div></div>
+        <div class="app-state">${isRunning ? `<span class="up">running</span>${external}${pid}${uptime}` : escapeHtml(app.status || "stopped")}${error}</div></div>
         ${button}
       </div>`;
     }).join("");
