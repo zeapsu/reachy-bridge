@@ -10,6 +10,8 @@ import psutil
 import pytest
 
 from reachy_controller.app_supervisor import (
+    _APP_BOOT_GRACE_S,
+    _APP_READINESS_POLL_S,
     _STOP_SIGINT_GRACE_S,
     AppSupervisor,
     LocalApp,
@@ -28,10 +30,10 @@ async def test_start_app_success() -> None:
     with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
         result = await supervisor.start_app("reachy_chat")
 
-    assert result["status"] == "running"
+    assert result["status"] == "loading"
     assert result["name"] == "reachy_chat"
     assert result["pid"] == 12345
-    assert supervisor._apps["reachy_chat"].status == "running"
+    assert supervisor._apps["reachy_chat"].status == "loading"
 
 
 @pytest.mark.asyncio
@@ -54,7 +56,7 @@ async def test_single_app_lock() -> None:
     with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
         # Start first app
         result1 = await supervisor.start_app("reachy_chat")
-        assert result1["status"] == "running"
+        assert result1["status"] == "loading"
 
         # Try to start second app
         result2 = await supervisor.start_app("reachy_dance")
@@ -71,7 +73,8 @@ async def test_stop_app() -> None:
     mock_process.pid = 12345
 
     with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
-        await supervisor.start_app("reachy_chat")
+        result_start = await supervisor.start_app("reachy_chat")
+        assert result_start["status"] == "loading"
         result = await supervisor.stop_app("reachy_chat")
 
     assert result["status"] == "stopped"
@@ -624,7 +627,7 @@ async def test_start_app_succeeds_when_no_external_app() -> None:
             result = await supervisor.start_app("reachy_chat")
 
     # Should succeed
-    assert result["status"] == "running"
+    assert result["status"] == "loading"
     assert result["pid"] == 9999
     # Popen should have been called
     mock_popen_class.assert_called_once()
@@ -679,3 +682,155 @@ async def test_stop_app_can_kill_external_app() -> None:
     assert simon_app.status == "stopped"
     assert simon_app.external is False
     assert simon_app.pid is None
+
+
+@pytest.mark.asyncio
+async def test_readiness_monitor_promotes_after_grace() -> None:
+    """Test that readiness monitor promotes app from loading to running after grace timeout."""
+    supervisor = AppSupervisor()
+
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+
+    with patch(
+        "reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process
+    ), patch("reachy_controller.app_supervisor._APP_BOOT_GRACE_S", 0.05):
+        # Patch asyncio.to_thread to prevent the reaper from consuming the event loop
+        async def mock_to_thread(func, *args):
+            # Just sleep forever for the reaper's wait call
+            if "wait" in str(func):
+                await asyncio.sleep(100)
+            return 0
+
+        with patch("reachy_controller.app_supervisor.asyncio.to_thread", side_effect=mock_to_thread):
+            result = await supervisor.start_app("reachy_chat")
+            assert result["status"] == "loading"
+
+            # Wait for the readiness monitor to promote
+            monitor_task = supervisor._readiness_tasks.get("reachy_chat")
+            assert monitor_task is not None
+
+            # Wait for the monitor task to complete
+            await asyncio.wait_for(monitor_task, timeout=5.0)
+
+            # Check that status was promoted to running
+            assert supervisor._apps["reachy_chat"].status == "running"
+
+            # Clean up the reaper task
+            reaper_task = supervisor._reaper_tasks.get("reachy_chat")
+            if reaper_task:
+                reaper_task.cancel()
+                try:
+                    await reaper_task
+                except asyncio.CancelledError:
+                    pass
+
+
+@pytest.mark.asyncio
+async def test_readiness_monitor_early_promote_via_lock() -> None:
+    """Test that readiness monitor promotes early when daemon reports lock held by this app."""
+    supervisor = AppSupervisor()
+
+    # Create a mock daemon proxy that reports lock held by reachy_chat
+    mock_proxy = AsyncMock()
+
+    # Return free for the start check, then local_app for the monitor check
+    async def lock_status_side_effect():
+        if not hasattr(lock_status_side_effect, "call_count"):
+            lock_status_side_effect.call_count = 0
+        lock_status_side_effect.call_count += 1
+
+        if lock_status_side_effect.call_count == 1:
+            # First call (during start_app) should return free
+            return {"state": "free"}
+        else:
+            # Subsequent calls (during monitor) should return local_app
+            return {"state": "local_app", "holder_name": "reachy_chat"}
+
+    mock_proxy.get_robot_app_lock_status = AsyncMock(
+        side_effect=lock_status_side_effect
+    )
+
+    supervisor.daemon_proxy = mock_proxy
+
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+
+    with patch(
+        "reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process
+    ), patch("reachy_controller.app_supervisor._APP_BOOT_GRACE_S", 10.0):
+        # Patch asyncio.to_thread to prevent the reaper from blocking
+        async def mock_to_thread(func, *args):
+            if "wait" in str(func):
+                await asyncio.sleep(100)
+            return 0
+
+        with patch("reachy_controller.app_supervisor.asyncio.to_thread", side_effect=mock_to_thread):
+            result = await supervisor.start_app("reachy_chat")
+            assert result["status"] == "loading"
+
+            # Wait for the readiness monitor to promote
+            monitor_task = supervisor._readiness_tasks.get("reachy_chat")
+            assert monitor_task is not None
+
+            # Wait for the monitor task to complete (should complete before grace timeout)
+            await asyncio.wait_for(monitor_task, timeout=5.0)
+
+            # Check that status was promoted to running
+            assert supervisor._apps["reachy_chat"].status == "running"
+
+            # Clean up the reaper task
+            reaper_task = supervisor._reaper_tasks.get("reachy_chat")
+            if reaper_task:
+                reaper_task.cancel()
+                try:
+                    await reaper_task
+                except asyncio.CancelledError:
+                    pass
+
+
+@pytest.mark.asyncio
+async def test_readiness_monitor_process_death_during_loading_errors() -> None:
+    """Test that process death during loading transitions to error, monitor doesn't promote."""
+    supervisor = AppSupervisor()
+
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+
+    with patch(
+        "reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process
+    ), patch(
+        "reachy_controller.app_supervisor._APP_BOOT_GRACE_S", 10.0
+    ):
+        # Patch asyncio.to_thread to return error code immediately from reaper
+        async def mock_to_thread(func, *args):
+            if "wait" in str(func):
+                # First call is from reaper; return exit code 1
+                return 1  # Non-zero exit code
+            return 0
+
+        with patch("reachy_controller.app_supervisor.asyncio.to_thread", side_effect=mock_to_thread):
+            result = await supervisor.start_app("reachy_chat")
+            assert result["status"] == "loading"
+
+            # Give the reaper and monitor tasks a chance to run
+            await asyncio.sleep(0.2)
+
+            # Check that status transitioned to error (reaper already ran)
+            assert supervisor._apps["reachy_chat"].status == "error"
+
+            # Now wait for the monitor task (should exit without promoting)
+            monitor_task = supervisor._readiness_tasks.get("reachy_chat")
+            if monitor_task:
+                try:
+                    await asyncio.wait_for(monitor_task, timeout=5.0)
+                except asyncio.TimeoutError:
+                    # Monitor should exit relatively quickly once status != loading
+                    monitor_task.cancel()
+                    try:
+                        await monitor_task
+                    except asyncio.CancelledError:
+                        pass
+
+            # Status should still be error, not promoted to running
+            assert supervisor._apps["reachy_chat"].status == "error"

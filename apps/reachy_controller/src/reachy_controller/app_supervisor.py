@@ -18,6 +18,8 @@ import psutil
 logger = logging.getLogger(__name__)
 
 _STOP_SIGINT_GRACE_S = 5.0
+_APP_BOOT_GRACE_S = 4.0  # Grace period for app startup before promoting loading → running
+_APP_READINESS_POLL_S = 0.5  # Polling interval for readiness monitor
 
 
 def _get_workspace_root() -> Path:
@@ -42,7 +44,7 @@ class LocalApp:
     uses_camera: bool = True
     process: subprocess.Popen[str] | None = None
     pid: int | None = None
-    status: str = "stopped"  # "stopped", "running", "stopping", "error"
+    status: str = "stopped"  # "stopped", "loading", "running", "stopping", "error"
     error: str | None = None
     start_time: float | None = None
     external: bool = False
@@ -88,6 +90,7 @@ class AppSupervisor:
             for name, config in self.APPS.items()
         }
         self._reaper_tasks: dict[str, asyncio.Task[None]] = {}
+        self._readiness_tasks: dict[str, asyncio.Task[None]] = {}
         self._camera_release_hook: Callable[[], Awaitable[None]] | None = None
         self._workspace_root = _get_workspace_root()
 
@@ -104,7 +107,7 @@ class AppSupervisor:
     def camera_holder(self) -> str | None:
         """Return the running camera-using app name, if any."""
         for app in self._apps.values():
-            if app.status == "running" and app.uses_camera:
+            if app.status in ("running", "loading") and app.uses_camera:
                 return app.name
         return None
 
@@ -134,8 +137,8 @@ class AppSupervisor:
                     "status": "refused",
                 }
 
-            # Refuse if any app is already running
-            any_running = any(a.status == "running" for a in self._apps.values())
+            # Refuse if any app is already running or loading
+            any_running = any(a.status in ("running", "loading") for a in self._apps.values())
             if any_running:
                 return {
                     "error": "Another app is already running",
@@ -169,18 +172,22 @@ class AppSupervisor:
                     text=True,
                 )
                 app.pid = app.process.pid
-                app.status = "running"
+                app.status = "loading"
                 app.error = None
                 app.start_time = time.time()
-                logger.info(f"Started app {name} (pid {app.pid})")
+                logger.info(f"Started app {name} (pid {app.pid}) in loading state")
 
                 # Spawn reaper task
-                task = asyncio.create_task(self._reap_app(name))
-                self._reaper_tasks[name] = task
+                reaper_task = asyncio.create_task(self._reap_app(name))
+                self._reaper_tasks[name] = reaper_task
+
+                # Spawn readiness monitor task
+                monitor_task = asyncio.create_task(self._monitor_readiness(name))
+                self._readiness_tasks[name] = monitor_task
 
                 return {
                     "name": name,
-                    "status": "running",
+                    "status": "loading",
                     "pid": app.pid,
                 }
             except Exception as e:
@@ -199,6 +206,15 @@ class AppSupervisor:
 
             if app.status == "stopped":
                 return {"name": name, "status": "stopped"}
+
+            # Cancel pending readiness monitor if present
+            if name in self._readiness_tasks:
+                task = self._readiness_tasks.pop(name)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
             try:
                 # Handle subprocess.Popen handle (started by this supervisor)
@@ -266,6 +282,68 @@ class AppSupervisor:
                     app.status = "stopped"
                     app.process = None
 
+    async def _monitor_readiness(self, name: str) -> None:
+        """Monitor app readiness and promote from loading to running.
+
+        Uses a dual strategy:
+        1. Primary: boot-grace timeout (_APP_BOOT_GRACE_S). This is necessary because
+           directly-launched SDK client apps bypass the daemon's robot_app_lock entirely
+           (see #15, daemon/robot_app_lock.py docstring). The lock-based strategy is kept
+           as a best-effort early-promote but will not fire for our launch path.
+        2. Best-effort early-promote via daemon lock: if the daemon reports this app holds
+           the lock before grace elapses, promote immediately.
+        """
+        app = self._apps[name]
+        boot_start_time = app.start_time
+        if boot_start_time is None:
+            logger.error(f"_monitor_readiness for {name}: start_time is None")
+            return
+
+        try:
+            while True:
+                elapsed = time.time() - boot_start_time
+
+                # Try early-promote via daemon lock (best-effort, won't fire for us)
+                if self.daemon_proxy is not None:
+                    try:
+                        lock_status = await self.daemon_proxy.get_robot_app_lock_status()
+                        if (
+                            lock_status is not None
+                            and lock_status.get("state") == "local_app"
+                            and lock_status.get("holder_name") == name
+                        ):
+                            logger.info(f"App {name} acquired lock early, promoting to running")
+                            break
+                    except Exception as e:
+                        # Best-effort; swallow exceptions
+                        logger.debug(f"Lock check for {name} failed (best-effort): {e}")
+
+                # Check timeout
+                if elapsed >= _APP_BOOT_GRACE_S:
+                    logger.info(
+                        f"App {name} boot grace ({_APP_BOOT_GRACE_S}s) elapsed, promoting to running"
+                    )
+                    break
+
+                # Sleep before polling again
+                await asyncio.sleep(_APP_READINESS_POLL_S)
+
+            # Promote: re-check status under lock before modifying
+            async with self._lock:
+                if app.status == "loading":
+                    app.status = "running"
+                    # Reset start_time to measure running duration, not boot duration (issue #15 requirement)
+                    app.start_time = time.time()
+                    logger.info(f"App {name} promoted to running")
+        except asyncio.CancelledError:
+            # Task was cancelled during stop_app; expected
+            logger.debug(f"Readiness monitor for {name} cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"Readiness monitor error for {name}: {e}")
+        finally:
+            self._readiness_tasks.pop(name, None)
+
     async def _reap_app(self, name: str) -> None:
         """Monitor a child process and update status when it exits."""
         app = self._apps[name]
@@ -275,7 +353,7 @@ class AppSupervisor:
         try:
             exit_code = await asyncio.to_thread(app.process.wait)
             async with self._lock:
-                if app.status == "running":
+                if app.status in ("loading", "running"):
                     if exit_code == 0:
                         app.status = "stopped"
                         app.external = False
