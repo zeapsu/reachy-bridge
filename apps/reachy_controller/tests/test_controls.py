@@ -84,6 +84,7 @@ async def test_daemon_proxy_control_helpers_return_none_for_bad_responses(
 class ControlProxy:
     def __init__(self, result: dict[str, object] | None = None) -> None:
         self.result = {"ok": True} if result is None else result
+        self.acquire_media = AsyncMock(return_value=self.result)
         self.get_speaker_volume = AsyncMock(return_value=self.result)
         self.set_speaker_volume = AsyncMock(return_value=self.result)
         self.get_microphone_volume = AsyncMock(return_value=self.result)
@@ -132,6 +133,51 @@ async def test_control_routes_delegate_and_forward_request_bodies() -> None:
     proxy.play_sound.assert_awaited_once_with("hello.wav")
     proxy.play_move.assert_awaited_once_with("wake_up")
     proxy.get_move_running.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_wobble_enable_acquires_media_before_enabling() -> None:
+    proxy = ControlProxy()
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+    calls: list[str] = []
+
+    async def acquire_media() -> dict[str, object]:
+        calls.append("acquire")
+        return proxy.result
+
+    async def enable_wobbling() -> dict[str, object]:
+        calls.append("enable")
+        return proxy.result
+
+    proxy.acquire_media.side_effect = acquire_media
+    proxy.enable_wobbling.side_effect = enable_wobbling
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/media/wobbling/enable")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    proxy.acquire_media.assert_awaited_once()
+    proxy.enable_wobbling.assert_awaited_once()
+    assert calls == ["acquire", "enable"]
+
+
+@pytest.mark.asyncio
+async def test_wobble_disable_does_not_acquire_media() -> None:
+    proxy = ControlProxy()
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/media/wobbling/disable")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    proxy.acquire_media.assert_not_awaited()
+    proxy.disable_wobbling.assert_awaited_once()
 
 
 @pytest.mark.asyncio

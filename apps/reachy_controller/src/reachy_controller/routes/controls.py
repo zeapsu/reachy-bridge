@@ -93,6 +93,7 @@ async def get_move_running(request: Request) -> dict[str, Any]:
 @router.post("/media/wobbling/enable")
 async def enable_wobbling(request: Request) -> dict[str, Any]:
     proxy: DaemonProxy = request.app.state.daemon_proxy
+    await proxy.acquire_media()
     return _result_or_unavailable(await proxy.enable_wobbling())
 
 

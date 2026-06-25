@@ -763,6 +763,12 @@
       return result;
     }).then((result) => {
       if (result == null) event.target.checked = !checked;
+      const hintEl = $("wobble-hint");
+      if (checked && result != null) {
+        hintEl.removeAttribute("hidden");
+      } else {
+        hintEl.setAttribute("hidden", "");
+      }
     });
   });
 
