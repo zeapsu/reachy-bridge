@@ -266,6 +266,12 @@ input:focus-visible {
   box-shadow: 0 0 10px 1px rgba(255, 107, 107, 0.65);
 }
 
+.dot.loading {
+  background: var(--cyan);
+  box-shadow: 0 0 10px 1px rgba(111, 227, 255, 0.7);
+  animation: pulse 2.6s var(--ease) infinite;
+}
+
 @keyframes pulse {
   50% { opacity: 0.45; }
 }
@@ -620,6 +626,11 @@ input:focus-visible {
   border-color: rgba(255, 107, 107, 0.42);
 }
 
+.app-card.loading {
+  border-color: rgba(111, 227, 255, 0.5);
+  background: rgba(111, 227, 255, 0.07);
+}
+
 /* Let the middle (text) grid cell shrink so long names can ellipsize. */
 .app-card > div { min-width: 0; }
 
@@ -643,6 +654,21 @@ input:focus-visible {
 
 .app-state .up { color: var(--amber); }
 .app-state .err { color: var(--coral); }
+.app-state .loading-frag { color: var(--cyan); }
+.app-state .spinner-glyph {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, var(--cyan) 0deg, var(--mint) 180deg, rgba(111, 227, 255, 0.3) 360deg);
+  animation: spin 1.2s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 
 .btn {
   font-family: "Space Grotesk", sans-serif;
@@ -1008,6 +1034,8 @@ input[type=range]::-moz-range-thumb {
   .blob,
   .glass::before,
   .dot.ok,
+  .dot.loading,
+  .spinner-glyph,
   .vp-badge .rec {
     animation: none;
   }

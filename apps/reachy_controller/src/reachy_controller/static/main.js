@@ -6,6 +6,8 @@
   const TAU = Math.PI * 2;
   const APP_NAMES = ["reachy_chat", "reachy_dance", "reachy_lookat", "reachy_simon"];
   const appState = new Map(APP_NAMES.map((name) => [name, { name, status: "stopped" }]));
+  const LOADING_FRAGMENTS = ["Booting…", "Resolving env…", "Connecting to daemon…", "Activating motors…", "Waking up…"];
+  let loadingTick = 0;
   const state = {
     daemonOnline: false,
     controlsLoaded: false,
@@ -263,29 +265,34 @@
   }
 
   function renderApps(statuses = Array.from(appState.values())) {
-    const running = statuses.find((app) => app.status === "running") || null;
+    const active = statuses.find((app) => app.status === "running" || app.status === "loading") || null;
     $("apps").innerHTML = APP_NAMES.map((name) => {
       const app = statuses.find((item) => item.name === name) || { name, status: "stopped" };
       const isRunning = app.status === "running";
+      const isLoading = app.status === "loading";
       const isError = app.status === "error";
-      const statusClass = isRunning ? "running" : isError ? "error" : "";
+      const statusClass = isRunning ? "running" : isLoading ? "loading" : isError ? "error" : "";
       const uptime = isRunning && app.start_time ? ` · ${formatUptime(Date.now() / 1000 - Number(app.start_time))}` : "";
       const pid = isRunning && app.pid ? ` · pid ${app.pid}` : "";
       const external = isRunning && app.external ? ` · external` : "";
       const error = app.error ? `<br><span class="err">${escapeHtml(app.error)}</span>` : "";
-      const button = isRunning
+      const isActive = isRunning || isLoading;
+      const button = isActive
         ? `<button class="btn stop" data-app="${name}" data-action="stop" ${state.appBusy ? "disabled" : ""}>Stop</button>`
-        : `<button class="btn start" data-app="${name}" data-action="start" ${(running || state.appBusy) ? "disabled" : ""}>Start</button>`;
+        : `<button class="btn start" data-app="${name}" data-action="start" ${(active || state.appBusy) ? "disabled" : ""}>Start</button>`;
+      const frag = LOADING_FRAGMENTS[loadingTick % LOADING_FRAGMENTS.length];
+      const spinnerMarkup = isLoading ? `<span class="spinner-glyph" aria-hidden="true"></span><span class="loading-frag">${escapeHtml(frag)}</span>` : "";
+      const stateContent = isRunning ? `<span class="up">running</span>${external}${pid}${uptime}` : isLoading ? spinnerMarkup : escapeHtml(app.status || "stopped");
       return `<div class="app-card ${statusClass}">
-        <span class="dot ${isRunning ? "live" : isError ? "error" : ""}"></span>
+        <span class="dot ${isRunning ? "live" : isLoading ? "loading" : isError ? "error" : ""}"></span>
         <div><div class="app-name">${escapeHtml(name)}</div>
-        <div class="app-state">${isRunning ? `<span class="up">running</span>${external}${pid}${uptime}` : escapeHtml(app.status || "stopped")}${error}</div></div>
+        <div class="app-state">${stateContent}${error}</div></div>
         ${button}
       </div>`;
     }).join("");
 
-    $("robot-dot").className = `dot ${running ? "live" : "ok"}`;
-    $("robot-value").textContent = running ? running.name : "free";
+    $("robot-dot").className = `dot ${active ? "live" : "ok"}`;
+    $("robot-value").textContent = active ? active.name : "free";
   }
 
   function formatUptime(seconds) {
@@ -299,6 +306,7 @@
 
   async function pollAppsStatus() {
     try {
+      loadingTick++;
       const statuses = await apiJson("/api/apps/status");
       if (Array.isArray(statuses)) {
         statuses.forEach((app) => appState.set(app.name, app));
