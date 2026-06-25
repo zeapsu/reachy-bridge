@@ -214,11 +214,11 @@ class AppSupervisor:
                             proc.send_signal(signal.SIGINT)
                             try:
                                 await asyncio.to_thread(proc.wait, 3.0)
-                            except subprocess.TimeoutExpired:
+                            except psutil.TimeoutExpired:
                                 proc.terminate()
                                 try:
                                     await asyncio.to_thread(proc.wait, 2.0)
-                                except subprocess.TimeoutExpired:
+                                except psutil.TimeoutExpired:
                                     proc.kill()
                                     await asyncio.to_thread(proc.wait, 1.0)
                             logger.info(f"Stopped adopted app {name} (pid {app.pid})")

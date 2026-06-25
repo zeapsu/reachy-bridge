@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -306,3 +307,80 @@ def test_get_all_status_detects_dead_process() -> None:
     assert dance_status["status"] == "stopped"
     assert dance_status["pid"] is None
     assert supervisor._apps["reachy_dance"].status == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_stop_adopted_orphan_with_escalation() -> None:
+    """Test escalation path for adopted orphan that ignores SIGINT and SIGTERM.
+
+    This is a regression test for the bug where psutil.TimeoutExpired was not
+    being caught (the code incorrectly caught subprocess.TimeoutExpired instead).
+    When the process ignores SIGINT, proc.wait() should raise psutil.TimeoutExpired,
+    triggering SIGTERM, which also fails, triggering SIGKILL.
+    """
+    supervisor = AppSupervisor()
+
+    # Mock psutil.Process for the orphaned process
+    mock_psutil_proc = MagicMock()
+    mock_psutil_proc.pid = 88888
+    mock_psutil_proc.cmdline.return_value = ["uv", "run", "python", "-m", "reachy_simon.main"]
+
+    # Track which signals were sent and call sequence
+    call_sequence = []
+    wait_call_count = [0]  # Use list to allow modification in nested function
+
+    def wait_with_timeout(timeout):
+        """Simulate process ignoring SIGINT and SIGTERM, then dying on SIGKILL."""
+        # First two calls (after SIGINT and SIGTERM) raise TimeoutExpired
+        # Third call (after SIGKILL) succeeds
+        wait_call_count[0] += 1
+        if wait_call_count[0] <= 2:
+            raise psutil.TimeoutExpired(88888)
+        return 0  # Exit code after SIGKILL
+
+    def send_signal(sig):
+        """Track signal sends."""
+        call_sequence.append(("signal", sig))
+
+    def terminate():
+        """Track terminate calls."""
+        call_sequence.append(("terminate",))
+
+    def kill():
+        """Track kill calls."""
+        call_sequence.append(("kill",))
+
+    mock_psutil_proc.wait = wait_with_timeout
+    mock_psutil_proc.send_signal = send_signal
+    mock_psutil_proc.terminate = terminate
+    mock_psutil_proc.kill = kill
+
+    # Manually set up the adopted app state
+    supervisor._apps["reachy_simon"].process = None
+    supervisor._apps["reachy_simon"].pid = 88888
+    supervisor._apps["reachy_simon"].status = "running"
+
+    with patch("reachy_controller.app_supervisor.psutil.Process", return_value=mock_psutil_proc):
+        result = await supervisor.stop_app("reachy_simon")
+
+    # Verify the stop completed successfully
+    assert result["status"] == "stopped"
+    assert supervisor._apps["reachy_simon"].status == "stopped"
+    assert supervisor._apps["reachy_simon"].pid is None
+
+    # Verify the full escalation path ran:
+    # 1. SIGINT sent
+    # 2. wait() raises TimeoutExpired (process still alive)
+    # 3. terminate() called (sends SIGTERM)
+    # 4. wait() raises TimeoutExpired again (process still alive)
+    # 5. kill() called (sends SIGKILL)
+    # 6. wait() succeeds (process dead)
+    assert ("signal", signal.SIGINT) in call_sequence, "SIGINT not sent"
+    assert ("terminate",) in call_sequence, "SIGTERM not sent"
+    assert ("kill",) in call_sequence, "SIGKILL not sent"
+
+    # Verify ordering: signal -> terminate -> kill
+    signal_idx = call_sequence.index(("signal", signal.SIGINT))
+    terminate_idx = call_sequence.index(("terminate",))
+    kill_idx = call_sequence.index(("kill",))
+    assert signal_idx < terminate_idx < kill_idx, "Escalation order is wrong"
