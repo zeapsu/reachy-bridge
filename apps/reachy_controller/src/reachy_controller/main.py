@@ -18,10 +18,12 @@ from starlette.requests import Request
 from reachy_controller.app_supervisor import AppSupervisor
 from reachy_controller.daemon_proxy import DaemonProxy
 from reachy_controller.daemon_proxy import router as daemon_router
+from reachy_controller.daemon_supervisor import DaemonSupervisor
 from reachy_controller.routes.apps import router as apps_router
 from reachy_controller.routes.audio import router as audio_router
 from reachy_controller.routes.camera import router as camera_router
 from reachy_controller.routes.controls import router as controls_router
+from reachy_controller.routes.daemon import router as daemon_control_router
 from reachy_controller.routes.system_stats import router as system_stats_router
 from reachy_controller.routes.telemetry import (
     root_router as telemetry_root_router,
@@ -42,11 +44,13 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
         timeout=float(os.getenv("DAEMON_TIMEOUT", "2.0")),
     )
     app_supervisor = AppSupervisor(daemon_proxy=daemon_proxy)
+    daemon_supervisor = DaemonSupervisor(daemon_proxy=daemon_proxy)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await app.state.daemon_proxy.start()
         app.state.app_supervisor.reconcile_orphans()
+        app.state.daemon_supervisor.reconcile_orphans()
         try:
             yield
         finally:
@@ -56,6 +60,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     app = FastAPI(title="Reachy Controller", version="0.1.0", lifespan=lifespan)
     app.state.daemon_proxy = daemon_proxy
     app.state.app_supervisor = app_supervisor
+    app.state.daemon_supervisor = daemon_supervisor
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.exception_handler(RequestValidationError)
@@ -79,6 +84,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     app.include_router(controls_router)
     app.include_router(audio_router)
     app.include_router(camera_router)
+    app.include_router(daemon_control_router)
     app.include_router(daemon_router)
     return app
 

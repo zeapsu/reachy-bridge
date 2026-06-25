@@ -36,3 +36,8 @@ Thumbs.db
 # --- Third-party upstream clones (cloned for reference; not this project's source) ---
 /reachy_mini/
 /reachy_mini_conversation_app/
+
+# --- Agent scratch / local QA artifacts (not committed) ---
+/.superpowers/
+/.playwright-mcp/
+/issue23-*.png
