@@ -16,6 +16,8 @@ async def test_daemon_proxy_control_helpers_use_expected_requests() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
+        if request.url.path == "/api/move/running":
+            return httpx.Response(200, json=["wake_up"])
         return httpx.Response(200, json={"ok": True})
 
     proxy = DaemonProxy("http://daemon.local:8000", transport=httpx.MockTransport(handler))
@@ -37,7 +39,7 @@ async def test_daemon_proxy_control_helpers_use_expected_requests() -> None:
     finally:
         await proxy.close()
 
-    assert results == [{"ok": True}] * 12
+    assert results == ([{"ok": True}] * 11) + [["wake_up"]]
     assert [(request.method, request.url.path) for request in seen] == [
         ("GET", "/api/volume/current"),
         ("POST", "/api/volume/set"),
@@ -82,8 +84,13 @@ async def test_daemon_proxy_control_helpers_return_none_for_bad_responses(
 
 
 class ControlProxy:
-    def __init__(self, result: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        result: dict[str, object] | None = None,
+        running_moves: list[str] | None = None,
+    ) -> None:
         self.result = {"ok": True} if result is None else result
+        self.running_moves = [] if running_moves is None else running_moves
         self.acquire_media = AsyncMock(return_value=self.result)
         self.get_speaker_volume = AsyncMock(return_value=self.result)
         self.set_speaker_volume = AsyncMock(return_value=self.result)
@@ -96,7 +103,7 @@ class ControlProxy:
         self.play_sound = AsyncMock(return_value=self.result)
         self.play_test_sound = AsyncMock(return_value=self.result)
         self.play_move = AsyncMock(return_value=self.result)
-        self.get_move_running = AsyncMock(return_value=self.result)
+        self.get_move_running = AsyncMock(return_value=self.running_moves)
 
     async def close(self) -> None:
         return None
@@ -104,7 +111,7 @@ class ControlProxy:
 
 @pytest.mark.asyncio
 async def test_control_routes_delegate_and_forward_request_bodies() -> None:
-    proxy = ControlProxy()
+    proxy = ControlProxy(running_moves=["wake_up"])
     app = create_app(proxy=proxy)  # type: ignore[arg-type]
 
     async with httpx.AsyncClient(
@@ -126,7 +133,9 @@ async def test_control_routes_delegate_and_forward_request_bodies() -> None:
         ]
 
     assert all(response.status_code == 200 for response in responses)
-    assert all(response.json() == {"ok": True} for response in responses)
+    assert [response.json() for response in responses] == ([{"ok": True}] * 11) + [
+        ["wake_up"]
+    ]
     proxy.set_speaker_volume.assert_awaited_once_with(42)
     proxy.set_microphone_volume.assert_awaited_once_with(37)
     proxy.set_motor_mode.assert_awaited_once_with("gravity_compensation")

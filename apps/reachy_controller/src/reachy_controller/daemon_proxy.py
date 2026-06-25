@@ -138,7 +138,7 @@ class DaemonProxy:
     async def play_move(self, name: str) -> dict[str, Any] | None:
         return await self._post_json(f"move/play/{name}")
 
-    async def get_move_running(self) -> dict[str, Any] | None:
+    async def get_move_running(self) -> list[Any] | None:
         try:
             return await self.get_json("move/running")
         except (httpx.HTTPError, ValueError):

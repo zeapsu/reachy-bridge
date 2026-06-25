@@ -85,9 +85,12 @@ async def play_move(move: str, request: Request) -> dict[str, Any]:
 
 
 @router.get("/move/running")
-async def get_move_running(request: Request) -> dict[str, Any]:
+async def get_move_running(request: Request) -> list[Any]:
     proxy: DaemonProxy = request.app.state.daemon_proxy
-    return _result_or_unavailable(await proxy.get_move_running())
+    result = await proxy.get_move_running()
+    if result is None:
+        raise HTTPException(status_code=503, detail="Daemon unavailable")
+    return result
 
 
 @router.post("/media/wobbling/enable")
