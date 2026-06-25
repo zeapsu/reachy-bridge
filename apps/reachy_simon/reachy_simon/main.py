@@ -81,7 +81,7 @@ class ReachySimon(ReachyMiniApp):
                 body_yaw=0.0,
                 duration=RETURN_HOME_DURATION_S,
             )
-        except (AttributeError, TypeError) as exc:
+        except Exception as exc:
             logger.warning(
                 "simon: graceful return-home unavailable; snapping home: %s", exc
             )
@@ -91,12 +91,8 @@ class ReachySimon(ReachyMiniApp):
                     antennas=np.array([0.0, 0.0], dtype=float),
                     body_yaw=0.0,
                 )
-            except (AttributeError, TypeError) as set_exc:
-                logger.warning("simon: failed to snap home on exit: %s", set_exc)
             except Exception as set_exc:
-                logger.debug("simon: failed to snap home on exit: %s", set_exc)
-        except Exception as exc:
-            logger.debug("simon: failed to return home on exit: %s", exc)
+                logger.warning("simon: failed to snap home on exit: %s", set_exc)
 
         try:
             reachy_mini.media.play_sound("go_sleep.wav")
