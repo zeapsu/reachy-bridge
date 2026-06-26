@@ -241,7 +241,7 @@
         <p class="lead">The Reachy Mini Lite is the tethered desktop robot: it plugs into your Mac over USB and borrows your computer's brain. This workspace turns that hardware into something programmable.</p>
         <p>Because the robot was still being assembled while this was built, everything was developed <strong>simulation-first</strong> against a headless MuJoCo physics daemon. The crucial property: <strong>the same code runs unchanged on the real robot</strong> — you only swap which daemon is running.</p>
         <p>The Lite carries a 120° / 12 MP camera, a 5 W speaker, and 2 microphones (it lacks the wireless version's onboard compute, battery, Wi-Fi, and IMU). That hardware set is exactly what the four custom apps were designed around.</p>
-        <div class="note teal"><span class="lbl">Everything lives here</span> <code>~/reachy/</code> — a single git repository. Custom apps under <code>apps/</code>, the SDK clone and reference apps are kept alongside for study.</div>
+        <div class="note teal"><span class="lbl">Everything lives here</span> <code>~/reachy-console/</code> — a single git repository. Custom apps under <code>apps/</code>, the SDK clone and reference apps are kept alongside for study.</div>
       </section>
 
       <!-- 02 -->
@@ -252,7 +252,7 @@
         <p>A self-contained <code>uv</code> virtual environment holds the whole runtime. Nothing here touches your system Python.</p>
         <table>
           <tr><th>Component</th><th>Version / path</th><th>Notes</th></tr>
-          <tr><td>Python</td><td><code>3.12.11</code> · <code>~/reachy/.venv</code></td><td>uv-managed venv</td></tr>
+          <tr><td>Python</td><td><code>3.12.11</code> · <code>~/reachy-console/.venv</code></td><td>uv-managed venv</td></tr>
           <tr><td>reachy-mini SDK</td><td><code>1.8.3</code></td><td>the <code>ReachyMini</code> client + app framework</td></tr>
           <tr><td>MuJoCo</td><td><code>3.3.7</code></td><td>physics for the sim (3.2.x had an XML regression)</td></tr>
           <tr><td>Daemon</td><td>port <code>:8000</code></td><td>bridges your code ↔ motors / sensors</td></tr>
@@ -271,7 +271,7 @@
 
         <h3>1 — Start the daemon</h3>
         <div class="code"><button class="copy">copy</button><span class="c"># Simulation (no robot needed) — headless on this Mac</span>
-~/reachy/.venv/bin/python -m reachy_mini.daemon.app.main <b>--sim --headless</b>
+~/reachy-console/.venv/bin/python -m reachy_mini.daemon.app.main <b>--sim --headless</b>
 
 <span class="c"># Real Reachy Mini Lite (USB)</span>
 <b>reachy-mini-daemon</b></div>
@@ -279,7 +279,7 @@
 
         <h3>2 — Smoke test the SDK</h3>
         <div class="code"><button class="copy">copy</button><span class="c"># wiggles the antennas — proves code → daemon → robot works</span>
-~/reachy/.venv/bin/python ~/reachy/hello.py</div>
+~/reachy-console/.venv/bin/python ~/reachy-console/hello.py</div>
 
         <h3>3 — The control primitives</h3>
         <ul class="clean">
@@ -352,7 +352,7 @@
         </div>
         <h3>Configuration</h3>
         <p>Copy the example env file and drop in your key. The default model is set; override it if you like.</p>
-        <div class="code"><button class="copy">copy</button>cd ~/reachy/apps/reachy_chat
+        <div class="code"><button class="copy">copy</button>cd ~/reachy-console/apps/reachy_chat
 cp .env.example .env
 
 <span class="c"># .env</span>
@@ -374,11 +374,11 @@ cp .env.example .env
         <h2>Imported reference programs</h2>
         <p>Learning material that came with the setup — clones and one-click installs to read and run.</p>
         <ul class="clean">
-          <li><strong>SDK + examples</strong> — <code>~/reachy/reachy_mini/</code> (the <code>pollen-robotics/reachy_mini</code> repo). Read <code>AGENTS.md</code> and the <code>skills/</code> guides; the <code>examples/</code> folder has runnable scripts (<code>goto_interpolation_playground.py</code> is a good first one).</li>
+          <li><strong>SDK + examples</strong> — <code>~/reachy-console/reachy_mini/</code> (the <code>pollen-robotics/reachy_mini</code> repo). Read <code>AGENTS.md</code> and the <code>skills/</code> guides; the <code>examples/</code> folder has runnable scripts (<code>goto_interpolation_playground.py</code> is a good first one).</li>
           <li><strong>Community apps</strong> — <em>Radio</em>, <em>Simon</em>, and <em>Hand Tracker</em> are installed in the daemon (great patterns for antenna interaction, no-GUI games, and camera control loops).</li>
-          <li><strong>Conversation app</strong> — <code>~/reachy/reachy_mini_conversation_app/</code>, the upstream reference that informed <code>reachy_chat</code>.</li>
+          <li><strong>Conversation app</strong> — <code>~/reachy-console/reachy_mini_conversation_app/</code>, the upstream reference that informed <code>reachy_chat</code>.</li>
         </ul>
-        <div class="note teal"><span class="lbl">Building your own</span> Always scaffold with the CLI — never hand-create folders: <code>reachy-mini-app-assistant create &lt;name&gt; ~/reachy/apps</code> (add <code>--template conversation</code> for voice apps). Validate with <code>reachy-mini-app-assistant check &lt;path&gt;</code>.</div>
+        <div class="note teal"><span class="lbl">Building your own</span> Always scaffold with the CLI — never hand-create folders: <code>reachy-mini-app-assistant create &lt;name&gt; ~/reachy-console/apps</code> (add <code>--template conversation</code> for voice apps). Validate with <code>reachy-mini-app-assistant check &lt;path&gt;</code>.</div>
       </section>
 
       <!-- 07 -->
@@ -391,7 +391,7 @@ cp .env.example .env
 <b>reachy-mini-daemon</b>
 
 <span class="c"># Everything else is identical:</span>
-cd ~/reachy/apps/reachy_dance &amp;&amp; ~/reachy/.venv/bin/python -m reachy_dance.main</div>
+cd ~/reachy-console/apps/reachy_dance &amp;&amp; ~/reachy-console/.venv/bin/python -m reachy_dance.main</div>
         <p>What activates automatically once the robot's sensors are live:</p>
         <ul class="clean">
           <li><strong>reachy_dance</strong> — already complete; now moves real servos.</li>
@@ -425,15 +425,15 @@ cd ~/reachy/apps/reachy_dance &amp;&amp; ~/reachy/.venv/bin/python -m reachy_dan
         <h2>Command cheat sheet</h2>
         <div class="code"><button class="copy">copy</button><span class="c"># ── DAEMON ──────────────────────────────</span>
 <span class="c"># sim (headless)</span>
-~/reachy/.venv/bin/python -m reachy_mini.daemon.app.main --sim --headless
+~/reachy-console/.venv/bin/python -m reachy_mini.daemon.app.main --sim --headless
 <span class="c"># hardware</span>
 reachy-mini-daemon
 
 <span class="c"># ── RUN AN APP ──────────────────────────</span>
-cd ~/reachy/apps/<b>reachy_dance</b>  &amp;&amp; ~/reachy/.venv/bin/python -m reachy_dance.main
-cd ~/reachy/apps/<b>reachy_simon</b>  &amp;&amp; ~/reachy/.venv/bin/python -m reachy_simon.main
-cd ~/reachy/apps/<b>reachy_lookat</b> &amp;&amp; ~/reachy/.venv/bin/python -m reachy_lookat.main
-cd ~/reachy/apps/<b>reachy_chat</b>   &amp;&amp; ~/reachy/.venv/bin/python -m reachy_chat.main
+cd ~/reachy-console/apps/<b>reachy_dance</b>  &amp;&amp; ~/reachy-console/.venv/bin/python -m reachy_dance.main
+cd ~/reachy-console/apps/<b>reachy_simon</b>  &amp;&amp; ~/reachy-console/.venv/bin/python -m reachy_simon.main
+cd ~/reachy-console/apps/<b>reachy_lookat</b> &amp;&amp; ~/reachy-console/.venv/bin/python -m reachy_lookat.main
+cd ~/reachy-console/apps/<b>reachy_chat</b>   &amp;&amp; ~/reachy-console/.venv/bin/python -m reachy_chat.main
 
 <span class="c"># ── APPS VIA REST ───────────────────────</span>
 curl localhost:8000/api/apps/list
@@ -441,11 +441,11 @@ curl -X POST localhost:8000/api/apps/start-app/<b>reachy_dance</b>
 curl -X POST localhost:8000/api/apps/stop-current-app
 
 <span class="c"># ── SCAFFOLD / VALIDATE ─────────────────</span>
-reachy-mini-app-assistant create <b>my_app</b> ~/reachy/apps
-reachy-mini-app-assistant check  ~/reachy/apps/<b>my_app</b></div>
+reachy-mini-app-assistant create <b>my_app</b> ~/reachy-console/apps
+reachy-mini-app-assistant check  ~/reachy-console/apps/<b>my_app</b></div>
 
         <h3>File map</h3>
-        <div class="code"><span class="c">~/reachy/</span>
+        <div class="code"><span class="c">~/reachy-console/</span>
 ├── .venv/                          <span class="c"># uv venv (gitignored)</span>
 ├── hello.py                        <span class="c"># SDK smoke test</span>
 ├── apps/
@@ -462,7 +462,7 @@ reachy-mini-app-assistant check  ~/reachy/apps/<b>my_app</b></div>
         <div class="big">Plug in. Start the daemon. Go.</div>
         REACHY MINI LITE FIELD MANUAL · Pollen Robotics × Hugging Face<br>
         Stack: Python 3.12.11 · reachy-mini 1.8.3 · MuJoCo 3.3.7 · OpenRouter (deepseek/deepseek-v4-flash)<br>
-        Generated 2026-06-20 · ~/reachy
+        Generated 2026-06-20 · ~/reachy-console
       </footer>
     </main>
   </div>

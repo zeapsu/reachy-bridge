@@ -1,5 +1,5 @@
 [project]
-name = "reachy-workspace"
+name = "reachy-console"
 version = "0.1.0"
 description = "Reachy Mini Lite workspace root: pins the daemon/SDK so a fresh clone can run the daemon and the root diagnostic scripts. Apps under apps/ have their own independent uv projects."
 readme = "README.md"
