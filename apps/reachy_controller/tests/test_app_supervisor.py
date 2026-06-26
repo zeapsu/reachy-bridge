@@ -16,6 +16,7 @@ from reachy_controller.app_supervisor import (
     _STOP_SIGINT_GRACE_S,
     AppSupervisor,
     LocalApp,
+    _signal_process_tree,
 )
 
 
@@ -103,8 +104,9 @@ async def test_stop_app_closes_log_handle(tmp_path: Path) -> None:
     log_handle = app.log_handle
     assert not log_handle.closed
 
-    # Stop the app
-    result = await supervisor.stop_app("reachy_chat")
+    # Stop the app (patch the tree-signaller so we never signal a real pid 12345)
+    with patch("reachy_controller.app_supervisor._signal_process_tree"):
+        result = await supervisor.stop_app("reachy_chat")
 
     # Verify stop succeeded
     assert result["status"] == "stopped"
@@ -151,14 +153,92 @@ async def test_stop_app() -> None:
     mock_process = MagicMock()
     mock_process.pid = 12345
 
-    with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
+    with (
+        patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process),
+        patch("reachy_controller.app_supervisor._signal_process_tree"),
+    ):
         result_start = await supervisor.start_app("reachy_chat")
         assert result_start["status"] == "loading"
         result = await supervisor.stop_app("reachy_chat")
 
     assert result["status"] == "stopped"
     assert supervisor._apps["reachy_chat"].status == "stopped"
-    mock_process.send_signal.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_stop_app_signals_process_tree() -> None:
+    """stop_app signals the whole process tree, not just the Popen (wrapper) handle.
+
+    Regression for #26: ``uv run`` does NOT forward SIGINT to its python child, so
+    signalling only the wrapper pid never reaches the app's KeyboardInterrupt path
+    (where the graceful return-home + sleep cue live). The supervisor must signal
+    the tree so the python child receives SIGINT directly.
+    """
+    supervisor = AppSupervisor()
+
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+    mock_process.wait.return_value = 0  # exits cleanly on SIGINT (no escalation)
+
+    supervisor._apps["reachy_chat"].process = mock_process
+    supervisor._apps["reachy_chat"].status = "running"
+
+    with patch("reachy_controller.app_supervisor._signal_process_tree") as mock_sig:
+        result = await supervisor.stop_app("reachy_chat")
+
+    assert result["status"] == "stopped"
+    mock_sig.assert_called_once_with(12345, signal.SIGINT)
+
+
+def test_signal_process_tree_signals_parent_and_children() -> None:
+    """_signal_process_tree signals the parent AND every descendant (the python child).
+
+    This is the core of the #26 fix: the launched ``uv run`` wrapper is the parent and
+    the actual python app is a child; both must receive the signal.
+    """
+    child_a = MagicMock()
+    child_b = MagicMock()
+    parent = MagicMock()
+    parent.children.return_value = [child_a, child_b]
+
+    with patch("reachy_controller.app_supervisor.psutil.Process", return_value=parent):
+        _signal_process_tree(4242, signal.SIGINT)
+
+    parent.children.assert_called_once_with(recursive=True)
+    parent.send_signal.assert_called_once_with(signal.SIGINT)
+    child_a.send_signal.assert_called_once_with(signal.SIGINT)
+    child_b.send_signal.assert_called_once_with(signal.SIGINT)
+
+
+def test_signal_process_tree_missing_process_is_noop() -> None:
+    """_signal_process_tree is a no-op (no raise) when the pid is already gone."""
+    with patch(
+        "reachy_controller.app_supervisor.psutil.Process",
+        side_effect=psutil.NoSuchProcess(4242),
+    ):
+        _signal_process_tree(4242, signal.SIGINT)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_start_app_sets_unbuffered_env(tmp_path: Path) -> None:
+    """Launched apps get PYTHONUNBUFFERED=1 so their log file flushes line-by-line.
+
+    Without this, buffered child stdout is lost on a non-clean exit, making the
+    app log untrustworthy when diagnosing #26.
+    """
+    supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
+
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+
+    with patch(
+        "reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process
+    ) as mock_popen:
+        await supervisor.start_app("reachy_chat")
+
+    env = mock_popen.call_args.kwargs["env"]
+    assert env["PYTHONUNBUFFERED"] == "1"
 
 
 @pytest.mark.asyncio
@@ -328,14 +408,15 @@ async def test_stop_app_uses_thread_for_wait() -> None:
     supervisor._apps["reachy_chat"].status = "running"
 
     # Call stop_app - should complete without blocking the event loop
-    result = await supervisor.stop_app("reachy_chat")
+    with patch("reachy_controller.app_supervisor._signal_process_tree") as mock_sig:
+        result = await supervisor.stop_app("reachy_chat")
 
     # Verify the stop completed and signals were sent
     assert result["status"] == "stopped"
     assert wait_called, "Process.wait() was not called"
     assert wait_timeouts == [_STOP_SIGINT_GRACE_S]
     assert supervisor._apps["reachy_chat"].status == "stopped"
-    mock_process.send_signal.assert_called_once()
+    mock_sig.assert_called_once_with(12345, signal.SIGINT)
 
 
 @pytest.mark.asyncio
@@ -366,15 +447,18 @@ async def test_stop_adopted_orphan() -> None:
     supervisor._apps["reachy_lookat"].pid = 99999
     supervisor._apps["reachy_lookat"].status = "running"
 
-    with patch("reachy_controller.app_supervisor.psutil.Process", return_value=mock_psutil_proc):
+    with (
+        patch("reachy_controller.app_supervisor.psutil.Process", return_value=mock_psutil_proc),
+        patch("reachy_controller.app_supervisor._signal_process_tree") as mock_sig,
+    ):
         result = await supervisor.stop_app("reachy_lookat")
 
     assert result["status"] == "stopped"
     assert supervisor._apps["reachy_lookat"].status == "stopped"
     assert supervisor._apps["reachy_lookat"].pid is None
     assert wait_timeouts == [_STOP_SIGINT_GRACE_S]
-    # Verify signals were sent via psutil
-    mock_psutil_proc.send_signal.assert_called_once()
+    # Signal delivered to the whole tree (uv wrapper + python child), not just app.pid
+    mock_sig.assert_called_once_with(99999, signal.SIGINT)
 
 
 def test_get_all_status_detects_dead_process() -> None:
@@ -405,10 +489,11 @@ def test_get_all_status_detects_dead_process() -> None:
 async def test_stop_adopted_orphan_with_escalation() -> None:
     """Test escalation path for adopted orphan that ignores SIGINT and SIGTERM.
 
-    This is a regression test for the bug where psutil.TimeoutExpired was not
-    being caught (the code incorrectly caught subprocess.TimeoutExpired instead).
-    When the process ignores SIGINT, proc.wait() should raise psutil.TimeoutExpired,
-    triggering SIGTERM, which also fails, triggering SIGKILL.
+    Regression for two bugs: (1) psutil.TimeoutExpired must be caught (not
+    subprocess.TimeoutExpired) so escalation actually runs; (2) #26 — the signal
+    must reach the process tree (the python child), since ``uv run`` swallows SIGINT.
+    When the process ignores SIGINT/SIGTERM, proc.wait() raises psutil.TimeoutExpired,
+    escalating SIGINT -> SIGTERM -> SIGKILL, all delivered via _signal_process_tree.
     """
     supervisor = AppSupervisor()
 
@@ -417,42 +502,28 @@ async def test_stop_adopted_orphan_with_escalation() -> None:
     mock_psutil_proc.pid = 88888
     mock_psutil_proc.cmdline.return_value = ["uv", "run", "python", "-m", "reachy_simon.main"]
 
-    # Track which signals were sent and call sequence
-    call_sequence = []
     wait_call_count = [0]  # Use list to allow modification in nested function
 
     def wait_with_timeout(timeout):
         """Simulate process ignoring SIGINT and SIGTERM, then dying on SIGKILL."""
-        # First two calls (after SIGINT and SIGTERM) raise TimeoutExpired
-        # Third call (after SIGKILL) succeeds
+        # First two calls (after SIGINT and SIGTERM) raise TimeoutExpired;
+        # third call (after SIGKILL) succeeds.
         wait_call_count[0] += 1
         if wait_call_count[0] <= 2:
             raise psutil.TimeoutExpired(88888)
         return 0  # Exit code after SIGKILL
 
-    def send_signal(sig):
-        """Track signal sends."""
-        call_sequence.append(("signal", sig))
-
-    def terminate():
-        """Track terminate calls."""
-        call_sequence.append(("terminate",))
-
-    def kill():
-        """Track kill calls."""
-        call_sequence.append(("kill",))
-
     mock_psutil_proc.wait = wait_with_timeout
-    mock_psutil_proc.send_signal = send_signal
-    mock_psutil_proc.terminate = terminate
-    mock_psutil_proc.kill = kill
 
     # Manually set up the adopted app state
     supervisor._apps["reachy_simon"].process = None
     supervisor._apps["reachy_simon"].pid = 88888
     supervisor._apps["reachy_simon"].status = "running"
 
-    with patch("reachy_controller.app_supervisor.psutil.Process", return_value=mock_psutil_proc):
+    with (
+        patch("reachy_controller.app_supervisor.psutil.Process", return_value=mock_psutil_proc),
+        patch("reachy_controller.app_supervisor._signal_process_tree") as mock_sig,
+    ):
         result = await supervisor.stop_app("reachy_simon")
 
     # Verify the stop completed successfully
@@ -460,22 +531,14 @@ async def test_stop_adopted_orphan_with_escalation() -> None:
     assert supervisor._apps["reachy_simon"].status == "stopped"
     assert supervisor._apps["reachy_simon"].pid is None
 
-    # Verify the full escalation path ran:
-    # 1. SIGINT sent
-    # 2. wait() raises TimeoutExpired (process still alive)
-    # 3. terminate() called (sends SIGTERM)
-    # 4. wait() raises TimeoutExpired again (process still alive)
-    # 5. kill() called (sends SIGKILL)
-    # 6. wait() succeeds (process dead)
-    assert ("signal", signal.SIGINT) in call_sequence, "SIGINT not sent"
-    assert ("terminate",) in call_sequence, "SIGTERM not sent"
-    assert ("kill",) in call_sequence, "SIGKILL not sent"
-
-    # Verify ordering: signal -> terminate -> kill
-    signal_idx = call_sequence.index(("signal", signal.SIGINT))
-    terminate_idx = call_sequence.index(("terminate",))
-    kill_idx = call_sequence.index(("kill",))
-    assert signal_idx < terminate_idx < kill_idx, "Escalation order is wrong"
+    # Full escalation, all via the process-tree helper, in order:
+    # SIGINT -> (timeout) -> SIGTERM -> (timeout) -> SIGKILL -> (dead)
+    sent = [call.args for call in mock_sig.call_args_list]
+    assert sent == [
+        (88888, signal.SIGINT),
+        (88888, signal.SIGTERM),
+        (88888, signal.SIGKILL),
+    ], f"Escalation sequence wrong: {sent}"
 
 
 def test_local_app_to_dict_includes_external() -> None:
@@ -740,7 +803,10 @@ async def test_stop_app_can_kill_external_app() -> None:
     assert simon_app.external is True
 
     # Now stop it
-    with patch("reachy_controller.app_supervisor.psutil.Process") as mock_psutil_proc:
+    with (
+        patch("reachy_controller.app_supervisor.psutil.Process") as mock_psutil_proc,
+        patch("reachy_controller.app_supervisor._signal_process_tree") as mock_sig,
+    ):
         mock_proc_instance = MagicMock()
         mock_proc_instance.cmdline.return_value = [
             "uv",
@@ -755,7 +821,6 @@ async def test_stop_app_can_kill_external_app() -> None:
             return 0
 
         mock_proc_instance.wait = mock_wait
-        mock_proc_instance.send_signal = MagicMock()
         mock_psutil_proc.return_value = mock_proc_instance
 
         result = await supervisor.stop_app("reachy_simon")
@@ -764,6 +829,7 @@ async def test_stop_app_can_kill_external_app() -> None:
     assert simon_app.status == "stopped"
     assert simon_app.external is False
     assert simon_app.pid is None
+    mock_sig.assert_called_once_with(2000, signal.SIGINT)
 
 
 @pytest.mark.asyncio
