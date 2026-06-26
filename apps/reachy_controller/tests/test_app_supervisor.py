@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -37,6 +38,31 @@ async def test_start_app_success(tmp_path: Path) -> None:
     assert result["name"] == "reachy_chat"
     assert result["pid"] == 12345
     assert supervisor._apps["reachy_chat"].status == "loading"
+
+
+@pytest.mark.asyncio
+async def test_start_app_argv_direct_interpreter(tmp_path: Path) -> None:
+    """start_app launches the app module with the shared interpreter directly."""
+    supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
+
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+
+    with (
+        patch("reachy_controller.app_supervisor.psutil.process_iter", return_value=[]),
+        patch(
+            "reachy_controller.app_supervisor.subprocess.Popen",
+            return_value=mock_process,
+        ) as mock_popen,
+    ):
+        result = await supervisor.start_app("reachy_chat")
+
+    assert result["status"] == "loading"
+    argv = mock_popen.call_args.args[0]
+    assert argv == [sys.executable, "-m", "reachy_chat.main"]
+    assert "uv" not in argv
+    assert "run" not in argv
 
 
 @pytest.mark.asyncio
@@ -167,12 +193,11 @@ async def test_stop_app() -> None:
 
 @pytest.mark.asyncio
 async def test_stop_app_signals_process_tree() -> None:
-    """stop_app signals the whole process tree, not just the Popen (wrapper) handle.
+    """stop_app signals the whole process tree, not just the Popen handle.
 
-    Regression for #26: ``uv run`` does NOT forward SIGINT to its python child, so
-    signalling only the wrapper pid never reaches the app's KeyboardInterrupt path
-    (where the graceful return-home + sleep cue live). The supervisor must signal
-    the tree so the python child receives SIGINT directly.
+    Regression for #26: launched apps may spawn children during operation, and
+    those descendants must receive shutdown signals along with the direct app
+    process so graceful return-home + sleep cues can complete.
     """
     supervisor = AppSupervisor()
 
@@ -191,10 +216,10 @@ async def test_stop_app_signals_process_tree() -> None:
 
 
 def test_signal_process_tree_signals_parent_and_children() -> None:
-    """_signal_process_tree signals the parent AND every descendant (the python child).
+    """_signal_process_tree signals the parent AND every descendant.
 
-    This is the core of the #26 fix: the launched ``uv run`` wrapper is the parent and
-    the actual python app is a child; both must receive the signal.
+    This is the core of the #26 stop behavior: a launched app can create child
+    processes, and both the parent app process and descendants must receive the signal.
     """
     child_a = MagicMock()
     child_b = MagicMock()
@@ -432,7 +457,11 @@ async def test_stop_adopted_orphan() -> None:
     # Mock psutil.Process for the orphaned process
     mock_psutil_proc = MagicMock()
     mock_psutil_proc.pid = 99999
-    mock_psutil_proc.cmdline.return_value = ["uv", "run", "python", "-m", "reachy_lookat.main"]
+    mock_psutil_proc.cmdline.return_value = [
+        "/path/to/.venv/bin/python",
+        "-m",
+        "reachy_lookat.main",
+    ]
     wait_timeouts = []
 
     def quick_wait(timeout):
@@ -457,7 +486,7 @@ async def test_stop_adopted_orphan() -> None:
     assert supervisor._apps["reachy_lookat"].status == "stopped"
     assert supervisor._apps["reachy_lookat"].pid is None
     assert wait_timeouts == [_STOP_SIGINT_GRACE_S]
-    # Signal delivered to the whole tree (uv wrapper + python child), not just app.pid
+    # Signal delivered to the whole tree, not just app.pid
     mock_sig.assert_called_once_with(99999, signal.SIGINT)
 
 
@@ -491,7 +520,7 @@ async def test_stop_adopted_orphan_with_escalation() -> None:
 
     Regression for two bugs: (1) psutil.TimeoutExpired must be caught (not
     subprocess.TimeoutExpired) so escalation actually runs; (2) #26 — the signal
-    must reach the process tree (the python child), since ``uv run`` swallows SIGINT.
+    must reach the whole process tree because apps can spawn children.
     When the process ignores SIGINT/SIGTERM, proc.wait() raises psutil.TimeoutExpired,
     escalating SIGINT -> SIGTERM -> SIGKILL, all delivered via _signal_process_tree.
     """
@@ -500,7 +529,11 @@ async def test_stop_adopted_orphan_with_escalation() -> None:
     # Mock psutil.Process for the orphaned process
     mock_psutil_proc = MagicMock()
     mock_psutil_proc.pid = 88888
-    mock_psutil_proc.cmdline.return_value = ["uv", "run", "python", "-m", "reachy_simon.main"]
+    mock_psutil_proc.cmdline.return_value = [
+        "/path/to/.venv/bin/python",
+        "-m",
+        "reachy_simon.main",
+    ]
 
     wait_call_count = [0]  # Use list to allow modification in nested function
 
@@ -581,14 +614,14 @@ def test_scan_for_live_apps_finds_multiple() -> None:
     mock_proc1 = MagicMock()
     mock_proc1.info = {
         "pid": 1001,
-        "cmdline": ["uv", "run", "python", "-m", "reachy_chat.main"],
+        "cmdline": ["/path/to/.venv/bin/python", "-m", "reachy_chat.main"],
     }
     mock_proc1.create_time.return_value = 1000.0
 
     mock_proc2 = MagicMock()
     mock_proc2.info = {
         "pid": 1002,
-        "cmdline": ["uv", "run", "python", "-m", "reachy_dance.main"],
+        "cmdline": ["/path/to/.venv/bin/python", "-m", "reachy_dance.main"],
     }
     mock_proc2.create_time.return_value = 1001.0
 
@@ -621,6 +654,31 @@ def test_scan_for_live_apps_ignores_non_matching() -> None:
     assert result == {}
 
 
+def test_scan_for_live_apps_matches_direct_interpreter() -> None:
+    """_scan_for_live_apps matches direct interpreter launches only."""
+    supervisor = AppSupervisor()
+
+    matching_proc = MagicMock()
+    matching_proc.info = {
+        "pid": 1001,
+        "cmdline": ["/some/python", "-m", "reachy_chat.main"],
+    }
+    matching_proc.create_time.return_value = 1000.0
+
+    non_matching_proc = MagicMock()
+    non_matching_proc.info = {
+        "pid": 999,
+        "cmdline": ["/some/python", "-c", "reachy_chat.main"],
+    }
+    non_matching_proc.create_time.return_value = 900.0
+
+    with patch("reachy_controller.app_supervisor.psutil.process_iter") as mock_iter:
+        mock_iter.return_value = [non_matching_proc, matching_proc]
+        result = supervisor._scan_for_live_apps()
+
+    assert result == {"reachy_chat": (1001, 1000.0)}
+
+
 def test_scan_for_live_apps_handles_no_such_process() -> None:
     """Test that _scan_for_live_apps handles NoSuchProcess exception."""
     supervisor = AppSupervisor()
@@ -629,7 +687,7 @@ def test_scan_for_live_apps_handles_no_such_process() -> None:
     mock_proc = MagicMock()
     mock_proc.info = {
         "pid": 888,
-        "cmdline": ["uv", "run", "python", "-m", "reachy_chat.main"],
+        "cmdline": ["/path/to/.venv/bin/python", "-m", "reachy_chat.main"],
     }
     mock_proc.create_time.side_effect = psutil.NoSuchProcess(888)
 
@@ -649,7 +707,7 @@ def test_scan_for_live_apps_handles_access_denied() -> None:
     mock_proc = MagicMock()
     mock_proc.info = {
         "pid": 777,
-        "cmdline": ["uv", "run", "python", "-m", "reachy_chat.main"],
+        "cmdline": ["/path/to/.venv/bin/python", "-m", "reachy_chat.main"],
     }
     mock_proc.create_time.side_effect = psutil.AccessDenied(777, "test")
 
@@ -669,7 +727,7 @@ def test_get_all_status_adopts_external_app() -> None:
     mock_proc = MagicMock()
     mock_proc.info = {
         "pid": 5000,
-        "cmdline": ["uv", "run", "python", "-m", "reachy_chat.main"],
+        "cmdline": ["/path/to/.venv/bin/python", "-m", "reachy_chat.main"],
     }
     mock_proc.create_time.return_value = 2000.0
 
@@ -702,7 +760,7 @@ def test_get_all_status_dead_adopted_app_resets_external() -> None:
     mock_proc = MagicMock()
     mock_proc.info = {
         "pid": 4000,
-        "cmdline": ["uv", "run", "python", "-m", "reachy_dance.main"],
+        "cmdline": ["/path/to/.venv/bin/python", "-m", "reachy_dance.main"],
     }
     mock_proc.create_time.return_value = 1500.0
 
@@ -736,7 +794,7 @@ async def test_start_app_refuses_external_live_app(tmp_path: Path) -> None:
     mock_proc = MagicMock()
     mock_proc.info = {
         "pid": 3000,
-        "cmdline": ["uv", "run", "python", "-m", "reachy_chat.main"],
+        "cmdline": ["/path/to/.venv/bin/python", "-m", "reachy_chat.main"],
     }
     mock_proc.create_time.return_value = 1000.0
 
@@ -787,7 +845,7 @@ async def test_stop_app_can_kill_external_app() -> None:
     mock_proc = MagicMock()
     mock_proc.info = {
         "pid": 2000,
-        "cmdline": ["uv", "run", "python", "-m", "reachy_simon.main"],
+        "cmdline": ["/path/to/.venv/bin/python", "-m", "reachy_simon.main"],
     }
     mock_proc.create_time.return_value = 900.0
 
@@ -809,9 +867,7 @@ async def test_stop_app_can_kill_external_app() -> None:
     ):
         mock_proc_instance = MagicMock()
         mock_proc_instance.cmdline.return_value = [
-            "uv",
-            "run",
-            "python",
+            "/path/to/.venv/bin/python",
             "-m",
             "reachy_simon.main",
         ]
@@ -1153,3 +1209,100 @@ async def test_monitor_readiness_timeout_fallback(tmp_path: Path, caplog) -> Non
                     await reaper_task
                 except asyncio.CancelledError:
                     pass
+
+
+def test_cmdline_matches_module_exact_match() -> None:
+    """Test _cmdline_matches_module with exact module token matching."""
+    supervisor = AppSupervisor()
+
+    # Exact match: should return True
+    assert supervisor._cmdline_matches_module(
+        ["/path/to/python", "-m", "reachy_chat.main"], "reachy_chat"
+    )
+
+    # With trailing args: should return True
+    assert supervisor._cmdline_matches_module(
+        ["/path/to/python", "-m", "reachy_chat.main", "--debug"], "reachy_chat"
+    )
+
+    # Confusingly-named module: should return False
+    assert not supervisor._cmdline_matches_module(
+        ["/path/to/python", "-m", "my_reachy_chat.main"], "reachy_chat"
+    )
+    assert not supervisor._cmdline_matches_module(
+        ["/path/to/python", "-m", "reachy_chat.main.bak"], "reachy_chat"
+    )
+
+    # Wrong launcher: should return False
+    assert not supervisor._cmdline_matches_module(
+        ["/path/to/python", "-c", "reachy_chat.main"], "reachy_chat"
+    )
+
+    # Too short: should return False
+    assert not supervisor._cmdline_matches_module(
+        ["/path/to/python", "-m"], "reachy_chat"
+    )
+    assert not supervisor._cmdline_matches_module(
+        ["/path/to/python"], "reachy_chat"
+    )
+
+
+@pytest.mark.asyncio
+async def test_stop_app_rejects_confusingly_named_module() -> None:
+    """Test that stop_app does not signal an adopted process with a confusingly-named module."""
+    supervisor = AppSupervisor()
+
+    # Mock psutil.Process for the orphaned process with a mismatched module
+    mock_psutil_proc = MagicMock()
+    mock_psutil_proc.pid = 99999
+    mock_psutil_proc.cmdline.return_value = [
+        "/path/to/.venv/bin/python",
+        "-m",
+        "not_reachy_chat.main",  # Confusingly-named, should not match
+    ]
+
+    # Manually set up the adopted app state
+    supervisor._apps["reachy_chat"].process = None
+    supervisor._apps["reachy_chat"].pid = 99999
+    supervisor._apps["reachy_chat"].status = "running"
+
+    with (
+        patch("reachy_controller.app_supervisor.psutil.Process", return_value=mock_psutil_proc),
+        patch("reachy_controller.app_supervisor._signal_process_tree") as mock_sig,
+    ):
+        result = await supervisor.stop_app("reachy_chat")
+
+    # Should stop without signalling
+    assert result["status"] == "stopped"
+    assert supervisor._apps["reachy_chat"].status == "stopped"
+    # _signal_process_tree should NOT have been called
+    mock_sig.assert_not_called()
+
+
+def test_get_all_status_rejects_confusingly_named_module() -> None:
+    """Test that get_all_status resets a running adopted app with a confusingly-named module to stopped."""
+    supervisor = AppSupervisor()
+
+    # Manually adopt an app with a live PID
+    supervisor._apps["reachy_dance"].pid = 7777
+    supervisor._apps["reachy_dance"].status = "running"
+    supervisor._apps["reachy_dance"].external = True
+
+    # Mock psutil.Process to return a live process with a confusingly-named module
+    mock_psutil_proc = MagicMock()
+    mock_psutil_proc.cmdline.return_value = [
+        "/path/to/.venv/bin/python",
+        "-m",
+        "my_reachy_dance.main",  # Confusingly-named, should not match
+    ]
+
+    with patch("reachy_controller.app_supervisor.psutil.Process", return_value=mock_psutil_proc):
+        status = supervisor.get_all_status()
+
+    # Find the dance status
+    dance_status = next(s for s in status if s["name"] == "reachy_dance")
+
+    # Should be reset to stopped because the cmdline doesn't match the expected module
+    assert dance_status["status"] == "stopped"
+    assert supervisor._apps["reachy_dance"].status == "stopped"
+    assert supervisor._apps["reachy_dance"].pid is None

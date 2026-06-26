@@ -13,8 +13,24 @@ which daemon is running. Custom apps live in `apps/`. The upstream SDK clone (`r
 reference app (`reachy_mini_conversation_app/`) are gitignored.
 
 ## Environment & commands
-- **Use `uv run`** — do not call `.venv/bin/python` directly or activate venvs.
-  From an app dir, `uv run python -m <pkg>.main` builds/uses that app's own env.
+- **One uv workspace, one shared `.venv`.** The repo is a single uv workspace
+  (`[tool.uv.workspace] members = ["apps/*"]` in the root `pyproject.toml`): `uv sync
+  --all-packages` from the repo root resolves the root + every `apps/*` into **one** `.venv`
+  and **one** `uv.lock` (#33). There are no per-app venvs anymore. **Use `uv run`** — do not
+  call `.venv/bin/python` directly or activate venvs. `uv run python -m <app>.main` from
+  anywhere uses the shared env. (Stale-venv tip: if `cv2` ever fails to import after an
+  incremental sync, clean-rebuild with `rm -rf .venv && uv sync --all-packages` —
+  `opencv-python` and `opencv-contrib-python` both own `cv2/` and collide on an in-place sync.)
+  - **Always `--all-packages`.** A plain `uv sync` installs only the **root** (`reachy-mini`/
+    `mujoco`/`numpy`), NOT the `apps/*` members — the root has zero dependency on the apps, so they
+    are not pulled in. That leaves a **half-broken env that fails confusingly**: src-layout apps
+    (`reachy_chat`, `reachy_controller`) die with `ModuleNotFoundError: No module named '<app>'`
+    (their package lives under `src/`, only importable once installed); apps with extra deps fail on
+    the dep (`reachy_lookat` → `No module named 'cv2'`); but **flat-layout, root-dep-only apps
+    (`reachy_dance`, `reachy_simon`) still run** because `python -m <app>.main` resolves the package
+    from `cwd=apps/<app>` even when uninstalled — which masks the problem. Fix/avoid: **always
+    `uv sync --all-packages`** from the repo root after every pull/checkout, on the Jetson too
+    (verify with `ls .venv/lib/python3.12/site-packages/__editable__.reachy_*.pth` → expect all 5).
 - Python 3.12, `reachy-mini` 1.8.3, `mujoco` 3.3.7.
 - **Daemon** (must be running; bridges code ↔ motors/sensors, serves `:8000`):
   - Simulation: `uv run python -m reachy_mini.daemon.app.main --sim --headless`
@@ -22,7 +38,9 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
     (NOT plain `reachy-mini-daemon` — the wrapper aliases `unixfd*→nvunixfd*` so the camera socket
     is created; stock launcher = no camera). See "Jetson / Ubuntu 24.04 gotchas" below.
   - Other real hardware (non-Jetson, Lite over USB): `uv run reachy-mini-daemon`
-- Run an app: `cd apps/<app> && uv run python -m <app>.main` (e.g. `reachy_dance.main`).
+- Run an app: `cd apps/<app> && uv run python -m <app>.main` (e.g. `reachy_dance.main`), or launch
+  it from the controller — its `AppSupervisor` spawns apps with the **shared interpreter directly**
+  (`sys.executable -m <app>.main`, no `uv run` wrapper; #33).
   Only **one app uses the robot at a time** — stop the current one first:
   `curl -X POST localhost:8000/api/apps/stop-current-app`. **That endpoint only stops
   daemon-managed apps;** an app you launched directly with `uv run python -m <app>.main` returns
@@ -187,6 +205,17 @@ git history + memory replace it).
   `REACHY_MANAGE_DAEMON=1` (a local controller only manages a local daemon); for that, tunnel the
   **controller** port instead (`ssh -N -L 7870:localhost:7861 <jetson>`, a distinct local port to
   dodge a local :7861) and point the browser at `:7870`.
+- **Functional QA is agent-driven, then owner-finished (adopted 2026-06-25).** The agent verifies
+  controller *functionality* by driving the **live Jetson controller** with the Playwright MCP (web
+  UI) + computer-use MCP (native bits), through the controller-port tunnel above
+  (`ssh -N -L 7870:localhost:7861 <jetson>` → drive `:7870`). Exercise Start/Stop of each app and
+  confirm it reaches **`running`** (not `error`/exit-1) — that catches launch/env regressions like
+  the partial-`uv sync` footgun above. **An app Started this way runs ON the Jetson and actuates the
+  REAL robot** (the controller spawns it on-device), so: only **one app at a time**, stop the prior
+  one first, and **don't drive while the owner is hands-on at the robot** — coordinate. After the
+  agent's functional pass, the **owner does a light final hardware pass** (motion feel, mic/camera/
+  speaker). Loading the UI + reading telemetry is non-actuating; clicking **Start** is what moves the
+  robot — confirm timing before that step.
 - **Never put `filter: url(#…)` (feDisplacementMap) on `.vp-stage`** — it warps the live camera/sim/
   schematic *content* (the original "distortion" bug). Liquid-glass refraction belongs on the panel
   **backdrop** (`backdrop-filter: url(#lg-refract)`, behind `@supports`) — Chromium-only, with a
