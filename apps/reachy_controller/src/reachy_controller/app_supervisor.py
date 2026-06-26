@@ -7,6 +7,7 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -30,11 +31,9 @@ _APP_READINESS_TIMEOUT_S = 60.0  # Ceiling timeout for app startup before promot
 def _signal_process_tree(pid: int, sig: int) -> None:
     """Send ``sig`` to ``pid`` and all of its descendant processes.
 
-    Apps are launched as ``uv run python -m <app>.main``; ``uv`` does NOT forward
-    SIGINT to its python child, so signalling only the wrapper pid never reaches the
-    app's KeyboardInterrupt handler — where the graceful return-home + sleep cue live
-    (#26). Signalling the whole tree delivers the signal to the python child directly.
-    Best-effort: processes that exit mid-iteration are ignored.
+    The launched process is the Python app directly, but it may spawn child subprocesses
+    (e.g. audio handlers). Signalling the whole tree ensures the signal reaches child
+    processes spawned by the app. Best-effort: processes that exit mid-iteration are ignored.
     """
     try:
         parent = psutil.Process(pid)
@@ -96,7 +95,7 @@ class LocalApp:
 
 
 class AppSupervisor:
-    """Supervise local Python apps launched via uv run."""
+    """Supervise local Python apps launched with the shared interpreter."""
 
     APPS: dict[str, dict[str, Any]] = {
         "reachy_chat": {"module": "reachy_chat", "uses_camera": True},
@@ -191,9 +190,10 @@ class AppSupervisor:
             if app.uses_camera:
                 await self._release_dashboard_camera()
 
-            # Launch app
+            # Launch the app module directly with the shared interpreter. Keep
+            # cwd=app_dir because apps load resources relative to their own directory.
             app_dir = self._workspace_root / "apps" / name
-            argv = ["uv", "run", "python", "-m", f"{name}.main"]
+            argv = [sys.executable, "-m", f"{name}.main"]
 
             # Generate unique ready file path for this app launch
             ready_path = Path(tempfile.gettempdir()) / f"reachy_ready_{name}_{uuid.uuid4().hex}"
@@ -285,9 +285,8 @@ class AppSupervisor:
             try:
                 # Handle subprocess.Popen handle (started by this supervisor)
                 if app.process is not None:
-                    # `uv run` does not forward SIGINT to its python child, so signal the
-                    # whole process tree — the python app receives SIGINT directly and runs
-                    # its graceful return-home + sleep cue (#26).
+                    # The app receives SIGINT directly; signal the whole tree too so any
+                    # child subprocesses participate in graceful shutdown (#26).
                     _signal_process_tree(app.process.pid, signal.SIGINT)
                     try:
                         await asyncio.to_thread(app.process.wait, _STOP_SIGINT_GRACE_S)
@@ -308,7 +307,7 @@ class AppSupervisor:
                         # Verify it's still the right process
                         cmdline = " ".join(proc.cmdline() or [])
                         if f"{name}.main" in cmdline:
-                            # Same `uv run` SIGINT-forwarding caveat as above — signal the tree.
+                            # Same process-tree rationale as above: adopted apps may have children.
                             _signal_process_tree(app.pid, signal.SIGINT)
                             try:
                                 await asyncio.to_thread(proc.wait, _STOP_SIGINT_GRACE_S)
@@ -509,15 +508,12 @@ class AppSupervisor:
         for proc in psutil.process_iter(["pid", "cmdline"]):
             try:
                 cmdline = proc.info.get("cmdline") or []
-                # Check if this process matches the pattern: uv run python -m <name>.main
-                if (
-                    len(cmdline) >= 5
-                    and cmdline[0:4] == ["uv", "run", "python", "-m"]
-                ):
-                    # Check which app this matches (first match wins)
+                # Match direct interpreter launches by exact module token:
+                # <python> -m <name>.main. The interpreter path varies by host.
+                if len(cmdline) >= 3 and cmdline[1] == "-m":
+                    module = cmdline[2]
                     for app_name in self.APPS:
-                        if f"{app_name}.main" in " ".join(cmdline):
-                            # Only record if not already found (first match per app)
+                        if module == f"{app_name}.main":
                             if app_name not in found:
                                 found[app_name] = (proc.info.get("pid"), proc.create_time())
                             break
