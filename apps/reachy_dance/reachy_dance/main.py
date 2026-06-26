@@ -12,7 +12,6 @@ from reachy_mini.utils import create_head_pose
 
 CONTROL_PERIOD_S = 0.02
 ANTENNA_AMPLITUDE_RAD = 0.28
-RETURN_HOME_DURATION_S = 2.5
 SLEEP_CUE_SETTLE_S = 1.0
 
 logger = logging.getLogger(__name__)
@@ -209,16 +208,12 @@ class ReachyDance(ReachyMiniApp):
     @staticmethod
     def _return_home(reachy_mini: ReachyMini) -> None:
         try:
-            reachy_mini.goto_target(
-                head=create_head_pose(degrees=True),
-                antennas=np.array([0.0, 0.0], dtype=float),
-                body_yaw=0.0,
-                duration=RETURN_HOME_DURATION_S,
-            )
+            # Daemon stays up, so the robot stays awake: return to the awake-ready
+            # home posture with the SDK wake_up emote (home + head gesture + wake_up.wav).
+            reachy_mini.wake_up()
+            time.sleep(SLEEP_CUE_SETTLE_S)  # let the wake_up.wav cue finish before the process exits/disconnects
         except Exception as exc:
-            logger.warning(
-                "dance: graceful return-home unavailable; snapping home: %s", exc
-            )
+            logger.warning("dance: graceful return-home (wake_up) unavailable; snapping home: %s", exc)
             try:
                 reachy_mini.set_target(
                     head=create_head_pose(degrees=True),
@@ -227,14 +222,6 @@ class ReachyDance(ReachyMiniApp):
                 )
             except Exception as set_exc:
                 logger.warning("dance: failed to snap home on exit: %s", set_exc)
-
-        try:
-            reachy_mini.media.play_sound("go_sleep.wav")
-            time.sleep(SLEEP_CUE_SETTLE_S)
-        except AttributeError as exc:
-            logger.warning("dance: sleep cue unavailable on exit: %s", exc)
-        except Exception as exc:
-            logger.debug("dance: sleep cue failed on exit: %s", exc)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,6 @@ HEAD_TURN_THRESHOLD = 0.35
 HEAD_PITCH_THRESHOLD = 0.25
 INPUT_TIMEOUT_SECONDS = 5.0
 MAX_SEQUENCE_LENGTH = 8
-RETURN_HOME_DURATION_S = 2.5
 SLEEP_CUE_SETTLE_S = 1.0
 
 logger = logging.getLogger(__name__)
@@ -85,16 +84,12 @@ class ReachySimon(ReachyMiniApp):
     @staticmethod
     def _return_home(reachy_mini: ReachyMini) -> None:
         try:
-            reachy_mini.goto_target(
-                head=create_head_pose(degrees=True),
-                antennas=np.array([0.0, 0.0], dtype=float),
-                body_yaw=0.0,
-                duration=RETURN_HOME_DURATION_S,
-            )
+            # Daemon stays up, so the robot stays awake: return to the awake-ready
+            # home posture with the SDK wake_up emote (home + head gesture + wake_up.wav).
+            reachy_mini.wake_up()
+            time.sleep(SLEEP_CUE_SETTLE_S)  # let the wake_up.wav cue finish before the process exits/disconnects
         except Exception as exc:
-            logger.warning(
-                "simon: graceful return-home unavailable; snapping home: %s", exc
-            )
+            logger.warning("simon: graceful return-home (wake_up) unavailable; snapping home: %s", exc)
             try:
                 reachy_mini.set_target(
                     head=create_head_pose(degrees=True),
@@ -103,14 +98,6 @@ class ReachySimon(ReachyMiniApp):
                 )
             except Exception as set_exc:
                 logger.warning("simon: failed to snap home on exit: %s", set_exc)
-
-        try:
-            reachy_mini.media.play_sound("go_sleep.wav")
-            time.sleep(SLEEP_CUE_SETTLE_S)
-        except AttributeError as exc:
-            logger.warning("simon: sleep cue unavailable on exit: %s", exc)
-        except Exception as exc:
-            logger.debug("simon: sleep cue failed on exit: %s", exc)
 
     def play_sequence(
         self,
