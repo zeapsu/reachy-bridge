@@ -282,6 +282,11 @@ input:focus-visible {
   50% { opacity: 0.45; }
 }
 
+@keyframes ramp-off {
+  from { color: var(--mint); }
+  to { color: var(--coral); }
+}
+
 .grid {
   margin-top: 20px;
   display: grid;
@@ -447,6 +452,10 @@ input:focus-visible {
 .vp-power.starting button {
   animation: pulse 1s var(--ease) infinite;
   color: var(--mint);
+}
+
+.vp-power.stopping button {
+  animation: ramp-off 1.6s var(--ease) forwards;
 }
 
 .vp-power.disabled button {
@@ -1058,6 +1067,11 @@ input[type=range]::-moz-range-thumb {
   .dot.loading,
   .spinner-glyph,
   .vp-badge .rec {
+    animation: none;
+  }
+
+  .vp-power.starting button,
+  .vp-power.stopping button {
     animation: none;
   }
 

@@ -17,6 +17,7 @@
     robotControlMode: null,
     daemonStatusTimer: null,
     daemonStatusInflight: false,
+    daemonStopping: false,
     simLoop: null,
   };
 
@@ -746,7 +747,20 @@
       const vpPower = $("vp-power");
       const button = $("daemon-power");
 
-      vpPower.classList.remove("running", "starting", "disabled");
+      vpPower.classList.remove("running", "starting", "stopping", "disabled");
+
+      if (state.daemonStopping) {
+        if (status.running) {
+          // Still shutting down — hold the OFF ramp and keep the button inert.
+          vpPower.classList.add("stopping");
+          button.title = "Daemon stopping…";
+          button.setAttribute("aria-label", "Daemon stopping…");
+          button.disabled = true;
+          return;
+        }
+        // Daemon is down — clear the transitional state, fall through to red default.
+        state.daemonStopping = false;
+      }
 
       if (!status.manageable) {
         vpPower.classList.add("disabled");
@@ -784,10 +798,18 @@
 
     if (isRunning) {
       state.controlBusy = true;
+      state.daemonStopping = true;
+      vpPower.classList.remove("running", "starting");
+      vpPower.classList.add("stopping");
+      button.disabled = true;
+      button.title = "Daemon stopping…";
+      button.setAttribute("aria-label", "Daemon stopping…");
       $("control-status").textContent = "stopping";
       try {
         await apiJson("/api/daemon/stop", { method: "POST" });
       } catch (error) {
+        state.daemonStopping = false;
+        vpPower.classList.remove("stopping");
         $("control-status").textContent = "error";
         $("control-hint").textContent = error.message || "Failed to stop daemon";
         $("control-hint").className = "panel-hint error";
