@@ -500,15 +500,46 @@
     }
   }
 
+  // Lightweight volume save path (#38): POST directly without disabling the slider
+  // being dragged. setControlsEnabled() is reserved for daemon-offline + discrete ops.
+  const volumeSave = {
+    "vol-spk": { inflight: false, dirty: false },
+    "vol-mic": { inflight: false, dirty: false },
+  };
+
+  async function saveVolume(id, label, endpoint) {
+    if (!state.daemonOnline) return;
+    const slot = volumeSave[id];
+    if (slot.inflight) {
+      // A request is already in flight; remember that the value moved again and
+      // re-send the freshest value once it returns (coalesce, don't queue per-event).
+      slot.dirty = true;
+      return;
+    }
+    slot.inflight = true;
+    $("control-status").textContent = label;
+    try {
+      const value = Number($(id).value);
+      await apiJson(endpoint, { method: "POST", body: JSON.stringify({ volume: value }) });
+      $("control-status").textContent = "ok";
+      $("control-hint").textContent = "";
+      $("control-hint").className = "panel-hint";
+    } catch (error) {
+      $("control-status").textContent = "error";
+      $("control-hint").textContent = error.message || "Volume request failed";
+      $("control-hint").className = "panel-hint error";
+    } finally {
+      slot.inflight = false;
+      if (slot.dirty) {
+        slot.dirty = false;
+        void saveVolume(id, label, endpoint);
+      }
+    }
+  }
+
   function bindSliders() {
-    const speakerSave = debounce(() => {
-      const value = Number($("vol-spk").value);
-      void performControl("speaker", () => apiJson("/api/volume/set", { method: "POST", body: JSON.stringify({ volume: value }) }));
-    }, 240);
-    const micSave = debounce(() => {
-      const value = Number($("vol-mic").value);
-      void performControl("microphone", () => apiJson("/api/volume/microphone/set", { method: "POST", body: JSON.stringify({ volume: value }) }));
-    }, 240);
+    const speakerSave = debounce(() => void saveVolume("vol-spk", "speaker", "/api/volume/set"), 240);
+    const micSave = debounce(() => void saveVolume("vol-mic", "microphone", "/api/volume/microphone/set"), 240);
 
     [["vol-spk", speakerSave], ["vol-mic", micSave]].forEach(([id, save]) => {
       updateSliderFill(id);
