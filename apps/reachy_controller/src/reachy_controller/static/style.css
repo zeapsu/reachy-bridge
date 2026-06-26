@@ -1058,6 +1058,8 @@ input[type=range]::-moz-range-thumb {
     backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
     -webkit-backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
   }
+  .blob { animation: none; }
+  .glass::before { animation: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

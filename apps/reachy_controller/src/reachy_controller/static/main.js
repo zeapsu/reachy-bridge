@@ -19,6 +19,7 @@
     daemonStatusInflight: false,
     daemonStopping: false,
     simLoop: null,
+    live: { streams: [], timers: [], active: false },
   };
 
   document.querySelectorAll(".glass").forEach((glass) => {
@@ -836,40 +837,63 @@
     }
   });
 
+  function startLiveConnections() {
+    if (state.live.active) return;
+    state.live.active = true;
+
+    void pollDaemonStatus();
+    void pollAppsStatus();
+    state.live.timers.push(
+      setInterval(() => void pollDaemonStatus(), 1000),
+      setInterval(() => void pollAppsStatus(), 1000),
+    );
+
+    const telemetry = bindEventSource("/telemetry/state-stream", {
+      "state-update": (event) => {
+        const payload = readEventPayload(event);
+        setDaemonOnline(true);
+        applyRobotState(payload);
+      },
+      "daemon-offline": () => setDaemonOnline(false),
+      error: () => setDaemonOnline(false),
+    });
+    const stats = bindEventSource("/api/system/stats-stream", {
+      "stats-update": (event) => updateStats(readEventPayload(event)),
+      error: () => {
+        $("v-host").textContent = "stats reconnecting";
+      },
+    });
+    const audio = bindEventSource("/api/audio/levels-stream", {
+      "audio-level": (event) => {
+        const payload = readEventPayload(event);
+        const speechDetected = payload && payload.speech_detected === true;
+        renderEqualizer(speechDetected);
+      },
+      "daemon-unavailable": () => renderEqualizer(false, "no audio signal"),
+      error: () => renderEqualizer(false, "audio stream reconnecting"),
+    });
+    state.live.streams.push(telemetry, stats, audio);
+  }
+
+  function stopLiveConnections() {
+    if (!state.live.active) return;
+    state.live.active = false;
+    state.live.timers.forEach((id) => clearInterval(id));
+    state.live.timers = [];
+    state.live.streams.forEach((source) => {
+      if (source) source.close();
+    });
+    state.live.streams = [];
+  }
+
   // Poll daemon status on the same cadence as the daemon connectivity check
-  void pollDaemonStatus();
-  setInterval(() => void pollDaemonStatus(), 1000);
-
-  bindEventSource("/telemetry/state-stream", {
-    "state-update": (event) => {
-      const payload = readEventPayload(event);
-      setDaemonOnline(true);
-      applyRobotState(payload);
-    },
-    "daemon-offline": () => setDaemonOnline(false),
-    error: () => setDaemonOnline(false),
-  });
-
-  bindEventSource("/api/system/stats-stream", {
-    "stats-update": (event) => updateStats(readEventPayload(event)),
-    error: () => {
-      $("v-host").textContent = "stats reconnecting";
-    },
-  });
-
-  bindEventSource("/api/audio/levels-stream", {
-    "audio-level": (event) => {
-      const payload = readEventPayload(event);
-      const speechDetected = payload && payload.speech_detected === true;
-      renderEqualizer(speechDetected);
-    },
-    "daemon-unavailable": () => renderEqualizer(false, "no audio signal"),
-    error: () => renderEqualizer(false, "audio stream reconnecting"),
-  });
-
   renderApps();
   renderEqualizer(false, "no audio signal");
   setDaemonOnline(false);
-  void pollAppsStatus();
-  setInterval(() => void pollAppsStatus(), 1000);
+  startLiveConnections();
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopLiveConnections();
+    else startLiveConnections();
+  });
 })();
