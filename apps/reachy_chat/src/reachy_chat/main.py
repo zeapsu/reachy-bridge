@@ -26,31 +26,21 @@ from reachy_chat.utils import (
 # Apply NVIDIA Jetson GStreamer plugin patch before any SDK initialization
 apply_nvidia_unixfd_patch()
 
-RETURN_HOME_DURATION_S = 2.5
 SLEEP_CUE_SETTLE_S = 1.0
 
 
 def _return_home(robot: ReachyMini, logger) -> None:
     try:
-        robot.goto_target(
-            head=create_head_pose(degrees=True),
-            body_yaw=0.0,
-            duration=RETURN_HOME_DURATION_S,
-        )
+        # Daemon stays up, so the robot stays awake: return to the awake-ready
+        # home posture with the SDK wake_up emote (home + head gesture + wake_up.wav).
+        robot.wake_up()
+        time.sleep(SLEEP_CUE_SETTLE_S)  # let the wake_up.wav cue finish before the process exits/disconnects
     except Exception as exc:
-        logger.warning("chat: graceful return-home unavailable; snapping home: %s", exc)
+        logger.warning("chat: graceful return-home (wake_up) unavailable; snapping home: %s", exc)
         try:
             robot.set_target(head=create_head_pose(degrees=True), body_yaw=0.0)
         except Exception as set_exc:
             logger.warning("chat: failed to snap home on exit: %s", set_exc)
-
-    try:
-        robot.media.play_sound("go_sleep.wav")
-        time.sleep(SLEEP_CUE_SETTLE_S)
-    except AttributeError as exc:
-        logger.warning("chat: sleep cue unavailable on exit: %s", exc)
-    except Exception as exc:
-        logger.debug("chat: sleep cue failed on exit: %s", exc)
 
 
 def main() -> None:
