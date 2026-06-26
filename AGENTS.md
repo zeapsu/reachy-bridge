@@ -31,7 +31,11 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
     from `cwd=apps/<app>` even when uninstalled — which masks the problem. Fix/avoid: **always
     `uv sync --all-packages`** from the repo root after every pull/checkout, on the Jetson too
     (verify with `ls .venv/lib/python3.12/site-packages/__editable__.reachy_*.pth` → expect all 5).
-- Python 3.12, `reachy-mini` 1.8.3, `mujoco` 3.3.7.
+- Python 3.12, `reachy-mini` 1.8.3, `mujoco` 3.3.7. **uv is pinned** to `>=0.11,<0.12`
+  (`[tool.uv] required-version`, #39) so Mac + Jetson stay on the same uv minor — a mismatch otherwise
+  churns ~1100 `uv.lock` marker lines. Bumping the minor is a deliberate both-machines step (update the
+  pin + re-lock). The Mac also has a second uv bundled by the Reachy desktop app — see memory
+  `mac-uv-dual-install` if `uv self update` errors.
 - **Daemon** (must be running; bridges code ↔ motors/sensors, serves `:8000`):
   - Simulation: `uv run python -m reachy_mini.daemon.app.main --sim --headless`
   - **Jetson hardware (current host — Lite over USB): `uv run python tools/reachy_mini_daemon_jetson.py`**
