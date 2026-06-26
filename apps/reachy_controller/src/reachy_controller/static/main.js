@@ -416,16 +416,39 @@
   });
   const eqState = new Array(NBARS).fill(0);
   const eqProfile = Array.from({ length: NBARS }, (_, index) => 0.24 + Math.sin((index / (NBARS - 1)) * Math.PI) * 0.76);
+  const eqLast = new Array(NBARS).fill(null);
+  let eqSettled = false;
+  let eqPeakLast = null;
 
   function renderEqualizer(speechDetected, label = null) {
-    const normalized = speechDetected ? 0.7 : 0.0;
+    const peak = label || (speechDetected ? "speech detected" : "no audio signal");
+    if (peak !== eqPeakLast) {
+      eqPeakLast = peak;
+      $("eq-peak").textContent = peak;
+    }
+    // Once idle has settled to the floor, do zero per-bar work each tick. The
+    // 20 Hz audio stream otherwise rewrites 36 bar heights forever, and those
+    // bars sit inside a backdrop-filtered panel that iOS re-rasterizes on every
+    // write — the focused-tab battery/heat drain (#36).
+    if (!speechDetected && eqSettled) return;
     eqEl.classList.toggle("idle", !speechDetected);
+    const normalized = speechDetected ? 0.7 : 0.0;
+    let settled = !speechDetected;
     bars.forEach((bar, index) => {
       const target = 5 + normalized * 86 * eqProfile[index];
       eqState[index] += (target - eqState[index]) * 0.42;
-      bar.style.height = `${Math.max(4, eqState[index]).toFixed(1)}%`;
+      if (!speechDetected && Math.abs(eqState[index] - target) < 0.1) {
+        eqState[index] = target;
+      } else if (!speechDetected) {
+        settled = false;
+      }
+      const next = `${Math.max(4, eqState[index]).toFixed(1)}%`;
+      if (next !== eqLast[index]) {
+        eqLast[index] = next;
+        bar.style.height = next;
+      }
     });
-    $("eq-peak").textContent = label || (speechDetected ? "speech detected" : "no audio signal");
+    eqSettled = settled;
   }
 
   function syncSlider(id, value) {
