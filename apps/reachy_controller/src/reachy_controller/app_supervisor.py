@@ -142,6 +142,43 @@ class AppSupervisor:
                 return app.name
         return None
 
+    @staticmethod
+    def _cmdline_matches_module(cmdline: list[str], module: str) -> bool:
+        """True when ``cmdline`` is a direct ``<python> -m <module>.main`` launch.
+
+        Exact token match (not substring): trailing args are allowed (e.g. ``--debug``),
+        but a confusingly-named module like ``my_<module>.main`` must NOT match.
+        """
+        return len(cmdline) >= 3 and cmdline[1] == "-m" and cmdline[2] == f"{module}.main"
+
+    def _close_log_handle(self, app: LocalApp) -> None:
+        """Close and clear an app's log handle if open (best-effort)."""
+        if app.log_handle is not None:
+            try:
+                app.log_handle.close()
+            except Exception as close_err:
+                logger.error(f"Failed to close log handle for {app.name}: {close_err}")
+            app.log_handle = None
+
+    async def _escalate_stop(self, pid: int, wait_fn: Callable, timeout_exc: type[BaseException]) -> None:
+        """Signal SIGINT, then escalate to SIGTERM then SIGKILL across the process tree,
+        waiting (via a worker thread) for ``wait_fn(timeout)`` between escalations.
+
+        ``wait_fn`` is the blocking wait for the target (``Popen.wait`` or ``psutil.Process.wait``);
+        ``timeout_exc`` is the timeout it raises (``subprocess.TimeoutExpired`` /
+        ``psutil.TimeoutExpired``).
+        """
+        _signal_process_tree(pid, signal.SIGINT)
+        try:
+            await asyncio.to_thread(wait_fn, _STOP_SIGINT_GRACE_S)
+        except timeout_exc:
+            _signal_process_tree(pid, signal.SIGTERM)
+            try:
+                await asyncio.to_thread(wait_fn, _STOP_SIGTERM_GRACE_S)
+            except timeout_exc:
+                _signal_process_tree(pid, signal.SIGKILL)
+                await asyncio.to_thread(wait_fn, 1.0)
+
     async def _release_dashboard_camera(self) -> None:
         """Ask the dashboard camera reader to yield ownership if registered."""
         if self._camera_release_hook is None:
@@ -251,13 +288,7 @@ class AppSupervisor:
                 app.status = "error"
                 app.error = str(e)
                 logger.error(f"Failed to start app {name}: {e}")
-                # Close log handle if it's open
-                if app.log_handle is not None:
-                    try:
-                        app.log_handle.close()
-                    except Exception as close_err:
-                        logger.error(f"Failed to close log handle for {name}: {close_err}")
-                    app.log_handle = None
+                self._close_log_handle(app)
                 return {"error": str(e), "name": name, "status": "error"}
 
     async def stop_app(self, name: str) -> dict[str, Any]:
@@ -287,41 +318,21 @@ class AppSupervisor:
                 if app.process is not None:
                     # The app receives SIGINT directly; signal the whole tree too so any
                     # child subprocesses participate in graceful shutdown (#26).
-                    _signal_process_tree(app.process.pid, signal.SIGINT)
-                    try:
-                        await asyncio.to_thread(app.process.wait, _STOP_SIGINT_GRACE_S)
-                    except subprocess.TimeoutExpired:
-                        # Escalate to SIGTERM across the tree
-                        _signal_process_tree(app.process.pid, signal.SIGTERM)
-                        try:
-                            await asyncio.to_thread(app.process.wait, _STOP_SIGTERM_GRACE_S)
-                        except subprocess.TimeoutExpired:
-                            # Final escalation: SIGKILL across the tree
-                            _signal_process_tree(app.process.pid, signal.SIGKILL)
-                            await asyncio.to_thread(app.process.wait, 1.0)
+                    await self._escalate_stop(app.process.pid, app.process.wait, subprocess.TimeoutExpired)
                     logger.info(f"Stopped app {name} (via subprocess handle)")
                 elif app.pid is not None:
                     # Handle adopted orphaned process (reconcile_orphans set pid, process=None)
                     try:
                         proc = psutil.Process(app.pid)
                         # Verify it's still the right process
-                        cmdline = " ".join(proc.cmdline() or [])
-                        if f"{name}.main" in cmdline:
+                        cmdline = proc.cmdline() or []
+                        if self._cmdline_matches_module(cmdline, name):
                             # Same process-tree rationale as above: adopted apps may have children.
-                            _signal_process_tree(app.pid, signal.SIGINT)
-                            try:
-                                await asyncio.to_thread(proc.wait, _STOP_SIGINT_GRACE_S)
-                            except psutil.TimeoutExpired:
-                                _signal_process_tree(app.pid, signal.SIGTERM)
-                                try:
-                                    await asyncio.to_thread(proc.wait, _STOP_SIGTERM_GRACE_S)
-                                except psutil.TimeoutExpired:
-                                    _signal_process_tree(app.pid, signal.SIGKILL)
-                                    await asyncio.to_thread(proc.wait, 1.0)
+                            await self._escalate_stop(app.pid, proc.wait, psutil.TimeoutExpired)
                             logger.info(f"Stopped adopted app {name} (pid {app.pid})")
                         else:
                             logger.warning(
-                                f"PID {app.pid} no longer matches {name}.main (cmdline: {cmdline})"
+                                f"PID {app.pid} no longer matches {name}.main (cmdline: {' '.join(cmdline)})"
                             )
                     except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
                         logger.info(f"Adopted process {name} (pid {app.pid}) already exited: {e}")
@@ -334,13 +345,7 @@ class AppSupervisor:
             app.process = None
             app.external = False
 
-            # Close log handle if it's open
-            if app.log_handle is not None:
-                try:
-                    app.log_handle.close()
-                except Exception as close_err:
-                    logger.error(f"Failed to close log handle for {name}: {close_err}")
-                app.log_handle = None
+            self._close_log_handle(app)
 
             # Clean up ready file
             if app.ready_file is not None:
@@ -366,13 +371,7 @@ class AppSupervisor:
                 finally:
                     app.status = "stopped"
                     app.process = None
-                    # Close log handle if it's open
-                    if app.log_handle is not None:
-                        try:
-                            app.log_handle.close()
-                        except Exception as close_err:
-                            logger.error(f"Failed to close log handle for {app.name}: {close_err}")
-                        app.log_handle = None
+                    self._close_log_handle(app)
                     # Clean up ready file
                     if app.ready_file is not None:
                         try:
@@ -482,13 +481,7 @@ class AppSupervisor:
             logger.error(f"Reaper error for {name}: {e}")
         finally:
             self._reaper_tasks.pop(name, None)
-            # Close log handle if it's open
-            if app.log_handle is not None:
-                try:
-                    app.log_handle.close()
-                except Exception as close_err:
-                    logger.error(f"Failed to close log handle for {name}: {close_err}")
-                app.log_handle = None
+            self._close_log_handle(app)
             # Clean up ready file
             if app.ready_file is not None:
                 try:
@@ -508,15 +501,12 @@ class AppSupervisor:
         for proc in psutil.process_iter(["pid", "cmdline"]):
             try:
                 cmdline = proc.info.get("cmdline") or []
-                # Match direct interpreter launches by exact module token:
-                # <python> -m <name>.main. The interpreter path varies by host.
-                if len(cmdline) >= 3 and cmdline[1] == "-m":
-                    module = cmdline[2]
-                    for app_name in self.APPS:
-                        if module == f"{app_name}.main":
-                            if app_name not in found:
-                                found[app_name] = (proc.info.get("pid"), proc.create_time())
-                            break
+                # Match direct interpreter launches by exact module token via _cmdline_matches_module
+                for app_name in self.APPS:
+                    if self._cmdline_matches_module(cmdline, app_name):
+                        if app_name not in found:
+                            found[app_name] = (proc.info.get("pid"), proc.create_time())
+                        break
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 # Process disappeared or we can't access it; continue scanning
                 pass
@@ -542,8 +532,8 @@ class AppSupervisor:
                 try:
                     proc = psutil.Process(app.pid)
                     # Verify it's still the right process
-                    cmdline = " ".join(proc.cmdline() or [])
-                    if f"{app.module}.main" not in cmdline:
+                    cmdline = proc.cmdline() or []
+                    if not self._cmdline_matches_module(cmdline, app.module):
                         # PID was reused by a different process; treat as dead
                         logger.warning(
                             f"PID {app.pid} no longer runs {app.module}.main; transition to stopped"

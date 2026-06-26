@@ -1209,3 +1209,100 @@ async def test_monitor_readiness_timeout_fallback(tmp_path: Path, caplog) -> Non
                     await reaper_task
                 except asyncio.CancelledError:
                     pass
+
+
+def test_cmdline_matches_module_exact_match() -> None:
+    """Test _cmdline_matches_module with exact module token matching."""
+    supervisor = AppSupervisor()
+
+    # Exact match: should return True
+    assert supervisor._cmdline_matches_module(
+        ["/path/to/python", "-m", "reachy_chat.main"], "reachy_chat"
+    )
+
+    # With trailing args: should return True
+    assert supervisor._cmdline_matches_module(
+        ["/path/to/python", "-m", "reachy_chat.main", "--debug"], "reachy_chat"
+    )
+
+    # Confusingly-named module: should return False
+    assert not supervisor._cmdline_matches_module(
+        ["/path/to/python", "-m", "my_reachy_chat.main"], "reachy_chat"
+    )
+    assert not supervisor._cmdline_matches_module(
+        ["/path/to/python", "-m", "reachy_chat.main.bak"], "reachy_chat"
+    )
+
+    # Wrong launcher: should return False
+    assert not supervisor._cmdline_matches_module(
+        ["/path/to/python", "-c", "reachy_chat.main"], "reachy_chat"
+    )
+
+    # Too short: should return False
+    assert not supervisor._cmdline_matches_module(
+        ["/path/to/python", "-m"], "reachy_chat"
+    )
+    assert not supervisor._cmdline_matches_module(
+        ["/path/to/python"], "reachy_chat"
+    )
+
+
+@pytest.mark.asyncio
+async def test_stop_app_rejects_confusingly_named_module() -> None:
+    """Test that stop_app does not signal an adopted process with a confusingly-named module."""
+    supervisor = AppSupervisor()
+
+    # Mock psutil.Process for the orphaned process with a mismatched module
+    mock_psutil_proc = MagicMock()
+    mock_psutil_proc.pid = 99999
+    mock_psutil_proc.cmdline.return_value = [
+        "/path/to/.venv/bin/python",
+        "-m",
+        "not_reachy_chat.main",  # Confusingly-named, should not match
+    ]
+
+    # Manually set up the adopted app state
+    supervisor._apps["reachy_chat"].process = None
+    supervisor._apps["reachy_chat"].pid = 99999
+    supervisor._apps["reachy_chat"].status = "running"
+
+    with (
+        patch("reachy_controller.app_supervisor.psutil.Process", return_value=mock_psutil_proc),
+        patch("reachy_controller.app_supervisor._signal_process_tree") as mock_sig,
+    ):
+        result = await supervisor.stop_app("reachy_chat")
+
+    # Should stop without signalling
+    assert result["status"] == "stopped"
+    assert supervisor._apps["reachy_chat"].status == "stopped"
+    # _signal_process_tree should NOT have been called
+    mock_sig.assert_not_called()
+
+
+def test_get_all_status_rejects_confusingly_named_module() -> None:
+    """Test that get_all_status resets a running adopted app with a confusingly-named module to stopped."""
+    supervisor = AppSupervisor()
+
+    # Manually adopt an app with a live PID
+    supervisor._apps["reachy_dance"].pid = 7777
+    supervisor._apps["reachy_dance"].status = "running"
+    supervisor._apps["reachy_dance"].external = True
+
+    # Mock psutil.Process to return a live process with a confusingly-named module
+    mock_psutil_proc = MagicMock()
+    mock_psutil_proc.cmdline.return_value = [
+        "/path/to/.venv/bin/python",
+        "-m",
+        "my_reachy_dance.main",  # Confusingly-named, should not match
+    ]
+
+    with patch("reachy_controller.app_supervisor.psutil.Process", return_value=mock_psutil_proc):
+        status = supervisor.get_all_status()
+
+    # Find the dance status
+    dance_status = next(s for s in status if s["name"] == "reachy_dance")
+
+    # Should be reset to stopped because the cmdline doesn't match the expected module
+    assert dance_status["status"] == "stopped"
+    assert supervisor._apps["reachy_dance"].status == "stopped"
+    assert supervisor._apps["reachy_dance"].pid is None
