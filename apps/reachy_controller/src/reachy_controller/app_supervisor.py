@@ -17,7 +17,35 @@ import psutil
 
 logger = logging.getLogger(__name__)
 
-_STOP_SIGINT_GRACE_S = 5.0
+_STOP_SIGINT_GRACE_S = 8.0  # generous: the app's graceful shutdown (return-home + sleep cue)
+# takes ~4-5s; wait() returns as soon as the process exits, so a larger ceiling never slows a
+# clean stop — it only gives a slow app room before we escalate.
+_STOP_SIGTERM_GRACE_S = 3.0
+
+
+def _signal_process_tree(pid: int, sig: int) -> None:
+    """Send ``sig`` to ``pid`` and all of its descendant processes.
+
+    Apps are launched as ``uv run python -m <app>.main``; ``uv`` does NOT forward
+    SIGINT to its python child, so signalling only the wrapper pid never reaches the
+    app's KeyboardInterrupt handler — where the graceful return-home + sleep cue live
+    (#26). Signalling the whole tree delivers the signal to the python child directly.
+    Best-effort: processes that exit mid-iteration are ignored.
+    """
+    try:
+        parent = psutil.Process(pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return
+    try:
+        targets = parent.children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        targets = []
+    targets.append(parent)
+    for proc in targets:
+        try:
+            proc.send_signal(sig)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
 
 
 def _get_workspace_root() -> Path:
@@ -182,6 +210,9 @@ class AppSupervisor:
                     stdout=stdout_target,
                     stderr=stderr_target,
                     text=True,
+                    # Unbuffered so the per-app log flushes line-by-line — otherwise a
+                    # non-clean exit loses the buffered tail (incl. the shutdown sequence).
+                    env={**os.environ, "PYTHONUNBUFFERED": "1"},
                 )
                 app.pid = app.process.pid
                 app.status = "running"
@@ -225,18 +256,20 @@ class AppSupervisor:
             try:
                 # Handle subprocess.Popen handle (started by this supervisor)
                 if app.process is not None:
-                    # Try SIGINT first (Ctrl-C)
-                    app.process.send_signal(signal.SIGINT)
+                    # `uv run` does not forward SIGINT to its python child, so signal the
+                    # whole process tree — the python app receives SIGINT directly and runs
+                    # its graceful return-home + sleep cue (#26).
+                    _signal_process_tree(app.process.pid, signal.SIGINT)
                     try:
                         await asyncio.to_thread(app.process.wait, _STOP_SIGINT_GRACE_S)
                     except subprocess.TimeoutExpired:
-                        # Escalate to SIGTERM
-                        app.process.terminate()
+                        # Escalate to SIGTERM across the tree
+                        _signal_process_tree(app.process.pid, signal.SIGTERM)
                         try:
-                            await asyncio.to_thread(app.process.wait, 2.0)
+                            await asyncio.to_thread(app.process.wait, _STOP_SIGTERM_GRACE_S)
                         except subprocess.TimeoutExpired:
-                            # Final escalation: SIGKILL
-                            app.process.kill()
+                            # Final escalation: SIGKILL across the tree
+                            _signal_process_tree(app.process.pid, signal.SIGKILL)
                             await asyncio.to_thread(app.process.wait, 1.0)
                     logger.info(f"Stopped app {name} (via subprocess handle)")
                 elif app.pid is not None:
@@ -246,15 +279,16 @@ class AppSupervisor:
                         # Verify it's still the right process
                         cmdline = " ".join(proc.cmdline() or [])
                         if f"{name}.main" in cmdline:
-                            proc.send_signal(signal.SIGINT)
+                            # Same `uv run` SIGINT-forwarding caveat as above — signal the tree.
+                            _signal_process_tree(app.pid, signal.SIGINT)
                             try:
                                 await asyncio.to_thread(proc.wait, _STOP_SIGINT_GRACE_S)
                             except psutil.TimeoutExpired:
-                                proc.terminate()
+                                _signal_process_tree(app.pid, signal.SIGTERM)
                                 try:
-                                    await asyncio.to_thread(proc.wait, 2.0)
+                                    await asyncio.to_thread(proc.wait, _STOP_SIGTERM_GRACE_S)
                                 except psutil.TimeoutExpired:
-                                    proc.kill()
+                                    _signal_process_tree(app.pid, signal.SIGKILL)
                                     await asyncio.to_thread(proc.wait, 1.0)
                             logger.info(f"Stopped adopted app {name} (pid {app.pid})")
                         else:
