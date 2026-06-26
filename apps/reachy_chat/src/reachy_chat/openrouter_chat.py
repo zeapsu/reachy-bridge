@@ -363,15 +363,20 @@ class OpenRouterChatHandler(ConversationHandler):
     async def _transcribe(self, audio: NDArray[np.float32]) -> str:
         return cast(str, await self._run_blocking(self._transcribe_blocking, audio))
 
-    def _transcribe_blocking(self, audio: NDArray[np.float32]) -> str:
-        if self._whisper_model is None:
-            from faster_whisper import WhisperModel
+    def ensure_whisper_loaded(self) -> None:
+        """Ensure the faster-whisper model is loaded (idempotent)."""
+        if self._whisper_model is not None:
+            return  # Already loaded
+        from faster_whisper import WhisperModel
 
-            model_name = os.getenv("WHISPER_MODEL", "base.en")
-            device = os.getenv("WHISPER_DEVICE", "cpu")
-            compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
-            logger.info("Loading faster-whisper model %s on %s", model_name, device)
-            self._whisper_model = WhisperModel(model_name, device=device, compute_type=compute_type)
+        model_name = os.getenv("WHISPER_MODEL", "base.en")
+        device = os.getenv("WHISPER_DEVICE", "cpu")
+        compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+        logger.info("Loading faster-whisper model %s on %s", model_name, device)
+        self._whisper_model = WhisperModel(model_name, device=device, compute_type=compute_type)
+
+    def _transcribe_blocking(self, audio: NDArray[np.float32]) -> str:
+        self.ensure_whisper_loaded()
         segments, _ = self._whisper_model.transcribe(
             audio,
             beam_size=5,

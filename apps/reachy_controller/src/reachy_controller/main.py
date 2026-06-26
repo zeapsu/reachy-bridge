@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,7 +13,9 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import Response
 
 from reachy_controller.app_supervisor import AppSupervisor
 from reachy_controller.daemon_proxy import DaemonProxy
@@ -36,6 +38,19 @@ load_dotenv()
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = PACKAGE_DIR / "static"
+
+
+class NoCacheMiddleware(BaseHTTPMiddleware):
+    """Middleware to set Cache-Control: no-cache for static assets and index."""
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Response]
+    ) -> Response:
+        response = await call_next(request)
+        # Set no-cache for root index and all static assets
+        if request.url.path == "/" or request.url.path.startswith("/static"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
@@ -61,6 +76,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     app.state.daemon_proxy = daemon_proxy
     app.state.app_supervisor = app_supervisor
     app.state.daemon_supervisor = daemon_supervisor
+    app.add_middleware(NoCacheMiddleware)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.exception_handler(RequestValidationError)

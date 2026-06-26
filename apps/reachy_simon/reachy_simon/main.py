@@ -1,8 +1,10 @@
 import logging
+import os
 import random
 import threading
 import time
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -36,6 +38,14 @@ class ReachySimon(ReachyMiniApp):
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event):
         try:
             self.ready_animation(reachy_mini, stop_event)
+
+            # Signal readiness after ready_animation completes
+            _ready_file = os.getenv("REACHY_READY_FILE")
+            if _ready_file:
+                try:
+                    Path(_ready_file).touch()
+                except Exception as exc:
+                    logger.debug("could not write readiness file: %s", exc)
 
             sequence: list[str] = []
 

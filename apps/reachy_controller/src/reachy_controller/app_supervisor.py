@@ -7,7 +7,9 @@ import logging
 import os
 import signal
 import subprocess
+import tempfile
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +23,8 @@ _STOP_SIGINT_GRACE_S = 8.0  # generous: the app's graceful shutdown (return-home
 # takes ~4-5s; wait() returns as soon as the process exits, so a larger ceiling never slows a
 # clean stop — it only gives a slow app room before we escalate.
 _STOP_SIGTERM_GRACE_S = 3.0
+_APP_READINESS_POLL_S = 0.5  # Polling interval for readiness monitor
+_APP_READINESS_TIMEOUT_S = 60.0  # Ceiling timeout for app startup before promoting loading → running
 
 
 def _signal_process_tree(pid: int, sig: int) -> None:
@@ -70,11 +74,12 @@ class LocalApp:
     uses_camera: bool = True
     process: subprocess.Popen[str] | None = None
     pid: int | None = None
-    status: str = "stopped"  # "stopped", "running", "stopping", "error"
+    status: str = "stopped"  # "stopped", "loading", "running", "stopping", "error"
     error: str | None = None
     start_time: float | None = None
     external: bool = False
     log_handle: TextIO | None = None
+    ready_file: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to serializable dict."""
@@ -117,6 +122,7 @@ class AppSupervisor:
             for name, config in self.APPS.items()
         }
         self._reaper_tasks: dict[str, asyncio.Task[None]] = {}
+        self._readiness_tasks: dict[str, asyncio.Task[None]] = {}
         self._camera_release_hook: Callable[[], Awaitable[None]] | None = None
         self._workspace_root = _get_workspace_root()
 
@@ -133,7 +139,7 @@ class AppSupervisor:
     def camera_holder(self) -> str | None:
         """Return the running camera-using app name, if any."""
         for app in self._apps.values():
-            if app.status == "running" and app.uses_camera:
+            if app.status in ("running", "loading") and app.uses_camera:
                 return app.name
         return None
 
@@ -163,8 +169,8 @@ class AppSupervisor:
                     "status": "refused",
                 }
 
-            # Refuse if any app is already running
-            any_running = any(a.status == "running" for a in self._apps.values())
+            # Refuse if any app is already running or loading
+            any_running = any(a.status in ("running", "loading") for a in self._apps.values())
             if any_running:
                 return {
                     "error": "Another app is already running",
@@ -189,6 +195,10 @@ class AppSupervisor:
             app_dir = self._workspace_root / "apps" / name
             argv = ["uv", "run", "python", "-m", f"{name}.main"]
 
+            # Generate unique ready file path for this app launch
+            ready_path = Path(tempfile.gettempdir()) / f"reachy_ready_{name}_{uuid.uuid4().hex}"
+            app.ready_file = ready_path
+
             # Open log file for app output
             log_dir = self._workspace_root / ".reachy-logs"
             try:
@@ -210,23 +220,31 @@ class AppSupervisor:
                     stdout=stdout_target,
                     stderr=stderr_target,
                     text=True,
-                    # Unbuffered so the per-app log flushes line-by-line — otherwise a
-                    # non-clean exit loses the buffered tail (incl. the shutdown sequence).
-                    env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                    env={
+                        **os.environ,
+                        "REACHY_READY_FILE": str(ready_path),
+                        # Unbuffered so the per-app log flushes line-by-line — otherwise a
+                        # non-clean exit loses the buffered tail (incl. the shutdown sequence).
+                        "PYTHONUNBUFFERED": "1",
+                    },
                 )
                 app.pid = app.process.pid
-                app.status = "running"
+                app.status = "loading"
                 app.error = None
                 app.start_time = time.time()
-                logger.info(f"Started app {name} (pid {app.pid})")
+                logger.info(f"Started app {name} (pid {app.pid}) in loading state")
 
                 # Spawn reaper task
-                task = asyncio.create_task(self._reap_app(name))
-                self._reaper_tasks[name] = task
+                reaper_task = asyncio.create_task(self._reap_app(name))
+                self._reaper_tasks[name] = reaper_task
+
+                # Spawn readiness monitor task
+                monitor_task = asyncio.create_task(self._monitor_readiness(name))
+                self._readiness_tasks[name] = monitor_task
 
                 return {
                     "name": name,
-                    "status": "running",
+                    "status": "loading",
                     "pid": app.pid,
                 }
             except Exception as e:
@@ -252,6 +270,17 @@ class AppSupervisor:
 
             if app.status == "stopped":
                 return {"name": name, "status": "stopped"}
+
+            app.status = "stopping"
+
+            # Cancel pending readiness monitor if present
+            if name in self._readiness_tasks:
+                task = self._readiness_tasks.pop(name)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
             try:
                 # Handle subprocess.Popen handle (started by this supervisor)
@@ -314,6 +343,14 @@ class AppSupervisor:
                     logger.error(f"Failed to close log handle for {name}: {close_err}")
                 app.log_handle = None
 
+            # Clean up ready file
+            if app.ready_file is not None:
+                try:
+                    app.ready_file.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"Failed to clean up ready file for {name}: {e}")
+                app.ready_file = None
+
             if app.uses_camera:
                 logger.info(f"Camera available after stopping app {name}")
             return {"name": name, "status": "stopped"}
@@ -337,6 +374,89 @@ class AppSupervisor:
                         except Exception as close_err:
                             logger.error(f"Failed to close log handle for {app.name}: {close_err}")
                         app.log_handle = None
+                    # Clean up ready file
+                    if app.ready_file is not None:
+                        try:
+                            app.ready_file.unlink(missing_ok=True)
+                        except Exception as e:
+                            logger.debug(f"Failed to clean up ready file for {app.name}: {e}")
+                        app.ready_file = None
+
+    async def _monitor_readiness(self, name: str) -> None:
+        """Monitor app readiness and promote from loading to running.
+
+        Uses a multi-strategy approach:
+        1. Primary: ready file signal. Apps write to REACHY_READY_FILE when truly ready.
+        2. Secondary: daemon lock (best-effort early-promote, won't fire for direct launches).
+        3. Ceiling: timeout (_APP_READINESS_TIMEOUT_S) as fallback, logs WARNING if hit.
+        """
+        app = self._apps[name]
+        if app.start_time is None:
+            logger.error(f"_monitor_readiness for {name}: start_time is None")
+            return
+
+        # Measure the readiness window with a monotonic clock, not wall-clock
+        # start_time: an NTP step / DST change mid-boot must not distort `elapsed`.
+        # (app.start_time stays wall-clock — the frontend reads it as a timestamp.)
+        start_mono = time.monotonic()
+
+        try:
+            while True:
+                elapsed = time.monotonic() - start_mono
+
+                # Check primary: ready file signal
+                if app.ready_file is not None and app.ready_file.exists():
+                    logger.info(f"App {name} signalled ready")
+                    break
+
+                # Try secondary: daemon lock (best-effort, won't fire for direct launches)
+                if self.daemon_proxy is not None:
+                    try:
+                        lock_status = await self.daemon_proxy.get_robot_app_lock_status()
+                        if (
+                            lock_status is not None
+                            and lock_status.get("state") == "local_app"
+                            and lock_status.get("holder_name") == name
+                        ):
+                            logger.info(f"App {name} acquired lock early, promoting to running")
+                            break
+                    except Exception as e:
+                        # Best-effort; swallow exceptions
+                        logger.debug(f"Lock check for {name} failed (best-effort): {e}")
+
+                # Check ceiling timeout
+                if elapsed >= _APP_READINESS_TIMEOUT_S:
+                    logger.warning(
+                        f"App {name} readiness signal never arrived within {_APP_READINESS_TIMEOUT_S}s, promoting by fallback ceiling"
+                    )
+                    break
+
+                # Sleep before polling again
+                await asyncio.sleep(_APP_READINESS_POLL_S)
+
+            # Promote: re-check status under lock before modifying
+            async with self._lock:
+                if app.status == "loading":
+                    app.status = "running"
+                    # Reset start_time to measure running duration, not boot duration (issue #15 requirement)
+                    app.start_time = time.time()
+                    logger.info(f"App {name} promoted to running")
+
+            # Clean up ready file after promotion (served its purpose)
+            if app.ready_file is not None:
+                try:
+                    app.ready_file.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"Failed to clean up ready file for {name}: {e}")
+                app.ready_file = None
+        except asyncio.CancelledError:
+            # Task was cancelled during stop_app; expected
+            logger.debug(f"Readiness monitor for {name} cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"Readiness monitor error for {name}: {e}")
+        finally:
+            self._readiness_tasks.pop(name, None)
 
     async def _reap_app(self, name: str) -> None:
         """Monitor a child process and update status when it exits."""
@@ -347,7 +467,7 @@ class AppSupervisor:
         try:
             exit_code = await asyncio.to_thread(app.process.wait)
             async with self._lock:
-                if app.status == "running":
+                if app.status in ("loading", "running"):
                     if exit_code == 0:
                         app.status = "stopped"
                         app.external = False
@@ -370,6 +490,13 @@ class AppSupervisor:
                 except Exception as close_err:
                     logger.error(f"Failed to close log handle for {name}: {close_err}")
                 app.log_handle = None
+            # Clean up ready file
+            if app.ready_file is not None:
+                try:
+                    app.ready_file.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"Failed to clean up ready file for {name}: {e}")
+                app.ready_file = None
 
     def _scan_for_live_apps(self) -> dict[str, tuple[int, float]]:
         """Scan process table for live apps matching known patterns.

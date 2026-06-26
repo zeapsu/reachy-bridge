@@ -195,3 +195,31 @@ def test_static_ui_wires_liquid_glass_to_live_controller_endpoints() -> None:
     assert "/api/volume/set" in script
     assert "/api/volume/microphone/set" in script
     assert "/api/motors/set_mode/" in script
+
+
+@pytest.mark.asyncio
+async def test_index_includes_cache_control_no_cache_header() -> None:
+    app = create_app(proxy=FakeProxy({}))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/")
+
+    assert response.status_code == 200
+    assert response.headers.get("cache-control") == "no-cache"
+
+
+@pytest.mark.asyncio
+async def test_static_files_include_cache_control_no_cache_header() -> None:
+    app = create_app(proxy=FakeProxy({}))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/static/main.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("cache-control") == "no-cache"
