@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -9,6 +10,9 @@ from reachy_mini.utils import create_head_pose
 
 CONTROL_PERIOD_S = 0.02
 ANTENNA_AMPLITUDE_RAD = 0.28
+SLEEP_CUE_SETTLE_S = 1.0
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -171,23 +175,41 @@ class ReachyDance(ReachyMiniApp):
     request_media_backend: str | None = None
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
-        start = time.monotonic()
-        next_tick = start
-        # Clock-seeded so the subtle variation differs run-to-run.
-        variation = Variation.seeded(time.time_ns() % (2**32))
+        try:
+            start = time.monotonic()
+            next_tick = start
+            # Clock-seeded so the subtle variation differs run-to-run.
+            variation = Variation.seeded(time.time_ns() % (2**32))
 
-        while not stop_event.is_set():
-            now = time.monotonic()
-            t = now - start
+            while not stop_event.is_set():
+                now = time.monotonic()
+                t = now - start
 
-            target = dance_move(t, bpm=120, variation=variation)
-            reachy_mini.set_target(head=target.head, antennas=target.antennas)
+                target = dance_move(t, bpm=120, variation=variation)
+                reachy_mini.set_target(head=target.head, antennas=target.antennas)
 
-            next_tick += CONTROL_PERIOD_S
-            stop_event.wait(max(0.0, next_tick - time.monotonic()))
+                next_tick += CONTROL_PERIOD_S
+                stop_event.wait(max(0.0, next_tick - time.monotonic()))
+        finally:
+            self._return_home(reachy_mini)
 
-        target = breathing_pose(time.monotonic() - start, variation=variation)
-        reachy_mini.set_target(head=target.head, antennas=target.antennas)
+    @staticmethod
+    def _return_home(reachy_mini: ReachyMini) -> None:
+        try:
+            # Daemon stays up, so the robot stays awake: return to the awake-ready
+            # home posture with the SDK wake_up emote (home + head gesture + wake_up.wav).
+            reachy_mini.wake_up()
+            time.sleep(SLEEP_CUE_SETTLE_S)  # let the wake_up.wav cue finish before the process exits/disconnects
+        except Exception as exc:
+            logger.warning("dance: graceful return-home (wake_up) unavailable; snapping home: %s", exc)
+            try:
+                reachy_mini.set_target(
+                    head=create_head_pose(degrees=True),
+                    antennas=np.array([0.0, 0.0], dtype=float),
+                    body_yaw=0.0,
+                )
+            except Exception as set_exc:
+                logger.warning("dance: failed to snap home on exit: %s", set_exc)
 
 
 if __name__ == "__main__":

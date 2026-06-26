@@ -1,3 +1,4 @@
+import logging
 import random
 import threading
 import time
@@ -14,6 +15,9 @@ HEAD_TURN_THRESHOLD = 0.35
 HEAD_PITCH_THRESHOLD = 0.25
 INPUT_TIMEOUT_SECONDS = 5.0
 MAX_SEQUENCE_LENGTH = 8
+SLEEP_CUE_SETTLE_S = 1.0
+
+logger = logging.getLogger(__name__)
 
 CUE_OPTIONS = (
     "right_antenna",
@@ -30,41 +34,60 @@ class ReachySimon(ReachyMiniApp):
     request_media_backend: str | None = None
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event):
-        self.ready_animation(reachy_mini, stop_event)
+        try:
+            self.ready_animation(reachy_mini, stop_event)
 
-        sequence: list[str] = []
+            sequence: list[str] = []
 
-        while not stop_event.is_set():
-            if not sequence or len(sequence) >= MAX_SEQUENCE_LENGTH:
-                sequence = []
+            while not stop_event.is_set():
+                if not sequence or len(sequence) >= MAX_SEQUENCE_LENGTH:
+                    sequence = []
 
-            sequence.append(random.choice(CUE_OPTIONS))
-            self.play_sequence(reachy_mini, sequence, stop_event)
+                sequence.append(random.choice(CUE_OPTIONS))
+                self.play_sequence(reachy_mini, sequence, stop_event)
 
-            if stop_event.is_set():
-                break
+                if stop_event.is_set():
+                    break
 
-            player_sequence, auto_played = self.collect_player_sequence(
-                reachy_mini=reachy_mini,
-                expected_sequence=sequence,
-                stop_event=stop_event,
-            )
+                player_sequence, auto_played = self.collect_player_sequence(
+                    reachy_mini=reachy_mini,
+                    expected_sequence=sequence,
+                    stop_event=stop_event,
+                )
 
-            if stop_event.is_set():
-                break
+                if stop_event.is_set():
+                    break
 
-            if player_sequence == sequence:
-                self.win_animation(reachy_mini, stop_event)
-                if auto_played:
-                    print(f"Simon auto-mode repeated round {len(sequence)}.")
-            else:
-                print(f"Simon reset: expected {sequence}, got {player_sequence}.")
-                self.lose_animation(reachy_mini, stop_event)
-                sequence = []
+                if player_sequence == sequence:
+                    self.win_animation(reachy_mini, stop_event)
+                    if auto_played:
+                        print(f"Simon auto-mode repeated round {len(sequence)}.")
+                else:
+                    print(f"Simon reset: expected {sequence}, got {player_sequence}.")
+                    self.lose_animation(reachy_mini, stop_event)
+                    sequence = []
 
-            self.wait_or_stop(stop_event, 0.8)
+                self.wait_or_stop(stop_event, 0.8)
+        finally:
+            self._return_home(reachy_mini)
 
-        self.neutral(reachy_mini)
+    @staticmethod
+    def _return_home(reachy_mini: ReachyMini) -> None:
+        try:
+            # Daemon stays up, so the robot stays awake: return to the awake-ready
+            # home posture with the SDK wake_up emote (home + head gesture + wake_up.wav).
+            reachy_mini.wake_up()
+            time.sleep(SLEEP_CUE_SETTLE_S)  # let the wake_up.wav cue finish before the process exits/disconnects
+        except Exception as exc:
+            logger.warning("simon: graceful return-home (wake_up) unavailable; snapping home: %s", exc)
+            try:
+                reachy_mini.set_target(
+                    head=create_head_pose(degrees=True),
+                    antennas=np.array([0.0, 0.0], dtype=float),
+                    body_yaw=0.0,
+                )
+            except Exception as set_exc:
+                logger.warning("simon: failed to snap home on exit: %s", set_exc)
 
     def play_sequence(
         self,

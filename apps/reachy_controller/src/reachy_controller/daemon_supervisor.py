@@ -126,7 +126,7 @@ class DaemonSupervisor:
         if not self._manageable:
             return {"status": "refused", "error": "Daemon is not locally manageable"}
 
-        if self._daemon.status == "stopped":
+        if self._daemon.status == "stopped" and self._daemon.pid is None:
             return {"status": "stopped"}
 
         try:
@@ -217,8 +217,14 @@ class DaemonSupervisor:
         Returns:
             Status dict with running, manageable, status, pid, start_time.
         """
-        # Refresh transient status from running flag
-        if running and self._daemon.status == "starting":
+        # Refresh transient status from running flag. A reachable daemon with a
+        # live pid is genuinely up — promote it whether it's a freshly-started
+        # ("starting") or an adopted ("stopped") process (#27).
+        if (
+            running
+            and self._daemon.pid is not None
+            and self._daemon.status in ("starting", "stopped")
+        ):
             self._daemon.status = "running"
         elif not running and self._daemon.status == "running":
             self._daemon.status = "stopped"

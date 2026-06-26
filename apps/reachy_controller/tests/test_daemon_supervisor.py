@@ -150,6 +150,42 @@ async def test_stop_via_adopted_pid() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stop_via_adopted_stopped_pid() -> None:
+    """Test stopping an adopted daemon whose transient status is stopped."""
+    with patch.dict("os.environ", {"REACHY_MANAGE_DAEMON": "1"}):
+        supervisor = DaemonSupervisor()
+
+        mock_psutil_proc = MagicMock()
+        mock_psutil_proc.pid = 12345
+        mock_psutil_proc.cmdline.return_value = [
+            "uv",
+            "run",
+            "python",
+            "tools/reachy_mini_daemon_jetson.py",
+        ]
+
+        def quick_wait(timeout):
+            return 0
+
+        mock_psutil_proc.wait = quick_wait
+
+        supervisor._daemon.process = None
+        supervisor._daemon.pid = 12345
+        supervisor._daemon.status = "stopped"
+
+        with patch(
+            "reachy_controller.daemon_supervisor.psutil.Process",
+            return_value=mock_psutil_proc,
+        ):
+            result = await supervisor.stop()
+
+    assert result["status"] == "stopped"
+    assert supervisor._daemon.status == "stopped"
+    assert supervisor._daemon.pid is None
+    mock_psutil_proc.send_signal.assert_called_once_with(signal.SIGINT)
+
+
+@pytest.mark.asyncio
 async def test_stop_escalation_sigint_to_sigterm_to_sigkill() -> None:
     """Test SIGINT -> SIGTERM -> SIGKILL escalation."""
     with patch.dict("os.environ", {"REACHY_MANAGE_DAEMON": "1"}):
@@ -257,6 +293,36 @@ async def test_status_returns_running_flag() -> None:
         status = supervisor.status(running=False)
 
     assert status["running"] is False
+
+
+def test_status_promotes_adopted_daemon_with_live_pid() -> None:
+    """Test that reachable adopted daemons are promoted to running."""
+    with patch.dict("os.environ", {"REACHY_MANAGE_DAEMON": "1"}):
+        supervisor = DaemonSupervisor()
+        supervisor._daemon.pid = 12345
+        supervisor._daemon.status = "stopped"
+
+        status = supervisor.status(running=True)
+
+    assert status["running"] is True
+    assert status["status"] == "running"
+    assert status["pid"] == 12345
+    assert supervisor._daemon.status == "running"
+
+
+def test_status_does_not_promote_adopted_daemon_without_pid() -> None:
+    """Test that reachable status alone does not promote when no pid is known."""
+    with patch.dict("os.environ", {"REACHY_MANAGE_DAEMON": "1"}):
+        supervisor = DaemonSupervisor()
+        supervisor._daemon.pid = None
+        supervisor._daemon.status = "stopped"
+
+        status = supervisor.status(running=True)
+
+    assert status["running"] is True
+    assert status["status"] == "stopped"
+    assert status["pid"] is None
+    assert supervisor._daemon.status == "stopped"
 
 
 @pytest.mark.asyncio

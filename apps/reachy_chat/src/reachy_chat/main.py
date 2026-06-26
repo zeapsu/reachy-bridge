@@ -13,6 +13,7 @@ from collections.abc import Callable, Awaitable
 from fastapi import FastAPI, Request, Response
 
 from reachy_mini import ReachyMini, ReachyMiniApp
+from reachy_mini.utils import create_head_pose
 from reachy_chat.gstreamer_nvidia_patch import apply_nvidia_unixfd_patch
 from reachy_chat.utils import (
     CameraVisionInitializationError,
@@ -24,6 +25,22 @@ from reachy_chat.utils import (
 
 # Apply NVIDIA Jetson GStreamer plugin patch before any SDK initialization
 apply_nvidia_unixfd_patch()
+
+SLEEP_CUE_SETTLE_S = 1.0
+
+
+def _return_home(robot: ReachyMini, logger) -> None:
+    try:
+        # Daemon stays up, so the robot stays awake: return to the awake-ready
+        # home posture with the SDK wake_up emote (home + head gesture + wake_up.wav).
+        robot.wake_up()
+        time.sleep(SLEEP_CUE_SETTLE_S)  # let the wake_up.wav cue finish before the process exits/disconnects
+    except Exception as exc:
+        logger.warning("chat: graceful return-home (wake_up) unavailable; snapping home: %s", exc)
+        try:
+            robot.set_target(head=create_head_pose(degrees=True), body_yaw=0.0)
+        except Exception as set_exc:
+            logger.warning("chat: failed to snap home on exit: %s", set_exc)
 
 
 def main() -> None:
@@ -286,11 +303,15 @@ def run(
         if own_ui_server is not None:
             own_ui_server.should_exit = True
 
-        movement_manager.stop()
+        try:
+            movement_manager.stop()
+        except Exception as e:
+            logger.debug(f"Error stopping movement manager during shutdown: {e}")
         try:
             robot.disable_wobbling()
         except Exception as e:
             logger.debug(f"Error disabling wobbling during shutdown: {e}")
+        _return_home(robot, logger)
         if camera_worker:
             camera_worker.stop()
 
