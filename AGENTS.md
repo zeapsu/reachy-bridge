@@ -1,6 +1,6 @@
 # AGENTS.md — Reachy Mini Lite workspace
 
-Project memory for agents/humans working in `~/reachy`. For end-user usage see
+Project memory for agents/humans working in `~/reachy-console`. For end-user usage see
 `README.md` and `docs/USER_GUIDE.html`.
 
 > Canonical agent guide. `CLAUDE.md` is a symlink to this file, so Claude Code, Codex, and other
@@ -192,7 +192,7 @@ re-deriving decisions, re-doing finished work, or contradicting an earlier choic
 For multi-session work, **open GitHub issues for what's next** (a parent/epic issue + child issues)
 and update **memory + this AGENTS.md** in the same pass — issues track *what's next*, memory/AGENTS.md
 track *what we learned*. PRs reference their issues (`Closes #N`) and may ship in parts (e.g. part 1
-visual/QA → part 2 functional verification). Repo: `zeapsu/reachy`; PR base is the default branch
+visual/QA → part 2 functional verification). Repo: `zeapsu/reachy-console`; PR base is the default branch
 `feat/reachy-chat-vision`. End sessions with `/close` (do **not** recreate `SESSION_LOG.md` — removed,
 git history + memory replace it).
 

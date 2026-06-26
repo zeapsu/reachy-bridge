@@ -1,7 +1,7 @@
 """Standalone mic probe: is the robot delivering audio samples to the SDK?
 
 Run with the app STOPPED (the mic is a shared resource) and the daemon running:
-    cd ~/reachy/apps/reachy_chat && uv run python ~/reachy/mic_test.py
+    cd ~/reachy-console/apps/reachy_chat && uv run python ~/reachy-console/mic_test.py
 Then talk for the 6-second window.
 """
 import time

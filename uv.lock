@@ -9,11 +9,11 @@ resolution-markers = [
 [manifest]
 members = [
     "reachy-chat",
+    "reachy-console",
     "reachy-controller",
     "reachy-dance",
     "reachy-lookat",
     "reachy-simon",
-    "reachy-workspace",
 ]
 
 [[package]]
@@ -5051,7 +5051,7 @@ dependencies = [
 requires-dist = [{ name = "reachy-mini" }]
 
 [[package]]
-name = "reachy-workspace"
+name = "reachy-console"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
