@@ -13,8 +13,14 @@ which daemon is running. Custom apps live in `apps/`. The upstream SDK clone (`r
 reference app (`reachy_mini_conversation_app/`) are gitignored.
 
 ## Environment & commands
-- **Use `uv run`** — do not call `.venv/bin/python` directly or activate venvs.
-  From an app dir, `uv run python -m <pkg>.main` builds/uses that app's own env.
+- **One uv workspace, one shared `.venv`.** The repo is a single uv workspace
+  (`[tool.uv.workspace] members = ["apps/*"]` in the root `pyproject.toml`): `uv sync
+  --all-packages` from the repo root resolves the root + every `apps/*` into **one** `.venv`
+  and **one** `uv.lock` (#33). There are no per-app venvs anymore. **Use `uv run`** — do not
+  call `.venv/bin/python` directly or activate venvs. `uv run python -m <app>.main` from
+  anywhere uses the shared env. (Stale-venv tip: if `cv2` ever fails to import after an
+  incremental sync, clean-rebuild with `rm -rf .venv && uv sync --all-packages` —
+  `opencv-python` and `opencv-contrib-python` both own `cv2/` and collide on an in-place sync.)
 - Python 3.12, `reachy-mini` 1.8.3, `mujoco` 3.3.7.
 - **Daemon** (must be running; bridges code ↔ motors/sensors, serves `:8000`):
   - Simulation: `uv run python -m reachy_mini.daemon.app.main --sim --headless`
@@ -22,7 +28,9 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
     (NOT plain `reachy-mini-daemon` — the wrapper aliases `unixfd*→nvunixfd*` so the camera socket
     is created; stock launcher = no camera). See "Jetson / Ubuntu 24.04 gotchas" below.
   - Other real hardware (non-Jetson, Lite over USB): `uv run reachy-mini-daemon`
-- Run an app: `cd apps/<app> && uv run python -m <app>.main` (e.g. `reachy_dance.main`).
+- Run an app: `cd apps/<app> && uv run python -m <app>.main` (e.g. `reachy_dance.main`), or launch
+  it from the controller — its `AppSupervisor` spawns apps with the **shared interpreter directly**
+  (`sys.executable -m <app>.main`, no `uv run` wrapper; #33).
   Only **one app uses the robot at a time** — stop the current one first:
   `curl -X POST localhost:8000/api/apps/stop-current-app`. **That endpoint only stops
   daemon-managed apps;** an app you launched directly with `uv run python -m <app>.main` returns
