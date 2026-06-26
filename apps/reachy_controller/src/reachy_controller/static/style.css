@@ -757,7 +757,6 @@ input:disabled,
   box-shadow: 0 0 10px -2px rgba(111, 227, 255, 0.5);
   transform-origin: bottom;
   height: 6%;
-  will-change: height;
   transition: height 0.12s linear, opacity 0.2s;
 }
 
@@ -1062,11 +1061,33 @@ input[type=range]::-moz-range-thumb {
   .glass::before { animation: none; }
 }
 
+/* Touch devices (phones/tablets) match (hover: none) and (pointer: coarse)
+   regardless of the viewport width a home-screen PWA reports — so key the
+   GPU-heavy reductions off capability, not the px breakpoint above (which a
+   wide-reporting PWA can miss). Drop the animated refraction to a lighter
+   frost and stop the always-on idle animations: each kept the iOS compositor
+   re-rasterizing every frame while the tab is focused (#36). */
+@media (hover: none) and (pointer: coarse) {
+  .glass {
+    backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
+    -webkit-backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
+  }
+  .blob,
+  .glass::before,
+  .dot.ok,
+  .dot.loading,
+  .dot.stopping,
+  .vp-badge .rec {
+    animation: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .blob,
   .glass::before,
   .dot.ok,
   .dot.loading,
+  .dot.stopping,
   .spinner-glyph,
   .vp-badge .rec {
     animation: none;
