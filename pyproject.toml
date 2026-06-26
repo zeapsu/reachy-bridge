@@ -15,6 +15,12 @@ dependencies = [
 ]
 
 [tool.uv]
-# Workspace root is not an installable package; we only use it to resolve the
-# daemon + root scripts. Apps each manage their own env via apps/<app>/pyproject.toml.
+# Workspace root is a virtual project (not an installable package): it pins the
+# daemon/SDK for the shared env and anchors the workspace below.
 package = false
+
+[tool.uv.workspace]
+# One lockfile + one shared .venv for the whole repo, while each app under apps/
+# stays a distinct, independently-launchable package (issue #33). No
+# [tool.uv.sources] needed — apps have zero cross-app imports.
+members = ["apps/*"]
