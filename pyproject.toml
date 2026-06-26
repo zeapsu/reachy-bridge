@@ -18,6 +18,9 @@ dependencies = [
 # Workspace root is a virtual project (not an installable package): it pins the
 # daemon/SDK for the shared env and anchors the workspace below.
 package = false
+# Pin uv minor version to prevent lockfile marker churn (issue #39).
+# 0.11 allows the desktop app's bundled 0.11.23, <0.12 forces coordinated minor bumps.
+required-version = ">=0.11,<0.12"
 
 [tool.uv.workspace]
 # One lockfile + one shared .venv for the whole repo, while each app under apps/
