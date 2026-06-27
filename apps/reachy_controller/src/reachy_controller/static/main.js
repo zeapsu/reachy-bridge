@@ -18,6 +18,7 @@
     daemonStatusTimer: null,
     daemonStatusInflight: false,
     daemonStopping: false,
+    sliderActive: null,
     simLoop: null,
     live: { streams: [], timers: [], active: false },
   };
@@ -124,7 +125,10 @@
   function setControlsEnabled(enabled) {
     ["vol-spk", "vol-mic", "wobble", "testsound"].forEach((id) => {
       const element = $(id);
-      if (element) element.disabled = !enabled;
+      // Never toggle .disabled on the slider being dragged — flipping it (even
+      // re-enabling) aborts an in-progress touch drag on iOS. The release
+      // handler reconciles the correct state once the drag ends (#38).
+      if (element && state.sliderActive !== id) element.disabled = !enabled;
     });
     document.querySelectorAll("#motor-seg button").forEach((button) => {
       button.disabled = !enabled;
@@ -454,7 +458,12 @@
   function syncSlider(id, value) {
     const input = $(id);
     const display = $(`${id}-v`);
-    if (!input || !display || value == null || document.activeElement === input) return;
+    if (!input || !display || value == null) return;
+    // Never clobber a slider the user is actively dragging. On touch a range
+    // input never becomes document.activeElement, so the focus check alone
+    // misses pointer drags — reassigning input.value mid-drag aborts the touch
+    // interaction and snaps to the daemon value (#38).
+    if (state.sliderActive === id || document.activeElement === input) return;
     const next = String(clamp(Number(value), 0, 100));
     input.value = next;
     display.textContent = next;
@@ -563,16 +572,38 @@
   }
 
   function bindSliders() {
-    const speakerSave = debounce(() => void saveVolume("vol-spk", "speaker", "/api/volume/set"), 240);
-    const micSave = debounce(() => void saveVolume("vol-mic", "microphone", "/api/volume/microphone/set"), 240);
+    const saves = {
+      "vol-spk": debounce(() => void saveVolume("vol-spk", "speaker", "/api/volume/set"), 240),
+      "vol-mic": debounce(() => void saveVolume("vol-mic", "microphone", "/api/volume/microphone/set"), 240),
+    };
 
-    [["vol-spk", speakerSave], ["vol-mic", micSave]].forEach(([id, save]) => {
+    // End of an active drag: clear the guard, reconcile the disabled state we
+    // deliberately left untouched while dragging, and persist the released value.
+    function endInteraction() {
+      const id = state.sliderActive;
+      if (id === null) return;
+      state.sliderActive = null;
+      setControlsEnabled(state.daemonOnline && !state.controlBusy);
+      saves[id]();
+    }
+
+    Object.keys(saves).forEach((id) => {
+      const input = $(id);
       updateSliderFill(id);
-      $(id).addEventListener("input", () => {
+      input.addEventListener("pointerdown", () => { state.sliderActive = id; });
+      input.addEventListener("input", () => {
+        state.sliderActive = id;
         updateSliderFill(id);
-        save();
+        saves[id]();
       });
+      input.addEventListener("change", endInteraction);
+      input.addEventListener("blur", endInteraction);
     });
+
+    // Pointer release can land off the thumb (touch drags wander), so clear the
+    // guard from the window — a stuck flag would freeze daemon→slider sync.
+    window.addEventListener("pointerup", endInteraction);
+    window.addEventListener("pointercancel", endInteraction);
   }
 
   function makeSim(canvas) {
