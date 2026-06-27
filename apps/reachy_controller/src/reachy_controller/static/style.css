@@ -10,7 +10,7 @@
   --amber: #ffc857;
   --cyan: #6fe3ff;
   --coral: #ff6b6b;
-  --mint: #5ee6c3;
+  --mint: #36e8a4;
   --text: #edf0f4;
   --muted: #8a92a6;
   --r-lg: 26px;
@@ -87,7 +87,7 @@ input:focus-visible {
   height: 52vw;
   left: 22vw;
   bottom: -24vw;
-  background: radial-gradient(circle, rgba(94, 230, 195, 0.4), transparent 60%);
+  background: radial-gradient(circle, rgba(54, 232, 164, 0.4), transparent 60%);
   animation: drift3 38s var(--ease) infinite;
 }
 
@@ -252,7 +252,7 @@ input:focus-visible {
 
 .dot.ok {
   background: var(--mint);
-  box-shadow: 0 0 10px 1px rgba(94, 230, 195, 0.7);
+  box-shadow: 0 0 10px 1px rgba(54, 232, 164, 0.7);
   animation: pulse 2.6s var(--ease) infinite;
 }
 
@@ -280,11 +280,6 @@ input:focus-visible {
 
 @keyframes pulse {
   50% { opacity: 0.45; }
-}
-
-@keyframes ramp-off {
-  from { color: var(--mint); }
-  to { color: var(--coral); }
 }
 
 .grid {
@@ -455,7 +450,8 @@ input:focus-visible {
 }
 
 .vp-power.stopping button {
-  animation: ramp-off 1.6s var(--ease) forwards;
+  color: var(--coral);
+  animation: pulse 1s var(--ease) infinite;
 }
 
 .vp-power.disabled button {
@@ -538,7 +534,7 @@ input:focus-visible {
 
 .vp-badge .rec.ok {
   background: var(--mint);
-  box-shadow: 0 0 9px 1px rgba(94, 230, 195, 0.8);
+  box-shadow: 0 0 9px 1px rgba(54, 232, 164, 0.8);
 }
 
 .hud {
@@ -753,7 +749,7 @@ input:disabled,
 .eq .bar {
   flex: 1;
   border-radius: 4px 4px 2px 2px;
-  background: linear-gradient(180deg, var(--cyan), var(--mint) 55%, rgba(94, 230, 195, 0.25));
+  background: linear-gradient(180deg, var(--cyan), var(--mint) 55%, rgba(54, 232, 164, 0.25));
   box-shadow: 0 0 10px -2px rgba(111, 227, 255, 0.5);
   transform-origin: bottom;
   height: 6%;
