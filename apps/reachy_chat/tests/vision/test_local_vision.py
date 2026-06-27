@@ -6,6 +6,11 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+# local_vision requires torch/transformers (the optional [local_vision] extra);
+# skip the whole module where they're absent (e.g. the sim-only Mac) instead of
+# erroring at collection and aborting the entire test run.
+pytest.importorskip("torch")
+
 from reachy_chat.vision.local_vision import (
     LOCAL_VISION_RESPONSE_INSTRUCTIONS,
     VisionConfig,

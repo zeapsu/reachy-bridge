@@ -482,7 +482,14 @@ class LocalStream:
             refresh_runtime_config_from_env()
             return
 
-        if current_model_name and current_model_name != get_model_name_for_backend(current_backend):
+        # Preserve an explicit model override only when re-persisting the same
+        # backend; switching backends resets to the new backend's default model
+        # (models are backend-specific and don't carry across).
+        if (
+            backend == current_backend
+            and current_model_name
+            and current_model_name != get_model_name_for_backend(current_backend)
+        ):
             updates["MODEL_NAME"] = current_model_name
         else:
             updates["MODEL_NAME"] = get_model_name_for_backend(backend)

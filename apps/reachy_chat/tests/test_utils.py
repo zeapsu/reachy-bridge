@@ -13,6 +13,10 @@ from reachy_chat.utils import (
 
 def test_initialize_camera_and_vision_propagates_local_vision_init_failures() -> None:
     """Explicit local vision requests should preserve unexpected initialization errors."""
+    # Importing local_vision pulls in torch/transformers (the optional [local_vision]
+    # extra); skip where they're absent (e.g. the sim-only Mac). The import also binds
+    # `local_vision` as an attribute of the vision package so the patch target resolves.
+    pytest.importorskip("reachy_chat.vision.local_vision")
     args = argparse.Namespace(
         no_camera=False,
         head_tracker=None,
