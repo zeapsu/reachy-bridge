@@ -169,6 +169,10 @@
     $("doaTick").setAttribute("cx", "160");
     $("doaTick").setAttribute("cy", "16");
     $("rig").classList.remove("speaking");
+    // This writes the DOM directly, so invalidate the change-guard cache — otherwise a
+    // reconnect with an unchanged pose makes every guard in applyRobotState skip and
+    // the schematic stays blank.
+    poseCache = freshPoseCache();
   }
 
   function poseValues(pose) {
@@ -192,19 +196,24 @@
     return Math.abs(angle) <= TAU ? radiansToDegrees(angle) : angle;
   }
 
-  // Change-guard caches for applyRobotState
-  const poseCache = {
-    rpy: null,
-    yaw: null,
-    ant: null,
-    doa: null,
-    head: null,
-    body: null,
-    antL: null,
-    antR: null,
-    speaking: null,
-    doaDeg: undefined,
-  };
+  // Change-guard caches for applyRobotState. doaDeg uses `undefined` (not null) so
+  // a real null DOA still differs from the initial cache and renders once. Kept in a
+  // factory so renderOfflinePose can invalidate the whole cache in one place.
+  function freshPoseCache() {
+    return {
+      rpy: null,
+      yaw: null,
+      ant: null,
+      doa: null,
+      head: null,
+      body: null,
+      antL: null,
+      antR: null,
+      speaking: null,
+      doaDeg: undefined,
+    };
+  }
+  let poseCache = freshPoseCache();
 
   function applyRobotState(payload) {
     if (!payload || typeof payload !== "object") return;
@@ -1048,6 +1057,7 @@
         button.disabled = false;
       } finally {
         state.controlBusy = false;
+        void pollDaemonStatus();
       }
     }
   });
