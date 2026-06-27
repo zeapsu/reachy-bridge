@@ -215,6 +215,15 @@
   }
   let poseCache = freshPoseCache();
 
+  // Guarded write: touch the DOM only when the value changed since last render.
+  // Collapses the per-field if/cache/write the schematic repeated for every node.
+  function guard(key, value, write) {
+    if (value !== poseCache[key]) {
+      poseCache[key] = value;
+      write(value);
+    }
+  }
+
   function applyRobotState(payload) {
     if (!payload || typeof payload !== "object") return;
     const [rollDeg, pitchDeg, yawDeg] = poseValues(payload.head_pose).map(radiansToDegrees);
@@ -228,70 +237,24 @@
     }
 
     const rpyText = [rollDeg, pitchDeg, yawDeg].map((value) => (value == null ? "—" : value.toFixed(0))).join("/");
-    if (rpyText !== poseCache.rpy) {
-      poseCache.rpy = rpyText;
-      $("r-rpy").textContent = rpyText;
-    }
-
-    const yawText = dash(bodyYaw, 2);
-    if (yawText !== poseCache.yaw) {
-      poseCache.yaw = yawText;
-      $("r-yaw").textContent = yawText;
-    }
-
-    const antText = `${dash(antLeft, 2)}/${dash(antRight, 2)}`;
-    if (antText !== poseCache.ant) {
-      poseCache.ant = antText;
-      $("r-ant").textContent = antText;
-    }
-
-    const doaText = doaDeg == null ? "—°" : `${doaDeg.toFixed(0)}°`;
-    if (doaText !== poseCache.doa) {
-      poseCache.doa = doaText;
-      $("r-doa").textContent = doaText;
-    }
+    guard("rpy", rpyText, (v) => { $("r-rpy").textContent = v; });
+    guard("yaw", dash(bodyYaw, 2), (v) => { $("r-yaw").textContent = v; });
+    guard("ant", `${dash(antLeft, 2)}/${dash(antRight, 2)}`, (v) => { $("r-ant").textContent = v; });
+    guard("doa", doaDeg == null ? "—°" : `${doaDeg.toFixed(0)}°`, (v) => { $("r-doa").textContent = v; });
 
     const roll = rollDeg ?? 0;
     const pitch = pitchDeg ?? 0;
     const yaw = yawDeg ?? 0;
-    const headTransform = `rotate(${roll.toFixed(2)} 160 104) translate(${(yaw * 0.3).toFixed(2)} ${(-pitch * 0.3).toFixed(2)})`;
-    if (headTransform !== poseCache.head) {
-      poseCache.head = headTransform;
-      $("head").setAttribute("transform", headTransform);
-    }
+    guard("head", `rotate(${roll.toFixed(2)} 160 104) translate(${(yaw * 0.3).toFixed(2)} ${(-pitch * 0.3).toFixed(2)})`, (v) => { $("head").setAttribute("transform", v); });
+    guard("body", `rotate(${((bodyYaw ?? 0) * 12).toFixed(2)} 160 152)`, (v) => { $("body").setAttribute("transform", v); });
+    guard("antL", `rotate(${((antLeft ?? 0) * 18).toFixed(2)} 132 70)`, (v) => { $("antL").setAttribute("transform", v); });
+    guard("antR", `rotate(${((antRight ?? 0) * 18).toFixed(2)} 188 70)`, (v) => { $("antR").setAttribute("transform", v); });
 
-    const bodyTransform = `rotate(${((bodyYaw ?? 0) * 12).toFixed(2)} 160 152)`;
-    if (bodyTransform !== poseCache.body) {
-      poseCache.body = bodyTransform;
-      $("body").setAttribute("transform", bodyTransform);
-    }
-
-    const antLTransform = `rotate(${((antLeft ?? 0) * 18).toFixed(2)} 132 70)`;
-    if (antLTransform !== poseCache.antL) {
-      poseCache.antL = antLTransform;
-      $("antL").setAttribute("transform", antLTransform);
-    }
-
-    const antRTransform = `rotate(${((antRight ?? 0) * 18).toFixed(2)} 188 70)`;
-    if (antRTransform !== poseCache.antR) {
-      poseCache.antR = antRTransform;
-      $("antR").setAttribute("transform", antRTransform);
-    }
-
-    const speakingState = speechDetected && doaDeg != null;
-    if (speakingState !== poseCache.speaking) {
-      poseCache.speaking = speakingState;
-      $("rig").classList.toggle("speaking", speakingState);
-    }
-
-    if (doaDeg !== poseCache.doaDeg) {
-      poseCache.doaDeg = doaDeg;
-      if (doaDeg == null) {
-        $("doaArc").setAttribute("d", "");
-      } else {
-        setDoa(doaDeg);
-      }
-    }
+    guard("speaking", speechDetected && doaDeg != null, (v) => { $("rig").classList.toggle("speaking", v); });
+    guard("doaDeg", doaDeg, (v) => {
+      if (v == null) $("doaArc").setAttribute("d", "");
+      else setDoa(v);
+    });
   }
 
   const polar = (cx, cy, radius, degrees) => {
@@ -498,29 +461,16 @@
     sink: null,
   };
 
-  const setCpu = (value, text, suffix) => {
+  const makeGuardedSetter = (cacheKey, raw) => (value, text, suffix) => {
     const key = JSON.stringify({ value, text, suffix });
-    if (key !== statsCache.cpu) {
-      statsCache.cpu = key;
-      setCpuRaw(value, text, suffix);
+    if (key !== statsCache[cacheKey]) {
+      statsCache[cacheKey] = key;
+      raw(value, text, suffix);
     }
   };
-
-  const setGpu = (value, text, suffix) => {
-    const key = JSON.stringify({ value, text, suffix });
-    if (key !== statsCache.gpu) {
-      statsCache.gpu = key;
-      setGpuRaw(value, text, suffix);
-    }
-  };
-
-  const setTemp = (value, text, suffix) => {
-    const key = JSON.stringify({ value, text, suffix });
-    if (key !== statsCache.temp) {
-      statsCache.temp = key;
-      setTempRaw(value, text, suffix);
-    }
-  };
+  const setCpu = makeGuardedSetter("cpu", setCpuRaw);
+  const setGpu = makeGuardedSetter("gpu", setGpuRaw);
+  const setTemp = makeGuardedSetter("temp", setTempRaw);
 
   function updateStats(stats) {
     if (!stats || typeof stats !== "object") return;
