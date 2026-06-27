@@ -159,8 +159,7 @@ async def test_daemon_status_cache_coalesces_within_ttl() -> None:
     proxy.get_full_state to be awaited only once.
     """
     import os
-    import time
-    from unittest.mock import patch, AsyncMock
+    from unittest.mock import patch
 
     proxy = DaemonControlProxy(running=True)
     with patch.dict(os.environ, {"REACHY_MANAGE_DAEMON": "1"}):
@@ -202,7 +201,6 @@ async def test_daemon_status_cache_reprobe_after_ttl() -> None:
     a fresh probe that reflects any state change.
     """
     import os
-    import time
     from unittest.mock import patch
 
     proxy = DaemonControlProxy(running=True)
