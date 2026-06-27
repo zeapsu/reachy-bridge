@@ -944,7 +944,8 @@
   renderApps();
   renderEqualizer(false, "no audio signal");
   setDaemonOnline(false);
-  startLiveConnections();
+  // Skip if we boot into an already-hidden tab — visibilitychange starts us when shown.
+  if (!document.hidden) startLiveConnections();
 
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stopLiveConnections();
