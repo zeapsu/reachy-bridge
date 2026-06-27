@@ -29,6 +29,7 @@ from reachy_chat.tools import core_tools
 from reachy_chat.address_gate import AddressGate
 from reachy_chat.config import (
     config,
+    HF_BACKEND,
     get_default_voice_for_backend,
     get_available_voices_for_backend,
 )
@@ -720,7 +721,9 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
             [tool["name"] for tool in tool_specs],
         )
         connect_kwargs: dict[str, Any] = {}
-        if config.MODEL_NAME:
+        # Hugging Face realtime connects to a session-allocated URL where the
+        # model is fixed by the deployment, so passing `model` is rejected.
+        if config.MODEL_NAME and self.BACKEND_PROVIDER != HF_BACKEND:
             connect_kwargs["model"] = config.MODEL_NAME
         if self._realtime_connect_query:
             connect_kwargs["extra_query"] = self._realtime_connect_query
