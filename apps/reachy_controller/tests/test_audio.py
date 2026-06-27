@@ -80,3 +80,41 @@ async def test_audio_stream_suppresses_client_cancellation() -> None:
 
     with pytest.raises(StopAsyncIteration):
         await anext(stream)
+
+
+@pytest.mark.asyncio
+async def test_audio_stream_cadence_is_10_hz(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Assert audio stream poll cadence is 0.10s (10 Hz) via actual sleep calls."""
+    from reachy_controller.routes import audio
+
+    sleep_calls = []
+
+    async def tracking_sleep(interval: float) -> None:
+        sleep_calls.append(interval)
+
+    monkeypatch.setattr(audio.asyncio, "sleep", tracking_sleep)
+
+    # Drive the generator for 3 iterations to observe 2 sleeps
+    # (sleep happens after yield, so 3 yields = 2 sleeps before termination)
+    stream = audio._audio_level_stream_generator(
+        AudioProxy(
+            [
+                {"doa": {"speech_detected": True}},
+                {"doa": {"speech_detected": False}},
+                {"doa": {"speech_detected": True}},
+            ]
+        )
+    )
+
+    # Drive the generator for 3 iterations
+    await anext(stream)
+    await anext(stream)
+    await anext(stream)
+    await stream.aclose()
+
+    # Verify sleep was called with the correct interval (0.10s = 10 Hz)
+    assert len(sleep_calls) >= 2
+    assert all(call == 0.10 for call in sleep_calls)
+    assert audio._POLL_INTERVAL_SECONDS == 0.10

@@ -14,7 +14,7 @@ from reachy_controller.daemon_proxy import DaemonProxy
 
 router = APIRouter(prefix="/api", tags=["audio"])
 
-_POLL_INTERVAL_SECONDS = 0.05
+_POLL_INTERVAL_SECONDS = 0.10
 _KEEPALIVE_INTERVAL_SECONDS = 15.0
 
 
