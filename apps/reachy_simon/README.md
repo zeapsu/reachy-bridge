@@ -1,12 +1,3 @@
----
-title: Reachy Simon
-emoji: 👋
-colorFrom: red
-colorTo: blue
-sdk: static
-pinned: false
-short_description: Write your description here
-tags:
- - reachy_mini
- - reachy_mini_python_app
----
+# Reachy Simon
+
+A Simon-style memory game for Reachy Mini (antennas as buttons).
