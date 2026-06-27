@@ -182,7 +182,7 @@
     antL: null,
     antR: null,
     speaking: null,
-    doaDeg: null,
+    doaDeg: undefined,
   };
 
   function applyRobotState(payload) {
