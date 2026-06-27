@@ -10,7 +10,7 @@
   --amber: #ffc857;
   --cyan: #6fe3ff;
   --coral: #ff6b6b;
-  --mint: #5ee6c3;
+  --mint: #36e8a4;
   --text: #edf0f4;
   --muted: #8a92a6;
   --r-lg: 26px;
@@ -87,7 +87,7 @@ input:focus-visible {
   height: 52vw;
   left: 22vw;
   bottom: -24vw;
-  background: radial-gradient(circle, rgba(94, 230, 195, 0.4), transparent 60%);
+  background: radial-gradient(circle, rgba(54, 232, 164, 0.4), transparent 60%);
   animation: drift3 38s var(--ease) infinite;
 }
 
@@ -252,7 +252,7 @@ input:focus-visible {
 
 .dot.ok {
   background: var(--mint);
-  box-shadow: 0 0 10px 1px rgba(94, 230, 195, 0.7);
+  box-shadow: 0 0 10px 1px rgba(54, 232, 164, 0.7);
   animation: pulse 2.6s var(--ease) infinite;
 }
 
@@ -449,6 +449,11 @@ input:focus-visible {
   color: var(--mint);
 }
 
+.vp-power.stopping button {
+  color: var(--coral);
+  animation: pulse 1s var(--ease) infinite;
+}
+
 .vp-power.disabled button {
   color: var(--muted);
   cursor: not-allowed;
@@ -529,7 +534,7 @@ input:focus-visible {
 
 .vp-badge .rec.ok {
   background: var(--mint);
-  box-shadow: 0 0 9px 1px rgba(94, 230, 195, 0.8);
+  box-shadow: 0 0 9px 1px rgba(54, 232, 164, 0.8);
 }
 
 .hud {
@@ -744,11 +749,10 @@ input:disabled,
 .eq .bar {
   flex: 1;
   border-radius: 4px 4px 2px 2px;
-  background: linear-gradient(180deg, var(--cyan), var(--mint) 55%, rgba(94, 230, 195, 0.25));
+  background: linear-gradient(180deg, var(--cyan), var(--mint) 55%, rgba(54, 232, 164, 0.25));
   box-shadow: 0 0 10px -2px rgba(111, 227, 255, 0.5);
   transform-origin: bottom;
   height: 6%;
-  will-change: height;
   transition: height 0.12s linear, opacity 0.2s;
 }
 
@@ -1049,6 +1053,29 @@ input[type=range]::-moz-range-thumb {
     backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
     -webkit-backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
   }
+  .blob { animation: none; }
+  .glass::before { animation: none; }
+}
+
+/* Touch devices (phones/tablets) match (hover: none) and (pointer: coarse)
+   regardless of the viewport width a home-screen PWA reports — so key the
+   GPU-heavy reductions off capability, not the px breakpoint above (which a
+   wide-reporting PWA can miss). Drop the animated refraction to a lighter
+   frost and stop the always-on idle animations: each kept the iOS compositor
+   re-rasterizing every frame while the tab is focused (#36). */
+@media (hover: none) and (pointer: coarse) {
+  .glass {
+    backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
+    -webkit-backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
+  }
+  .blob,
+  .glass::before,
+  .dot.ok,
+  .dot.loading,
+  .dot.stopping,
+  .vp-badge .rec {
+    animation: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1056,8 +1083,14 @@ input[type=range]::-moz-range-thumb {
   .glass::before,
   .dot.ok,
   .dot.loading,
+  .dot.stopping,
   .spinner-glyph,
   .vp-badge .rec {
+    animation: none;
+  }
+
+  .vp-power.starting button,
+  .vp-power.stopping button {
     animation: none;
   }
 

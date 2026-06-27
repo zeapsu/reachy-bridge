@@ -17,7 +17,10 @@
     robotControlMode: null,
     daemonStatusTimer: null,
     daemonStatusInflight: false,
+    daemonStopping: false,
+    sliderActive: null,
     simLoop: null,
+    live: { streams: [], timers: [], active: false },
   };
 
   document.querySelectorAll(".glass").forEach((glass) => {
@@ -122,7 +125,10 @@
   function setControlsEnabled(enabled) {
     ["vol-spk", "vol-mic", "wobble", "testsound"].forEach((id) => {
       const element = $(id);
-      if (element) element.disabled = !enabled;
+      // Never toggle .disabled on the slider being dragged — flipping it (even
+      // re-enabling) aborts an in-progress touch drag on iOS. The release
+      // handler reconciles the correct state once the drag ends (#38).
+      if (element && state.sliderActive !== id) element.disabled = !enabled;
     });
     document.querySelectorAll("#motor-seg button").forEach((button) => {
       button.disabled = !enabled;
@@ -414,22 +420,50 @@
   });
   const eqState = new Array(NBARS).fill(0);
   const eqProfile = Array.from({ length: NBARS }, (_, index) => 0.24 + Math.sin((index / (NBARS - 1)) * Math.PI) * 0.76);
+  const eqLast = new Array(NBARS).fill(null);
+  let eqSettled = false;
+  let eqPeakLast = null;
 
   function renderEqualizer(speechDetected, label = null) {
-    const normalized = speechDetected ? 0.7 : 0.0;
+    const peak = label || (speechDetected ? "speech detected" : "no audio signal");
+    if (peak !== eqPeakLast) {
+      eqPeakLast = peak;
+      $("eq-peak").textContent = peak;
+    }
+    // Once idle has settled to the floor, do zero per-bar work each tick. The
+    // 20 Hz audio stream otherwise rewrites 36 bar heights forever, and those
+    // bars sit inside a backdrop-filtered panel that iOS re-rasterizes on every
+    // write — the focused-tab battery/heat drain (#36).
+    if (!speechDetected && eqSettled) return;
     eqEl.classList.toggle("idle", !speechDetected);
+    const normalized = speechDetected ? 0.7 : 0.0;
+    let settled = !speechDetected;
     bars.forEach((bar, index) => {
       const target = 5 + normalized * 86 * eqProfile[index];
       eqState[index] += (target - eqState[index]) * 0.42;
-      bar.style.height = `${Math.max(4, eqState[index]).toFixed(1)}%`;
+      if (!speechDetected && Math.abs(eqState[index] - target) < 0.1) {
+        eqState[index] = target;
+      } else if (!speechDetected) {
+        settled = false;
+      }
+      const next = `${Math.max(4, eqState[index]).toFixed(1)}%`;
+      if (next !== eqLast[index]) {
+        eqLast[index] = next;
+        bar.style.height = next;
+      }
     });
-    $("eq-peak").textContent = label || (speechDetected ? "speech detected" : "no audio signal");
+    eqSettled = settled;
   }
 
   function syncSlider(id, value) {
     const input = $(id);
     const display = $(`${id}-v`);
-    if (!input || !display || value == null || document.activeElement === input) return;
+    if (!input || !display || value == null) return;
+    // Never clobber a slider the user is actively dragging. On touch a range
+    // input never becomes document.activeElement, so the focus check alone
+    // misses pointer drags — reassigning input.value mid-drag aborts the touch
+    // interaction and snaps to the daemon value (#38).
+    if (state.sliderActive === id || document.activeElement === input) return;
     const next = String(clamp(Number(value), 0, 100));
     input.value = next;
     display.textContent = next;
@@ -500,23 +534,76 @@
     }
   }
 
-  function bindSliders() {
-    const speakerSave = debounce(() => {
-      const value = Number($("vol-spk").value);
-      void performControl("speaker", () => apiJson("/api/volume/set", { method: "POST", body: JSON.stringify({ volume: value }) }));
-    }, 240);
-    const micSave = debounce(() => {
-      const value = Number($("vol-mic").value);
-      void performControl("microphone", () => apiJson("/api/volume/microphone/set", { method: "POST", body: JSON.stringify({ volume: value }) }));
-    }, 240);
+  // Lightweight volume save path (#38): POST directly without disabling the slider
+  // being dragged. setControlsEnabled() is reserved for daemon-offline + discrete ops.
+  const volumeSave = {
+    "vol-spk": { inflight: false, dirty: false },
+    "vol-mic": { inflight: false, dirty: false },
+  };
 
-    [["vol-spk", speakerSave], ["vol-mic", micSave]].forEach(([id, save]) => {
+  async function saveVolume(id, label, endpoint) {
+    if (!state.daemonOnline) return;
+    const slot = volumeSave[id];
+    if (slot.inflight) {
+      // A request is already in flight; remember that the value moved again and
+      // re-send the freshest value once it returns (coalesce, don't queue per-event).
+      slot.dirty = true;
+      return;
+    }
+    slot.inflight = true;
+    $("control-status").textContent = label;
+    try {
+      const value = Number($(id).value);
+      await apiJson(endpoint, { method: "POST", body: JSON.stringify({ volume: value }) });
+      $("control-status").textContent = "ok";
+      $("control-hint").textContent = "";
+      $("control-hint").className = "panel-hint";
+    } catch (error) {
+      $("control-status").textContent = "error";
+      $("control-hint").textContent = error.message || "Volume request failed";
+      $("control-hint").className = "panel-hint error";
+    } finally {
+      slot.inflight = false;
+      if (slot.dirty) {
+        slot.dirty = false;
+        void saveVolume(id, label, endpoint);
+      }
+    }
+  }
+
+  function bindSliders() {
+    const saves = {
+      "vol-spk": debounce(() => void saveVolume("vol-spk", "speaker", "/api/volume/set"), 240),
+      "vol-mic": debounce(() => void saveVolume("vol-mic", "microphone", "/api/volume/microphone/set"), 240),
+    };
+
+    // End of an active drag: clear the guard, reconcile the disabled state we
+    // deliberately left untouched while dragging, and persist the released value.
+    function endInteraction() {
+      const id = state.sliderActive;
+      if (id === null) return;
+      state.sliderActive = null;
+      setControlsEnabled(state.daemonOnline && !state.controlBusy);
+      saves[id]();
+    }
+
+    Object.keys(saves).forEach((id) => {
+      const input = $(id);
       updateSliderFill(id);
-      $(id).addEventListener("input", () => {
+      input.addEventListener("pointerdown", () => { state.sliderActive = id; });
+      input.addEventListener("input", () => {
+        state.sliderActive = id;
         updateSliderFill(id);
-        save();
+        saves[id]();
       });
+      input.addEventListener("change", endInteraction);
+      input.addEventListener("blur", endInteraction);
     });
+
+    // Pointer release can land off the thumb (touch drags wander), so clear the
+    // guard from the window — a stuck flag would freeze daemon→slider sync.
+    window.addEventListener("pointerup", endInteraction);
+    window.addEventListener("pointercancel", endInteraction);
   }
 
   function makeSim(canvas) {
@@ -715,7 +802,20 @@
       const vpPower = $("vp-power");
       const button = $("daemon-power");
 
-      vpPower.classList.remove("running", "starting", "disabled");
+      vpPower.classList.remove("running", "starting", "stopping", "disabled");
+
+      if (state.daemonStopping) {
+        if (status.running) {
+          // Still shutting down — hold the OFF ramp and keep the button inert.
+          vpPower.classList.add("stopping");
+          button.title = "Daemon stopping…";
+          button.setAttribute("aria-label", "Daemon stopping…");
+          button.disabled = true;
+          return;
+        }
+        // Daemon is down — clear the transitional state, fall through to red default.
+        state.daemonStopping = false;
+      }
 
       if (!status.manageable) {
         vpPower.classList.add("disabled");
@@ -753,10 +853,18 @@
 
     if (isRunning) {
       state.controlBusy = true;
+      state.daemonStopping = true;
+      vpPower.classList.remove("running", "starting");
+      vpPower.classList.add("stopping");
+      button.disabled = true;
+      button.title = "Daemon stopping…";
+      button.setAttribute("aria-label", "Daemon stopping…");
       $("control-status").textContent = "stopping";
       try {
         await apiJson("/api/daemon/stop", { method: "POST" });
       } catch (error) {
+        state.daemonStopping = false;
+        vpPower.classList.remove("stopping");
         $("control-status").textContent = "error";
         $("control-hint").textContent = error.message || "Failed to stop daemon";
         $("control-hint").className = "panel-hint error";
@@ -783,40 +891,64 @@
     }
   });
 
+  function startLiveConnections() {
+    if (state.live.active) return;
+    state.live.active = true;
+
+    void pollDaemonStatus();
+    void pollAppsStatus();
+    state.live.timers.push(
+      setInterval(() => void pollDaemonStatus(), 1000),
+      setInterval(() => void pollAppsStatus(), 1000),
+    );
+
+    const telemetry = bindEventSource("/telemetry/state-stream", {
+      "state-update": (event) => {
+        const payload = readEventPayload(event);
+        setDaemonOnline(true);
+        applyRobotState(payload);
+      },
+      "daemon-offline": () => setDaemonOnline(false),
+      error: () => setDaemonOnline(false),
+    });
+    const stats = bindEventSource("/api/system/stats-stream", {
+      "stats-update": (event) => updateStats(readEventPayload(event)),
+      error: () => {
+        $("v-host").textContent = "stats reconnecting";
+      },
+    });
+    const audio = bindEventSource("/api/audio/levels-stream", {
+      "audio-level": (event) => {
+        const payload = readEventPayload(event);
+        const speechDetected = payload && payload.speech_detected === true;
+        renderEqualizer(speechDetected);
+      },
+      "daemon-unavailable": () => renderEqualizer(false, "no audio signal"),
+      error: () => renderEqualizer(false, "audio stream reconnecting"),
+    });
+    state.live.streams.push(telemetry, stats, audio);
+  }
+
+  function stopLiveConnections() {
+    if (!state.live.active) return;
+    state.live.active = false;
+    state.live.timers.forEach((id) => clearInterval(id));
+    state.live.timers = [];
+    state.live.streams.forEach((source) => {
+      if (source) source.close();
+    });
+    state.live.streams = [];
+  }
+
   // Poll daemon status on the same cadence as the daemon connectivity check
-  void pollDaemonStatus();
-  setInterval(() => void pollDaemonStatus(), 1000);
-
-  bindEventSource("/telemetry/state-stream", {
-    "state-update": (event) => {
-      const payload = readEventPayload(event);
-      setDaemonOnline(true);
-      applyRobotState(payload);
-    },
-    "daemon-offline": () => setDaemonOnline(false),
-    error: () => setDaemonOnline(false),
-  });
-
-  bindEventSource("/api/system/stats-stream", {
-    "stats-update": (event) => updateStats(readEventPayload(event)),
-    error: () => {
-      $("v-host").textContent = "stats reconnecting";
-    },
-  });
-
-  bindEventSource("/api/audio/levels-stream", {
-    "audio-level": (event) => {
-      const payload = readEventPayload(event);
-      const speechDetected = payload && payload.speech_detected === true;
-      renderEqualizer(speechDetected);
-    },
-    "daemon-unavailable": () => renderEqualizer(false, "no audio signal"),
-    error: () => renderEqualizer(false, "audio stream reconnecting"),
-  });
-
   renderApps();
   renderEqualizer(false, "no audio signal");
   setDaemonOnline(false);
-  void pollAppsStatus();
-  setInterval(() => void pollAppsStatus(), 1000);
+  // Skip if we boot into an already-hidden tab — visibilitychange starts us when shown.
+  if (!document.hidden) startLiveConnections();
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopLiveConnections();
+    else startLiveConnections();
+  });
 })();
