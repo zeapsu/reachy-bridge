@@ -171,6 +171,20 @@
     return Math.abs(angle) <= TAU ? radiansToDegrees(angle) : angle;
   }
 
+  // Change-guard caches for applyRobotState
+  const poseCache = {
+    rpy: null,
+    yaw: null,
+    ant: null,
+    doa: null,
+    head: null,
+    body: null,
+    antL: null,
+    antR: null,
+    speaking: null,
+    doaDeg: null,
+  };
+
   function applyRobotState(payload) {
     if (!payload || typeof payload !== "object") return;
     const [rollDeg, pitchDeg, yawDeg] = poseValues(payload.head_pose).map(radiansToDegrees);
@@ -183,24 +197,70 @@
       selectMotorMode(payload.control_mode);
     }
 
-    $("r-rpy").textContent = [rollDeg, pitchDeg, yawDeg].map((value) => (value == null ? "—" : value.toFixed(0))).join("/");
-    $("r-yaw").textContent = dash(bodyYaw, 2);
-    $("r-ant").textContent = `${dash(antLeft, 2)}/${dash(antRight, 2)}`;
-    $("r-doa").textContent = doaDeg == null ? "—°" : `${doaDeg.toFixed(0)}°`;
+    const rpyText = [rollDeg, pitchDeg, yawDeg].map((value) => (value == null ? "—" : value.toFixed(0))).join("/");
+    if (rpyText !== poseCache.rpy) {
+      poseCache.rpy = rpyText;
+      $("r-rpy").textContent = rpyText;
+    }
+
+    const yawText = dash(bodyYaw, 2);
+    if (yawText !== poseCache.yaw) {
+      poseCache.yaw = yawText;
+      $("r-yaw").textContent = yawText;
+    }
+
+    const antText = `${dash(antLeft, 2)}/${dash(antRight, 2)}`;
+    if (antText !== poseCache.ant) {
+      poseCache.ant = antText;
+      $("r-ant").textContent = antText;
+    }
+
+    const doaText = doaDeg == null ? "—°" : `${doaDeg.toFixed(0)}°`;
+    if (doaText !== poseCache.doa) {
+      poseCache.doa = doaText;
+      $("r-doa").textContent = doaText;
+    }
 
     const roll = rollDeg ?? 0;
     const pitch = pitchDeg ?? 0;
     const yaw = yawDeg ?? 0;
-    $("head").setAttribute("transform", `rotate(${roll.toFixed(2)} 160 104) translate(${(yaw * 0.3).toFixed(2)} ${(-pitch * 0.3).toFixed(2)})`);
-    $("body").setAttribute("transform", `rotate(${((bodyYaw ?? 0) * 12).toFixed(2)} 160 152)`);
-    $("antL").setAttribute("transform", `rotate(${((antLeft ?? 0) * 18).toFixed(2)} 132 70)`);
-    $("antR").setAttribute("transform", `rotate(${((antRight ?? 0) * 18).toFixed(2)} 188 70)`);
-    $("rig").classList.toggle("speaking", speechDetected && doaDeg != null);
+    const headTransform = `rotate(${roll.toFixed(2)} 160 104) translate(${(yaw * 0.3).toFixed(2)} ${(-pitch * 0.3).toFixed(2)})`;
+    if (headTransform !== poseCache.head) {
+      poseCache.head = headTransform;
+      $("head").setAttribute("transform", headTransform);
+    }
 
-    if (doaDeg == null) {
-      $("doaArc").setAttribute("d", "");
-    } else {
-      setDoa(doaDeg);
+    const bodyTransform = `rotate(${((bodyYaw ?? 0) * 12).toFixed(2)} 160 152)`;
+    if (bodyTransform !== poseCache.body) {
+      poseCache.body = bodyTransform;
+      $("body").setAttribute("transform", bodyTransform);
+    }
+
+    const antLTransform = `rotate(${((antLeft ?? 0) * 18).toFixed(2)} 132 70)`;
+    if (antLTransform !== poseCache.antL) {
+      poseCache.antL = antLTransform;
+      $("antL").setAttribute("transform", antLTransform);
+    }
+
+    const antRTransform = `rotate(${((antRight ?? 0) * 18).toFixed(2)} 188 70)`;
+    if (antRTransform !== poseCache.antR) {
+      poseCache.antR = antRTransform;
+      $("antR").setAttribute("transform", antRTransform);
+    }
+
+    const speakingState = speechDetected && doaDeg != null;
+    if (speakingState !== poseCache.speaking) {
+      poseCache.speaking = speakingState;
+      $("rig").classList.toggle("speaking", speakingState);
+    }
+
+    if (doaDeg !== poseCache.doaDeg) {
+      poseCache.doaDeg = doaDeg;
+      if (doaDeg == null) {
+        $("doaArc").setAttribute("d", "");
+      } else {
+        setDoa(doaDeg);
+      }
     }
   }
 
@@ -380,9 +440,45 @@
     };
   }
 
-  const setCpu = gauge($("g-cpu"), "cpu", "var(--cyan)");
-  const setGpu = gauge($("g-gpu"), "gpu", "var(--mint)");
-  const setTemp = gauge($("g-temp"), "temp", "var(--amber)");
+  const setCpuRaw = gauge($("g-cpu"), "cpu", "var(--cyan)");
+  const setGpuRaw = gauge($("g-gpu"), "gpu", "var(--mint)");
+  const setTempRaw = gauge($("g-temp"), "temp", "var(--amber)");
+
+  // Change-guard caches for updateStats
+  const statsCache = {
+    cpu: null,
+    gpu: null,
+    temp: null,
+    mem: null,
+    memWidth: null,
+    host: null,
+    card: null,
+    sink: null,
+  };
+
+  const setCpu = (value, text, suffix) => {
+    const key = JSON.stringify({ value, text, suffix });
+    if (key !== statsCache.cpu) {
+      statsCache.cpu = key;
+      setCpuRaw(value, text, suffix);
+    }
+  };
+
+  const setGpu = (value, text, suffix) => {
+    const key = JSON.stringify({ value, text, suffix });
+    if (key !== statsCache.gpu) {
+      statsCache.gpu = key;
+      setGpuRaw(value, text, suffix);
+    }
+  };
+
+  const setTemp = (value, text, suffix) => {
+    const key = JSON.stringify({ value, text, suffix });
+    if (key !== statsCache.temp) {
+      statsCache.temp = key;
+      setTempRaw(value, text, suffix);
+    }
+  };
 
   function updateStats(stats) {
     if (!stats || typeof stats !== "object") return;
@@ -398,16 +494,40 @@
     if (memUsedMb != null && memTotalMb) {
       const usedGb = memUsedMb / 1024;
       const totalGb = memTotalMb / 1024;
-      $("v-mem").textContent = `${usedGb.toFixed(1)} / ${totalGb.toFixed(1)} GB`;
-      $("bar-mem").style.width = `${clamp((memUsedMb / memTotalMb) * 100, 0, 100).toFixed(0)}%`;
+      const memText = `${usedGb.toFixed(1)} / ${totalGb.toFixed(1)} GB`;
+      const memWidth = `${clamp((memUsedMb / memTotalMb) * 100, 0, 100).toFixed(0)}%`;
+      if (memText !== statsCache.mem || memWidth !== statsCache.memWidth) {
+        statsCache.mem = memText;
+        statsCache.memWidth = memWidth;
+        $("v-mem").textContent = memText;
+        $("bar-mem").style.width = memWidth;
+      }
     } else {
-      $("v-mem").textContent = "— / — GB";
-      $("bar-mem").style.width = "0";
+      if (statsCache.mem !== "— / — GB" || statsCache.memWidth !== "0") {
+        statsCache.mem = "— / — GB";
+        statsCache.memWidth = "0";
+        $("v-mem").textContent = "— / — GB";
+        $("bar-mem").style.width = "0";
+      }
     }
 
-    $("v-host").textContent = "jetson stats";
-    $("v-card").textContent = stats.alsa_card == null ? "not found" : `card ${stats.alsa_card} · PCM,1 ${stats.alsa_pcm_volume ?? "—"}%`;
-    $("v-sink").textContent = stats.pipewire_sink_volume == null ? "not found" : Number(stats.pipewire_sink_volume).toFixed(2);
+    const hostText = "jetson stats";
+    if (hostText !== statsCache.host) {
+      statsCache.host = hostText;
+      $("v-host").textContent = hostText;
+    }
+
+    const cardText = stats.alsa_card == null ? "not found" : `card ${stats.alsa_card} · PCM,1 ${stats.alsa_pcm_volume ?? "—"}%`;
+    if (cardText !== statsCache.card) {
+      statsCache.card = cardText;
+      $("v-card").textContent = cardText;
+    }
+
+    const sinkText = stats.pipewire_sink_volume == null ? "not found" : Number(stats.pipewire_sink_volume).toFixed(2);
+    if (sinkText !== statsCache.sink) {
+      statsCache.sink = sinkText;
+      $("v-sink").textContent = sinkText;
+    }
   }
 
   const NBARS = 36;
