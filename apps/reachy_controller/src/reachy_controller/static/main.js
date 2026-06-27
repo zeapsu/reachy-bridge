@@ -8,8 +8,14 @@
   const appState = new Map(APP_NAMES.map((name) => [name, { name, status: "stopped" }]));
   const LOADING_FRAGMENTS = ["Booting…", "Resolving env…", "Connecting to daemon…", "Activating motors…", "Waking up…"];
   let loadingTick = 0;
+  let lastAppsSig = null;
   const state = {
-    daemonOnline: false,
+    // null = unknown until the first setDaemonOnline() call. Starting at null (not
+    // false) makes `changed` true on that first call, so the boot DOM ("connecting"
+    // /"waiting") is reconciled to the real state even when the daemon is offline
+    // from page load and stays offline — the change-guard would otherwise suppress
+    // those writes since false === false (#43).
+    daemonOnline: null,
     controlsLoaded: false,
     controlBusy: false,
     appBusy: false,
@@ -98,13 +104,23 @@
   function setDaemonOnline(online) {
     const changed = state.daemonOnline !== online;
     state.daemonOnline = online;
-    $("daemon-dot").className = `dot ${online ? "ok" : "error"}`;
-    $("daemon-value").textContent = online ? "online" : "offline";
-    $("vp-rec").className = `rec ${online ? "ok" : ""}`;
-    $("rig").classList.toggle("offline", !online);
-    $("rig-note").hidden = online;
-    $("mic-dot").className = `dot ${online ? "ok" : "error"}`;
-    $("mic-state").textContent = online ? "listening" : "unavailable";
+    // The telemetry "state-update" event calls this ~10 Hz with online=true. The
+    // status chrome below is a pure function of `online`, so only rewrite it when
+    // online actually flips — `changed` is also true on the first call (daemonOnline
+    // starts null, see state init), so the boot DOM is reconciled exactly once (#43).
+    // setControlsEnabled() stays unconditional — it is
+    // the reconciliation point for controlBusy, which the daemon start/stop handlers
+    // flip without calling it — but is itself change-guarded, so a steady-state tick
+    // does zero DOM writes.
+    if (changed) {
+      $("daemon-dot").className = `dot ${online ? "ok" : "error"}`;
+      $("daemon-value").textContent = online ? "online" : "offline";
+      $("vp-rec").className = `rec ${online ? "ok" : ""}`;
+      $("rig").classList.toggle("offline", !online);
+      $("rig-note").hidden = online;
+      $("mic-dot").className = `dot ${online ? "ok" : "error"}`;
+      $("mic-state").textContent = online ? "listening" : "unavailable";
+    }
     setControlsEnabled(online && !state.controlBusy);
 
     if (!online) {
@@ -123,15 +139,20 @@
   }
 
   function setControlsEnabled(enabled) {
+    const disabled = !enabled;
     ["vol-spk", "vol-mic", "wobble", "testsound"].forEach((id) => {
       const element = $(id);
       // Never toggle .disabled on the slider being dragged — flipping it (even
       // re-enabling) aborts an in-progress touch drag on iOS. The release
       // handler reconciles the correct state once the drag ends (#38).
-      if (element && state.sliderActive !== id) element.disabled = !enabled;
+      // Write only on change: setDaemonOnline calls this ~10 Hz to reconcile
+      // controlBusy, so an unconditional write would thrash .disabled every tick (#43).
+      if (element && state.sliderActive !== id && element.disabled !== disabled) {
+        element.disabled = disabled;
+      }
     });
     document.querySelectorAll("#motor-seg button").forEach((button) => {
-      button.disabled = !enabled;
+      if (button.disabled !== disabled) button.disabled = disabled;
     });
   }
 
@@ -332,7 +353,7 @@
 
   function renderApps(statuses = Array.from(appState.values())) {
     const active = statuses.find((app) => app.status === "running" || app.status === "loading" || app.status === "stopping") || null;
-    $("apps").innerHTML = APP_NAMES.map((name) => {
+    const html = APP_NAMES.map((name) => {
       const app = statuses.find((item) => item.name === name) || { name, status: "stopped" };
       const isRunning = app.status === "running";
       const isLoading = app.status === "loading";
@@ -343,7 +364,6 @@
       const pid = isRunning && app.pid ? ` · pid ${app.pid}` : "";
       const external = isRunning && app.external ? ` · external` : "";
       const error = app.error ? `<br><span class="err">${escapeHtml(app.error)}</span>` : "";
-      const isActive = isRunning || isLoading || isStopping;
       let button;
       if (isRunning) {
         button = `<button class="btn stop" data-app="${name}" data-action="stop" ${state.appBusy ? "disabled" : ""}>Stop</button>`;
@@ -366,8 +386,21 @@
       </div>`;
     }).join("");
 
-    $("robot-dot").className = `dot ${active ? "live" : "ok"}`;
-    $("robot-value").textContent = active ? active.name : "free";
+    const robotDotClass = `dot ${active ? "live" : "ok"}`;
+    const robotValue = active ? active.name : "free";
+
+    // pollAppsStatus re-renders at 1 Hz even when nothing changed; skip the
+    // innerHTML rebuild (parse + reflow) + status writes when the output is
+    // identical. The rendered markup IS the signature, so it is correct by
+    // construction: a running app's ticking uptime changes it (rebuild, as before),
+    // while an idle list is stable → zero rebuilds (#43).
+    const sig = `${html} ${robotDotClass} ${robotValue}`;
+    if (sig === lastAppsSig) return;
+    lastAppsSig = sig;
+
+    $("apps").innerHTML = html;
+    $("robot-dot").className = robotDotClass;
+    $("robot-value").textContent = robotValue;
   }
 
   function formatUptime(seconds) {
@@ -914,49 +947,57 @@
     });
   });
 
+  // Apply the daemon power-button presentation, writing only what changed. This
+  // poll runs at 1 Hz and previously rewrote classList + title + aria-label +
+  // disabled every tick regardless; per-write guards make a steady tick a no-op
+  // while still reconciling the authoritative state every poll (#43).
+  function applyDaemonPower(powerClass, title, disabled) {
+    const vpPower = $("vp-power");
+    const button = $("daemon-power");
+    for (const cls of ["running", "starting", "stopping", "disabled"]) {
+      const want = cls === powerClass;
+      if (vpPower.classList.contains(cls) !== want) vpPower.classList.toggle(cls, want);
+    }
+    if (button.title !== title) button.title = title;
+    if (button.getAttribute("aria-label") !== title) button.setAttribute("aria-label", title);
+    if (button.disabled !== disabled) button.disabled = disabled;
+  }
+
   async function pollDaemonStatus() {
     if (state.daemonStatusInflight) return;
     state.daemonStatusInflight = true;
     try {
       const status = await apiJson("/api/daemon/status");
-      const vpPower = $("vp-power");
-      const button = $("daemon-power");
 
-      vpPower.classList.remove("running", "starting", "stopping", "disabled");
+      let powerClass = "";
+      let title = "Start daemon";
+      let disabled = false;
 
-      if (state.daemonStopping) {
-        if (status.running) {
-          // Still shutting down — hold the OFF ramp and keep the button inert.
-          vpPower.classList.add("stopping");
-          button.title = "Daemon stopping…";
-          button.setAttribute("aria-label", "Daemon stopping…");
-          button.disabled = true;
-          return;
-        }
-        // Daemon is down — clear the transitional state, fall through to red default.
-        state.daemonStopping = false;
-      }
-
-      if (!status.manageable) {
-        vpPower.classList.add("disabled");
-        button.title = "Daemon managed on device";
-        button.setAttribute("aria-label", "Daemon managed on device");
-        button.disabled = true;
-      } else if (status.running) {
-        vpPower.classList.add("running");
-        button.title = "Stop daemon";
-        button.setAttribute("aria-label", "Stop daemon");
-        button.disabled = false;
-      } else if (status.status === "starting") {
-        vpPower.classList.add("starting");
-        button.title = "Daemon starting…";
-        button.setAttribute("aria-label", "Daemon starting…");
-        button.disabled = true;
+      if (state.daemonStopping && status.running) {
+        // Still shutting down — hold the OFF state and keep the button inert.
+        powerClass = "stopping";
+        title = "Daemon stopping…";
+        disabled = true;
       } else {
-        button.title = "Start daemon";
-        button.setAttribute("aria-label", "Start daemon");
-        button.disabled = false;
+        // Daemon is down — clear the transitional state, fall through to red default.
+        if (state.daemonStopping) state.daemonStopping = false;
+        if (!status.manageable) {
+          powerClass = "disabled";
+          title = "Daemon managed on device";
+          disabled = true;
+        } else if (status.running) {
+          powerClass = "running";
+          title = "Stop daemon";
+          disabled = false;
+        } else if (status.status === "starting") {
+          powerClass = "starting";
+          title = "Daemon starting…";
+          disabled = true;
+        }
+        // else: defaults above (no power class, "Start daemon", enabled).
       }
+
+      applyDaemonPower(powerClass, title, disabled);
     } catch (_) {
       // Silent fail — let the daemon online/offline mechanism handle it
     } finally {
