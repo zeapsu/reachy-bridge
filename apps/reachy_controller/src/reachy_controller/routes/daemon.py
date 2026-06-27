@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -10,19 +11,43 @@ from reachy_controller.daemon_supervisor import DaemonSupervisor
 
 router = APIRouter(prefix="/api/daemon", tags=["daemon"])
 
+# TTL for the daemon status cache, in seconds. A ~1s stale window is acceptable:
+# daemon up/down transitions are infrequent and the client polls status at ~1 Hz,
+# so this coalesces redundant full-state probes without status feeling sticky.
+_DAEMON_STATUS_TTL_SECONDS = 1.0
+
 
 async def _get_daemon_running(request: Request) -> bool:
-    """Check if the daemon is reachable via HTTP.
+    """Check if the daemon is reachable via HTTP with caching.
 
-    Reuses the existing DaemonProxy reachability mechanism.
+    Reuses the existing DaemonProxy reachability mechanism, but caches
+    the result for _DAEMON_STATUS_TTL_SECONDS to reduce redundant probes
+    from rapid polling.
     """
     proxy = request.app.state.daemon_proxy
+    now = time.monotonic()
+
+    # Lazily initialize or retrieve the cache from app state
+    cache = getattr(request.app.state, "_daemon_status_cache", None)
+
+    # Check if cache is fresh
+    if cache is not None:
+        timestamp, cached_result = cache
+        if now - timestamp < _DAEMON_STATUS_TTL_SECONDS:
+            # Cache is still fresh, return the cached result
+            return cached_result
+
+    # Cache is stale or missing, re-probe
     try:
-        # Use the existing full state endpoint as the reachability check
         state = await proxy.get_full_state()
-        return state is not None
+        result = state is not None
     except Exception:
-        return False
+        result = False
+
+    # Update cache with new timestamp and result
+    request.app.state._daemon_status_cache = (now, result)
+
+    return result
 
 
 @router.get("/status")

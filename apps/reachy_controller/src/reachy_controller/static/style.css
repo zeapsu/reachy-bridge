@@ -1065,8 +1065,22 @@ input[type=range]::-moz-range-thumb {
    re-rasterizing every frame while the tab is focused (#36). */
 @media (hover: none) and (pointer: coarse) {
   .glass {
-    backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
-    -webkit-backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: rgba(18, 21, 32, 0.97);
+  }
+  /* The viewport overlays sit ON TOP of the live schematic (the default vp-stage
+     layer, updated ~10 Hz), so their backdrop-filter blurs recomposite on the GPU
+     every frame the pose changes — the per-frame cost #43's .glass fix missed.
+     Drop the blur on touch and lift the background opacity so the chips stay
+     legible over the now-unblurred (dark) stage. Desktop keeps the full effect. */
+  .vp-power,
+  .vp-switch,
+  .vp-badge,
+  .hud-readout {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: rgba(10, 12, 20, 0.82);
   }
   .blob,
   .glass::before,

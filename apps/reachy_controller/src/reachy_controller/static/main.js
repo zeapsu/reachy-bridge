@@ -8,8 +8,14 @@
   const appState = new Map(APP_NAMES.map((name) => [name, { name, status: "stopped" }]));
   const LOADING_FRAGMENTS = ["Booting…", "Resolving env…", "Connecting to daemon…", "Activating motors…", "Waking up…"];
   let loadingTick = 0;
+  let lastAppsSig = null;
   const state = {
-    daemonOnline: false,
+    // null = unknown until the first setDaemonOnline() call. Starting at null (not
+    // false) makes `changed` true on that first call, so the boot DOM ("connecting"
+    // /"waiting") is reconciled to the real state even when the daemon is offline
+    // from page load and stays offline — the change-guard would otherwise suppress
+    // those writes since false === false (#43).
+    daemonOnline: null,
     controlsLoaded: false,
     controlBusy: false,
     appBusy: false,
@@ -98,13 +104,23 @@
   function setDaemonOnline(online) {
     const changed = state.daemonOnline !== online;
     state.daemonOnline = online;
-    $("daemon-dot").className = `dot ${online ? "ok" : "error"}`;
-    $("daemon-value").textContent = online ? "online" : "offline";
-    $("vp-rec").className = `rec ${online ? "ok" : ""}`;
-    $("rig").classList.toggle("offline", !online);
-    $("rig-note").hidden = online;
-    $("mic-dot").className = `dot ${online ? "ok" : "error"}`;
-    $("mic-state").textContent = online ? "listening" : "unavailable";
+    // The telemetry "state-update" event calls this ~10 Hz with online=true. The
+    // status chrome below is a pure function of `online`, so only rewrite it when
+    // online actually flips — `changed` is also true on the first call (daemonOnline
+    // starts null, see state init), so the boot DOM is reconciled exactly once (#43).
+    // setControlsEnabled() stays unconditional — it is
+    // the reconciliation point for controlBusy, which the daemon start/stop handlers
+    // flip without calling it — but is itself change-guarded, so a steady-state tick
+    // does zero DOM writes.
+    if (changed) {
+      $("daemon-dot").className = `dot ${online ? "ok" : "error"}`;
+      $("daemon-value").textContent = online ? "online" : "offline";
+      $("vp-rec").className = `rec ${online ? "ok" : ""}`;
+      $("rig").classList.toggle("offline", !online);
+      $("rig-note").hidden = online;
+      $("mic-dot").className = `dot ${online ? "ok" : "error"}`;
+      $("mic-state").textContent = online ? "listening" : "unavailable";
+    }
     setControlsEnabled(online && !state.controlBusy);
 
     if (!online) {
@@ -123,15 +139,20 @@
   }
 
   function setControlsEnabled(enabled) {
+    const disabled = !enabled;
     ["vol-spk", "vol-mic", "wobble", "testsound"].forEach((id) => {
       const element = $(id);
       // Never toggle .disabled on the slider being dragged — flipping it (even
       // re-enabling) aborts an in-progress touch drag on iOS. The release
       // handler reconciles the correct state once the drag ends (#38).
-      if (element && state.sliderActive !== id) element.disabled = !enabled;
+      // Write only on change: setDaemonOnline calls this ~10 Hz to reconcile
+      // controlBusy, so an unconditional write would thrash .disabled every tick (#43).
+      if (element && state.sliderActive !== id && element.disabled !== disabled) {
+        element.disabled = disabled;
+      }
     });
     document.querySelectorAll("#motor-seg button").forEach((button) => {
-      button.disabled = !enabled;
+      if (button.disabled !== disabled) button.disabled = disabled;
     });
   }
 
@@ -148,6 +169,10 @@
     $("doaTick").setAttribute("cx", "160");
     $("doaTick").setAttribute("cy", "16");
     $("rig").classList.remove("speaking");
+    // This writes the DOM directly, so invalidate the change-guard cache — otherwise a
+    // reconnect with an unchanged pose makes every guard in applyRobotState skip and
+    // the schematic stays blank.
+    poseCache = freshPoseCache();
   }
 
   function poseValues(pose) {
@@ -171,6 +196,25 @@
     return Math.abs(angle) <= TAU ? radiansToDegrees(angle) : angle;
   }
 
+  // Change-guard caches for applyRobotState. doaDeg uses `undefined` (not null) so
+  // a real null DOA still differs from the initial cache and renders once. Kept in a
+  // factory so renderOfflinePose can invalidate the whole cache in one place.
+  function freshPoseCache() {
+    return {
+      rpy: null,
+      yaw: null,
+      ant: null,
+      doa: null,
+      head: null,
+      body: null,
+      antL: null,
+      antR: null,
+      speaking: null,
+      doaDeg: undefined,
+    };
+  }
+  let poseCache = freshPoseCache();
+
   function applyRobotState(payload) {
     if (!payload || typeof payload !== "object") return;
     const [rollDeg, pitchDeg, yawDeg] = poseValues(payload.head_pose).map(radiansToDegrees);
@@ -183,24 +227,70 @@
       selectMotorMode(payload.control_mode);
     }
 
-    $("r-rpy").textContent = [rollDeg, pitchDeg, yawDeg].map((value) => (value == null ? "—" : value.toFixed(0))).join("/");
-    $("r-yaw").textContent = dash(bodyYaw, 2);
-    $("r-ant").textContent = `${dash(antLeft, 2)}/${dash(antRight, 2)}`;
-    $("r-doa").textContent = doaDeg == null ? "—°" : `${doaDeg.toFixed(0)}°`;
+    const rpyText = [rollDeg, pitchDeg, yawDeg].map((value) => (value == null ? "—" : value.toFixed(0))).join("/");
+    if (rpyText !== poseCache.rpy) {
+      poseCache.rpy = rpyText;
+      $("r-rpy").textContent = rpyText;
+    }
+
+    const yawText = dash(bodyYaw, 2);
+    if (yawText !== poseCache.yaw) {
+      poseCache.yaw = yawText;
+      $("r-yaw").textContent = yawText;
+    }
+
+    const antText = `${dash(antLeft, 2)}/${dash(antRight, 2)}`;
+    if (antText !== poseCache.ant) {
+      poseCache.ant = antText;
+      $("r-ant").textContent = antText;
+    }
+
+    const doaText = doaDeg == null ? "—°" : `${doaDeg.toFixed(0)}°`;
+    if (doaText !== poseCache.doa) {
+      poseCache.doa = doaText;
+      $("r-doa").textContent = doaText;
+    }
 
     const roll = rollDeg ?? 0;
     const pitch = pitchDeg ?? 0;
     const yaw = yawDeg ?? 0;
-    $("head").setAttribute("transform", `rotate(${roll.toFixed(2)} 160 104) translate(${(yaw * 0.3).toFixed(2)} ${(-pitch * 0.3).toFixed(2)})`);
-    $("body").setAttribute("transform", `rotate(${((bodyYaw ?? 0) * 12).toFixed(2)} 160 152)`);
-    $("antL").setAttribute("transform", `rotate(${((antLeft ?? 0) * 18).toFixed(2)} 132 70)`);
-    $("antR").setAttribute("transform", `rotate(${((antRight ?? 0) * 18).toFixed(2)} 188 70)`);
-    $("rig").classList.toggle("speaking", speechDetected && doaDeg != null);
+    const headTransform = `rotate(${roll.toFixed(2)} 160 104) translate(${(yaw * 0.3).toFixed(2)} ${(-pitch * 0.3).toFixed(2)})`;
+    if (headTransform !== poseCache.head) {
+      poseCache.head = headTransform;
+      $("head").setAttribute("transform", headTransform);
+    }
 
-    if (doaDeg == null) {
-      $("doaArc").setAttribute("d", "");
-    } else {
-      setDoa(doaDeg);
+    const bodyTransform = `rotate(${((bodyYaw ?? 0) * 12).toFixed(2)} 160 152)`;
+    if (bodyTransform !== poseCache.body) {
+      poseCache.body = bodyTransform;
+      $("body").setAttribute("transform", bodyTransform);
+    }
+
+    const antLTransform = `rotate(${((antLeft ?? 0) * 18).toFixed(2)} 132 70)`;
+    if (antLTransform !== poseCache.antL) {
+      poseCache.antL = antLTransform;
+      $("antL").setAttribute("transform", antLTransform);
+    }
+
+    const antRTransform = `rotate(${((antRight ?? 0) * 18).toFixed(2)} 188 70)`;
+    if (antRTransform !== poseCache.antR) {
+      poseCache.antR = antRTransform;
+      $("antR").setAttribute("transform", antRTransform);
+    }
+
+    const speakingState = speechDetected && doaDeg != null;
+    if (speakingState !== poseCache.speaking) {
+      poseCache.speaking = speakingState;
+      $("rig").classList.toggle("speaking", speakingState);
+    }
+
+    if (doaDeg !== poseCache.doaDeg) {
+      poseCache.doaDeg = doaDeg;
+      if (doaDeg == null) {
+        $("doaArc").setAttribute("d", "");
+      } else {
+        setDoa(doaDeg);
+      }
     }
   }
 
@@ -272,7 +362,7 @@
 
   function renderApps(statuses = Array.from(appState.values())) {
     const active = statuses.find((app) => app.status === "running" || app.status === "loading" || app.status === "stopping") || null;
-    $("apps").innerHTML = APP_NAMES.map((name) => {
+    const html = APP_NAMES.map((name) => {
       const app = statuses.find((item) => item.name === name) || { name, status: "stopped" };
       const isRunning = app.status === "running";
       const isLoading = app.status === "loading";
@@ -283,7 +373,6 @@
       const pid = isRunning && app.pid ? ` · pid ${app.pid}` : "";
       const external = isRunning && app.external ? ` · external` : "";
       const error = app.error ? `<br><span class="err">${escapeHtml(app.error)}</span>` : "";
-      const isActive = isRunning || isLoading || isStopping;
       let button;
       if (isRunning) {
         button = `<button class="btn stop" data-app="${name}" data-action="stop" ${state.appBusy ? "disabled" : ""}>Stop</button>`;
@@ -306,8 +395,21 @@
       </div>`;
     }).join("");
 
-    $("robot-dot").className = `dot ${active ? "live" : "ok"}`;
-    $("robot-value").textContent = active ? active.name : "free";
+    const robotDotClass = `dot ${active ? "live" : "ok"}`;
+    const robotValue = active ? active.name : "free";
+
+    // pollAppsStatus re-renders at 1 Hz even when nothing changed; skip the
+    // innerHTML rebuild (parse + reflow) + status writes when the output is
+    // identical. The rendered markup IS the signature, so it is correct by
+    // construction: a running app's ticking uptime changes it (rebuild, as before),
+    // while an idle list is stable → zero rebuilds (#43).
+    const sig = `${html} ${robotDotClass} ${robotValue}`;
+    if (sig === lastAppsSig) return;
+    lastAppsSig = sig;
+
+    $("apps").innerHTML = html;
+    $("robot-dot").className = robotDotClass;
+    $("robot-value").textContent = robotValue;
   }
 
   function formatUptime(seconds) {
@@ -380,9 +482,45 @@
     };
   }
 
-  const setCpu = gauge($("g-cpu"), "cpu", "var(--cyan)");
-  const setGpu = gauge($("g-gpu"), "gpu", "var(--mint)");
-  const setTemp = gauge($("g-temp"), "temp", "var(--amber)");
+  const setCpuRaw = gauge($("g-cpu"), "cpu", "var(--cyan)");
+  const setGpuRaw = gauge($("g-gpu"), "gpu", "var(--mint)");
+  const setTempRaw = gauge($("g-temp"), "temp", "var(--amber)");
+
+  // Change-guard caches for updateStats
+  const statsCache = {
+    cpu: null,
+    gpu: null,
+    temp: null,
+    mem: null,
+    memWidth: null,
+    host: null,
+    card: null,
+    sink: null,
+  };
+
+  const setCpu = (value, text, suffix) => {
+    const key = JSON.stringify({ value, text, suffix });
+    if (key !== statsCache.cpu) {
+      statsCache.cpu = key;
+      setCpuRaw(value, text, suffix);
+    }
+  };
+
+  const setGpu = (value, text, suffix) => {
+    const key = JSON.stringify({ value, text, suffix });
+    if (key !== statsCache.gpu) {
+      statsCache.gpu = key;
+      setGpuRaw(value, text, suffix);
+    }
+  };
+
+  const setTemp = (value, text, suffix) => {
+    const key = JSON.stringify({ value, text, suffix });
+    if (key !== statsCache.temp) {
+      statsCache.temp = key;
+      setTempRaw(value, text, suffix);
+    }
+  };
 
   function updateStats(stats) {
     if (!stats || typeof stats !== "object") return;
@@ -398,16 +536,40 @@
     if (memUsedMb != null && memTotalMb) {
       const usedGb = memUsedMb / 1024;
       const totalGb = memTotalMb / 1024;
-      $("v-mem").textContent = `${usedGb.toFixed(1)} / ${totalGb.toFixed(1)} GB`;
-      $("bar-mem").style.width = `${clamp((memUsedMb / memTotalMb) * 100, 0, 100).toFixed(0)}%`;
+      const memText = `${usedGb.toFixed(1)} / ${totalGb.toFixed(1)} GB`;
+      const memWidth = `${clamp((memUsedMb / memTotalMb) * 100, 0, 100).toFixed(0)}%`;
+      if (memText !== statsCache.mem || memWidth !== statsCache.memWidth) {
+        statsCache.mem = memText;
+        statsCache.memWidth = memWidth;
+        $("v-mem").textContent = memText;
+        $("bar-mem").style.width = memWidth;
+      }
     } else {
-      $("v-mem").textContent = "— / — GB";
-      $("bar-mem").style.width = "0";
+      if (statsCache.mem !== "— / — GB" || statsCache.memWidth !== "0") {
+        statsCache.mem = "— / — GB";
+        statsCache.memWidth = "0";
+        $("v-mem").textContent = "— / — GB";
+        $("bar-mem").style.width = "0";
+      }
     }
 
-    $("v-host").textContent = "jetson stats";
-    $("v-card").textContent = stats.alsa_card == null ? "not found" : `card ${stats.alsa_card} · PCM,1 ${stats.alsa_pcm_volume ?? "—"}%`;
-    $("v-sink").textContent = stats.pipewire_sink_volume == null ? "not found" : Number(stats.pipewire_sink_volume).toFixed(2);
+    const hostText = "jetson stats";
+    if (hostText !== statsCache.host) {
+      statsCache.host = hostText;
+      $("v-host").textContent = hostText;
+    }
+
+    const cardText = stats.alsa_card == null ? "not found" : `card ${stats.alsa_card} · PCM,1 ${stats.alsa_pcm_volume ?? "—"}%`;
+    if (cardText !== statsCache.card) {
+      statsCache.card = cardText;
+      $("v-card").textContent = cardText;
+    }
+
+    const sinkText = stats.pipewire_sink_volume == null ? "not found" : Number(stats.pipewire_sink_volume).toFixed(2);
+    if (sinkText !== statsCache.sink) {
+      statsCache.sink = sinkText;
+      $("v-sink").textContent = sinkText;
+    }
   }
 
   const NBARS = 36;
@@ -794,49 +956,58 @@
     });
   });
 
+  // Apply the daemon power-button presentation, writing only what changed. This
+  // poll runs at 1 Hz and previously rewrote classList + title + aria-label +
+  // disabled every tick regardless; per-write guards make a steady tick a no-op
+  // while still reconciling the authoritative state every poll (#43).
+  function applyDaemonPower(powerClass, title, disabled) {
+    const vpPower = $("vp-power");
+    const button = $("daemon-power");
+    // toggle(cls, force) is a no-op (no DOM write) when the class is already in the
+    // wanted state, so it self-guards — no contains() pre-check needed here.
+    for (const cls of ["running", "starting", "stopping", "disabled"]) {
+      vpPower.classList.toggle(cls, cls === powerClass);
+    }
+    if (button.title !== title) button.title = title;
+    if (button.getAttribute("aria-label") !== title) button.setAttribute("aria-label", title);
+    if (button.disabled !== disabled) button.disabled = disabled;
+  }
+
   async function pollDaemonStatus() {
     if (state.daemonStatusInflight) return;
     state.daemonStatusInflight = true;
     try {
       const status = await apiJson("/api/daemon/status");
-      const vpPower = $("vp-power");
-      const button = $("daemon-power");
 
-      vpPower.classList.remove("running", "starting", "stopping", "disabled");
+      let powerClass = "";
+      let title = "Start daemon";
+      let disabled = false;
 
-      if (state.daemonStopping) {
-        if (status.running) {
-          // Still shutting down — hold the OFF ramp and keep the button inert.
-          vpPower.classList.add("stopping");
-          button.title = "Daemon stopping…";
-          button.setAttribute("aria-label", "Daemon stopping…");
-          button.disabled = true;
-          return;
-        }
-        // Daemon is down — clear the transitional state, fall through to red default.
-        state.daemonStopping = false;
-      }
-
-      if (!status.manageable) {
-        vpPower.classList.add("disabled");
-        button.title = "Daemon managed on device";
-        button.setAttribute("aria-label", "Daemon managed on device");
-        button.disabled = true;
-      } else if (status.running) {
-        vpPower.classList.add("running");
-        button.title = "Stop daemon";
-        button.setAttribute("aria-label", "Stop daemon");
-        button.disabled = false;
-      } else if (status.status === "starting") {
-        vpPower.classList.add("starting");
-        button.title = "Daemon starting…";
-        button.setAttribute("aria-label", "Daemon starting…");
-        button.disabled = true;
+      if (state.daemonStopping && status.running) {
+        // Still shutting down — hold the OFF state and keep the button inert.
+        powerClass = "stopping";
+        title = "Daemon stopping…";
+        disabled = true;
       } else {
-        button.title = "Start daemon";
-        button.setAttribute("aria-label", "Start daemon");
-        button.disabled = false;
+        // Daemon is down — clear the transitional state, fall through to red default.
+        if (state.daemonStopping) state.daemonStopping = false;
+        if (!status.manageable) {
+          powerClass = "disabled";
+          title = "Daemon managed on device";
+          disabled = true;
+        } else if (status.running) {
+          powerClass = "running";
+          title = "Stop daemon";
+          disabled = false;
+        } else if (status.status === "starting") {
+          powerClass = "starting";
+          title = "Daemon starting…";
+          disabled = true;
+        }
+        // else: defaults above (no power class, "Start daemon", enabled).
       }
+
+      applyDaemonPower(powerClass, title, disabled);
     } catch (_) {
       // Silent fail — let the daemon online/offline mechanism handle it
     } finally {
@@ -887,6 +1058,7 @@
         button.disabled = false;
       } finally {
         state.controlBusy = false;
+        void pollDaemonStatus();
       }
     }
   });
