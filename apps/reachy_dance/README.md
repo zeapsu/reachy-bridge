@@ -1,12 +1,3 @@
----
-title: Reachy Dance
-emoji: 👋
-colorFrom: red
-colorTo: blue
-sdk: static
-pinned: false
-short_description: Write your description here
-tags:
- - reachy_mini
- - reachy_mini_python_app
----
+# Reachy Dance
+
+Beat-synced head/antenna choreography with idle breathing for Reachy Mini.

@@ -1,15 +1,3 @@
----
-title: Reachy Chat
-emoji: 🤖
-colorFrom: purple
-colorTo: gray
-sdk: static
-pinned: false
-tags:
-  - reachy_mini
-  - reachy_mini_python_app
----
-
 # Reachy Chat
 
 A voice conversation app for Reachy Mini with multiple backend options. The default backend is **OpenAI Realtime**, which provides low-latency bidirectional speech over WebSocket with smart "addressed-to-me" barge-in. Alternative backends include **Gemini Live**, **Hugging Face Realtime**, and a local turn-based pipeline via **OpenRouter Chat**.
@@ -70,7 +58,7 @@ WHISPER_COMPUTE_TYPE=int8      # Quantization (int8, int16, float32)
 
 ### Custom Profiles and Personalities
 
-Use the `src/reachy_chat/profiles/_reachy_chat_locked_profile` folder to customize your own app from this template:
+Use the `profiles/_reachy_chat_locked_profile` folder to customize your own app from this template:
 
 - Edit instructions in `_reachy_chat_locked_profile/instructions.txt`
 - Define available tools in `_reachy_chat_locked_profile/tools.txt`
@@ -78,7 +66,6 @@ Use the `src/reachy_chat/profiles/_reachy_chat_locked_profile` folder to customi
 
 To finalize your custom app:
 - Update this `README.md` file
-- Update the Hugging Face Spaces landing page (`index.html` in the root)
 - Update the web app settings page (`src/reachy_chat/static/index.html`)
 
 ## Archived Documentation
