@@ -963,9 +963,10 @@
   function applyDaemonPower(powerClass, title, disabled) {
     const vpPower = $("vp-power");
     const button = $("daemon-power");
+    // toggle(cls, force) is a no-op (no DOM write) when the class is already in the
+    // wanted state, so it self-guards — no contains() pre-check needed here.
     for (const cls of ["running", "starting", "stopping", "disabled"]) {
-      const want = cls === powerClass;
-      if (vpPower.classList.contains(cls) !== want) vpPower.classList.toggle(cls, want);
+      vpPower.classList.toggle(cls, cls === powerClass);
     }
     if (button.title !== title) button.title = title;
     if (button.getAttribute("aria-label") !== title) button.setAttribute("aria-label", title);
