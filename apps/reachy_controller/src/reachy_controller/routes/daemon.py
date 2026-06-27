@@ -11,7 +11,9 @@ from reachy_controller.daemon_supervisor import DaemonSupervisor
 
 router = APIRouter(prefix="/api/daemon", tags=["daemon"])
 
-# TTL for the daemon status cache, in seconds
+# TTL for the daemon status cache, in seconds. A ~1s stale window is acceptable:
+# daemon up/down transitions are infrequent and the client polls status at ~1 Hz,
+# so this coalesces redundant full-state probes without status feeling sticky.
 _DAEMON_STATUS_TTL_SECONDS = 1.0
 
 
