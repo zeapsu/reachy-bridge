@@ -1,0 +1,1453 @@
+<!doctype html>
+<html lang="en" data-scheme="amber">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reachy Controller — colour schemes</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- Links the REAL shipped stylesheet — the design is unchanged; only the
+       colour tokens + atmosphere blobs are swapped per scheme below. -->
+  <style>
+/* Liquid Glass design tokens */
+:root {
+  --bg-0: #070810;
+  --bg-1: #0e1018;
+  --bg-2: #141826;
+  --glass-fill: rgba(255, 255, 255, 0.06);
+  --glass-fill-2: rgba(255, 255, 255, 0.10);
+  --glass-edge: rgba(255, 255, 255, 0.16);
+  --rim: rgba(255, 255, 255, 0.42);
+  --amber: #ffc857;
+  --cyan: #6fe3ff;
+  --coral: #ff6b6b;
+  --mint: #36e8a4;
+  --text: #edf0f4;
+  --muted: #8a92a6;
+  --r-lg: 26px;
+  --r-md: 18px;
+  --r-sm: 12px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --lg-blur: 26px;
+}
+
+* { box-sizing: border-box; }
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: "Inter", system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg-0);
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+}
+
+.atmosphere {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background: linear-gradient(160deg, var(--bg-2), var(--bg-0) 72%);
+  overflow: hidden;
+}
+
+.blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: 0.55;
+  mix-blend-mode: screen;
+}
+
+.blob.a {
+  width: 46vw;
+  height: 46vw;
+  left: -8vw;
+  top: -10vw;
+  background: radial-gradient(circle, rgba(255, 200, 87, 0.55), transparent 60%);
+  animation: drift1 26s var(--ease) infinite;
+}
+
+.blob.b {
+  width: 50vw;
+  height: 50vw;
+  right: -12vw;
+  top: 2vw;
+  background: radial-gradient(circle, rgba(111, 227, 255, 0.5), transparent 60%);
+  animation: drift2 32s var(--ease) infinite;
+}
+
+.blob.c {
+  width: 52vw;
+  height: 52vw;
+  left: 22vw;
+  bottom: -24vw;
+  background: radial-gradient(circle, rgba(54, 232, 164, 0.4), transparent 60%);
+  animation: drift3 38s var(--ease) infinite;
+}
+
+@keyframes drift1 {
+  50% { transform: translate(8vw, 6vw) scale(1.12); }
+}
+
+@keyframes drift2 {
+  0%, 100% { transform: scale(1.05); }
+  50% { transform: translate(-6vw, 8vw) scale(0.95); }
+}
+
+@keyframes drift3 {
+  50% { transform: translate(-7vw, -6vw) scale(1.1); }
+}
+
+.liquid-filter {
+  position: absolute;
+}
+
+.shell {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 22px clamp(14px, 3vw, 34px) 64px;
+  position: relative;
+}
+
+.glass {
+  position: relative;
+  border-radius: var(--r-lg);
+  /* Directional fill: brighter at the top-left, fading out — reads as a lit
+     pane of glass rather than a flat translucent rectangle. */
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.03) 42%, rgba(255, 255, 255, 0.015) 100%),
+    var(--glass-fill);
+  backdrop-filter: blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+  -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+  border: 1px solid var(--glass-edge);
+  /* Directional specular rim: light catches the top-left edge, shadow gathers
+     bottom-right, with an inner top glow and bottom depth for thickness. */
+  box-shadow:
+    inset 1.5px 1.5px 0 rgba(255, 255, 255, 0.5),
+    inset -1.5px -1.5px 0 rgba(0, 0, 0, 0.28),
+    inset 0 1.5px 0 var(--rim),
+    inset 0 10px 26px -20px rgba(255, 255, 255, 0.22),
+    inset 0 -22px 48px -34px rgba(0, 0, 0, 0.82),
+    0 32px 70px -40px rgba(0, 0, 0, 0.95);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* Continuous-radius (squircle) corners where supported — softer, more
+   Apple-like than a plain border-radius; falls back to --r-lg elsewhere. */
+@supports (corner-shape: squircle) {
+  .glass {
+    corner-shape: squircle;
+  }
+}
+
+/* Real background refraction (Chromium): bend the drifting atmosphere glows
+   through the glass via the SVG filter. Other engines ignore url() in
+   backdrop-filter and keep the CSS-only material above. */
+@supports (backdrop-filter: url("#lg-refract")) or (-webkit-backdrop-filter: url("#lg-refract")) {
+  .glass {
+    /* Displace the backdrop first (so the glow shapes actually bend), then
+       frost it — order matters; blur-then-displace washes the refraction out. */
+    backdrop-filter: url("#lg-refract") blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+    -webkit-backdrop-filter: url("#lg-refract") blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+  }
+}
+
+.glass::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.10) 46%, rgba(255, 255, 255, 0.02) 54%, transparent 70%);
+  background-size: 280% 280%;
+  animation: sheen 11s linear infinite;
+  mix-blend-mode: screen;
+}
+
+@keyframes sheen {
+  0% { background-position: 120% 0; }
+  100% { background-position: -60% 0; }
+}
+
+.glass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 0%), rgba(255, 255, 255, 0.16), transparent 62%);
+  opacity: 0;
+  transition: opacity 0.4s var(--ease);
+}
+
+.glass:hover::after { opacity: 1; }
+
+.glass > * {
+  position: relative;
+  z-index: 1;
+}
+
+.pad { padding: 18px 20px 20px; }
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 13px 20px;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-right: auto;
+}
+
+.brand .mark {
+  font-family: "Space Grotesk", sans-serif;
+  font-weight: 700;
+  font-size: 19px;
+  letter-spacing: 0;
+}
+
+.brand .mark b,
+.footnote b {
+  color: var(--amber);
+}
+
+.brand .sub {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--muted);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+  white-space: nowrap;
+}
+
+.pill .val { color: var(--text); }
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: 0 0 auto;
+}
+
+.dot.ok {
+  background: var(--mint);
+  box-shadow: 0 0 10px 1px rgba(54, 232, 164, 0.7);
+  animation: pulse 2.6s var(--ease) infinite;
+}
+
+.dot.live {
+  background: var(--amber);
+  box-shadow: 0 0 12px 1px rgba(255, 200, 87, 0.8);
+}
+
+.dot.error {
+  background: var(--coral);
+  box-shadow: 0 0 10px 1px rgba(255, 107, 107, 0.65);
+}
+
+.dot.loading {
+  background: var(--cyan);
+  box-shadow: 0 0 10px 1px rgba(111, 227, 255, 0.7);
+  animation: pulse 2.6s var(--ease) infinite;
+}
+
+.dot.stopping {
+  background: var(--muted);
+  box-shadow: 0 0 8px 1px rgba(138, 146, 166, 0.5);
+  animation: pulse 2.6s var(--ease) infinite;
+}
+
+@keyframes pulse {
+  50% { opacity: 0.45; }
+}
+
+.grid {
+  margin-top: 20px;
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+.col {
+  display: grid;
+  gap: 20px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.head h2 {
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0;
+}
+
+.head .rule {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--glass-edge), transparent);
+}
+
+.viewport { padding: 0; }
+
+.vp-stage {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  width: 100%;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  overflow: hidden;
+  background: #05060c;
+  /* NOTE: do not apply `filter: url(#...)` here — it warps the live camera/
+     sim/schematic content. Refraction lives on the glass rim (.vp-stage::after)
+     and panel backdrop, never on the content layers. */
+}
+
+/* Decorative liquid-glass rim for the viewport (no effect on content). */
+.vp-stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow:
+    inset 0 1.5px 0 var(--rim),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+    inset 0 -40px 70px -50px rgba(0, 0, 0, 0.9);
+}
+
+.vp-layer {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.5s var(--ease);
+}
+
+.vp-layer.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.vp-stage canvas,
+.vp-stage svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  line-height: 1.5;
+  background: radial-gradient(circle at 50% 55%, rgba(111, 227, 255, 0.10), transparent 40%);
+}
+
+.sim-label {
+  align-content: end;
+  padding-bottom: 32px;
+  background: linear-gradient(180deg, transparent 58%, rgba(5, 6, 12, 0.72));
+}
+
+.rig-note {
+  position: absolute;
+  left: 50%;
+  bottom: 30px;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 107, 107, 0.38);
+  background: rgba(10, 12, 20, 0.48);
+  color: var(--coral);
+  font: 11px "JetBrains Mono", monospace;
+}
+
+.vp-power {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 13px;
+  background: rgba(10, 12, 20, 0.42);
+  backdrop-filter: blur(14px) saturate(1.5);
+  -webkit-backdrop-filter: blur(14px) saturate(1.5);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--rim);
+}
+
+.vp-power button {
+  width: 34px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--coral);
+  border-radius: 9px;
+  cursor: pointer;
+  transition: 0.2s var(--ease);
+}
+
+.vp-power button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.vp-power button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.vp-power.running button {
+  color: var(--mint);
+}
+
+.vp-power.starting button {
+  animation: pulse 1s var(--ease) infinite;
+  color: var(--mint);
+}
+
+.vp-power.stopping button {
+  color: var(--coral);
+  animation: pulse 1s var(--ease) infinite;
+}
+
+.vp-power.disabled button {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.vp-switch {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 13px;
+  background: rgba(10, 12, 20, 0.42);
+  backdrop-filter: blur(14px) saturate(1.5);
+  -webkit-backdrop-filter: blur(14px) saturate(1.5);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--rim);
+}
+
+.vp-switch button {
+  width: 34px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 9px;
+  cursor: pointer;
+  transition: 0.2s var(--ease);
+}
+
+.vp-switch button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.vp-switch button:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.vp-switch button.active {
+  color: #10130b;
+  background: var(--amber);
+  box-shadow: 0 6px 16px -6px rgba(255, 200, 87, 0.8);
+}
+
+.vp-badge {
+  position: absolute;
+  top: 60px;
+  left: 14px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--text);
+  padding: 5px 10px;
+  border-radius: 9px;
+  background: rgba(10, 12, 20, 0.42);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--glass-edge);
+}
+
+.vp-badge .rec {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--coral);
+  box-shadow: 0 0 9px 1px rgba(255, 107, 107, 0.8);
+  animation: pulse 1.6s infinite;
+}
+
+.vp-badge .rec.ok {
+  background: var(--mint);
+  box-shadow: 0 0 9px 1px rgba(54, 232, 164, 0.8);
+}
+
+.hud {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  right: 14px;
+  z-index: 5;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.hud-readout {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 3px 12px;
+  padding: 10px 13px;
+  border-radius: 13px;
+  background: rgba(10, 12, 20, 0.40);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--rim);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+}
+
+.hud-readout .k { color: var(--muted); }
+
+.hud-readout .v {
+  color: var(--cyan);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-readout .v.amber { color: var(--amber); }
+
+.vp-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 18px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.vp-foot .v { color: var(--text); }
+
+#rig.offline {
+  opacity: 0.55;
+  filter: saturate(0.45);
+}
+
+#doaArc,
+#doaTick {
+  opacity: 0.35;
+  transition: opacity 0.25s var(--ease);
+}
+
+#rig.speaking #doaArc,
+#rig.speaking #doaTick {
+  opacity: 1;
+}
+
+.apps {
+  display: grid;
+  gap: 11px;
+}
+
+.app-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  border-radius: var(--r-md);
+  background: var(--glass-fill);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transition: transform 0.25s var(--ease), border-color 0.25s var(--ease), background 0.25s var(--ease);
+}
+
+.app-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--rim);
+  background: var(--glass-fill-2);
+}
+
+.app-card.running {
+  border-color: rgba(255, 200, 87, 0.5);
+  background: rgba(255, 200, 87, 0.07);
+}
+
+.app-card.error {
+  border-color: rgba(255, 107, 107, 0.42);
+}
+
+.app-card.loading {
+  border-color: rgba(111, 227, 255, 0.5);
+  background: rgba(111, 227, 255, 0.07);
+}
+
+.app-card.stopping {
+  border-color: rgba(138, 146, 166, 0.3);
+  background: rgba(138, 146, 166, 0.04);
+}
+
+/* Let the middle (text) grid cell shrink so long names can ellipsize. */
+.app-card > div { min-width: 0; }
+
+.app-name {
+  font-family: "Space Grotesk", sans-serif;
+  font-weight: 600;
+  font-size: 14.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-state {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.app-state .up { color: var(--amber); }
+.app-state .err { color: var(--coral); }
+.app-state .loading-frag { color: var(--cyan); }
+.app-state .stopping-label { color: var(--muted); }
+.app-state .spinner-glyph {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, var(--cyan) 0deg, var(--mint) 180deg, rgba(111, 227, 255, 0.3) 360deg);
+  animation: spin 1.2s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.btn {
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text);
+  padding: 8px 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--glass-edge);
+  background: var(--glass-fill-2);
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  transition: transform 0.15s var(--ease), background 0.2s, border-color 0.2s, opacity 0.2s;
+}
+
+.btn:hover { transform: translateY(-1px); }
+
+.btn.start {
+  color: #1a1407;
+  background: var(--amber);
+  border-color: transparent;
+}
+
+.btn.start:hover { box-shadow: 0 8px 22px -8px rgba(255, 200, 87, 0.8); }
+
+.btn.stop {
+  color: var(--coral);
+  border-color: rgba(255, 107, 107, 0.42);
+}
+
+.btn.stop:hover { background: rgba(255, 107, 107, 0.12); }
+
+.btn.pending {
+  color: var(--muted);
+  background: rgba(138, 146, 166, 0.15);
+  border-color: rgba(138, 146, 166, 0.3);
+  cursor: not-allowed;
+}
+
+.btn.pending:hover { transform: none; }
+
+.btn:disabled,
+input:disabled,
+.segmented button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.wide { width: 100%; }
+
+/* Expressions filmstrip (#48): two horizontal, scrollable chip-strips. */
+.expr-group + .expr-group { margin-top: 14px; }
+.expr-label {
+  display: block;
+  margin-bottom: 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.expr-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 5px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--glass-edge) transparent;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+}
+.expr-strip::-webkit-scrollbar { height: 6px; }
+.expr-strip::-webkit-scrollbar-thumb { background: var(--glass-edge); border-radius: 3px; }
+.expr-strip:empty::before {
+  content: "—";
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+}
+.chip {
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 8px 15px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-edge);
+  background: var(--glass-fill);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chip:disabled { opacity: 0.3; cursor: not-allowed; }
+.chip:hover:not(:disabled) { border-color: var(--rim); background: var(--glass-fill-2); }
+/* Currently-playing move: accent border + text, token-driven so it follows the
+   active colour scheme. */
+.chip.playing { border-color: var(--amber); color: var(--amber); }
+
+.eq {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 92px;
+  padding: 6px 2px 0;
+}
+
+.eq .bar {
+  flex: 1;
+  border-radius: 4px 4px 2px 2px;
+  background: linear-gradient(180deg, var(--cyan), var(--mint) 55%, rgba(54, 232, 164, 0.25));
+  box-shadow: 0 0 10px -2px rgba(111, 227, 255, 0.5);
+  transform-origin: bottom;
+  height: 6%;
+  transition: height 0.12s linear, opacity 0.2s;
+}
+
+.eq.idle .bar {
+  opacity: 0.35;
+  box-shadow: none;
+}
+
+.eq-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.eq-foot .v { color: var(--text); }
+
+.gauges {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.gauge {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+}
+
+.gauge svg {
+  width: 84px;
+  height: 84px;
+}
+
+.gauge .gv {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 16px;
+  font-weight: 600;
+  fill: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.gauge .gu {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  fill: var(--muted);
+}
+
+.gauge .gl {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.meminfo { margin-top: 14px; }
+
+.bar-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 6px;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.barline {
+  height: 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+
+.barline > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--mint), var(--cyan));
+  transition: width 0.6s var(--ease);
+}
+
+.route {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--glass-edge);
+  display: grid;
+  gap: 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+}
+
+.route .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.route .row span:first-child { color: var(--muted); }
+.route .row span:last-child { text-align: right; }
+
+.panel-hint {
+  margin: -4px 0 14px;
+  color: var(--muted);
+  font: 11px "JetBrains Mono", monospace;
+  min-height: 15px;
+}
+
+.panel-hint.error { color: var(--coral); }
+.panel-hint.ok { color: var(--mint); }
+.apps + .panel-hint { margin-top: 11px; }
+
+.control { margin-bottom: 16px; }
+.control:last-child { margin-bottom: 0; }
+
+.control > label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  letter-spacing: 0.04em;
+}
+
+.with-val {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+input[type=range] {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  height: 6px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--cyan) var(--fill, 60%), rgba(255, 255, 255, 0.09) var(--fill, 60%));
+  outline: none;
+}
+
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+  box-shadow: 0 0 0 4px rgba(111, 227, 255, 0.25);
+}
+
+input[type=range]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+  box-shadow: 0 0 0 4px rgba(111, 227, 255, 0.25);
+}
+
+.ctl-val {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12.5px;
+  width: 42px;
+  text-align: right;
+}
+
+.segmented {
+  display: flex;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 4px;
+  border-radius: 11px;
+  border: 1px solid var(--glass-edge);
+}
+
+.segmented button {
+  flex: 1;
+  min-width: 0;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  padding: 7px 4px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s;
+  overflow-wrap: anywhere;
+}
+
+.segmented button.active {
+  color: #10130b;
+  background: var(--amber);
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.toggle-row label { margin: 0; }
+
+.switch {
+  position: relative;
+  width: 46px;
+  height: 26px;
+  flex: 0 0 auto;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+  border-radius: 26px;
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid var(--glass-edge);
+  transition: 0.25s;
+}
+
+.slider::before {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 3px;
+  top: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: 0.25s var(--ease);
+}
+
+.switch input:checked + .slider {
+  background: rgba(255, 200, 87, 0.5);
+  border-color: transparent;
+}
+
+.switch input:checked + .slider::before {
+  transform: translateX(20px);
+}
+
+.action { margin-top: 18px; }
+
+.footnote {
+  margin-top: 26px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+  letter-spacing: 0.04em;
+}
+
+@media (max-width: 900px) {
+  .grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 560px) {
+  .brand .sub { display: none; }
+  .statusbar { gap: 10px; }
+  .vp-foot,
+  .eq-foot {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .hud-readout { font-size: 10px; }
+  /* On a narrow stage the centered offline note collides with the bottom-left
+     HUD readout — float it into the open space above the robot instead. */
+  .rig-note {
+    top: 48px;
+    bottom: auto;
+  }
+  .gauges { gap: 4px; }
+  .gauge svg {
+    width: 72px;
+    height: 72px;
+  }
+  .app-card {
+    grid-template-columns: auto 1fr;
+  }
+  .app-card .btn {
+    grid-column: 1 / -1;
+  }
+  /* Perf: the animated refraction filter is GPU-heavy across stacked panels on
+     phones — drop to a lighter frost; the CSS rim keeps the glass read. */
+  .glass {
+    backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
+    -webkit-backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
+  }
+  .blob { animation: none; }
+  .glass::before { animation: none; }
+}
+
+/* Touch devices (phones/tablets) match (hover: none) and (pointer: coarse)
+   regardless of the viewport width a home-screen PWA reports — so key the
+   GPU-heavy reductions off capability, not the px breakpoint above (which a
+   wide-reporting PWA can miss). Drop the animated refraction to a lighter
+   frost and stop the always-on idle animations: each kept the iOS compositor
+   re-rasterizing every frame while the tab is focused (#36). */
+@media (hover: none) and (pointer: coarse) {
+  .glass {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: rgba(18, 21, 32, 0.97);
+  }
+  /* The viewport overlays sit ON TOP of the live schematic (the default vp-stage
+     layer, updated ~10 Hz), so their backdrop-filter blurs recomposite on the GPU
+     every frame the pose changes — the per-frame cost #43's .glass fix missed.
+     Drop the blur on touch and lift the background opacity so the chips stay
+     legible over the now-unblurred (dark) stage. Desktop keeps the full effect. */
+  .vp-power,
+  .vp-switch,
+  .vp-badge,
+  .hud-readout {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: rgba(10, 12, 20, 0.82);
+  }
+  .blob,
+  .glass::before,
+  .dot.ok,
+  .dot.loading,
+  .dot.stopping,
+  .vp-badge .rec {
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blob,
+  .glass::before,
+  .dot.ok,
+  .dot.loading,
+  .dot.stopping,
+  .spinner-glyph,
+  .vp-badge .rec {
+    animation: none;
+  }
+
+  .vp-power.starting button,
+  .vp-power.stopping button {
+    animation: none;
+  }
+
+  /* The refraction filter animates its turbulence — swap to the static frost. */
+  .glass {
+    backdrop-filter: blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+    -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+  }
+
+  * {
+    transition: none !important;
+  }
+}
+
+/* Solidify the glass for users who ask for reduced transparency: opaque panels,
+   no blur/refraction, no decorative sheen/pointer layers, dimmed backdrop. */
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    background: rgba(18, 21, 32, 0.97);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .glass::before,
+  .glass::after {
+    display: none;
+  }
+  .atmosphere { opacity: 0.18; }
+}
+
+  </style>
+
+  <style>
+    /* ---- Scheme token overrides (design/layout untouched) ---- */
+    html[data-scheme="arctic"] {
+      --bg-0:#05080f; --bg-1:#0b111c; --bg-2:#121a2a;
+      --amber:#7fe0ff; --cyan:#9db8ff; --coral:#ff6b6b; --mint:#4be0c0;
+    }
+    html[data-scheme="arctic"] .blob.a{background:radial-gradient(circle,rgba(127,224,255,.55),transparent 60%);}
+    html[data-scheme="arctic"] .blob.b{background:radial-gradient(circle,rgba(157,184,255,.44),transparent 60%);}
+    html[data-scheme="arctic"] .blob.c{background:radial-gradient(circle,rgba(75,224,192,.34),transparent 60%);}
+
+    html[data-scheme="emerald"] {
+      --bg-0:#060f0b; --bg-1:#0c1712; --bg-2:#12211a;
+      --amber:#3ce3a0; --cyan:#63e6ff; --coral:#ff6b6b; --mint:#3ce3a0;
+    }
+    html[data-scheme="emerald"] .blob.a{background:radial-gradient(circle,rgba(60,227,160,.55),transparent 60%);}
+    html[data-scheme="emerald"] .blob.b{background:radial-gradient(circle,rgba(99,230,255,.44),transparent 60%);}
+    html[data-scheme="emerald"] .blob.c{background:radial-gradient(circle,rgba(47,209,140,.34),transparent 60%);}
+
+    html[data-scheme="ultraviolet"] {
+      --bg-0:#08060f; --bg-1:#100c1c; --bg-2:#1a1430;
+      --amber:#c199ff; --cyan:#6fd0ff; --coral:#ff7aa8; --mint:#66e8c4;
+    }
+    html[data-scheme="ultraviolet"] .blob.a{background:radial-gradient(circle,rgba(193,153,255,.55),transparent 60%);}
+    html[data-scheme="ultraviolet"] .blob.b{background:radial-gradient(circle,rgba(111,208,255,.42),transparent 60%);}
+    html[data-scheme="ultraviolet"] .blob.c{background:radial-gradient(circle,rgba(224,140,255,.34),transparent 60%);}
+
+    html[data-scheme="ember"] {
+      --bg-0:#0c0708; --bg-1:#160f0d; --bg-2:#211613;
+      --amber:#ff8a5c; --cyan:#4fe0d0; --coral:#ff5d5d; --mint:#ffd27a;
+    }
+    html[data-scheme="ember"] .blob.a{background:radial-gradient(circle,rgba(255,138,92,.55),transparent 60%);}
+    html[data-scheme="ember"] .blob.b{background:radial-gradient(circle,rgba(79,224,208,.4),transparent 60%);}
+    html[data-scheme="ember"] .blob.c{background:radial-gradient(circle,rgba(255,107,107,.32),transparent 60%);}
+
+    /* ---- Scheme switcher (mockup chrome only) ---- */
+    .scheme-bar {
+      position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+      z-index: 50; display: flex; gap: 6px; padding: 6px;
+      border-radius: 999px; border: 1px solid var(--glass-edge);
+      background: rgba(10, 12, 20, 0.72); backdrop-filter: blur(18px);
+      box-shadow: 0 14px 40px -12px rgba(0, 0, 0, 0.7);
+      font-family: "JetBrains Mono", monospace;
+    }
+    .scheme-bar button {
+      border: 1px solid transparent; background: transparent; color: var(--muted);
+      padding: 7px 14px; border-radius: 999px; cursor: pointer;
+      font-size: 12px; letter-spacing: 0.04em; text-transform: lowercase;
+    }
+    .scheme-bar button:hover { color: var(--text); }
+    .scheme-bar button[aria-pressed="true"] {
+      color: var(--bg-0); background: var(--amber); font-weight: 600;
+      border-color: transparent;
+    }
+    .scheme-bar .sw {
+      width: 11px; height: 11px; border-radius: 50%; display: inline-block;
+      margin-right: 6px; vertical-align: -1px;
+    }
+  </style>
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"><span class="blob a"></span><span class="blob b"></span><span class="blob c"></span></div>
+
+  <svg width="0" height="0" class="liquid-filter" aria-hidden="true">
+    <filter id="lg-refract" x="-12%" y="-12%" width="124%" height="124%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.006 0.009" numOctaves="2" seed="11" result="noise">
+        <animate attributeName="baseFrequency" dur="26s" values="0.006 0.009;0.009 0.006;0.006 0.009" repeatCount="indefinite"></animate>
+      </feTurbulence>
+      <feGaussianBlur in="noise" stdDeviation="1.1" result="smoothNoise"></feGaussianBlur>
+      <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale="12" xChannelSelector="R" yChannelSelector="G" result="disp"></feDisplacementMap>
+      <feColorMatrix in="disp" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="gChan"></feColorMatrix>
+      <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale="16" xChannelSelector="R" yChannelSelector="G" result="dispR"></feDisplacementMap>
+      <feColorMatrix in="dispR" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="rChan"></feColorMatrix>
+      <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale="8" xChannelSelector="R" yChannelSelector="G" result="dispB"></feDisplacementMap>
+      <feColorMatrix in="dispB" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="bChan"></feColorMatrix>
+      <feBlend in="rChan" in2="gChan" mode="screen" result="rg"></feBlend>
+      <feBlend in="rg" in2="bChan" mode="screen"></feBlend>
+    </filter>
+  </svg>
+
+  <nav class="scheme-bar" id="scheme-bar" aria-label="Colour scheme"></nav>
+
+  <div class="shell">
+    <header class="glass statusbar">
+      <div class="brand" aria-label="reachy·controller"><span class="mark">reachy<b>·</b>controller</span></div>
+      <span class="pill"><span class="dot ok" id="daemon-dot"></span>daemon <span class="val" id="daemon-value">online</span></span>
+      <span class="pill"><span class="dot ok" id="robot-dot"></span>robot <span class="val" id="robot-value">free</span></span>
+      <span class="pill"><span class="dot ok"></span>link <span class="val">tailnet</span></span>
+    </header>
+
+    <div class="grid">
+      <div class="col">
+        <section class="glass viewport">
+          <div class="vp-stage" id="vp">
+            <div class="vp-layer active" data-mode="schematic">
+              <svg viewBox="0 0 320 200" id="rig" preserveAspectRatio="xMidYMid meet" aria-label="Live Reachy pose schematic">
+                <defs>
+                  <radialGradient id="halo" cx="50%" cy="46%" r="55%"><stop offset="0%" stop-color="rgba(111,227,255,0.16)"></stop><stop offset="100%" stop-color="rgba(111,227,255,0)"></stop></radialGradient>
+                  <linearGradient id="hg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="rgba(255,255,255,0.18)"></stop><stop offset="100%" stop-color="rgba(255,255,255,0.04)"></stop></linearGradient>
+                </defs>
+                <circle cx="160" cy="108" r="92" fill="url(#halo)"></circle>
+                <circle cx="160" cy="108" r="92" fill="none" stroke="rgba(255,255,255,0.10)" stroke-width="1.5"></circle>
+                <path id="doaArc" d="M100.9 37.5 A92 92 0 0 1 191.5 21.5" fill="none" stroke="var(--amber)" stroke-width="4" stroke-linecap="round"></path>
+                <circle id="doaTick" cx="191.5" cy="21.5" r="4" fill="var(--amber)"></circle>
+                <g id="body">
+                  <g id="antL"><line x1="132" y1="70" x2="118" y2="26" stroke="var(--cyan)" stroke-width="3.5" stroke-linecap="round"></line><circle cx="118" cy="26" r="6" fill="var(--cyan)"></circle></g>
+                  <g id="antR"><line x1="188" y1="70" x2="202" y2="26" stroke="var(--cyan)" stroke-width="3.5" stroke-linecap="round"></line><circle cx="202" cy="26" r="6" fill="var(--cyan)"></circle></g>
+                  <g id="head"><rect x="114" y="64" width="92" height="80" rx="28" fill="url(#hg)" stroke="rgba(255,255,255,0.24)" stroke-width="1.5"></rect>
+                    <circle cx="143" cy="102" r="8" fill="#05060c"></circle><circle cx="145" cy="100" r="2.4" fill="var(--cyan)"></circle>
+                    <circle cx="177" cy="102" r="8" fill="#05060c"></circle><circle cx="179" cy="100" r="2.4" fill="var(--cyan)"></circle></g>
+                  <path d="M122 152 Q160 170 198 152 L194 168 Q160 182 126 168 Z" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.14)"></path>
+                </g>
+              </svg>
+            </div>
+            <div class="vp-power running" id="vp-power">
+              <button id="daemon-power" type="button" title="Stop daemon" aria-label="Stop daemon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 3.2v8"/><path d="M6.5 6.6a8 8 0 1 0 11 0"/></svg>
+              </button>
+            </div>
+            <div class="vp-badge" id="vp-badge"><span class="rec ok" id="vp-rec"></span><span id="vp-badge-t">SCHEMATIC</span></div>
+            <div class="vp-switch" id="vp-switch" aria-label="Viewport mode">
+              <button data-mode="camera" title="Live camera" aria-label="Camera"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 7h3l2-2h6l2 2h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"></path><circle cx="12" cy="13" r="3.5"></circle></svg></button>
+              <button data-mode="sim" title="Simulation" aria-label="Simulation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 2 21 7v10l-9 5-9-5V7l9-5Z"></path><path d="M12 12 21 7M12 12v10M12 12 3 7"></path></svg></button>
+              <button class="active" data-mode="schematic" title="Schematic" aria-label="Schematic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="13" r="6"></circle><path d="M8 8 6 3M16 8l2-5M12 7V2"></path></svg></button>
+            </div>
+            <div class="hud">
+              <div class="hud-readout">
+                <span class="k">head rpy°</span><span class="v" id="r-rpy">-2 / 4 / 0</span>
+                <span class="k">body yaw</span><span class="v" id="r-yaw">11°</span>
+                <span class="k">ant L/R</span><span class="v" id="r-ant">18 / 22</span>
+                <span class="k">doa</span><span class="v amber" id="r-doa">42°</span>
+              </div>
+            </div>
+          </div>
+          <div class="vp-foot"><span>viewport · <span class="v" id="vp-name">schematic</span></span><span id="vp-meta">telemetry 10 hz</span></div>
+        </section>
+
+        <section class="glass pad">
+          <div class="head"><h2>audio</h2><div class="rule"></div><span class="pill"><span class="dot ok" id="mic-dot"></span><span id="mic-state">listening</span></span></div>
+          <div class="eq" id="eq" aria-hidden="true"></div>
+          <div class="eq-foot"><span>input · <span class="v">XVF3800</span></span><span>peak <span class="v" id="eq-peak">-18 dB</span></span><span>rate <span class="v">16 kHz</span></span></div>
+        </section>
+
+        <section class="glass pad">
+          <div class="head"><h2>jetson</h2><div class="rule"></div><span class="pill" id="v-host">local stats</span></div>
+          <div class="gauges"><div class="gauge" id="g-cpu"></div><div class="gauge" id="g-gpu"></div><div class="gauge" id="g-temp"></div></div>
+          <div class="meminfo"><div class="bar-row"><span>memory</span><span id="v-mem">3.1 / 7.4 GB</span></div><div class="barline"><span id="bar-mem" style="width:42%"></span></div></div>
+          <div class="route"><div class="row"><span>reachy alsa card</span><span id="v-card">hw:0</span></div><div class="row"><span>pipewire sink</span><span id="v-sink">1.00</span></div></div>
+        </section>
+      </div>
+
+      <div class="col">
+        <section class="glass pad">
+          <div class="head"><h2>apps</h2><div class="rule"></div><span class="pill">one at a time</span></div>
+          <div class="apps" id="apps" aria-live="polite"></div>
+          <p class="panel-hint" id="apps-message" role="status">reachy_dance is running.</p>
+        </section>
+
+        <section class="glass pad">
+          <div class="head"><h2>controls</h2><div class="rule"></div><span class="pill ok" id="control-status">ready</span></div>
+          <div class="control"><label for="vol-spk">Speaker volume</label><div class="with-val"><input type="range" id="vol-spk" min="0" max="100" value="80"><span class="ctl-val" id="vol-spk-v">80</span></div></div>
+          <div class="control"><label for="vol-mic">Microphone volume</label><div class="with-val"><input type="range" id="vol-mic" min="0" max="100" value="60"><span class="ctl-val" id="vol-mic-v">60</span></div></div>
+          <div class="control"><label>Motor mode</label><div class="segmented" id="motor-seg"><button class="active" data-mode="enabled">Enabled</button><button data-mode="gravity_compensation">Gravity-comp</button><button data-mode="disabled">Disabled</button></div></div>
+          <div class="control toggle-row"><label for="wobble">Audio-reactive wobble</label><label class="switch"><input type="checkbox" id="wobble" checked><span class="slider"></span></label></div>
+          <div class="control action"><button class="btn wide" id="testsound">Play test sound</button></div>
+        </section>
+
+        <section class="glass pad">
+          <div class="head"><h2>expressions</h2><div class="rule"></div><span class="pill">one at a time</span></div>
+          <div class="expr-group">
+            <span class="expr-label">Emotions</span>
+            <div class="expr-strip" id="expr-emotions" data-dataset="pollen-robotics/reachy-mini-emotions-library" aria-live="polite"></div>
+          </div>
+          <div class="expr-group">
+            <span class="expr-label">Dances</span>
+            <div class="expr-strip" id="expr-dances" data-dataset="pollen-robotics/reachy-mini-dances-library" aria-live="polite"></div>
+          </div>
+          <p class="panel-hint" id="expr-hint" hidden>Expressions enable when the daemon is online.</p>
+        </section>
+      </div>
+    </div>
+
+    <p class="footnote">colour-scheme mockup · real Liquid Glass stylesheet, tokens swapped only · live controller unchanged</p>
+  </div>
+
+  <script>
+    // ---- Representative sample content (so panels read as "live") ----
+    const $ = (id) => document.getElementById(id);
+
+    // Apps
+    const APPS = [
+      { name: "reachy_dance", state: '<span class="up">running</span>', dot: "live", cls: "running", btn: '<button class="btn stop">Stop</button>' },
+      { name: "reachy_simon", state: "stopped", dot: "", cls: "", btn: '<button class="btn start">Start</button>' },
+      { name: "reachy_lookat", state: "stopped", dot: "", cls: "", btn: '<button class="btn start">Start</button>' },
+      { name: "reachy_chat", state: "stopped", dot: "", cls: "", btn: '<button class="btn start">Start</button>' },
+    ];
+    $("apps").innerHTML = APPS.map((a) => `<div class="app-card ${a.cls}">
+      <span class="dot ${a.dot}"></span>
+      <div><div class="app-name">${a.name}</div><div class="app-state">${a.state}</div></div>
+      ${a.btn}</div>`).join("");
+
+    // Audio EQ — a settled waveform (not idle)
+    const bars = [];
+    for (let i = 0; i < 46; i++) {
+      const h = 14 + Math.round(58 * Math.abs(Math.sin(i * 0.5) * Math.cos(i * 0.17)));
+      bars.push(`<div class="bar" style="height:${h}%"></div>`);
+    }
+    $("eq").innerHTML = bars.join("");
+
+    // Gauges — replicate the shipped gauge() markup with values filled in
+    const TAU = Math.PI * 2, R = 34, C = TAU * R;
+    function gauge(el, label, color, pct, text, unit) {
+      const off = C * (1 - pct / 100);
+      el.innerHTML = `<svg viewBox="0 0 84 84" aria-hidden="true">
+        <circle cx="42" cy="42" r="${R}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="7"></circle>
+        <circle cx="42" cy="42" r="${R}" fill="none" stroke="${color}" stroke-width="7" stroke-linecap="round" transform="rotate(-90 42 42)" stroke-dasharray="${C}" stroke-dashoffset="${off}" class="arc"></circle>
+        <text x="42" y="40" text-anchor="middle" class="gv">${text}</text><text x="42" y="55" text-anchor="middle" class="gu">${unit}</text></svg><span class="gl">${label}</span>`;
+    }
+    gauge($("g-cpu"), "cpu", "var(--cyan)", 38, "38", "%");
+    gauge($("g-gpu"), "gpu", "var(--mint)", 62, "62", "%");
+    gauge($("g-temp"), "temp", "var(--amber)", 54, "54", "°C");
+
+    // Expressions — representative move names
+    const EMOTIONS = ["curious", "happy1", "attentive", "thinking", "surprised", "sad1", "sassy", "yes", "no", "listening"];
+    const DANCES = ["disco", "headbang", "wave1", "spin", "sway", "bounce", "robot", "shimmy"];
+    const chips = (names) => names.map((m) => `<button class="chip" type="button" data-move="${m}">${m}</button>`).join("");
+    $("expr-emotions").innerHTML = chips(EMOTIONS);
+    $("expr-dances").innerHTML = chips(DANCES);
+    // one chip mid-play, to show the accent "playing" state
+    $("expr-emotions").children[1].classList.add("playing");
+
+    // ---- Scheme switcher ----
+    const SCHEMES = [
+      { id: "amber",       label: "amber",  sw: "#ffc857" },
+      { id: "arctic",      label: "arctic", sw: "#7fe0ff" },
+      { id: "emerald",     label: "emerald", sw: "#3ce3a0" },
+      { id: "ultraviolet", label: "violet", sw: "#c199ff" },
+      { id: "ember",       label: "ember",  sw: "#ff8a5c" },
+    ];
+    const bar = $("scheme-bar");
+    bar.innerHTML = SCHEMES.map((s) =>
+      `<button data-scheme="${s.id}" aria-pressed="${s.id === "amber"}"><span class="sw" style="background:${s.sw}"></span>${s.label}</button>`
+    ).join("");
+    bar.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-scheme]");
+      if (!btn) return;
+      document.documentElement.dataset.scheme = btn.dataset.scheme;
+      bar.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b === btn));
+    });
+  </script>
+</body>
+</html>
