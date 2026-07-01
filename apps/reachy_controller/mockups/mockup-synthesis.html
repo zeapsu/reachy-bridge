@@ -191,6 +191,7 @@
       .col:last-child { grid-column: 2; }
       .viewport { flex-shrink: 0; }
       .audio { flex-shrink: 0; display: block; }
+      .col > .glass:not(.viewport) { padding: 16px 18px 18px; }
       .tabs { display: none; }
       .tab-content { display: none !important; }
       .statusbar { grid-column: 1 / -1; }
@@ -329,20 +330,20 @@
               <div class="hud-row"><span class="hud-label">doa</span><span class="hud-value">45°</span></div>
             </div>
           </div>
+        </section>
 
-          <section class="glass audio">
-            <div class="head"><h2>audio</h2><div class="rule"></div></div>
-            <div class="eq-bars">
-              <div class="eq-bar" style="height: 40%;"></div>
-              <div class="eq-bar" style="height: 55%;"></div>
-              <div class="eq-bar" style="height: 68%;"></div>
-              <div class="eq-bar" style="height: 72%;"></div>
-              <div class="eq-bar" style="height: 65%;"></div>
-              <div class="eq-bar" style="height: 48%;"></div>
-              <div class="eq-bar" style="height: 32%;"></div>
-            </div>
-            <div class="eq-info"><span>input · XVF3800</span><span>16 kHz</span></div>
-          </section>
+        <section class="glass audio">
+          <div class="head"><h2>audio</h2><div class="rule"></div></div>
+          <div class="eq-bars">
+            <div class="eq-bar" style="height: 40%;"></div>
+            <div class="eq-bar" style="height: 55%;"></div>
+            <div class="eq-bar" style="height: 68%;"></div>
+            <div class="eq-bar" style="height: 72%;"></div>
+            <div class="eq-bar" style="height: 65%;"></div>
+            <div class="eq-bar" style="height: 48%;"></div>
+            <div class="eq-bar" style="height: 32%;"></div>
+          </div>
+          <div class="eq-info"><span>input · XVF3800</span><span>16 kHz</span></div>
         </section>
       </div>
 
