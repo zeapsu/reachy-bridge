@@ -19,6 +19,9 @@
     controlsLoaded: false,
     controlBusy: false,
     appBusy: false,
+    exprLoaded: false,
+    exprLoading: false,
+    exprBusy: false,
     mode: "schematic",
     robotControlMode: null,
     daemonStatusTimer: null,
@@ -122,6 +125,7 @@
       $("mic-state").textContent = online ? "listening" : "unavailable";
     }
     setControlsEnabled(online && !state.controlBusy);
+    if (online) void loadExpressions();
 
     if (!online) {
       state.controlsLoaded = false;
@@ -154,6 +158,13 @@
     document.querySelectorAll("#motor-seg button").forEach((button) => {
       if (button.disabled !== disabled) button.disabled = disabled;
     });
+    // Expression chips gate on the daemon too — but never fight an in-progress
+    // move (exprBusy disables the whole strip until the POST resolves).
+    if (!state.exprBusy) {
+      document.querySelectorAll(".chip").forEach((chip) => {
+        if (chip.disabled !== disabled) chip.disabled = disabled;
+      });
+    }
   }
 
   function renderOfflinePose() {
@@ -421,6 +432,65 @@
     } finally {
       state.appBusy = false;
       renderApps(Array.from(appState.values()));
+    }
+  }
+
+  // Expression datasets served by the daemon (via the transparent /api proxy).
+  // Each strip's dataset id also lives on its container's data-dataset attribute.
+  const MOVE_DATASETS = [
+    ["expr-emotions", "pollen-robotics/reachy-mini-emotions-library"],
+    ["expr-dances", "pollen-robotics/reachy-mini-dances-library"],
+  ];
+
+  // Populate both filmstrips from the daemon once it is reachable. Idempotent:
+  // guarded by exprLoaded/exprLoading so the ~10 Hz online reconcile is a cheap
+  // early return once the (static) move lists are in.
+  async function loadExpressions() {
+    if (state.exprLoaded || state.exprLoading) return;
+    state.exprLoading = true;
+    try {
+      const groups = await Promise.all(
+        MOVE_DATASETS.map(async ([id, dataset]) => {
+          const data = await apiJson(`/api/move/recorded-move-datasets/list/${dataset}`);
+          const moves = Array.isArray(data) ? data : (data && (data.moves || data.names || data.items)) || [];
+          return { id, moves };
+        }),
+      );
+      const disabled = state.daemonOnline ? "" : "disabled";
+      groups.forEach(({ id, moves }) => {
+        $(id).innerHTML = moves
+          .map((move) => `<button class="chip" type="button" data-move="${escapeHtml(move)}" ${disabled}>${escapeHtml(move)}</button>`)
+          .join("");
+      });
+      state.exprLoaded = true;
+      $("expr-hint").hidden = true;
+    } catch (error) {
+      // Leave the strips empty + the hint up; the next online reconcile retries.
+    } finally {
+      state.exprLoading = false;
+    }
+  }
+
+  // Play one move at a time: lock the whole strip, mark the tapped chip, POST via
+  // the proxy (dataset carries a '/', so it stays raw in the path; only the move
+  // name is encoded), then reconcile the disabled state to the live daemon status.
+  async function playExpression(dataset, move, chip) {
+    state.exprBusy = true;
+    document.querySelectorAll(".chip").forEach((c) => { c.disabled = true; });
+    chip.classList.add("playing");
+    $("expr-hint").hidden = true;
+    try {
+      const result = await apiJson(`/api/move/recorded-move-dataset/${dataset}/${encodeURIComponent(move)}`, { method: "POST" });
+      if (result && result.error) throw new Error(result.error);
+    } catch (error) {
+      $("expr-hint").hidden = false;
+      $("expr-hint").textContent = error.message || "Move failed";
+      $("expr-hint").className = "panel-hint error";
+    } finally {
+      chip.classList.remove("playing");
+      state.exprBusy = false;
+      const disabled = !state.daemonOnline;
+      document.querySelectorAll(".chip").forEach((c) => { c.disabled = disabled; });
     }
   }
 
@@ -868,6 +938,15 @@
     void performAppAction(button.dataset.app, button.dataset.action);
   });
 
+  ["expr-emotions", "expr-dances"].forEach((id) => {
+    $(id).addEventListener("click", (event) => {
+      const chip = event.target.closest("button.chip");
+      if (!chip || chip.disabled || state.exprBusy) return;
+      const strip = chip.closest(".expr-strip");
+      void playExpression(strip.dataset.dataset, chip.dataset.move, chip);
+    });
+  });
+
   bindSliders();
 
   $("motor-seg").addEventListener("click", (event) => {
@@ -1013,6 +1092,71 @@
     }
   });
 
+  // ---- Theme selector (status-bar palette button → top-layer popover) ----
+  // A pure UI preference — works with the daemon offline. The saved theme is
+  // already applied pre-paint by the inline <head> script; here we build the
+  // menu, persist changes, and keep the popover positioned under the button.
+  const THEME_SCHEMES = [
+    { id: "amber", label: "Amber", sw: "#ffc857" },
+    { id: "arctic", label: "Arctic", sw: "#7fe0ff" },
+    { id: "emerald", label: "Emerald", sw: "#3ce3a0" },
+    { id: "ultraviolet", label: "Violet", sw: "#c199ff" },
+    { id: "ember", label: "Ember", sw: "#ff8a5c" },
+  ];
+  const CHECK_SVG =
+    '<svg class="chk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>';
+
+  function setupThemeSelector() {
+    const btn = $("theme-btn");
+    const pop = $("theme-pop");
+    if (!btn || !pop) return;
+    const currentScheme = () => document.documentElement.dataset.scheme || "amber";
+
+    function renderThemeOptions() {
+      const cur = currentScheme();
+      pop.querySelectorAll(".theme-opt").forEach((el) => el.remove());
+      THEME_SCHEMES.forEach((scheme) => {
+        const opt = document.createElement("button");
+        opt.className = "theme-opt";
+        opt.type = "button";
+        opt.setAttribute("role", "menuitemradio");
+        opt.dataset.scheme = scheme.id;
+        opt.setAttribute("aria-checked", String(scheme.id === cur));
+        opt.innerHTML =
+          `<span class="sw" style="background:${scheme.sw}"></span>` +
+          `<span class="nm">${scheme.label}</span>${CHECK_SVG}`;
+        pop.appendChild(opt);
+      });
+    }
+
+    // The popover lives in the top layer (escapes the status bar's
+    // overflow:hidden), so position it under the button ourselves — correct at
+    // any viewport width.
+    function placePopover() {
+      const rect = btn.getBoundingClientRect();
+      pop.style.top = `${rect.bottom + 10}px`;
+      pop.style.right = `${window.innerWidth - rect.right}px`;
+      pop.style.left = "auto";
+    }
+
+    renderThemeOptions();
+
+    pop.addEventListener("click", (event) => {
+      const opt = event.target.closest(".theme-opt");
+      if (!opt) return;
+      const scheme = opt.dataset.scheme;
+      document.documentElement.dataset.scheme = scheme;
+      try { localStorage.setItem("reachy-theme", scheme); } catch (e) {}
+      renderThemeOptions();
+      if (pop.hidePopover) pop.hidePopover();
+    });
+
+    btn.addEventListener("click", () => requestAnimationFrame(placePopover));
+    window.addEventListener("resize", () => {
+      if (pop.matches && pop.matches(":popover-open")) placePopover();
+    });
+  }
+
   function startLiveConnections() {
     if (state.live.active) return;
     state.live.active = true;
@@ -1063,6 +1207,7 @@
   }
 
   // Poll daemon status on the same cadence as the daemon connectivity check
+  setupThemeSelector();
   renderApps();
   renderEqualizer(false, "no audio signal");
   setDaemonOnline(false);

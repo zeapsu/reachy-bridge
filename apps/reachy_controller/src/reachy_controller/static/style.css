@@ -13,11 +13,41 @@
   --mint: #36e8a4;
   --text: #edf0f4;
   --muted: #8a92a6;
+  /* Atmosphere glow colours (the three drifting blobs). Tokenised so a colour
+     scheme recolours the whole scene, not just the panels. */
+  --glow-a: rgba(255, 200, 87, 0.55);
+  --glow-b: rgba(111, 227, 255, 0.5);
+  --glow-c: rgba(54, 232, 164, 0.4);
   --r-lg: 26px;
   --r-md: 18px;
   --r-sm: 12px;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --lg-blur: 26px;
+}
+
+/* Colour schemes — chosen at runtime via the status-bar theme selector (sets
+   data-scheme on <html>). Amber is the default (the :root values above); each
+   block overrides ONLY the palette tokens + atmosphere glows, never layout, so
+   the design stays identical across themes. */
+html[data-scheme="arctic"] {
+  --bg-0: #05080f; --bg-1: #0b111c; --bg-2: #121a2a;
+  --amber: #7fe0ff; --cyan: #9db8ff; --coral: #ff6b6b; --mint: #4be0c0;
+  --glow-a: rgba(127, 224, 255, 0.55); --glow-b: rgba(157, 184, 255, 0.44); --glow-c: rgba(75, 224, 192, 0.34);
+}
+html[data-scheme="emerald"] {
+  --bg-0: #060f0b; --bg-1: #0c1712; --bg-2: #12211a;
+  --amber: #3ce3a0; --cyan: #63e6ff; --coral: #ff6b6b; --mint: #3ce3a0;
+  --glow-a: rgba(60, 227, 160, 0.55); --glow-b: rgba(99, 230, 255, 0.44); --glow-c: rgba(47, 209, 140, 0.34);
+}
+html[data-scheme="ultraviolet"] {
+  --bg-0: #08060f; --bg-1: #100c1c; --bg-2: #1a1430;
+  --amber: #c199ff; --cyan: #6fd0ff; --coral: #ff7aa8; --mint: #66e8c4;
+  --glow-a: rgba(193, 153, 255, 0.55); --glow-b: rgba(111, 208, 255, 0.42); --glow-c: rgba(224, 140, 255, 0.34);
+}
+html[data-scheme="ember"] {
+  --bg-0: #0c0708; --bg-1: #160f0d; --bg-2: #211613;
+  --amber: #ff8a5c; --cyan: #4fe0d0; --coral: #ff5d5d; --mint: #ffd27a;
+  --glow-a: rgba(255, 138, 92, 0.55); --glow-b: rgba(79, 224, 208, 0.4); --glow-c: rgba(255, 107, 107, 0.32);
 }
 
 * { box-sizing: border-box; }
@@ -69,7 +99,7 @@ input:focus-visible {
   height: 46vw;
   left: -8vw;
   top: -10vw;
-  background: radial-gradient(circle, rgba(255, 200, 87, 0.55), transparent 60%);
+  background: radial-gradient(circle, var(--glow-a), transparent 60%);
   animation: drift1 26s var(--ease) infinite;
 }
 
@@ -78,7 +108,7 @@ input:focus-visible {
   height: 50vw;
   right: -12vw;
   top: 2vw;
-  background: radial-gradient(circle, rgba(111, 227, 255, 0.5), transparent 60%);
+  background: radial-gradient(circle, var(--glow-b), transparent 60%);
   animation: drift2 32s var(--ease) infinite;
 }
 
@@ -87,7 +117,7 @@ input:focus-visible {
   height: 52vw;
   left: 22vw;
   bottom: -24vw;
-  background: radial-gradient(circle, rgba(54, 232, 164, 0.4), transparent 60%);
+  background: radial-gradient(circle, var(--glow-c), transparent 60%);
   animation: drift3 38s var(--ease) infinite;
 }
 
@@ -738,6 +768,57 @@ input:disabled,
 
 .wide { width: 100%; }
 
+/* Expressions filmstrip (#48): two horizontal, scrollable chip-strips. */
+.expr-group + .expr-group { margin-top: 14px; }
+.expr-label {
+  display: block;
+  margin-bottom: 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.expr-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 5px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--glass-edge) transparent;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+}
+.expr-strip::-webkit-scrollbar { height: 6px; }
+.expr-strip::-webkit-scrollbar-thumb { background: var(--glass-edge); border-radius: 3px; }
+.expr-strip:empty::before {
+  content: "—";
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+}
+.chip {
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 8px 15px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-edge);
+  background: var(--glass-fill);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chip:disabled { opacity: 0.3; cursor: not-allowed; }
+.chip:hover:not(:disabled) { border-color: var(--rim); background: var(--glass-fill-2); }
+/* Currently-playing move: accent border + text, token-driven so it follows the
+   active colour scheme. */
+.chip.playing { border-color: var(--amber); color: var(--amber); }
+
 .eq {
   display: flex;
   align-items: flex-end;
@@ -867,6 +948,11 @@ input:disabled,
 
 .panel-hint.error { color: var(--coral); }
 .panel-hint.ok { color: var(--mint); }
+
+/* The apps status line ("… is running.") sits directly below the app cards with
+   no header above it, so the hint's default negative top margin cramps it
+   against the last card. Give it real breathing room in that one spot. */
+.apps + .panel-hint { margin-top: 11px; }
 
 .control { margin-bottom: 16px; }
 .control:last-child { margin-bottom: 0; }
@@ -1017,6 +1103,106 @@ input[type=range]::-moz-range-thumb {
   letter-spacing: 0.04em;
 }
 
+/* Theme selector — a global colour-scheme preference, so it lives in the
+   status-bar chrome (right of the pills), not a content panel. Quiet palette
+   button whose swatch shows the active theme; opens a top-layer popover of
+   schemes so the menu escapes the status bar's overflow:hidden. */
+.theme-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-edge);
+  background: var(--glass-fill);
+  color: var(--muted);
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+
+.theme-btn:hover {
+  color: var(--text);
+  border-color: var(--rim);
+  background: var(--glass-fill-2);
+}
+
+.theme-btn svg { width: 15px; height: 15px; }
+
+.theme-btn .cur {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--amber);          /* reflects the active theme's accent */
+  box-shadow: 0 0 8px 0 var(--amber);
+}
+
+.theme-pop {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  min-width: 204px;
+  padding: 7px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 16px;
+  background: rgba(14, 16, 24, 0.74);
+  backdrop-filter: blur(24px) saturate(1.6);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  box-shadow: 0 26px 64px -26px rgba(0, 0, 0, 0.9), inset 0 1px 0 var(--rim);
+}
+
+.theme-pop .ttl {
+  padding: 4px 10px 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.theme-opt {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: 11px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.theme-opt:hover { background: var(--glass-fill-2); }
+
+.theme-opt[aria-checked="true"] {
+  border-color: var(--glass-edge);
+  background: var(--glass-fill);
+}
+
+.theme-opt .sw {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+}
+
+.theme-opt .nm { margin-right: auto; }
+
+.theme-opt .chk {
+  width: 15px;
+  height: 15px;
+  color: var(--amber);
+  opacity: 0;
+}
+
+.theme-opt[aria-checked="true"] .chk { opacity: 1; }
+
 @media (max-width: 900px) {
   .grid { grid-template-columns: 1fr; }
 }
@@ -1122,7 +1308,8 @@ input[type=range]::-moz-range-thumb {
 /* Solidify the glass for users who ask for reduced transparency: opaque panels,
    no blur/refraction, no decorative sheen/pointer layers, dimmed backdrop. */
 @media (prefers-reduced-transparency: reduce) {
-  .glass {
+  .glass,
+  .theme-pop {
     background: rgba(18, 21, 32, 0.97);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;

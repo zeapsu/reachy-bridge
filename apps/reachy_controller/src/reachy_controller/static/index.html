@@ -1,10 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-scheme="amber">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#070810">
   <title>Reachy Controller</title>
+  <script>
+    // Restore the saved colour theme before first paint (no flash of default
+    // amber). The selector UI itself is wired in main.js.
+    try { document.documentElement.dataset.scheme = localStorage.getItem("reachy-theme") || "amber"; } catch (e) {}
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -39,6 +44,10 @@
     </filter>
   </svg>
 
+  <div class="theme-pop" id="theme-pop" popover role="menu" aria-label="Colour theme">
+    <div class="ttl">Colour theme</div>
+  </div>
+
   <div class="shell">
     <header class="glass statusbar">
       <div class="brand" aria-label="reachy·controller">
@@ -47,6 +56,10 @@
       <span class="pill"><span class="dot" id="daemon-dot"></span>daemon <span class="val" id="daemon-value">connecting</span></span>
       <span class="pill"><span class="dot" id="robot-dot"></span>robot <span class="val" id="robot-value">unknown</span></span>
       <span class="pill"><span class="dot ok"></span>link <span class="val">tailnet</span></span>
+      <button class="theme-btn" id="theme-btn" popovertarget="theme-pop" aria-haspopup="menu" aria-label="Colour theme" title="Colour theme">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="2.2"/><rect x="13" y="3.5" width="7.5" height="7.5" rx="2.2"/><rect x="3.5" y="13" width="7.5" height="7.5" rx="2.2"/><rect x="13" y="13" width="7.5" height="7.5" rx="2.2"/></svg>
+        <span class="cur"></span>
+      </button>
     </header>
 
     <div class="grid">
@@ -144,6 +157,19 @@
           <div class="control toggle-row"><label for="wobble">Audio-reactive wobble</label><label class="switch"><input type="checkbox" id="wobble"><span class="slider"></span></label></div>
           <p class="panel-hint" id="wobble-hint" hidden>Reacts to audio — press <b>Play test sound</b> (or run an app) to see the head move.</p>
           <div class="control action"><button class="btn wide" id="testsound">Play test sound</button></div>
+        </section>
+
+        <section class="glass pad">
+          <div class="head"><h2>expressions</h2><div class="rule"></div><span class="pill">one at a time</span></div>
+          <div class="expr-group">
+            <span class="expr-label">Emotions</span>
+            <div class="expr-strip" id="expr-emotions" data-dataset="pollen-robotics/reachy-mini-emotions-library" aria-live="polite"></div>
+          </div>
+          <div class="expr-group">
+            <span class="expr-label">Dances</span>
+            <div class="expr-strip" id="expr-dances" data-dataset="pollen-robotics/reachy-mini-dances-library" aria-live="polite"></div>
+          </div>
+          <p class="panel-hint" id="expr-hint">Expressions enable when the daemon is online.</p>
         </section>
       </div>
     </div>
