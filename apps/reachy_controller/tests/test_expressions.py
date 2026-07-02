@@ -288,6 +288,18 @@ async def test_concurrent_plays_only_one_succeeds() -> None:
     uuid1 = "uuid1"
     proxy.play_recorded_move.return_value = {"uuid": uuid1}
 
+    # AsyncMock resolves without ever suspending the calling task, so without a
+    # real await point here asyncio.gather runs both play() calls back-to-back
+    # on the same lock-holding pass and this test would pass even with the
+    # `_lock` removed. `await asyncio.sleep(0)` forces an actual suspension so
+    # the two plays interleave at the lock, making the assertions below
+    # load-bearing against a missing/broken lock.
+    async def yielding_running_moves(*args, **kwargs):
+        await asyncio.sleep(0)
+        return []
+
+    proxy.get_running_moves.side_effect = yielding_running_moves
+
     # Execute both plays concurrently
     results = await asyncio.gather(
         player.play("dataset1", "move1"),
@@ -307,25 +319,42 @@ async def test_concurrent_plays_only_one_succeeds() -> None:
 
 @pytest.mark.asyncio
 async def test_play_propagates_daemon_404() -> None:
-    """Test 11: play propagates daemon 404 (unknown move) → 404, session NOT left set."""
-    proxy = MockDaemonProxy()
-    player = ExpressionPlayer(proxy)
+    """Test 11: play propagates daemon 404 (unknown move) → 404, session NOT left set.
 
-    # Make play_recorded_move raise a 404
-    async def play_404(*args):
-        response = httpx.Response(404)
-        raise httpx.HTTPStatusError("404", request=None, response=response)
+    Drives a REAL DaemonProxy over httpx.MockTransport through the FastAPI app
+    (not a mocked play_recorded_move) so this pins the actual HTTP-level status
+    mapping: DaemonProxy.play_recorded_move only swallows transport errors, so
+    the daemon's 404 must propagate as an httpx.HTTPStatusError that the route
+    turns into a 404 response — not the 503 "unavailable" a naive _post_json
+    reuse would produce. A follow-up play then must succeed, proving the
+    lock/session were released on the 404 path (not wedged).
+    """
 
-    proxy.play_recorded_move = AsyncMock(side_effect=play_404)
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/move/play/recorded-move-dataset/dataset1/unknown_move":
+            return httpx.Response(404, json={"detail": "Unknown move"})
+        if path == "/api/move/play/recorded-move-dataset/dataset1/move1":
+            return httpx.Response(200, json={"uuid": "test-uuid"})
+        if path == "/api/move/running":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
 
-    result = await player.play("dataset1", "unknown_move")
-    assert result["status"] == "not_found"
+    proxy = DaemonProxy("http://daemon.local:8000", transport=httpx.MockTransport(handler))
+    app = create_app(proxy)
 
-    # Session should not be set
-    current = await player.current()
-    assert current["active"] is False
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/api/expressions/play/dataset1/unknown_move")
+            assert response.status_code == 404
 
-    await player.aclose()
+            current = await client.get("/api/expressions/current")
+            assert current.json()["active"] is False
+
+            # Session must not be wedged: a follow-up play for a real move succeeds.
+            response2 = await client.post("/api/expressions/play/dataset1/move1")
+            assert response2.status_code == 200
+            assert response2.json()["status"] == "playing"
 
 
 @pytest.mark.asyncio
@@ -349,3 +378,28 @@ async def test_play_returns_session_in_app() -> None:
             data = response.json()
             assert data["status"] == "playing"
             assert data["uuid"] == "test-uuid"
+
+
+@pytest.mark.asyncio
+async def test_stop_while_returning_home_is_noop() -> None:
+    """Test 12: stop() while phase is returning_home returns {"status":
+    "returning_home"} and fires no daemon stop call — this contract branch
+    (frozen in the API contract as a 200 idempotent no-op) was previously
+    unpinned by any test. Reaches into the session dict directly to land
+    squarely in the returning_home window instead of racing the watcher's
+    real timing.
+    """
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy)
+    player._session = {
+        "uuid": "test-uuid",
+        "dataset": "dataset1",
+        "move": "move1",
+        "phase": "returning_home",
+    }
+
+    result = await player.stop()
+    assert result == {"status": "returning_home"}
+    proxy.stop_move.assert_not_called()
+
+    await player.aclose()

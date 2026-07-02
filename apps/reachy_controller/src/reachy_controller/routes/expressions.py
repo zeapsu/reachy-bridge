@@ -87,8 +87,15 @@ class ExpressionPlayer:
                     return {"status": "not_found"}
                 raise
 
-            # Store session and spawn watcher
-            uuid = result["uuid"]
+            # Store session and spawn watcher. Guard against a malformed 200
+            # (missing uuid) — treat as unavailable rather than KeyError with
+            # the robot already moving untracked.
+            uuid = result.get("uuid")
+            if uuid is None:
+                return {
+                    "status": "unavailable",
+                    "detail": "Reachy daemon unavailable",
+                }
             self._session = {
                 "uuid": uuid,
                 "dataset": dataset,

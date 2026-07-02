@@ -163,8 +163,19 @@ class DaemonProxy:
             return None
 
     async def play_recorded_move(self, dataset: str, move: str) -> dict[str, Any] | None:
-        """Play a recorded move from the given dataset."""
-        return await self._post_json(f"move/play/recorded-move-dataset/{dataset}/{move}")
+        """Play a recorded move from the given dataset.
+
+        Unlike _post_json, does NOT swallow HTTPStatusError: callers need the
+        daemon's 404 (unknown move/dataset) to pass through instead of reading
+        as a generic "unavailable". Only transport errors (daemon unreachable)
+        return None.
+        """
+        try:
+            response = await self.request("POST", f"move/play/recorded-move-dataset/{dataset}/{move}")
+            response.raise_for_status()
+            return response.json()
+        except httpx.RequestError:
+            return None
 
     async def get_running_moves(self) -> list[dict[str, Any]] | None:
         """Get list of currently running moves."""

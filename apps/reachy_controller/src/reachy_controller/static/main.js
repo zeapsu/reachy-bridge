@@ -509,6 +509,7 @@
     chip.classList.add("playing");
     $("expr-cancel").hidden = false;
     $("expr-hint").hidden = true;
+    $("expr-hint").className = "panel-hint";
     try {
       const result = await apiJson(`/api/expressions/play/${dataset}/${encodeURIComponent(move)}`, { method: "POST" });
       // On 200, the backend returns { status, uuid, dataset, move }; start polling
@@ -555,7 +556,8 @@
         }
 
         // Move is active — update UI based on phase. Default to hiding cancel
-        // unless explicitly playing; unknown phases hide the button and stop polling.
+        // unless explicitly playing; unknown phases hide the button but polling
+        // continues (the session clears server-side, which flips active to false).
         if (current.phase === "playing") {
           $("expr-cancel").hidden = false;
         } else {
@@ -585,6 +587,7 @@
       });
       $("expr-cancel").hidden = true;
       $("expr-hint").hidden = true;
+      $("expr-hint").className = "panel-hint";
     }
   }
 
