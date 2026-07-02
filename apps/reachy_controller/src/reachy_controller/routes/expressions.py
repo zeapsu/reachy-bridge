@@ -116,6 +116,29 @@ class ExpressionPlayer:
                 "move": move,
             }
 
+    async def return_home(self) -> dict[str, Any]:
+        """Standalone return-home session (post-motor-enable recovery, #67).
+
+        Reuses the session machinery so play() and the app-start guard block
+        for free, and the frontend expression poller renders it with zero new
+        UI. No daemon I/O under the lock — the goto runs in the watcher — so
+        the session exists before the caller's route returns.
+
+        Returns:
+            {"status": "returning_home"} | {"status": "busy", "detail": "..."}
+        """
+        async with self._lock:
+            if self._session is not None:
+                return {"status": "busy", "detail": "Robot is busy with another move."}
+            self._session = {
+                "uuid": None,
+                "dataset": None,
+                "move": None,
+                "phase": "returning_home",
+            }
+            self._watcher = asyncio.create_task(self._watch_return_home())
+            return {"status": "returning_home"}
+
     async def stop(self) -> dict[str, str]:
         """Stop the current expression playback.
 
@@ -245,6 +268,15 @@ class ExpressionPlayer:
             pass
         except Exception:
             # Swallow any exception; watcher is fire-and-forget
+            self._session = None
+
+    async def _watch_return_home(self) -> None:
+        """Watcher for a standalone return-home session. Never raises."""
+        try:
+            await self._goto_home_and_clear()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
             self._session = None
 
 
