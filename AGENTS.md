@@ -163,6 +163,13 @@ execution scheme by task shape:
 | Plan execution, but no subagents / want a clean session | **`executing-plans`** | You execute the plan yourself in a separate session, sequential, with review checkpoints. Its own note: *"if subagents are available, use subagent-driven-development instead."* |
 | 2+ **independent** tasks, no shared state/order | **`dispatching-parallel-agents`** | Fan out one subagent per task in a single response → parallel. For unrelated debugging/investigation, **not** sequenced plan steps. |
 
+**Subagent models:** there is no global subagent pin (the old `CLAUDE_CODE_SUBAGENT_MODEL=haiku`
+was removed 2026-07-01 — it was a HARD pin that overrode even explicit `model:` dispatches and
+silently ran haiku reviewers). An omitted model now inherits the **session model** (expensive) —
+always pass `model:` per the skill's rubric: haiku only for transcription-grade implementation,
+**reviewers ≥ sonnet**, final whole-branch review on the most capable model. Explore keeps its own
+haiku pin.
+
 **Default architecture: `subagent-driven-development` orchestrating, dispatching
 `codex-implement-review-loop` as the per-task worker** — lean in-session orchestrator + cross-model
 gatekeeping + Claude-token offload. **Worker choice is orthogonal to the scheme:** any task-dispatching
