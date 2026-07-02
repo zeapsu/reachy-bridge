@@ -253,6 +253,11 @@ async def play_expression(
     request: Request,
 ) -> dict[str, Any]:
     """POST /api/expressions/play/{dataset}/{move_name}."""
+    # ponytail: check-then-act across app/expression state is non-atomic; single-user UI
+    if request.app.state.app_supervisor.any_app_active():
+        raise HTTPException(
+            status_code=409, detail="An app is controlling the robot — stop it first."
+        )
     player: ExpressionPlayer = request.app.state.expression_player
     result = await player.play(dataset, move_name)
 

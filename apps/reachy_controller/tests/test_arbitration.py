@@ -37,3 +37,42 @@ def test_expression_player_active_property() -> None:
     assert player.active is False
     player._session = {"uuid": None, "dataset": None, "move": None, "phase": "returning_home"}
     assert player.active is True
+
+
+@pytest.mark.asyncio
+async def test_play_expression_409_while_app_running() -> None:
+    play_posts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/api/move/play/"):
+            play_posts.append(request.url.path)
+            return httpx.Response(200, json={"uuid": "u1"})
+        if request.url.path == "/api/move/running":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    app = _make_app(handler)
+    async with app.router.lifespan_context(app):
+        app.state.app_supervisor._apps["reachy_chat"].status = "running"
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/expressions/play/dataset1/move1")
+            assert response.status_code == 409
+            assert "app" in response.json()["detail"].lower()
+    assert play_posts == []  # never reached the daemon
+
+
+@pytest.mark.asyncio
+async def test_play_expression_409_while_app_loading() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
+
+    app = _make_app(handler)
+    async with app.router.lifespan_context(app):
+        app.state.app_supervisor._apps["reachy_dance"].status = "loading"
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/expressions/play/dataset1/move1")
+            assert response.status_code == 409
