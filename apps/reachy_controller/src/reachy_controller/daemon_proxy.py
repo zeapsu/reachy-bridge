@@ -162,6 +162,34 @@ class DaemonProxy:
         except (httpx.HTTPError, ValueError):
             return None
 
+    async def play_recorded_move(self, dataset: str, move: str) -> dict[str, Any] | None:
+        """Play a recorded move from the given dataset."""
+        return await self._post_json(f"move/play/recorded-move-dataset/{dataset}/{move}")
+
+    async def get_running_moves(self) -> list[dict[str, Any]] | None:
+        """Get list of currently running moves."""
+        try:
+            return await self.get_json("move/running")
+        except (httpx.HTTPError, ValueError):
+            return None
+
+    async def stop_move(self, uuid: str) -> None:
+        """Stop a move by UUID. Swallows 500 (move already finished) as success."""
+        try:
+            response = await self.request("POST", "move/stop", content=json.dumps({"uuid": uuid}).encode(), headers={"content-type": "application/json"})
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Treat 500 (KeyError in daemon) as best-effort success
+            if exc.response.status_code != 500:
+                raise
+        except (httpx.HTTPError, ValueError):
+            # Swallow other errors as best-effort success
+            pass
+
+    async def play_wake_up(self) -> dict[str, Any] | None:
+        """Play the wake_up return-home move."""
+        return await self._post_json("move/play/wake_up")
+
     async def ws_stream_full_state(self) -> AsyncGenerator[dict[str, Any], None]:
         """Stream full robot state from daemon via WebSocket.
 

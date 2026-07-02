@@ -26,6 +26,8 @@ from reachy_controller.routes.audio import router as audio_router
 from reachy_controller.routes.camera import router as camera_router
 from reachy_controller.routes.controls import router as controls_router
 from reachy_controller.routes.daemon import router as daemon_control_router
+from reachy_controller.routes.expressions import ExpressionPlayer
+from reachy_controller.routes.expressions import router as expressions_router
 from reachy_controller.routes.system_stats import router as system_stats_router
 from reachy_controller.routes.telemetry import (
     root_router as telemetry_root_router,
@@ -60,6 +62,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     )
     app_supervisor = AppSupervisor(daemon_proxy=daemon_proxy)
     daemon_supervisor = DaemonSupervisor(daemon_proxy=daemon_proxy)
+    expression_player = ExpressionPlayer(daemon_proxy)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -69,6 +72,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
         try:
             yield
         finally:
+            await app.state.expression_player.aclose()
             app.state.app_supervisor.stop_all()
             await app.state.daemon_proxy.close()
 
@@ -76,6 +80,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     app.state.daemon_proxy = daemon_proxy
     app.state.app_supervisor = app_supervisor
     app.state.daemon_supervisor = daemon_supervisor
+    app.state.expression_player = expression_player
     app.add_middleware(NoCacheMiddleware)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -101,6 +106,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     app.include_router(audio_router)
     app.include_router(camera_router)
     app.include_router(daemon_control_router)
+    app.include_router(expressions_router)
     app.include_router(daemon_router)
     return app
 
