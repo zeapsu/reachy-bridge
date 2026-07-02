@@ -592,3 +592,34 @@ async def test_home_completion_clears_needs_home() -> None:
     result = await player.play("dataset1", "move1")
     assert result["status"] == "playing"
     await player.aclose()
+
+
+@pytest.mark.asyncio
+async def test_mode_change_mid_goto_keeps_needs_home() -> None:
+    """SAFETY: a motor-mode change while the goto-home is in flight means the
+    drained goto never physically homed the robot (torque may be off) — the
+    flag must survive and keep refusing plays."""
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy, poll_interval_s=0.01)
+    player.needs_home = True
+    proxy.goto_home.return_value = {"uuid": "home-uuid"}
+    proxy.get_running_moves.return_value = [{"uuid": "home-uuid"}]  # goto in flight
+
+    await player.return_home()
+    # Let the watcher task actually start and dispatch the goto (asyncio
+    # only runs a freshly created task once its creator yields control —
+    # without this checkpoint the "mode change" below would race ahead of
+    # the goto's own epoch capture instead of landing mid-flight).
+    await asyncio.sleep(0)
+    # Simulate the motor route reacting to a mid-flight mode change.
+    player.mode_epoch += 1
+    player.needs_home = True
+
+    proxy.get_running_moves.return_value = []  # goto drains on schedule
+    await player._watcher
+
+    assert player.active is False
+    assert player.needs_home is True  # NOT cleared by the stale goto
+    result = await player.play("dataset1", "move1")
+    assert result["status"] == "busy"
+    await player.aclose()

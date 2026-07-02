@@ -44,6 +44,12 @@ class ExpressionPlayer:
         # only when a goto-home verifiably completes. While True, play() refuses
         # (jolt hazard: torque on, pose unknown).
         self.needs_home = False
+        # #67 safety, part 2: every motor-mode change bumps this epoch. A
+        # goto-home only clears needs_home if no mode change happened while it
+        # was in flight — a torque cut mid-goto means the "completed" move
+        # never physically homed the robot (daemon moves drain on schedule
+        # regardless of torque).
+        self.mode_epoch = 0
 
     @property
     def active(self) -> bool:
@@ -227,6 +233,7 @@ class ExpressionPlayer:
     async def _goto_home_and_clear(self) -> None:
         """Second half of every lifecycle: goto home (one retry), poll the
         goto uuid out, clear the session."""
+        epoch = self.mode_epoch
         home_result = await self.daemon_proxy.goto_home()
         if home_result is None:
             # A single transient failure must not cost the return-home;
@@ -242,7 +249,8 @@ class ExpressionPlayer:
             self._session = None
             return
 
-        self.needs_home = False  # robot is verifiably at home
+        if self.mode_epoch == epoch:
+            self.needs_home = False  # robot is verifiably at home
         self._session = None
 
     async def _watch(self) -> None:

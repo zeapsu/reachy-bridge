@@ -79,6 +79,7 @@ async def set_motor_mode(mode: str, request: Request) -> dict[str, Any]:
     # return_home() no-ops and that session's own goto-home clears the flag.
     player = request.app.state.expression_player
     player.needs_home = True
+    player.mode_epoch += 1
     if mode == "enabled":
         await player.return_home()
     return result
