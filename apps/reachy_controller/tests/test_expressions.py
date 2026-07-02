@@ -22,7 +22,7 @@ class MockDaemonProxy:
         self.play_recorded_move = AsyncMock(return_value={"uuid": str(uuid4())})
         self.get_running_moves = AsyncMock(return_value=[])
         self.stop_move = AsyncMock(return_value=None)
-        self.play_wake_up = AsyncMock(return_value={"uuid": str(uuid4())})
+        self.goto_home = AsyncMock(return_value={"uuid": str(uuid4())})
 
     async def close(self) -> None:
         return None
@@ -106,7 +106,7 @@ async def test_natural_finish_triggers_wake_up() -> None:
     test_uuid = "test-uuid-4"
     wake_up_uuid = "wake-up-uuid-4"
     proxy.play_recorded_move.return_value = {"uuid": test_uuid}
-    proxy.play_wake_up.return_value = {"uuid": wake_up_uuid}
+    proxy.goto_home.return_value = {"uuid": wake_up_uuid}
 
     # Simulate daemon: note first call (during play()) checks for foreign moves
     proxy.get_running_moves.side_effect = [
@@ -124,7 +124,7 @@ async def test_natural_finish_triggers_wake_up() -> None:
     await asyncio.sleep(0.15)
 
     # Verify wake_up was called
-    proxy.play_wake_up.assert_called_once()
+    proxy.goto_home.assert_called_once()
 
     # Final state should be inactive
     current = await player.current()
@@ -142,7 +142,7 @@ async def test_stop_while_playing_triggers_return_home() -> None:
     test_uuid = "test-uuid-5"
     wake_up_uuid = "wake-up-uuid-5"
     proxy.play_recorded_move.return_value = {"uuid": test_uuid}
-    proxy.play_wake_up.return_value = {"uuid": wake_up_uuid}
+    proxy.goto_home.return_value = {"uuid": wake_up_uuid}
 
     # Sequence: first call is foreign move check, then move running, stops, wake_up runs, finishes
     proxy.get_running_moves.side_effect = [
@@ -167,7 +167,7 @@ async def test_stop_while_playing_triggers_return_home() -> None:
     await asyncio.sleep(0.15)
 
     # Verify wake_up was called
-    proxy.play_wake_up.assert_called_once()
+    proxy.goto_home.assert_called_once()
 
     # Final state should be inactive
     current = await player.current()
@@ -185,7 +185,7 @@ async def test_stop_tolerates_daemon_500() -> None:
     test_uuid = "test-uuid-6"
     wake_up_uuid = "wake-up-uuid-6"
     proxy.play_recorded_move.return_value = {"uuid": test_uuid}
-    proxy.play_wake_up.return_value = {"uuid": wake_up_uuid}
+    proxy.goto_home.return_value = {"uuid": wake_up_uuid}
 
     # stop_move returns None (daemon's 500 was swallowed by proxy)
     proxy.stop_move = AsyncMock(return_value=None)
@@ -280,7 +280,7 @@ async def test_daemon_dies_mid_watch_clears_session() -> None:
     assert current["active"] is False
 
     # wake_up should NOT be called
-    proxy.play_wake_up.assert_not_called()
+    proxy.goto_home.assert_not_called()
 
     await player.aclose()
 
@@ -295,7 +295,7 @@ async def test_transient_poll_blip_during_playing_still_completes() -> None:
     test_uuid = "test-uuid-9b"
     wake_up_uuid = "wake-up-uuid-9b"
     proxy.play_recorded_move.return_value = {"uuid": test_uuid}
-    proxy.play_wake_up.return_value = {"uuid": wake_up_uuid}
+    proxy.goto_home.return_value = {"uuid": wake_up_uuid}
 
     proxy.get_running_moves.side_effect = [
         [],  # Foreign move check
@@ -312,7 +312,7 @@ async def test_transient_poll_blip_during_playing_still_completes() -> None:
 
     await asyncio.sleep(0.2)
 
-    proxy.play_wake_up.assert_called_once()
+    proxy.goto_home.assert_called_once()
 
     current = await player.current()
     assert current["active"] is False
@@ -322,7 +322,7 @@ async def test_transient_poll_blip_during_playing_still_completes() -> None:
 
 @pytest.mark.asyncio
 async def test_wake_up_post_transient_failure_still_returns_home() -> None:
-    """Test 9c: play_wake_up returning None once is retried after one poll
+    """Test 9c: goto_home returning None once is retried after one poll
     interval — return-home still happens, session eventually cleared."""
     proxy = MockDaemonProxy()
     player = ExpressionPlayer(proxy, poll_interval_s=0.01)
@@ -330,7 +330,7 @@ async def test_wake_up_post_transient_failure_still_returns_home() -> None:
     test_uuid = "test-uuid-9c"
     wake_up_uuid = "wake-up-uuid-9c"
     proxy.play_recorded_move.return_value = {"uuid": test_uuid}
-    proxy.play_wake_up = AsyncMock(side_effect=[None, {"uuid": wake_up_uuid}])
+    proxy.goto_home = AsyncMock(side_effect=[None, {"uuid": wake_up_uuid}])
 
     proxy.get_running_moves.side_effect = [
         [],  # Foreign move check
@@ -345,7 +345,7 @@ async def test_wake_up_post_transient_failure_still_returns_home() -> None:
 
     await asyncio.sleep(0.2)
 
-    assert proxy.play_wake_up.call_count == 2
+    assert proxy.goto_home.call_count == 2
 
     current = await player.current()
     assert current["active"] is False

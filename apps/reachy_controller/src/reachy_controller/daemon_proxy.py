@@ -197,9 +197,23 @@ class DaemonProxy:
             # Swallow other errors as best-effort success
             pass
 
-    async def play_wake_up(self) -> dict[str, Any] | None:
-        """Play the wake_up return-home move."""
-        return await self._post_json("move/play/wake_up")
+    async def goto_home(self) -> dict[str, Any] | None:
+        """Silently goto the wake_up home pose (no head-roll emote, no wake_up.wav).
+
+        Matches the SDK wake_up() target: identity head pose, the ~10-degree
+        antenna offset it parks at (shake reduction at vertical), body yaw 0.
+        MIN_JERK is the endpoint default; 1.5 s approximates the emote's
+        distance-proportional return for typical expression end poses.
+        """
+        return await self._post_json(
+            "move/goto",
+            {
+                "head_pose": {"x": 0.0, "y": 0.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
+                "antennas": [-0.1745, 0.1745],
+                "body_yaw": 0.0,
+                "duration": 1.5,
+            },
+        )
 
     async def ws_stream_full_state(self) -> AsyncGenerator[dict[str, Any], None]:
         """Stream full robot state from daemon via WebSocket.

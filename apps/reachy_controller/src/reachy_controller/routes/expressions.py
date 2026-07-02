@@ -191,7 +191,7 @@ class ExpressionPlayer:
 
         Single owner of all session state transitions:
         - playing → (uuid vanishes) → returning_home
-        - returning_home → (wake_up uuid vanishes) → clear session
+        - returning_home → (goto-home uuid vanishes) → clear session
 
         Two consecutive daemon errors (None response) at any point clear the
         session and stop (no return-home possible). Never raises.
@@ -206,26 +206,27 @@ class ExpressionPlayer:
                 self._session = None
                 return
 
-            # Transition to returning_home and play wake_up
+            # Transition to returning_home and goto the home pose (silent —
+            # the wake_up emote's wav/gesture felt unnatural after expressions)
             if self._session is not None:
                 self._session["phase"] = "returning_home"
             else:
                 return
 
-            wake_up_result = await self.daemon_proxy.play_wake_up()
-            if wake_up_result is None:
+            home_result = await self.daemon_proxy.goto_home()
+            if home_result is None:
                 # A single transient failure must not cost the return-home;
                 # retry once before giving up.
                 await asyncio.sleep(self.POLL_INTERVAL_S)
-                wake_up_result = await self.daemon_proxy.play_wake_up()
-                if wake_up_result is None:
+                home_result = await self.daemon_proxy.goto_home()
+                if home_result is None:
                     self._session = None
                     return
 
-            wake_up_uuid = wake_up_result["uuid"]
+            home_uuid = home_result["uuid"]
 
-            # Poll until wake_up uuid is absent
-            if not await self._poll_until_absent(wake_up_uuid):
+            # Poll until the goto-home uuid is absent
+            if not await self._poll_until_absent(home_uuid):
                 self._session = None
                 return
 
