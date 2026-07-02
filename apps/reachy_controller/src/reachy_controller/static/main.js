@@ -1128,6 +1128,18 @@
     void performControl("motor", async () => {
       const result = await apiJson(`/api/motors/set_mode/${encodeURIComponent(mode)}`, { method: "POST" });
       selectMotorMode(mode);
+      if (mode === "enabled") {
+        // The backend kicked a return-home session (#67). Mirror an in-flight
+        // expression *inside* the operation so performControl's finally
+        // (setControlsEnabled) skips the chip branch — no enabled-flash.
+        state.exprBusy = true;
+        document.querySelectorAll(".chip").forEach((c) => { c.disabled = true; });
+        $("expr-cancel").hidden = true;
+        $("expr-hint").hidden = false;
+        $("expr-hint").textContent = "Returning home…";
+        $("expr-hint").className = "panel-hint";
+        startExpressionPoller();
+      }
       return result;
     });
   });
