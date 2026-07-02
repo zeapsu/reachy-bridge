@@ -40,6 +40,10 @@ class ExpressionPlayer:
         self._session: dict[str, Any] | None = None
         self._lock = asyncio.Lock()
         self._watcher: asyncio.Task[None] | None = None
+        # #67 safety: set by the motor-mode route on any torque change; cleared
+        # only when a goto-home verifiably completes. While True, play() refuses
+        # (jolt hazard: torque on, pose unknown).
+        self.needs_home = False
 
     @property
     def active(self) -> bool:
@@ -64,6 +68,12 @@ class ExpressionPlayer:
                 return {
                     "status": "busy",
                     "detail": "Robot is busy with another move.",
+                }
+
+            if self.needs_home:
+                return {
+                    "status": "busy",
+                    "detail": "Robot pose is not homed — set motor mode to enabled to return home.",
                 }
 
             # Check for foreign running moves
@@ -232,6 +242,7 @@ class ExpressionPlayer:
             self._session = None
             return
 
+        self.needs_home = False  # robot is verifiably at home
         self._session = None
 
     async def _watch(self) -> None:

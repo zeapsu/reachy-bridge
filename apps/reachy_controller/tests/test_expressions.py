@@ -538,3 +538,57 @@ async def test_stop_during_return_home_session_is_noop() -> None:
     await player._watcher
     assert player.active is False
     await player.aclose()
+
+
+@pytest.mark.asyncio
+async def test_needs_home_blocks_play_with_actionable_detail() -> None:
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy)
+    player.needs_home = True
+
+    result = await player.play("dataset1", "move1")
+    assert result["status"] == "busy"
+    assert "enabled" in result["detail"]  # detail names the recovery action
+    proxy.play_recorded_move.assert_not_called()
+    await player.aclose()
+
+
+@pytest.mark.asyncio
+async def test_needs_home_persists_when_goto_dispatch_fails() -> None:
+    """SAFETY: goto dispatch fails twice -> session clears but the flag stays
+    set, so expressions keep refusing (safe direction)."""
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy, poll_interval_s=0.01)
+    player.needs_home = True
+    proxy.goto_home.return_value = None  # both dispatch attempts fail
+
+    await player.return_home()
+    await player._watcher
+
+    assert player.active is False
+    assert player.needs_home is True
+    result = await player.play("dataset1", "move1")
+    assert result["status"] == "busy"
+    await player.aclose()
+
+
+@pytest.mark.asyncio
+async def test_home_completion_clears_needs_home() -> None:
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy, poll_interval_s=0.01)
+    player.needs_home = True
+    proxy.goto_home.return_value = {"uuid": "home-uuid"}
+    proxy.get_running_moves.side_effect = [
+        [{"uuid": "home-uuid"}],
+        [],
+    ]
+
+    await player.return_home()
+    await player._watcher
+    assert player.needs_home is False
+
+    proxy.get_running_moves.side_effect = None
+    proxy.get_running_moves.return_value = []
+    result = await player.play("dataset1", "move1")
+    assert result["status"] == "playing"
+    await player.aclose()
