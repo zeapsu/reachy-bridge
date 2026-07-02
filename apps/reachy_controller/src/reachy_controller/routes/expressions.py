@@ -7,7 +7,6 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
 
 from reachy_controller.daemon_proxy import DaemonProxy
 
@@ -116,15 +115,17 @@ class ExpressionPlayer:
         Returns:
             {"status": "idle"} | {"status": "returning_home"} | {"status": "stopping"}
         """
-        if self._session is None:
+        # Snapshot: keeps the reads coherent even if a future edit adds an
+        # await before them (the watcher clears _session at its own awaits).
+        session = self._session
+        if session is None:
             return {"status": "idle"}
 
-        if self._session["phase"] == "returning_home":
+        if session["phase"] == "returning_home":
             return {"status": "returning_home"}
 
         # Fire stop request (best-effort, don't mutate session)
-        uuid = self._session["uuid"]
-        await self.daemon_proxy.stop_move(uuid)
+        await self.daemon_proxy.stop_move(session["uuid"])
 
         return {"status": "stopping"}
 
@@ -135,15 +136,16 @@ class ExpressionPlayer:
             {"active": false} or
             {"active": true, "phase": "playing" | "returning_home", "dataset": "...", "move": "...", "uuid": "..."}
         """
-        if self._session is None:
+        session = self._session
+        if session is None:
             return {"active": False}
 
         return {
             "active": True,
-            "phase": self._session["phase"],
-            "dataset": self._session["dataset"],
-            "move": self._session["move"],
-            "uuid": self._session["uuid"],
+            "phase": session["phase"],
+            "dataset": session["dataset"],
+            "move": session["move"],
+            "uuid": session["uuid"],
         }
 
     async def aclose(self) -> None:
