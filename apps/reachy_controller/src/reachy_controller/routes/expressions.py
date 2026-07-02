@@ -41,6 +41,11 @@ class ExpressionPlayer:
         self._lock = asyncio.Lock()
         self._watcher: asyncio.Task[None] | None = None
 
+    @property
+    def active(self) -> bool:
+        """True while any session (playing or returning home) exists."""
+        return self._session is not None
+
     async def play(self, dataset: str, move: str) -> dict[str, Any]:
         """Start playing an expression. Returns session or error.
 
