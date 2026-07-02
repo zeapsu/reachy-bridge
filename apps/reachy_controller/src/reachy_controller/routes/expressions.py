@@ -164,6 +164,28 @@ class ExpressionPlayer:
             except asyncio.CancelledError:
                 pass
 
+    async def _poll_until_absent(self, target_uuid: str) -> bool:
+        """Poll get_running_moves until target_uuid is gone.
+
+        A single transient None must not cost the return-home; only two
+        consecutive None polls mean the daemon is actually gone.
+
+        Returns True once the move is absent, False if the daemon is
+        confirmed gone (two consecutive None polls).
+        """
+        consecutive_failures = 0
+        while True:
+            await asyncio.sleep(self.POLL_INTERVAL_S)
+            running = await self.daemon_proxy.get_running_moves()
+            if running is None:
+                consecutive_failures += 1
+                if consecutive_failures >= 2:
+                    return False
+                continue
+            consecutive_failures = 0
+            if not any(m["uuid"] == target_uuid for m in running):
+                return True
+
     async def _watch(self) -> None:
         """Poll daemon until our uuid is absent, then trigger return-home.
 
@@ -171,8 +193,8 @@ class ExpressionPlayer:
         - playing → (uuid vanishes) → returning_home
         - returning_home → (wake_up uuid vanishes) → clear session
 
-        Any daemon error (None response) at any point clears the session and
-        stops (no return-home possible). Never raises.
+        Two consecutive daemon errors (None response) at any point clear the
+        session and stop (no return-home possible). Never raises.
         """
         if self._session is None:
             return
@@ -180,16 +202,9 @@ class ExpressionPlayer:
         try:
             # Poll until our uuid is absent (move finished)
             playing_uuid = self._session["uuid"]
-            while True:
-                await asyncio.sleep(self.POLL_INTERVAL_S)
-                running = await self.daemon_proxy.get_running_moves()
-                if running is None:
-                    # Daemon unavailable, clear and stop
-                    self._session = None
-                    return
-                if not any(m["uuid"] == playing_uuid for m in running):
-                    # Our move finished
-                    break
+            if not await self._poll_until_absent(playing_uuid):
+                self._session = None
+                return
 
             # Transition to returning_home and play wake_up
             if self._session is not None:
@@ -199,23 +214,20 @@ class ExpressionPlayer:
 
             wake_up_result = await self.daemon_proxy.play_wake_up()
             if wake_up_result is None:
-                # Daemon unavailable, clear and stop
-                self._session = None
-                return
+                # A single transient failure must not cost the return-home;
+                # retry once before giving up.
+                await asyncio.sleep(self.POLL_INTERVAL_S)
+                wake_up_result = await self.daemon_proxy.play_wake_up()
+                if wake_up_result is None:
+                    self._session = None
+                    return
 
             wake_up_uuid = wake_up_result["uuid"]
 
             # Poll until wake_up uuid is absent
-            while True:
-                await asyncio.sleep(self.POLL_INTERVAL_S)
-                running = await self.daemon_proxy.get_running_moves()
-                if running is None:
-                    # Daemon unavailable, clear and stop
-                    self._session = None
-                    return
-                if not any(m["uuid"] == wake_up_uuid for m in running):
-                    # Wake_up finished
-                    break
+            if not await self._poll_until_absent(wake_up_uuid):
+                self._session = None
+                return
 
             # Clear session
             self._session = None

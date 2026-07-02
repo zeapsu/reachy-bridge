@@ -249,18 +249,24 @@ async def test_play_with_daemon_unreachable_returns_503() -> None:
 
 @pytest.mark.asyncio
 async def test_daemon_dies_mid_watch_clears_session() -> None:
-    """Test 9: daemon dies mid-watch (running-list request errors) → session cleared, no exception, no wake_up retry loop."""
+    """Test 9: TWO CONSECUTIVE daemon errors mid-watch (running-list requests
+    error back-to-back) → session cleared, no exception, no wake_up retry
+    loop. One transient failure alone is now tolerated (see test 9b); this
+    pins the still-unchanged give-up behavior once the daemon is actually gone.
+    """
     proxy = MockDaemonProxy()
     player = ExpressionPlayer(proxy, poll_interval_s=0.01)
 
     test_uuid = "test-uuid-9"
     proxy.play_recorded_move.return_value = {"uuid": test_uuid}
 
-    # First call is foreign check, second call has the move, third call returns None (daemon dies)
+    # First call is foreign check, second call has the move, third and
+    # fourth calls return None back-to-back (daemon actually gone).
     proxy.get_running_moves.side_effect = [
         [],  # Foreign move check
         [{"uuid": test_uuid}],  # Move running
-        None,  # Daemon dies
+        None,  # First failure — tolerated
+        None,  # Second consecutive failure — daemon confirmed gone
     ]
 
     result = await player.play("dataset1", "move1")
@@ -275,6 +281,74 @@ async def test_daemon_dies_mid_watch_clears_session() -> None:
 
     # wake_up should NOT be called
     proxy.play_wake_up.assert_not_called()
+
+    await player.aclose()
+
+
+@pytest.mark.asyncio
+async def test_transient_poll_blip_during_playing_still_completes() -> None:
+    """Test 9b: one transient None poll mid-playing-phase is tolerated —
+    lifecycle still completes (wake_up called once, session cleared)."""
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy, poll_interval_s=0.01)
+
+    test_uuid = "test-uuid-9b"
+    wake_up_uuid = "wake-up-uuid-9b"
+    proxy.play_recorded_move.return_value = {"uuid": test_uuid}
+    proxy.play_wake_up.return_value = {"uuid": wake_up_uuid}
+
+    proxy.get_running_moves.side_effect = [
+        [],  # Foreign move check
+        [{"uuid": test_uuid}],  # Still running
+        None,  # Transient blip — tolerated
+        [{"uuid": test_uuid}],  # Still running (retry succeeded)
+        [],  # Finished
+        [{"uuid": wake_up_uuid}],  # Wake_up running
+        [],  # Wake_up finished
+    ]
+
+    result = await player.play("dataset1", "move1")
+    assert result["status"] == "playing"
+
+    await asyncio.sleep(0.2)
+
+    proxy.play_wake_up.assert_called_once()
+
+    current = await player.current()
+    assert current["active"] is False
+
+    await player.aclose()
+
+
+@pytest.mark.asyncio
+async def test_wake_up_post_transient_failure_still_returns_home() -> None:
+    """Test 9c: play_wake_up returning None once is retried after one poll
+    interval — return-home still happens, session eventually cleared."""
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy, poll_interval_s=0.01)
+
+    test_uuid = "test-uuid-9c"
+    wake_up_uuid = "wake-up-uuid-9c"
+    proxy.play_recorded_move.return_value = {"uuid": test_uuid}
+    proxy.play_wake_up = AsyncMock(side_effect=[None, {"uuid": wake_up_uuid}])
+
+    proxy.get_running_moves.side_effect = [
+        [],  # Foreign move check
+        [{"uuid": test_uuid}],  # Still running
+        [],  # Finished
+        [{"uuid": wake_up_uuid}],  # Wake_up running
+        [],  # Wake_up finished
+    ]
+
+    result = await player.play("dataset1", "move1")
+    assert result["status"] == "playing"
+
+    await asyncio.sleep(0.2)
+
+    assert proxy.play_wake_up.call_count == 2
+
+    current = await player.current()
+    assert current["active"] is False
 
     await player.aclose()
 
