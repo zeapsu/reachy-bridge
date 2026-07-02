@@ -7,9 +7,10 @@ import json
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
+from reachy_controller.daemon_proxy import DaemonProxy
 from reachy_controller.jetson_stats import collect_jetson_stats
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -18,18 +19,22 @@ _SSE_KEEPALIVE_INTERVAL_SECONDS = 15.0
 _STATS_UPDATE_INTERVAL_SECONDS = 1.5
 
 
-async def _system_stats_stream_generator() -> AsyncGenerator[str, None]:
+async def _system_stats_stream_generator(
+    proxy: DaemonProxy,
+) -> AsyncGenerator[str, None]:
     """Generate Server-Sent Events for system stats updates.
 
-    Emits stats-update events every 1-2 seconds.
+    Emits stats-update events every 1-2 seconds while the daemon is reachable;
+    while it is offline the host read is skipped entirely (keepalives only).
     Emits keep-alive comments every ~15s to prevent proxy timeouts.
     """
     last_event_time = asyncio.get_event_loop().time()
 
     try:
         while True:
-            stats = await asyncio.to_thread(collect_jetson_stats)
-            yield f"event: stats-update\ndata: {json.dumps(stats)}\n\n"
+            if await proxy.get_daemon_status() is not None:
+                stats = await asyncio.to_thread(collect_jetson_stats)
+                yield f"event: stats-update\ndata: {json.dumps(stats)}\n\n"
 
             now = asyncio.get_event_loop().time()
             if now - last_event_time >= _SSE_KEEPALIVE_INTERVAL_SECONDS:
@@ -48,9 +53,10 @@ async def system_stats() -> dict[str, Any]:
 
 
 @router.get("/system/stats-stream")
-async def system_stats_stream() -> StreamingResponse:
+async def system_stats_stream(request: Request) -> StreamingResponse:
     """Stream system stats updates as Server-Sent Events (stats-update, keep-alive)."""
+    proxy: DaemonProxy = request.app.state.daemon_proxy
     return StreamingResponse(
-        _system_stats_stream_generator(),
+        _system_stats_stream_generator(proxy),
         media_type="text/event-stream",
     )

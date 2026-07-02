@@ -162,6 +162,59 @@ class DaemonProxy:
         except (httpx.HTTPError, ValueError):
             return None
 
+    async def play_recorded_move(self, dataset: str, move: str) -> dict[str, Any] | None:
+        """Play a recorded move from the given dataset.
+
+        Unlike _post_json, does NOT swallow HTTPStatusError: callers need the
+        daemon's 404 (unknown move/dataset) to pass through instead of reading
+        as a generic "unavailable". Only transport errors (daemon unreachable)
+        return None.
+        """
+        try:
+            response = await self.request("POST", f"move/play/recorded-move-dataset/{dataset}/{move}")
+            response.raise_for_status()
+            return response.json()
+        except httpx.RequestError:
+            return None
+
+    async def get_running_moves(self) -> list[dict[str, Any]] | None:
+        """Get list of currently running moves."""
+        try:
+            return await self.get_json("move/running")
+        except (httpx.HTTPError, ValueError):
+            return None
+
+    async def stop_move(self, uuid: str) -> None:
+        """Stop a move by UUID. Swallows 500 (move already finished) as success."""
+        try:
+            response = await self.request("POST", "move/stop", content=json.dumps({"uuid": uuid}).encode(), headers={"content-type": "application/json"})
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Treat 500 (KeyError in daemon) as best-effort success
+            if exc.response.status_code != 500:
+                raise
+        except (httpx.HTTPError, ValueError):
+            # Swallow other errors as best-effort success
+            pass
+
+    async def goto_home(self) -> dict[str, Any] | None:
+        """Silently goto the wake_up home pose (no head-roll emote, no wake_up.wav).
+
+        Matches the SDK wake_up() target: identity head pose, the ~10-degree
+        antenna offset it parks at (shake reduction at vertical), body yaw 0.
+        MIN_JERK is the endpoint default; 1.5 s approximates the emote's
+        distance-proportional return for typical expression end poses.
+        """
+        return await self._post_json(
+            "move/goto",
+            {
+                "head_pose": {"x": 0.0, "y": 0.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
+                "antennas": [-0.1745, 0.1745],
+                "body_yaw": 0.0,
+                "duration": 1.5,
+            },
+        )
+
     async def ws_stream_full_state(self) -> AsyncGenerator[dict[str, Any], None]:
         """Stream full robot state from daemon via WebSocket.
 

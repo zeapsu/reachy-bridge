@@ -19,6 +19,9 @@
     controlsLoaded: false,
     controlBusy: false,
     appBusy: false,
+    exprLoaded: false,
+    exprLoading: false,
+    exprBusy: false,
     mode: "schematic",
     robotControlMode: null,
     daemonStatusTimer: null,
@@ -120,20 +123,31 @@
       $("rig-note").hidden = online;
       $("mic-dot").className = `dot ${online ? "ok" : "error"}`;
       $("mic-state").textContent = online ? "listening" : "unavailable";
+      $("stats-dot").className = `dot ${online ? "ok" : "error"}`;
     }
     setControlsEnabled(online && !state.controlBusy);
+    if (online) void loadExpressions();
 
     if (!online) {
       state.controlsLoaded = false;
       $("control-status").textContent = "offline";
       $("control-hint").textContent = "Controls enable when the daemon is online.";
       $("control-hint").className = "panel-hint";
+      // Mirror the controls treatment: the chips dim when offline, and without
+      // this the panel gives no textual cue why (loadExpressions only hides).
+      $("expr-hint").hidden = false;
+      $("expr-hint").textContent = "Expressions enable when the daemon is online.";
+      $("expr-hint").className = "panel-hint";
       renderOfflinePose();
       renderEqualizer(false, "no audio signal");
+      resetStatsIdle();
     } else if (changed || !state.controlsLoaded) {
       $("control-status").textContent = "online";
       $("control-hint").textContent = "";
       $("control-hint").className = "panel-hint";
+      // Re-hide the offline hint on reconnect: loadExpressions early-returns
+      // once exprLoaded, so it won't do it for us.
+      if (state.exprLoaded) $("expr-hint").hidden = true;
       void loadControls();
     }
   }
@@ -154,6 +168,13 @@
     document.querySelectorAll("#motor-seg button").forEach((button) => {
       if (button.disabled !== disabled) button.disabled = disabled;
     });
+    // Expression chips gate on the daemon too — but never fight an in-progress
+    // move (exprBusy disables the whole strip until the POST resolves).
+    if (!state.exprBusy) {
+      document.querySelectorAll(".chip").forEach((chip) => {
+        if (chip.disabled !== disabled) chip.disabled = disabled;
+      });
+    }
   }
 
   function renderOfflinePose() {
@@ -344,7 +365,12 @@
       } else if (isStopping) {
         button = `<button class="btn pending" disabled>Stopping</button>`;
       } else {
-        button = `<button class="btn start" data-app="${name}" data-action="start" ${(active || state.appBusy) ? "disabled" : ""}>Start</button>`;
+        // Offline daemon disables Start (the backend refuses anyway — the app's
+        // ReachyMini() can't connect); Stop stays available for a still-running app.
+        // daemonOnline is part of the rendered markup, so the 1 Hz poll's signature
+        // guard re-renders on the flip without extra wiring.
+        const offline = !state.daemonOnline;
+        button = `<button class="btn start" data-app="${name}" data-action="start" ${(active || state.appBusy || offline) ? "disabled" : ""}${offline ? ' title="Apps start when the daemon is online."' : ""}>Start</button>`;
       }
       const frag = LOADING_FRAGMENTS[loadingTick % LOADING_FRAGMENTS.length];
       const spinnerMarkup = isLoading ? `<span class="spinner-glyph" aria-hidden="true"></span><span class="loading-frag">${escapeHtml(frag)}</span>` : "";
@@ -424,6 +450,162 @@
     }
   }
 
+  // Expression datasets served by the daemon (via the transparent /api proxy).
+  // Each strip's dataset id also lives on its container's data-dataset attribute.
+  const MOVE_DATASETS = [
+    ["expr-emotions", "pollen-robotics/reachy-mini-emotions-library"],
+    ["expr-dances", "pollen-robotics/reachy-mini-dances-library"],
+  ];
+
+  // Populate both filmstrips from the daemon once it is reachable. Idempotent:
+  // guarded by exprLoaded/exprLoading so the ~10 Hz online reconcile is a cheap
+  // early return once the (static) move lists are in.
+  async function loadExpressions() {
+    if (state.exprLoaded || state.exprLoading) return;
+    state.exprLoading = true;
+    try {
+      const groups = await Promise.all(
+        MOVE_DATASETS.map(async ([id, dataset]) => {
+          const data = await apiJson(`/api/move/recorded-move-datasets/list/${dataset}`);
+          const moves = Array.isArray(data) ? data : (data && (data.moves || data.names || data.items)) || [];
+          return { id, moves };
+        }),
+      );
+      const disabled = state.daemonOnline ? "" : "disabled";
+      groups.forEach(({ id, moves }) => {
+        $(id).innerHTML = moves
+          .map((move) => `<button class="chip" type="button" data-move="${escapeHtml(move)}" ${disabled}>${escapeHtml(move)}</button>`)
+          .join("");
+      });
+      state.exprLoaded = true;
+      $("expr-hint").hidden = true;
+
+      // Sync-on-load: check if a move is currently active (multi-tab scenario or
+      // reload mid-playback). If so, enter busy state + polling without a .playing
+      // chip if the move name isn't yet rendered.
+      if (state.daemonOnline) {
+        try {
+          const current = await apiJson("/api/expressions/current");
+          if (current && typeof current === "object" && current.active === true) {
+            // An expression lifecycle is active; enter busy state and start polling.
+            state.exprBusy = true;
+            document.querySelectorAll(".chip").forEach((c) => { c.disabled = true; });
+            // Try to mark the tapped chip if it's in the strips; otherwise skip.
+            const targetChip = document.querySelector(`.chip[data-move="${escapeHtml(current.move)}"]`);
+            if (targetChip && current.phase === "playing") {
+              targetChip.classList.add("playing");
+            }
+            // Show cancel only during phase === "playing"; hide during "returning_home".
+            $("expr-cancel").hidden = current.phase !== "playing";
+            startExpressionPoller();
+          }
+        } catch (_) {
+          // Sync-on-load fetch failed — leave the UI in normal state; the next
+          // live poll (if running) will reconcile.
+        }
+      }
+    } catch (error) {
+      // Leave the strips empty + the hint up; the next online reconcile retries.
+    } finally {
+      state.exprLoading = false;
+    }
+  }
+
+  // Track the polling poller so only one runs at a time. If the user double-clicks
+  // or rapid-retries while a lifecycle is in flight, we must not spawn concurrent
+  // pollers — the guard ensures new requests are rejected (exprBusy stays true) and
+  // the single poller drives the state machine to completion.
+  let exprPoller = null;
+
+  async function playExpression(dataset, move, chip) {
+    if (state.exprBusy) return;
+    state.exprBusy = true;
+    document.querySelectorAll(".chip").forEach((c) => { c.disabled = true; });
+    chip.classList.add("playing");
+    $("expr-cancel").hidden = false;
+    $("expr-hint").hidden = true;
+    $("expr-hint").className = "panel-hint";
+    try {
+      const result = await apiJson(`/api/expressions/play/${dataset}/${encodeURIComponent(move)}`, { method: "POST" });
+      // On 200, the backend returns { status, uuid, dataset, move }; start polling
+      // until the move finishes (active === false on /api/expressions/current).
+      if (result && typeof result === "object") {
+        startExpressionPoller();
+        return;
+      }
+      throw new Error("Invalid response");
+    } catch (error) {
+      // 409 → hint "Robot is busy with another move." (apiJson surfaces this from
+      // the response's detail field). Other errors → propagate as-is.
+      $("expr-hint").hidden = false;
+      $("expr-hint").textContent = error.message || "Move failed";
+      $("expr-hint").className = "panel-hint error";
+      chip.classList.remove("playing");
+      state.exprBusy = false;
+      const disabled = !state.daemonOnline;
+      document.querySelectorAll(".chip").forEach((c) => { c.disabled = disabled; });
+      $("expr-cancel").hidden = true;
+      $("expr-cancel").disabled = false;
+    }
+  }
+
+  function startExpressionPoller() {
+    // Guard: only one poller at a time. If one is already running (e.g. from a
+    // previous lifecycle), do not spawn another — the new playExpression never gets
+    // here because state.exprBusy rejects concurrent requests earlier.
+    if (exprPoller !== null) return;
+
+    exprPoller = setInterval(async () => {
+      try {
+        const current = await apiJson("/api/expressions/current");
+        if (!current || typeof current !== "object") {
+          // Malformed response — treat as inactive to stop polling.
+          stopExpressionPoller(true);
+          return;
+        }
+
+        if (current.active === false) {
+          // Playback finished; stop polling and reconcile the UI.
+          stopExpressionPoller(true);
+          return;
+        }
+
+        // Move is active — update UI based on phase. Default to hiding cancel
+        // unless explicitly playing; unknown phases hide the button but polling
+        // continues (the session clears server-side, which flips active to false).
+        if (current.phase === "playing") {
+          $("expr-cancel").hidden = false;
+        } else {
+          $("expr-cancel").hidden = true;
+        }
+      } catch (_) {
+        // Polling fetch failed (controller restart / network) — treat as inactive:
+        // clear busy state, reconcile chips to daemon-online state, stop polling.
+        // Don't spin forever; a transient network error should not block the UI.
+        stopExpressionPoller(true);
+      }
+    }, 750);
+  }
+
+  function stopExpressionPoller(reconcile) {
+    if (exprPoller !== null) {
+      clearInterval(exprPoller);
+      exprPoller = null;
+    }
+    if (reconcile) {
+      // Polling complete: reconcile the UI to the daemon-online state.
+      state.exprBusy = false;
+      const disabled = !state.daemonOnline;
+      document.querySelectorAll(".chip").forEach((c) => {
+        c.disabled = disabled;
+        c.classList.remove("playing");
+      });
+      $("expr-cancel").hidden = true;
+      $("expr-hint").hidden = true;
+      $("expr-hint").className = "panel-hint";
+    }
+  }
+
   function gauge(element, label, color) {
     const radius = 34;
     const circumference = TAU * radius;
@@ -445,8 +627,10 @@
     };
   }
 
-  const setCpuRaw = gauge($("g-cpu"), "cpu", "var(--cyan)");
-  const setGpuRaw = gauge($("g-gpu"), "gpu", "var(--mint)");
+  // One accent per panel: all three arcs follow the theme accent; the labels
+  // differentiate the metrics (accent-discipline pass, #49).
+  const setCpuRaw = gauge($("g-cpu"), "cpu", "var(--amber)");
+  const setGpuRaw = gauge($("g-gpu"), "gpu", "var(--amber)");
   const setTempRaw = gauge($("g-temp"), "temp", "var(--amber)");
 
   // Change-guard caches for updateStats
@@ -472,8 +656,26 @@
   const setGpu = makeGuardedSetter("gpu", setGpuRaw);
   const setTemp = makeGuardedSetter("temp", setTempRaw);
 
+  // Stats follow the daemon: the backend stops sampling while it is offline;
+  // this blanks the readouts and invalidates the change-guards so the
+  // reconnect repaint isn't suppressed (same lesson as poseCache, #44).
+  function resetStatsIdle() {
+    Object.keys(statsCache).forEach((key) => { statsCache[key] = null; });
+    setCpuRaw(null, "—", "");
+    setGpuRaw(null, "—", "");
+    setTempRaw(null, "—", "");
+    $("v-mem").textContent = "— / — GB";
+    $("bar-mem").style.width = "0";
+    $("v-host").textContent = "unavailable";
+    $("v-card").textContent = "—";
+    $("v-sink").textContent = "—";
+  }
+
   function updateStats(stats) {
     if (!stats || typeof stats !== "object") return;
+    // Drop in-flight updates that race the offline flip; the stream goes
+    // quiet server-side, this just closes the transition window.
+    if (!state.daemonOnline) return;
     const cpu = finite(stats.cpu_percent);
     const gpu = finite(stats.gpu_percent);
     const temperature = finite(stats.cpu_temp_c) ?? finite(stats.gpu_temp_c);
@@ -868,6 +1070,30 @@
     void performAppAction(button.dataset.app, button.dataset.action);
   });
 
+  ["expr-emotions", "expr-dances"].forEach((id) => {
+    $(id).addEventListener("click", (event) => {
+      const chip = event.target.closest("button.chip");
+      if (!chip || chip.disabled || state.exprBusy) return;
+      const strip = chip.closest(".expr-strip");
+      void playExpression(strip.dataset.dataset, chip.dataset.move, chip);
+    });
+  });
+
+  $("expr-cancel").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    // Disable immediately on first click; POST /api/expressions/stop is idempotent
+    // server-side, so accidental double-click is safe. Polling continues until
+    // the move finishes (active === false).
+    button.disabled = true;
+    try {
+      await apiJson("/api/expressions/stop", { method: "POST" });
+    } catch (error) {
+      // Log silently; the next poll will reconcile the true state.
+    } finally {
+      button.disabled = false;
+    }
+  });
+
   bindSliders();
 
   $("motor-seg").addEventListener("click", (event) => {
@@ -1013,6 +1239,71 @@
     }
   });
 
+  // ---- Theme selector (status-bar palette button → top-layer popover) ----
+  // A pure UI preference — works with the daemon offline. The saved theme is
+  // already applied pre-paint by the inline <head> script; here we build the
+  // menu, persist changes, and keep the popover positioned under the button.
+  const THEME_SCHEMES = [
+    { id: "amber", label: "Amber", sw: "#ffc857" },
+    { id: "arctic", label: "Arctic", sw: "#7fe0ff" },
+    { id: "emerald", label: "Emerald", sw: "#3ce3a0" },
+    { id: "ultraviolet", label: "Violet", sw: "#c199ff" },
+    { id: "ember", label: "Ember", sw: "#ff8a5c" },
+  ];
+  const CHECK_SVG =
+    '<svg class="chk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>';
+
+  function setupThemeSelector() {
+    const btn = $("theme-btn");
+    const pop = $("theme-pop");
+    if (!btn || !pop) return;
+    const currentScheme = () => document.documentElement.dataset.scheme || "amber";
+
+    function renderThemeOptions() {
+      const cur = currentScheme();
+      pop.querySelectorAll(".theme-opt").forEach((el) => el.remove());
+      THEME_SCHEMES.forEach((scheme) => {
+        const opt = document.createElement("button");
+        opt.className = "theme-opt";
+        opt.type = "button";
+        opt.setAttribute("role", "menuitemradio");
+        opt.dataset.scheme = scheme.id;
+        opt.setAttribute("aria-checked", String(scheme.id === cur));
+        opt.innerHTML =
+          `<span class="sw" style="background:${scheme.sw}"></span>` +
+          `<span class="nm">${scheme.label}</span>${CHECK_SVG}`;
+        pop.appendChild(opt);
+      });
+    }
+
+    // The popover lives in the top layer (escapes the status bar's
+    // overflow:hidden), so position it under the button ourselves — correct at
+    // any viewport width.
+    function placePopover() {
+      const rect = btn.getBoundingClientRect();
+      pop.style.top = `${rect.bottom + 10}px`;
+      pop.style.right = `${window.innerWidth - rect.right}px`;
+      pop.style.left = "auto";
+    }
+
+    renderThemeOptions();
+
+    pop.addEventListener("click", (event) => {
+      const opt = event.target.closest(".theme-opt");
+      if (!opt) return;
+      const scheme = opt.dataset.scheme;
+      document.documentElement.dataset.scheme = scheme;
+      try { localStorage.setItem("reachy-theme", scheme); } catch (e) {}
+      renderThemeOptions();
+      if (pop.hidePopover) pop.hidePopover();
+    });
+
+    btn.addEventListener("click", () => requestAnimationFrame(placePopover));
+    window.addEventListener("resize", () => {
+      if (pop.matches && pop.matches(":popover-open")) placePopover();
+    });
+  }
+
   function startLiveConnections() {
     if (state.live.active) return;
     state.live.active = true;
@@ -1063,6 +1354,7 @@
   }
 
   // Poll daemon status on the same cadence as the daemon connectivity check
+  setupThemeSelector();
   renderApps();
   renderEqualizer(false, "no audio signal");
   setDaemonOnline(false);
