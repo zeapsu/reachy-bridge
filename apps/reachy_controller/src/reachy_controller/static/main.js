@@ -618,7 +618,14 @@
         c.classList.remove("playing");
       });
       $("expr-cancel").hidden = true;
-      $("expr-hint").hidden = true;
+      // Reconcile the hint too: an app may have gone active mid-move (external
+      // launch) — dimmed chips need the "why" restored, not a blank hint (#66).
+      if (state.appActive) {
+        $("expr-hint").hidden = false;
+        $("expr-hint").textContent = "Expressions pause while an app is running.";
+      } else {
+        $("expr-hint").hidden = true;
+      }
       $("expr-hint").className = "panel-hint";
     }
   }
