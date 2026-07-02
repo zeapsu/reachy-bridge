@@ -191,6 +191,26 @@ class ExpressionPlayer:
             if not any(m["uuid"] == target_uuid for m in running):
                 return True
 
+    async def _goto_home_and_clear(self) -> None:
+        """Second half of every lifecycle: goto home (one retry), poll the
+        goto uuid out, clear the session."""
+        home_result = await self.daemon_proxy.goto_home()
+        if home_result is None:
+            # A single transient failure must not cost the return-home;
+            # retry once before giving up.
+            await asyncio.sleep(self.POLL_INTERVAL_S)
+            home_result = await self.daemon_proxy.goto_home()
+            if home_result is None:
+                self._session = None
+                return
+
+        # Poll until the goto-home uuid is absent
+        if not await self._poll_until_absent(home_result["uuid"]):
+            self._session = None
+            return
+
+        self._session = None
+
     async def _watch(self) -> None:
         """Poll daemon until our uuid is absent, then trigger return-home.
 
@@ -218,25 +238,7 @@ class ExpressionPlayer:
             else:
                 return
 
-            home_result = await self.daemon_proxy.goto_home()
-            if home_result is None:
-                # A single transient failure must not cost the return-home;
-                # retry once before giving up.
-                await asyncio.sleep(self.POLL_INTERVAL_S)
-                home_result = await self.daemon_proxy.goto_home()
-                if home_result is None:
-                    self._session = None
-                    return
-
-            home_uuid = home_result["uuid"]
-
-            # Poll until the goto-home uuid is absent
-            if not await self._poll_until_absent(home_uuid):
-                self._session = None
-                return
-
-            # Clear session
-            self._session = None
+            await self._goto_home_and_clear()
 
         except asyncio.CancelledError:
             # Task cancelled, clean up
