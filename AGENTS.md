@@ -58,6 +58,14 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
 - `reachy_controller` — FastAPI + **vanilla-JS, no build step** "Liquid Glass" web control console
   (binds `127.0.0.1:7861`). Talks to the daemon over HTTP/WS and **never** instantiates `ReachyMini()`.
   Don't add a framework/bundler. Visual QA is done on a browser-capable machine (see Dev workflow).
+  Ships 5 colour schemes with a statusbar theme selector (persists to localStorage) and an
+  **expressions card** playing daemon recorded moves. One-at-a-time playback is enforced in the
+  **controller backend** (`/api/expressions/{play,stop,current}`: 409 while any move runs, cancel,
+  silent ~1.5 s goto-home return on finish/cancel) — the daemon does NOT serialize `play_move`
+  itself (its RLock guard is a same-thread no-op; overlapping plays interleave `set_target` loops
+  → violent motion, #64). Daemon-fed UI (controls, expressions, audio, app **Start**, jetson stats)
+  disables while the daemon is offline — the stats stream samples host telemetry only while the
+  daemon is on — while controller-fed chrome (apps list, **Stop**, power button) stays live.
   A **daemon power button** in the viewport inset (`#vp-power`) starts/stops the **daemon process**
   (`DaemonSupervisor` + `/api/daemon/{status,start,stop}`) so you never have to SSH in to start it —
   it manages a *process*, still never the robot. Gated by `REACHY_MANAGE_DAEMON=1` (**on-device only**;
