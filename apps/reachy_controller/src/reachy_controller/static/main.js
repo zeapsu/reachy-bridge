@@ -528,6 +528,8 @@
       state.exprBusy = false;
       const disabled = !state.daemonOnline;
       document.querySelectorAll(".chip").forEach((c) => { c.disabled = disabled; });
+      $("expr-cancel").hidden = true;
+      $("expr-cancel").disabled = false;
     }
   }
 
@@ -552,13 +554,12 @@
           return;
         }
 
-        // Move is active — update UI based on phase.
-        if (current.phase === "returning_home") {
-          // Hide cancel during return-home, keep chips disabled.
-          $("expr-cancel").hidden = true;
-        } else if (current.phase === "playing") {
-          // Keep cancel visible during playback.
+        // Move is active — update UI based on phase. Default to hiding cancel
+        // unless explicitly playing; unknown phases hide the button and stop polling.
+        if (current.phase === "playing") {
           $("expr-cancel").hidden = false;
+        } else {
+          $("expr-cancel").hidden = true;
         }
       } catch (_) {
         // Polling fetch failed (controller restart / network) — treat as inactive:
