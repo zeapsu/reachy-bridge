@@ -656,10 +656,9 @@
   const setGpu = makeGuardedSetter("gpu", setGpuRaw);
   const setTemp = makeGuardedSetter("temp", setTempRaw);
 
-  // Reachy off = stats off (owner call): the jetson card reports host telemetry
-  // during robot operation, not general host monitoring. The backend stops
-  // sampling too; this blanks the readouts and invalidates the change-guards
-  // so the reconnect repaint isn't suppressed (same lesson as poseCache, #44).
+  // Stats follow the daemon: the backend stops sampling while it is offline;
+  // this blanks the readouts and invalidates the change-guards so the
+  // reconnect repaint isn't suppressed (same lesson as poseCache, #44).
   function resetStatsIdle() {
     Object.keys(statsCache).forEach((key) => { statsCache[key] = null; });
     setCpuRaw(null, "—", "");

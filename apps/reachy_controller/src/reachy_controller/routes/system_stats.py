@@ -24,10 +24,8 @@ async def _system_stats_stream_generator(
 ) -> AsyncGenerator[str, None]:
     """Generate Server-Sent Events for system stats updates.
 
-    Emits stats-update events every 1-2 seconds — but only while the daemon is
-    reachable. The stats element reports host telemetry during robot operation;
-    with Reachy off it must not turn into a general-purpose system monitor, so
-    the host read is skipped entirely (not just unsent).
+    Emits stats-update events every 1-2 seconds while the daemon is reachable;
+    while it is offline the host read is skipped entirely (keepalives only).
     Emits keep-alive comments every ~15s to prevent proxy timeouts.
     """
     last_event_time = asyncio.get_event_loop().time()
