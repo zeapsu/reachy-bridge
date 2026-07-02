@@ -1139,10 +1139,11 @@ input:disabled,
 .panel-hint.error { color: var(--coral); }
 .panel-hint.ok { color: var(--mint); }
 
-/* The apps status line ("… is running.") sits directly below the app cards with
-   no header above it, so the hint's default negative top margin cramps it
-   against the last card. Give it real breathing room in that one spot. */
-.apps + .panel-hint { margin-top: 11px; }
+/* The apps status line ("… is running.") and the expressions hint sit directly
+   below cards/chip-strips with no header above them, so the hint's default
+   negative top margin cramps them against the content. Give them breathing room. */
+.apps + .panel-hint,
+.expr-group + .panel-hint { margin-top: 11px; }
 
 .control { margin-bottom: 16px; }
 .control:last-child { margin-bottom: 0; }

@@ -480,7 +480,7 @@
     chip.classList.add("playing");
     $("expr-hint").hidden = true;
     try {
-      const result = await apiJson(`/api/move/recorded-move-dataset/${dataset}/${encodeURIComponent(move)}`, { method: "POST" });
+      const result = await apiJson(`/api/move/play/recorded-move-dataset/${dataset}/${encodeURIComponent(move)}`, { method: "POST" });
       if (result && result.error) throw new Error(result.error);
     } catch (error) {
       $("expr-hint").hidden = false;
