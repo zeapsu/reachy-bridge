@@ -123,6 +123,7 @@
       $("rig-note").hidden = online;
       $("mic-dot").className = `dot ${online ? "ok" : "error"}`;
       $("mic-state").textContent = online ? "listening" : "unavailable";
+      $("stats-dot").className = `dot ${online ? "ok" : "error"}`;
     }
     setControlsEnabled(online && !state.controlBusy);
     if (online) void loadExpressions();
@@ -139,6 +140,7 @@
       $("expr-hint").className = "panel-hint";
       renderOfflinePose();
       renderEqualizer(false, "no audio signal");
+      resetStatsIdle();
     } else if (changed || !state.controlsLoaded) {
       $("control-status").textContent = "online";
       $("control-hint").textContent = "";
@@ -654,8 +656,27 @@
   const setGpu = makeGuardedSetter("gpu", setGpuRaw);
   const setTemp = makeGuardedSetter("temp", setTempRaw);
 
+  // Reachy off = stats off (owner call): the jetson card reports host telemetry
+  // during robot operation, not general host monitoring. The backend stops
+  // sampling too; this blanks the readouts and invalidates the change-guards
+  // so the reconnect repaint isn't suppressed (same lesson as poseCache, #44).
+  function resetStatsIdle() {
+    Object.keys(statsCache).forEach((key) => { statsCache[key] = null; });
+    setCpuRaw(null, "—", "");
+    setGpuRaw(null, "—", "");
+    setTempRaw(null, "—", "");
+    $("v-mem").textContent = "— / — GB";
+    $("bar-mem").style.width = "0";
+    $("v-host").textContent = "unavailable";
+    $("v-card").textContent = "—";
+    $("v-sink").textContent = "—";
+  }
+
   function updateStats(stats) {
     if (!stats || typeof stats !== "object") return;
+    // Drop in-flight updates that race the offline flip; the stream goes
+    // quiet server-side, this just closes the transition window.
+    if (!state.daemonOnline) return;
     const cpu = finite(stats.cpu_percent);
     const gpu = finite(stats.gpu_percent);
     const temperature = finite(stats.cpu_temp_c) ?? finite(stats.gpu_temp_c);
