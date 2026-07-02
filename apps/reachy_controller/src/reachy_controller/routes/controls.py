@@ -72,7 +72,16 @@ async def set_motor_mode(mode: str, request: Request) -> dict[str, Any]:
     if mode not in VALID_MOTOR_MODES:
         raise HTTPException(status_code=400, detail="Invalid motor mode")
     proxy: DaemonProxy = request.app.state.daemon_proxy
-    return _result_or_unavailable(await proxy.set_motor_mode(mode))
+    result = _result_or_unavailable(await proxy.set_motor_mode(mode))
+    # #67: any torque change invalidates the trusted pose (a limp head droops).
+    # Enabling kicks the graceful return-home session; expressions refuse until
+    # a goto-home verifiably completes. If a session is already active,
+    # return_home() no-ops and that session's own goto-home clears the flag.
+    player = request.app.state.expression_player
+    player.needs_home = True
+    if mode == "enabled":
+        await player.return_home()
+    return result
 
 
 @router.post("/media/wobbling/enable")

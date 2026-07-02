@@ -130,3 +130,80 @@ async def test_app_start_allowed_when_expression_idle() -> None:
                 response = await client.post("/api/apps/start/reachy_dance")
             assert response.json()["status"] == "loading"
             start.assert_awaited_once_with("reachy_dance")
+
+
+@pytest.mark.asyncio
+async def test_motor_enable_route_kicks_return_home() -> None:
+    goto_posts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/motors/set_mode/enabled":
+            return httpx.Response(200, json={"mode": "enabled"})
+        if path == "/api/move/goto":
+            goto_posts.append(path)
+            return httpx.Response(200, json={"uuid": "home-uuid"})
+        if path == "/api/move/running":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    app = _make_app(handler)
+    async with app.router.lifespan_context(app):
+        app.state.expression_player.POLL_INTERVAL_S = 0.01
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/motors/set_mode/enabled")
+            assert response.status_code == 200
+            assert response.json() == {"mode": "enabled"}  # proxy body unmodified
+
+            # Session is live synchronously with the route return.
+            current = await client.get("/api/expressions/current")
+            assert current.json()["active"] is True
+            assert current.json()["phase"] == "returning_home"
+
+            await app.state.expression_player._watcher
+            assert goto_posts  # daemon saw POST /api/move/goto
+
+
+@pytest.mark.asyncio
+async def test_motor_disable_route_sets_needs_home() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/motors/set_mode/disabled":
+            return httpx.Response(200, json={"mode": "disabled"})
+        if request.url.path == "/api/move/running":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    app = _make_app(handler)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/api/motors/set_mode/disabled")
+            response = await client.post("/api/expressions/play/dataset1/move1")
+            assert response.status_code == 409
+            assert "enabled" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_play_blocked_during_post_enable_return_home() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/motors/set_mode/enabled":
+            return httpx.Response(200, json={"mode": "enabled"})
+        if path == "/api/move/goto":
+            return httpx.Response(200, json={"uuid": "home-uuid"})
+        if path == "/api/move/running":
+            return httpx.Response(200, json=[{"uuid": "home-uuid"}])  # goto held running
+        return httpx.Response(404)
+
+    app = _make_app(handler)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/api/motors/set_mode/enabled")
+            response = await client.post("/api/expressions/play/dataset1/move1")
+            assert response.status_code == 409
+    # lifespan aclose() cancels the still-polling watcher — no leak
