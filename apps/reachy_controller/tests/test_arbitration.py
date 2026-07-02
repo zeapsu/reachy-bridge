@@ -188,14 +188,21 @@ async def test_motor_disable_route_sets_needs_home() -> None:
 
 @pytest.mark.asyncio
 async def test_play_blocked_during_post_enable_return_home() -> None:
+    goto_posted = False
+
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal goto_posted
         path = request.url.path
         if path == "/api/motors/set_mode/enabled":
             return httpx.Response(200, json={"mode": "enabled"})
         if path == "/api/move/goto":
+            goto_posted = True
             return httpx.Response(200, json={"uuid": "home-uuid"})
         if path == "/api/move/running":
-            return httpx.Response(200, json=[{"uuid": "home-uuid"}])  # goto held running
+            # Only report the goto in flight once it was actually dispatched —
+            # otherwise the play()'s foreign-move check would 409 on its own and
+            # this test could pass with the enable→return_home wiring deleted.
+            return httpx.Response(200, json=[{"uuid": "home-uuid"}] if goto_posted else [])
         return httpx.Response(404)
 
     app = _make_app(handler)
@@ -206,4 +213,7 @@ async def test_play_blocked_during_post_enable_return_home() -> None:
             await client.post("/api/motors/set_mode/enabled")
             response = await client.post("/api/expressions/play/dataset1/move1")
             assert response.status_code == 409
+            # Session-busy detail — distinguishes the live return-home session
+            # from the needs_home refusal ("Robot pose is not homed — ...").
+            assert response.json()["detail"] == "Robot is busy with another move."
     # lifespan aclose() cancels the still-polling watcher — no leak
