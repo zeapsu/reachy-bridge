@@ -515,8 +515,10 @@
     };
   }
 
-  const setCpuRaw = gauge($("g-cpu"), "cpu", "var(--cyan)");
-  const setGpuRaw = gauge($("g-gpu"), "gpu", "var(--mint)");
+  // One accent per panel: all three arcs follow the theme accent; the labels
+  // differentiate the metrics (accent-discipline pass, #49).
+  const setCpuRaw = gauge($("g-cpu"), "cpu", "var(--amber)");
+  const setGpuRaw = gauge($("g-gpu"), "gpu", "var(--amber)");
   const setTempRaw = gauge($("g-temp"), "temp", "var(--amber)");
 
   // Change-guard caches for updateStats

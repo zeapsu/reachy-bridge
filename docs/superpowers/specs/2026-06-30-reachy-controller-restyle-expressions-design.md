@@ -113,3 +113,43 @@ first-class; (3) the "near-black + one acid accent" AI cliché → every accent 
   change; the proxy already forwards the move routes).
 - **Real actuation (#48):** owner light HW pass on the Jetson — tapping a chip actuates the real
   robot, so one move at a time, coordinated. Ships as the functional-verification part of the PR.
+
+---
+
+## Addendum (2026-07-01) — the shipped #49 direction: "Vivarium"
+
+The three remix mockups above (+ a hyperreal-glass synthesis) were **rejected** — "worse than the
+original; the original Liquid Glass is the bar." The direction that shipped instead was designed
+anchored to the shipped UI (rendered first, then changed as deltas — see memory
+`design-anchor-to-shipped-ui`): **same layout, same material family; restructured depth, hierarchy
+and character.** Review artifact: `apps/reachy_controller/mockups/mockup-vivarium.html`
+(self-contained: real stylesheet inlined + the delta layer that became the port diff).
+
+The concept: the console is a **glass vivarium** — one hero pane you look *through* at the living
+creature (the stage), quiet instrument glass you look *at* (everything else).
+
+1. **Glass altitudes** — only the viewport keeps the full hyperreal material + sheen;
+   `.glass.instrument` (statusbar + 5 panels) recedes: flatter fill, thinner edge, no sheen,
+   lighter frost. Atmosphere gains a static vignette + grain.
+2. **The creature got the craft** — schematic redrawn (lens-ring eyes, the larger right eye is the
+   camera; torso; floor glow) with idle breathing on a wrapper `<g class="breath">` so CSS never
+   fights the transform attributes main.js writes (pivots preserved: head 160,104 · body 160,152 ·
+   antennas 132,70/188,70). **Sleep state** (eyes close, breath slows) rides the existing
+   `#rig.offline` class; the **listening glow** on the DOA arc rides `#rig.speaking`. Zero JS for
+   the states.
+3. **Accent discipline** — cyan belongs to the creature only; one theme accent carries everything
+   interactive (gauges unified, sliders, EQ, memory bar, spinner, focus rings); mint/coral stay
+   semantic. Also finished #49's tokenisation: previously-hardcoded amber rgba tints
+   (`.app-card.running`, `.dot.live` glow, switch-checked, hover glows) now derive from the accent
+   via `color-mix`, so every scheme recolours them.
+4. **DOA leads the HUD** at display size (the signature readout: where the robot is listening).
+5. **Expressions as a performance deck** — larger chips, edge-fade scroll masks, pulsing cue dot on
+   the playing chip. No emoji.
+6. **Status pills join into one `.pillbar` strip**; right column reordered apps → expressions →
+   controls.
+7. **Motion** — creature breath + one-time panel entrance + press feedback; all disabled under
+   `prefers-reduced-motion`; breath also disabled on touch. The `(hover:none)`/
+   `prefers-reduced-transparency` blocks repeat `.glass.instrument` so the higher-specificity
+   instrument rule cannot re-enable backdrop blur on phones (#43 guard preserved).
+
+main.js changes: only the three gauge arc colour literals (→ `var(--amber)`).
