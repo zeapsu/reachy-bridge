@@ -132,12 +132,20 @@
       $("control-status").textContent = "offline";
       $("control-hint").textContent = "Controls enable when the daemon is online.";
       $("control-hint").className = "panel-hint";
+      // Mirror the controls treatment: the chips dim when offline, and without
+      // this the panel gives no textual cue why (loadExpressions only hides).
+      $("expr-hint").hidden = false;
+      $("expr-hint").textContent = "Expressions enable when the daemon is online.";
+      $("expr-hint").className = "panel-hint";
       renderOfflinePose();
       renderEqualizer(false, "no audio signal");
     } else if (changed || !state.controlsLoaded) {
       $("control-status").textContent = "online";
       $("control-hint").textContent = "";
       $("control-hint").className = "panel-hint";
+      // Re-hide the offline hint on reconnect: loadExpressions early-returns
+      // once exprLoaded, so it won't do it for us.
+      if (state.exprLoaded) $("expr-hint").hidden = true;
       void loadControls();
     }
   }
