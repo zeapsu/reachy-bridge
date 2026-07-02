@@ -22,6 +22,7 @@
     exprLoaded: false,
     exprLoading: false,
     exprBusy: false,
+    appActive: false,
     mode: "schematic",
     robotControlMode: null,
     daemonStatusTimer: null,
@@ -169,10 +170,12 @@
       if (button.disabled !== disabled) button.disabled = disabled;
     });
     // Expression chips gate on the daemon too — but never fight an in-progress
-    // move (exprBusy disables the whole strip until the POST resolves).
+    // move (exprBusy disables the whole strip until the POST resolves). They
+    // also pause while an app owns the robot (#66).
     if (!state.exprBusy) {
+      const chipDisabled = disabled || state.appActive;
       document.querySelectorAll(".chip").forEach((chip) => {
-        if (chip.disabled !== disabled) chip.disabled = disabled;
+        if (chip.disabled !== chipDisabled) chip.disabled = chipDisabled;
       });
     }
   }
@@ -346,6 +349,20 @@
 
   function renderApps(statuses = Array.from(appState.values())) {
     const active = statuses.find((app) => app.status === "running" || app.status === "loading" || app.status === "stopping") || null;
+    // Expressions pause while an app owns the robot (#66). setControlsEnabled
+    // reconciles chip disabled-ness at ~10 Hz off this flag; the hint is only
+    // touched on the flip.
+    const appActive = Boolean(active);
+    if (appActive !== state.appActive) {
+      state.appActive = appActive;
+      if (!state.exprBusy) {
+        $("expr-hint").hidden = !appActive;
+        if (appActive) {
+          $("expr-hint").textContent = "Expressions pause while an app is running.";
+          $("expr-hint").className = "panel-hint";
+        }
+      }
+    }
     const html = APP_NAMES.map((name) => {
       const app = statuses.find((item) => item.name === name) || { name, status: "stopped" };
       const isRunning = app.status === "running";
@@ -370,7 +387,7 @@
         // daemonOnline is part of the rendered markup, so the 1 Hz poll's signature
         // guard re-renders on the flip without extra wiring.
         const offline = !state.daemonOnline;
-        button = `<button class="btn start" data-app="${name}" data-action="start" ${(active || state.appBusy || offline) ? "disabled" : ""}${offline ? ' title="Apps start when the daemon is online."' : ""}>Start</button>`;
+        button = `<button class="btn start" data-app="${name}" data-action="start" ${(active || state.appBusy || offline || state.exprBusy) ? "disabled" : ""}${offline ? ' title="Apps start when the daemon is online."' : state.exprBusy ? ' title="Apps start when the robot finishes its expression."' : ""}>Start</button>`;
       }
       const frag = LOADING_FRAGMENTS[loadingTick % LOADING_FRAGMENTS.length];
       const spinnerMarkup = isLoading ? `<span class="spinner-glyph" aria-hidden="true"></span><span class="loading-frag">${escapeHtml(frag)}</span>` : "";
@@ -471,7 +488,7 @@
           return { id, moves };
         }),
       );
-      const disabled = state.daemonOnline ? "" : "disabled";
+      const disabled = state.daemonOnline && !state.appActive ? "" : "disabled";
       groups.forEach(({ id, moves }) => {
         $(id).innerHTML = moves
           .map((move) => `<button class="chip" type="button" data-move="${escapeHtml(move)}" ${disabled}>${escapeHtml(move)}</button>`)
@@ -542,7 +559,7 @@
       $("expr-hint").className = "panel-hint error";
       chip.classList.remove("playing");
       state.exprBusy = false;
-      const disabled = !state.daemonOnline;
+      const disabled = !state.daemonOnline || state.appActive;
       document.querySelectorAll(".chip").forEach((c) => { c.disabled = disabled; });
       $("expr-cancel").hidden = true;
       $("expr-cancel").disabled = false;
@@ -595,7 +612,7 @@
     if (reconcile) {
       // Polling complete: reconcile the UI to the daemon-online state.
       state.exprBusy = false;
-      const disabled = !state.daemonOnline;
+      const disabled = !state.daemonOnline || state.appActive;
       document.querySelectorAll(".chip").forEach((c) => {
         c.disabled = disabled;
         c.classList.remove("playing");
