@@ -464,6 +464,31 @@
       });
       state.exprLoaded = true;
       $("expr-hint").hidden = true;
+
+      // Sync-on-load: check if a move is currently active (multi-tab scenario or
+      // reload mid-playback). If so, enter busy state + polling without a .playing
+      // chip if the move name isn't yet rendered.
+      if (state.daemonOnline) {
+        try {
+          const current = await apiJson("/api/expressions/current");
+          if (current && typeof current === "object" && current.active === true) {
+            // An expression lifecycle is active; enter busy state and start polling.
+            state.exprBusy = true;
+            document.querySelectorAll(".chip").forEach((c) => { c.disabled = true; });
+            // Try to mark the tapped chip if it's in the strips; otherwise skip.
+            const targetChip = document.querySelector(`.chip[data-move="${escapeHtml(current.move)}"]`);
+            if (targetChip && current.phase === "playing") {
+              targetChip.classList.add("playing");
+            }
+            // Show cancel only during phase === "playing"; hide during "returning_home".
+            $("expr-cancel").hidden = current.phase !== "playing";
+            startExpressionPoller();
+          }
+        } catch (_) {
+          // Sync-on-load fetch failed — leave the UI in normal state; the next
+          // live poll (if running) will reconcile.
+        }
+      }
     } catch (error) {
       // Leave the strips empty + the hint up; the next online reconcile retries.
     } finally {
@@ -471,26 +496,94 @@
     }
   }
 
-  // Play one move at a time: lock the whole strip, mark the tapped chip, POST via
-  // the proxy (dataset carries a '/', so it stays raw in the path; only the move
-  // name is encoded), then reconcile the disabled state to the live daemon status.
+  // Track the polling poller so only one runs at a time. If the user double-clicks
+  // or rapid-retries while a lifecycle is in flight, we must not spawn concurrent
+  // pollers — the guard ensures new requests are rejected (exprBusy stays true) and
+  // the single poller drives the state machine to completion.
+  let exprPoller = null;
+
   async function playExpression(dataset, move, chip) {
+    if (state.exprBusy) return;
     state.exprBusy = true;
     document.querySelectorAll(".chip").forEach((c) => { c.disabled = true; });
     chip.classList.add("playing");
+    $("expr-cancel").hidden = false;
     $("expr-hint").hidden = true;
     try {
-      const result = await apiJson(`/api/move/play/recorded-move-dataset/${dataset}/${encodeURIComponent(move)}`, { method: "POST" });
-      if (result && result.error) throw new Error(result.error);
+      const result = await apiJson(`/api/expressions/play/${dataset}/${encodeURIComponent(move)}`, { method: "POST" });
+      // On 200, the backend returns { status, uuid, dataset, move }; start polling
+      // until the move finishes (active === false on /api/expressions/current).
+      if (result && typeof result === "object") {
+        startExpressionPoller();
+        return;
+      }
+      throw new Error("Invalid response");
     } catch (error) {
+      // 409 → hint "Robot is busy with another move." (apiJson surfaces this from
+      // the response's detail field). Other errors → propagate as-is.
       $("expr-hint").hidden = false;
       $("expr-hint").textContent = error.message || "Move failed";
       $("expr-hint").className = "panel-hint error";
-    } finally {
       chip.classList.remove("playing");
       state.exprBusy = false;
       const disabled = !state.daemonOnline;
       document.querySelectorAll(".chip").forEach((c) => { c.disabled = disabled; });
+    }
+  }
+
+  function startExpressionPoller() {
+    // Guard: only one poller at a time. If one is already running (e.g. from a
+    // previous lifecycle), do not spawn another — the new playExpression never gets
+    // here because state.exprBusy rejects concurrent requests earlier.
+    if (exprPoller !== null) return;
+
+    exprPoller = setInterval(async () => {
+      try {
+        const current = await apiJson("/api/expressions/current");
+        if (!current || typeof current !== "object") {
+          // Malformed response — treat as inactive to stop polling.
+          stopExpressionPoller(true);
+          return;
+        }
+
+        if (current.active === false) {
+          // Playback finished; stop polling and reconcile the UI.
+          stopExpressionPoller(true);
+          return;
+        }
+
+        // Move is active — update UI based on phase.
+        if (current.phase === "returning_home") {
+          // Hide cancel during return-home, keep chips disabled.
+          $("expr-cancel").hidden = true;
+        } else if (current.phase === "playing") {
+          // Keep cancel visible during playback.
+          $("expr-cancel").hidden = false;
+        }
+      } catch (_) {
+        // Polling fetch failed (controller restart / network) — treat as inactive:
+        // clear busy state, reconcile chips to daemon-online state, stop polling.
+        // Don't spin forever; a transient network error should not block the UI.
+        stopExpressionPoller(true);
+      }
+    }, 750);
+  }
+
+  function stopExpressionPoller(reconcile) {
+    if (exprPoller !== null) {
+      clearInterval(exprPoller);
+      exprPoller = null;
+    }
+    if (reconcile) {
+      // Polling complete: reconcile the UI to the daemon-online state.
+      state.exprBusy = false;
+      const disabled = !state.daemonOnline;
+      document.querySelectorAll(".chip").forEach((c) => {
+        c.disabled = disabled;
+        c.classList.remove("playing");
+      });
+      $("expr-cancel").hidden = true;
+      $("expr-hint").hidden = true;
     }
   }
 
@@ -947,6 +1040,21 @@
       const strip = chip.closest(".expr-strip");
       void playExpression(strip.dataset.dataset, chip.dataset.move, chip);
     });
+  });
+
+  $("expr-cancel").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    // Disable immediately on first click; POST /api/expressions/stop is idempotent
+    // server-side, so accidental double-click is safe. Polling continues until
+    // the move finishes (active === false).
+    button.disabled = true;
+    try {
+      await apiJson("/api/expressions/stop", { method: "POST" });
+    } catch (error) {
+      // Log silently; the next poll will reconcile the true state.
+    } finally {
+      button.disabled = false;
+    }
   });
 
   bindSliders();
