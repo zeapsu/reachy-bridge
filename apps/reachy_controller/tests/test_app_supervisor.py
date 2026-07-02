@@ -296,6 +296,25 @@ async def test_daemon_lock_check(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_refused_when_daemon_unreachable(tmp_path: Path) -> None:
+    """Start is refused (not spawned into a guaranteed error) when the daemon is offline."""
+    mock_proxy = AsyncMock()
+    mock_proxy.get_robot_app_lock_status = AsyncMock(return_value=None)
+    supervisor = AppSupervisor(daemon_proxy=mock_proxy)
+    supervisor._workspace_root = tmp_path
+
+    mock_process = MagicMock()
+    mock_process.pid = 12345
+
+    with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
+        result = await supervisor.start_app("reachy_chat")
+
+    assert result["status"] == "refused"
+    assert "daemon is offline" in result.get("error", "")
+    mock_process.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_all_status() -> None:
     """Test getting status for all apps."""
     supervisor = AppSupervisor()

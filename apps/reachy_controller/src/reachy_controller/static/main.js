@@ -363,7 +363,12 @@
       } else if (isStopping) {
         button = `<button class="btn pending" disabled>Stopping</button>`;
       } else {
-        button = `<button class="btn start" data-app="${name}" data-action="start" ${(active || state.appBusy) ? "disabled" : ""}>Start</button>`;
+        // Offline daemon disables Start (the backend refuses anyway — the app's
+        // ReachyMini() can't connect); Stop stays available for a still-running app.
+        // daemonOnline is part of the rendered markup, so the 1 Hz poll's signature
+        // guard re-renders on the flip without extra wiring.
+        const offline = !state.daemonOnline;
+        button = `<button class="btn start" data-app="${name}" data-action="start" ${(active || state.appBusy || offline) ? "disabled" : ""}${offline ? ' title="Apps start when the daemon is online."' : ""}>Start</button>`;
       }
       const frag = LOADING_FRAGMENTS[loadingTick % LOADING_FRAGMENTS.length];
       const spinnerMarkup = isLoading ? `<span class="spinner-glyph" aria-hidden="true"></span><span class="loading-frag">${escapeHtml(frag)}</span>` : "";

@@ -214,10 +214,18 @@ class AppSupervisor:
                     "status": "refused",
                 }
 
-            # Check daemon lock status (if proxy available)
+            # Check daemon lock status (if proxy available). An unreachable
+            # daemon (None) is a refusal too: the app's ReachyMini() cannot
+            # connect, so spawning it just manufactures an error card.
             if self.daemon_proxy is not None:
                 lock_status = await self.daemon_proxy.get_robot_app_lock_status()
-                if lock_status is not None and lock_status.get("state") != "free":
+                if lock_status is None:
+                    return {
+                        "error": "Reachy daemon is offline — start it first.",
+                        "name": name,
+                        "status": "refused",
+                    }
+                if lock_status.get("state") != "free":
                     return {
                         "error": f"Robot held by {lock_status.get('state')}: {lock_status.get('holder_name')}",
                         "name": name,
