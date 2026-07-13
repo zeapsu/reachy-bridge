@@ -142,6 +142,10 @@ class AppSupervisor:
                 return app.name
         return None
 
+    def any_app_active(self) -> bool:
+        """True when any managed app is running or loading (robot actuating)."""
+        return any(a.status in ("running", "loading") for a in self._apps.values())
+
     @staticmethod
     def _cmdline_matches_module(cmdline: list[str], module: str) -> bool:
         """True when ``cmdline`` is a direct ``<python> -m <module>.main`` launch.
@@ -206,8 +210,7 @@ class AppSupervisor:
                 }
 
             # Refuse if any app is already running or loading
-            any_running = any(a.status in ("running", "loading") for a in self._apps.values())
-            if any_running:
+            if self.any_app_active():
                 return {
                     "error": "Another app is already running",
                     "name": name,

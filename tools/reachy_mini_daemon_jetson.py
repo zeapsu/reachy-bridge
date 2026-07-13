@@ -266,12 +266,36 @@ def _set_reachy_audio_output_volume() -> None:
         logger.warning("Error setting Reachy Audio volume: %s", e)
 
 
+def _ensure_reachymini_asoundrc() -> None:
+    """Provision ~/.asoundrc so audio bypasses PipeWire's flaky USB-audio
+    profile picker (PipeWire sometimes only exposes a Sink for the "Reachy
+    Mini Audio" card, silently starving mic capture — #65). Upstream only
+    does this for --wireless-version; Lite hardware needs it here too.
+    """
+    if not _is_jetson():
+        return
+    try:
+        from reachy_mini.media.audio_utils import (
+            check_reachymini_asoundrc,
+            write_asoundrc_to_home,
+        )
+
+        if check_reachymini_asoundrc():
+            logger.info("~/.asoundrc already correctly configured for Reachy Mini Audio.")
+            return
+        write_asoundrc_to_home()
+        logger.info("Wrote ~/.asoundrc for Reachy Mini Audio (ALSA-direct, bypassing PipeWire).")
+    except Exception as e:
+        logger.warning("Could not provision ~/.asoundrc for Reachy Mini Audio: %s", e)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO)
     _apply_nvidia_unixfd_patch()
     _apply_webrtcsink_compat_patch()
     _apply_camera_ipc_patch()
     _set_reachy_audio_output_volume()
+    _ensure_reachymini_asoundrc()
     from reachy_mini.daemon.app.main import main as daemon_main
 
     return daemon_main()

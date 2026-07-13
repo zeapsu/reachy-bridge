@@ -477,3 +477,149 @@ async def test_stop_while_returning_home_is_noop() -> None:
     proxy.stop_move.assert_not_called()
 
     await player.aclose()
+
+
+@pytest.mark.asyncio
+async def test_return_home_creates_returning_home_session() -> None:
+    """return_home() runs a session with no play half: goto fires, session
+    clears when the goto uuid drains. Pins the null-field session shape the
+    frontend sync-on-load path depends on (selector built from `move`)."""
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy, poll_interval_s=0.01)
+    proxy.goto_home.return_value = {"uuid": "home-uuid"}
+    proxy.get_running_moves.side_effect = [
+        [{"uuid": "home-uuid"}],  # goto still running
+        [],  # done
+    ]
+
+    result = await player.return_home()
+    assert result == {"status": "returning_home"}
+
+    current = await player.current()
+    assert current["active"] is True
+    assert current["phase"] == "returning_home"
+    assert current["dataset"] is None
+    assert current["move"] is None
+    assert current["uuid"] is None
+
+    await player._watcher
+    assert (await player.current())["active"] is False
+    proxy.goto_home.assert_called_once()
+    await player.aclose()
+
+
+@pytest.mark.asyncio
+async def test_return_home_busy_when_session_active() -> None:
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy)
+    proxy.play_recorded_move.return_value = {"uuid": "u1"}
+    await player.play("dataset1", "move1")
+    proxy.get_running_moves.return_value = [{"uuid": "u1"}]  # hold phase=playing
+
+    result = await player.return_home()
+    assert result["status"] == "busy"
+    proxy.goto_home.assert_not_called()
+    await player.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stop_during_return_home_session_is_noop() -> None:
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy, poll_interval_s=0.01)
+    proxy.goto_home.return_value = {"uuid": "home-uuid"}
+    proxy.get_running_moves.return_value = [{"uuid": "home-uuid"}]  # goto in flight
+
+    await player.return_home()
+    result = await player.stop()
+    assert result == {"status": "returning_home"}
+    proxy.stop_move.assert_not_called()
+
+    proxy.get_running_moves.return_value = []  # let it finish
+    await player._watcher
+    assert player.active is False
+    await player.aclose()
+
+
+@pytest.mark.asyncio
+async def test_needs_home_blocks_play_with_actionable_detail() -> None:
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy)
+    player.needs_home = True
+
+    result = await player.play("dataset1", "move1")
+    assert result["status"] == "busy"
+    assert "enabled" in result["detail"]  # detail names the recovery action
+    proxy.play_recorded_move.assert_not_called()
+    await player.aclose()
+
+
+@pytest.mark.asyncio
+async def test_needs_home_persists_when_goto_dispatch_fails() -> None:
+    """SAFETY: goto dispatch fails twice -> session clears but the flag stays
+    set, so expressions keep refusing (safe direction)."""
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy, poll_interval_s=0.01)
+    player.needs_home = True
+    proxy.goto_home.return_value = None  # both dispatch attempts fail
+
+    await player.return_home()
+    await player._watcher
+
+    assert player.active is False
+    assert player.needs_home is True
+    result = await player.play("dataset1", "move1")
+    assert result["status"] == "busy"
+    await player.aclose()
+
+
+@pytest.mark.asyncio
+async def test_home_completion_clears_needs_home() -> None:
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy, poll_interval_s=0.01)
+    player.needs_home = True
+    proxy.goto_home.return_value = {"uuid": "home-uuid"}
+    proxy.get_running_moves.side_effect = [
+        [{"uuid": "home-uuid"}],
+        [],
+    ]
+
+    await player.return_home()
+    await player._watcher
+    assert player.needs_home is False
+
+    proxy.get_running_moves.side_effect = None
+    proxy.get_running_moves.return_value = []
+    result = await player.play("dataset1", "move1")
+    assert result["status"] == "playing"
+    await player.aclose()
+
+
+@pytest.mark.asyncio
+async def test_mode_change_mid_goto_keeps_needs_home() -> None:
+    """SAFETY: a motor-mode change while the goto-home is in flight means the
+    drained goto never physically homed the robot (torque may be off) — the
+    flag must survive and keep refusing plays."""
+    proxy = MockDaemonProxy()
+    player = ExpressionPlayer(proxy, poll_interval_s=0.01)
+    player.needs_home = True
+    proxy.goto_home.return_value = {"uuid": "home-uuid"}
+    proxy.get_running_moves.return_value = [{"uuid": "home-uuid"}]  # goto in flight
+
+    await player.return_home()
+    # Let the watcher task actually start and dispatch the goto (asyncio
+    # only runs a freshly created task once its creator yields control —
+    # without this checkpoint the "mode change" below would race ahead of
+    # the goto's own epoch capture instead of landing mid-flight).
+    await asyncio.sleep(0)
+    # Simulate the motor route reacting to a mid-flight mode change.
+    player.mode_epoch += 1
+    player.needs_home = True
+
+    proxy.get_running_moves.return_value = []  # goto drains on schedule
+    await player._watcher
+
+    assert player.active is False
+    assert player.needs_home is True  # NOT cleared by the stale goto
+    result = await player.play("dataset1", "move1")
+    assert result["status"] == "busy"
+    await player.aclose()

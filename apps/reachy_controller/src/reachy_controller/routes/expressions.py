@@ -40,6 +40,21 @@ class ExpressionPlayer:
         self._session: dict[str, Any] | None = None
         self._lock = asyncio.Lock()
         self._watcher: asyncio.Task[None] | None = None
+        # #67 safety: set by the motor-mode route on any torque change; cleared
+        # only when a goto-home verifiably completes. While True, play() refuses
+        # (jolt hazard: torque on, pose unknown).
+        self.needs_home = False
+        # #67 safety, part 2: every motor-mode change bumps this epoch. A
+        # goto-home only clears needs_home if no mode change happened while it
+        # was in flight — a torque cut mid-goto means the "completed" move
+        # never physically homed the robot (daemon moves drain on schedule
+        # regardless of torque).
+        self.mode_epoch = 0
+
+    @property
+    def active(self) -> bool:
+        """True while any session (playing or returning home) exists."""
+        return self._session is not None
 
     async def play(self, dataset: str, move: str) -> dict[str, Any]:
         """Start playing an expression. Returns session or error.
@@ -59,6 +74,12 @@ class ExpressionPlayer:
                 return {
                     "status": "busy",
                     "detail": "Robot is busy with another move.",
+                }
+
+            if self.needs_home:
+                return {
+                    "status": "busy",
+                    "detail": "Robot pose is not homed — set motor mode to enabled to return home.",
                 }
 
             # Check for foreign running moves
@@ -110,6 +131,29 @@ class ExpressionPlayer:
                 "dataset": dataset,
                 "move": move,
             }
+
+    async def return_home(self) -> dict[str, Any]:
+        """Standalone return-home session (post-motor-enable recovery, #67).
+
+        Reuses the session machinery so play() and the app-start guard block
+        for free, and the frontend expression poller renders it with zero new
+        UI. No daemon I/O under the lock — the goto runs in the watcher — so
+        the session exists before the caller's route returns.
+
+        Returns:
+            {"status": "returning_home"} | {"status": "busy", "detail": "..."}
+        """
+        async with self._lock:
+            if self._session is not None:
+                return {"status": "busy", "detail": "Robot is busy with another move."}
+            self._session = {
+                "uuid": None,
+                "dataset": None,
+                "move": None,
+                "phase": "returning_home",
+            }
+            self._watcher = asyncio.create_task(self._watch_return_home())
+            return {"status": "returning_home"}
 
     async def stop(self) -> dict[str, str]:
         """Stop the current expression playback.
@@ -186,6 +230,29 @@ class ExpressionPlayer:
             if not any(m["uuid"] == target_uuid for m in running):
                 return True
 
+    async def _goto_home_and_clear(self) -> None:
+        """Second half of every lifecycle: goto home (one retry), poll the
+        goto uuid out, clear the session."""
+        epoch = self.mode_epoch
+        home_result = await self.daemon_proxy.goto_home()
+        if home_result is None:
+            # A single transient failure must not cost the return-home;
+            # retry once before giving up.
+            await asyncio.sleep(self.POLL_INTERVAL_S)
+            home_result = await self.daemon_proxy.goto_home()
+            if home_result is None:
+                self._session = None
+                return
+
+        # Poll until the goto-home uuid is absent
+        if not await self._poll_until_absent(home_result["uuid"]):
+            self._session = None
+            return
+
+        if self.mode_epoch == epoch:
+            self.needs_home = False  # robot is verifiably at home
+        self._session = None
+
     async def _watch(self) -> None:
         """Poll daemon until our uuid is absent, then trigger return-home.
 
@@ -213,31 +280,22 @@ class ExpressionPlayer:
             else:
                 return
 
-            home_result = await self.daemon_proxy.goto_home()
-            if home_result is None:
-                # A single transient failure must not cost the return-home;
-                # retry once before giving up.
-                await asyncio.sleep(self.POLL_INTERVAL_S)
-                home_result = await self.daemon_proxy.goto_home()
-                if home_result is None:
-                    self._session = None
-                    return
-
-            home_uuid = home_result["uuid"]
-
-            # Poll until the goto-home uuid is absent
-            if not await self._poll_until_absent(home_uuid):
-                self._session = None
-                return
-
-            # Clear session
-            self._session = None
+            await self._goto_home_and_clear()
 
         except asyncio.CancelledError:
             # Task cancelled, clean up
             pass
         except Exception:
             # Swallow any exception; watcher is fire-and-forget
+            self._session = None
+
+    async def _watch_return_home(self) -> None:
+        """Watcher for a standalone return-home session. Never raises."""
+        try:
+            await self._goto_home_and_clear()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
             self._session = None
 
 
@@ -248,6 +306,11 @@ async def play_expression(
     request: Request,
 ) -> dict[str, Any]:
     """POST /api/expressions/play/{dataset}/{move_name}."""
+    # ponytail: check-then-act across app/expression state is non-atomic; single-user UI
+    if request.app.state.app_supervisor.any_app_active():
+        raise HTTPException(
+            status_code=409, detail="An app is controlling the robot — stop it first."
+        )
     player: ExpressionPlayer = request.app.state.expression_player
     result = await player.play(dataset, move_name)
 

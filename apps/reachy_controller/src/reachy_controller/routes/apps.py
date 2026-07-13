@@ -19,6 +19,13 @@ async def get_apps_status(request: Request) -> list[dict[str, Any]]:
 @router.post("/apps/start/{name}")
 async def start_app(name: str, request: Request) -> dict[str, Any]:
     """Start an app. Returns status dict with error if refused."""
+    # ponytail: check-then-act across app/expression state is non-atomic; single-user UI
+    if request.app.state.expression_player.active:
+        return {
+            "error": "Robot is playing an expression — wait for it to finish.",
+            "name": name,
+            "status": "refused",
+        }
     supervisor = request.app.state.app_supervisor
     result = await supervisor.start_app(name)
 

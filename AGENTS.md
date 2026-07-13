@@ -63,7 +63,13 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
   **controller backend** (`/api/expressions/{play,stop,current}`: 409 while any move runs, cancel,
   silent ~1.5 s goto-home return on finish/cancel) — the daemon does NOT serialize `play_move`
   itself (its RLock guard is a same-thread no-op; overlapping plays interleave `set_target` loops
-  → violent motion, #64). Daemon-fed UI (controls, expressions, audio, app **Start**, jetson stats)
+  → violent motion, #64). Apps and expressions also **block each other** (#66: expression play
+  409s while an app is running/loading; app Start returns 200-refused while any expression
+  session exists — both route-layer in-process checks, mirrored in the UI). Setting motor mode
+  to **enabled** kicks a silent graceful return-home session and expressions refuse
+  (`needs_home`, actionable 409) until a goto-home verifiably completes — re-enabling torque on
+  a drooped head otherwise makes the next expression jolt violently (#67). Daemon-fed UI
+  (controls, expressions, audio, app **Start**, jetson stats)
   disables while the daemon is offline — the stats stream samples host telemetry only while the
   daemon is on — while controller-fed chrome (apps list, **Stop**, power button) stays live.
   A **daemon power button** in the viewport inset (`#vp-power`) starts/stops the **daemon process**
@@ -124,7 +130,10 @@ The workspace now runs on an **NVIDIA Jetson Orin Nano**, migrated 2026-06-23 to
 Ubuntu 24.04 (GStreamer 1.24.2)**. The macOS section above is stale for this host.
 - **Launch the daemon via the Jetson wrapper** (`uv run python tools/reachy_mini_daemon_jetson.py`),
   never stock `reachy-mini-daemon`. The wrapper aliases `unixfd*→nvunixfd*`; without it the camera
-  IPC socket `/tmp/reachymini_camera_socket` is never created → no camera frames.
+  IPC socket `/tmp/reachymini_camera_socket` is never created → no camera frames. The wrapper also
+  self-heals `~/.asoundrc` (#65: PipeWire sometimes exposes only a Sink for the Reachy Mini Audio
+  card — no Source — so SDK capture silently falls back to the Sink's own loopback; the ALSA-direct
+  `.asoundrc` bypass fixes mic capture for every app on the box).
 - **`reachy_chat` uses the LOCAL media backend** (`REACHY_MINI_MEDIA_BACKEND=local`, default in
   `main.py`), NOT WebRTC. The daemon's `GstWebRTCSink ... 'run-signalling-server'` error at startup
   is therefore **harmless** — the custom `libgstrswebrtc.so` (0.10.11, built vs GStreamer 1.20) is
