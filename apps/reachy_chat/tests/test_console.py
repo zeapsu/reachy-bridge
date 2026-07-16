@@ -734,6 +734,39 @@ def test_personality_routes_list_uses_active_handler_empty_and_error_honestly() 
     assert fallback.json()
 
 
+def test_personality_routes_openrouter_list_callback_error_uses_system_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenRouter list lookup failures must not fall back to OpenAI Realtime voices."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
+    app = FastAPI()
+    handler = MagicMock()
+    handler.get_available_voices = AsyncMock(side_effect=RuntimeError("enumeration failed"))
+    mount_personality_routes(app, handler, lambda: None)
+
+    response = TestClient(app).get("/voices")
+
+    assert response.status_code == 200
+    assert response.json() == ["System Default"]
+    assert not {"cedar", "marin"}.intersection(response.json())
+
+
+def test_personality_routes_openrouter_current_callback_error_uses_system_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenRouter current-voice lookup failures must use its platform-default marker."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
+    app = FastAPI()
+    handler = MagicMock()
+    handler.get_current_voice = MagicMock(side_effect=RuntimeError("current voice unavailable"))
+    mount_personality_routes(app, handler, lambda: None)
+
+    response = TestClient(app).get("/voices/current")
+
+    assert response.status_code == 200
+    assert response.json() == {"voice": "System Default"}
+
+
 def test_local_stream_mounts_voice_routes_before_async_loop_is_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -170,6 +170,13 @@ async function init() {
     return !Number.isFinite(status) || [404, 502, 503, 504].includes(status);
   }
 
+  function shouldReconcileVoiceApply(error) {
+    const status = Number(error && error.status);
+    if (Number.isFinite(status)) return false;
+    // AbortError and transport failures have no usable HTTP status.
+    return true;
+  }
+
   async function loadVoices(automatic = false) {
     if (!automatic) {
       voiceState.retryAttempts = 0;
@@ -279,22 +286,24 @@ async function init() {
     } catch (error) {
       if (generation !== voiceState.generation) return;
       let reconciled = false;
-      try {
-        const current = normalizeCurrentVoice(
-          await requestJson("/voices/current", {}, VOICE_REQUEST_TIMEOUT_MS),
-        );
-        if (
-          generation === voiceState.generation &&
-          current === requestedVoice &&
-          voiceState.voices.includes(current)
-        ) {
-          voiceState.knownCurrent = current;
-          voiceSelect.value = current;
-          setVoiceStatus(`Voice applied · ${current}`, "ok");
-          reconciled = true;
+      if (shouldReconcileVoiceApply(error)) {
+        try {
+          const current = normalizeCurrentVoice(
+            await requestJson("/voices/current", {}, VOICE_REQUEST_TIMEOUT_MS),
+          );
+          if (
+            generation === voiceState.generation &&
+            current === requestedVoice &&
+            voiceState.voices.includes(current)
+          ) {
+            voiceState.knownCurrent = current;
+            voiceSelect.value = current;
+            setVoiceStatus(`Voice applied · ${current}`, "ok");
+            reconciled = true;
+          }
+        } catch (reconcileError) {
+          // Preserve the original apply error for the user.
         }
-      } catch (reconcileError) {
-        // Preserve the original apply error for the user.
       }
       if (!reconciled) {
         voiceSelect.value = requestedVoice;

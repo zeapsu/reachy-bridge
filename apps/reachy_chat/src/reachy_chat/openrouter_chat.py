@@ -19,7 +19,7 @@ from openai import AsyncOpenAI
 from fastrtc import AdditionalOutputs
 from numpy.typing import NDArray
 
-from reachy_chat.config import OPENAI_BACKEND, config
+from reachy_chat.config import OPENAI_BACKEND, OPENROUTER_SYSTEM_DEFAULT_VOICE, config
 from reachy_chat.address_gate import AddressGate
 from reachy_chat.prompts import get_session_instructions
 from reachy_chat.tools.core_tools import ToolDependencies
@@ -57,7 +57,7 @@ class OpenRouterChatHandler(ConversationHandler):
     MAX_HISTORY_MESSAGES = 10
     OUTPUT_CHUNK_SAMPLES = 3_200
     FALLBACK_REPLY = "Sorry, I couldn't answer that just now."
-    SYSTEM_DEFAULT_VOICE = "system-default"
+    SYSTEM_DEFAULT_VOICE = OPENROUTER_SYSTEM_DEFAULT_VOICE
 
     def __init__(
         self,

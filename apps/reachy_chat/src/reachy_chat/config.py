@@ -62,6 +62,7 @@ AVAILABLE_VOICES: list[str] = [
     "verse",
 ]
 OPENAI_DEFAULT_VOICE = "cedar"
+OPENROUTER_SYSTEM_DEFAULT_VOICE = "System Default"
 
 # Qwen3-TTS CustomVoice speaker catalog from the deployed Hugging Face backend.
 HF_AVAILABLE_VOICES: list[str] = [
@@ -133,7 +134,7 @@ BACKEND_LABEL_BY_PROVIDER = {
 }
 DEFAULT_VOICE_BY_BACKEND = {
     OPENAI_REALTIME_BACKEND: OPENAI_DEFAULT_VOICE,
-    OPENAI_BACKEND: OPENAI_DEFAULT_VOICE,
+    OPENAI_BACKEND: OPENROUTER_SYSTEM_DEFAULT_VOICE,
     GEMINI_BACKEND: "Kore",
     HF_BACKEND: HF_DEFAULTS.voice,
 }
@@ -543,6 +544,8 @@ def get_backend_label(backend: str | None = None) -> str:
 def get_available_voices_for_backend(backend: str | None = None) -> list[str]:
     """Return the curated voice list for a backend selector value."""
     normalized_backend = get_backend_choice() if backend is None else _normalize_backend_provider(backend)
+    if normalized_backend == OPENAI_BACKEND:
+        return [OPENROUTER_SYSTEM_DEFAULT_VOICE]
     if normalized_backend == GEMINI_BACKEND:
         return list(GEMINI_AVAILABLE_VOICES)
     if normalized_backend == HF_BACKEND:
