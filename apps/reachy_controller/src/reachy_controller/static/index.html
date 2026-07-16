@@ -165,7 +165,9 @@
         <section class="glass pad instrument">
           <div class="head"><h2>audio</h2><div class="rule"></div><span class="pill"><span class="dot" id="mic-dot"></span><span id="mic-state">waiting</span></span></div>
           <div class="eq" id="eq" aria-hidden="true"></div>
-          <div class="eq-foot"><span>input · <span class="v">XVF3800</span></span><span>peak <span class="v" id="eq-peak">no audio signal</span></span><span>rate <span class="v">16 kHz</span></span></div>
+          <div class="eq-rms" id="eq-rms" aria-hidden="true"></div>
+          <div class="eq-bands" aria-hidden="true"><span class="b-low">low</span><span class="b-mid">mid</span><span class="b-high">high</span></div>
+          <div class="eq-foot"><span>input · <span class="v" id="eq-input">XVF3800</span></span><span>peak <span class="v" id="eq-peak">no audio signal</span></span><span>rate <span class="v" id="eq-rate">16 kHz</span></span></div>
         </section>
 
         <section class="glass pad instrument" id="system-panel">

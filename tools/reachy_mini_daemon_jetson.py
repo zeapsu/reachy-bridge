@@ -298,14 +298,18 @@ def main() -> int:
         # Importing the extension is lazy so this wrapper remains a transparent
         # daemon pass-through on non-Jetson development machines.
         from reachy_mini_daemon_media import (
+            apply_jetson_audio_spectrum_patch,
             apply_jetson_camera_consumer_patch,
+            install_audio_levels_route,
             install_camera_stream_route,
         )
 
-        # The daemon-side route lazily constructs GStreamerCamera; patch its
-        # consumer branch before the first request can construct that reader.
+        # Patch the daemon-owned capture pipeline before GstMediaServer is
+        # constructed, then install both lazy media routes on create_app.
+        apply_jetson_audio_spectrum_patch()
         apply_jetson_camera_consumer_patch()
         install_camera_stream_route()
+        install_audio_levels_route()
     _set_reachy_audio_output_volume()
     _ensure_reachymini_asoundrc()
     from reachy_mini.daemon.app.main import main as daemon_main

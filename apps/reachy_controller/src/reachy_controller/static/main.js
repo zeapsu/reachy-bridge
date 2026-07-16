@@ -18,6 +18,7 @@
     // from page load and stays offline — the change-guard would otherwise suppress
     // those writes since false === false (#43).
     daemonOnline: null,
+    audioStatus: "waiting",
     controlsLoaded: false,
     controlBusy: false,
     appBusy: false,
@@ -326,6 +327,19 @@
     $("log-follow").hidden = true;
   });
 
+  function setAudioStatus(status) {
+    if (state.audioStatus === status) return;
+    state.audioStatus = status;
+    const dotClass = status === "listening"
+      ? "dot ok"
+      : status === "reconnecting"
+        ? "dot loading"
+        : status === "unavailable"
+          ? "dot error"
+          : "dot";
+    $("mic-dot").className = dotClass;
+    $("mic-state").textContent = status;
+  }
   function setDaemonOnline(online) {
     const changed = state.daemonOnline !== online;
     state.daemonOnline = online;
@@ -343,8 +357,6 @@
       $("vp-rec").className = `rec ${online ? "ok" : ""}`;
       $("rig").classList.toggle("offline", !online);
       $("rig-note").hidden = online;
-      $("mic-dot").className = `dot ${online ? "ok" : "error"}`;
-      $("mic-state").textContent = online ? "listening" : "unavailable";
       $("stats-dot").className = `dot ${online ? "ok" : "error"}`;
     }
     if (!online && state.mode === "camera") {
@@ -367,7 +379,7 @@
       $("expr-hint").textContent = "Expressions enable when the daemon is online.";
       $("expr-hint").className = "panel-hint";
       renderOfflinePose();
-      renderEqualizer(false, "no audio signal");
+      renderEqualizer(null, "no audio signal");
       resetStatsIdle();
     } else if (changed || !state.controlsLoaded) {
       $("control-status").textContent = "online";
@@ -1060,49 +1072,227 @@
     }
   }
 
+  // ── Audio spectrum visualizer ─────────────────────────────────────────
   const NBARS = 36;
+  const EQ_FLOOR = 4; // settled bar height (%)
+  const EQ_SPAN = 88; // full-scale travel above the floor (%)
+  // The daemon polls at 10 Hz. These per-sample gains reach roughly 75% of a
+  // new level in 150 ms and decay roughly 90% toward the floor in 500 ms.
+  const EQ_ATTACK = 0.75;
+  const EQ_RELEASE = 0.35;
+  const EQ_RMS_ATTACK = 0.75;
+  const EQ_RMS_RELEASE = 0.35;
+  // Quiet hysteresis: enter below 0.02 sustained for 12 events (~1.2 s at
+  // 10 Hz), wake at 0.04 — then settle to the floor and stop DOM writes.
+  const EQ_QUIET_ENTER = 0.02;
+  const EQ_QUIET_EXIT = 0.04;
+  const EQ_QUIET_TICKS = 12;
+  const EQ_PEAK_DECAY_DB = 2.4; // preserve ~24 dB/s peak decay at 10 Hz
   const eqEl = $("eq");
+  const eqRmsEl = $("eq-rms");
   const bars = Array.from({ length: NBARS }, () => {
     const bar = document.createElement("div");
     bar.className = "bar";
     eqEl.appendChild(bar);
     return bar;
   });
+  // Three overlapping band kernels centred on the low/mid/high thirds. Bar i
+  // renders clamp(w·[low, mid, high]) — three soft humps with smooth valleys
+  // instead of the old decorative sine bell.
+  const eqWeights = Array.from({ length: NBARS }, (_, index) =>
+    [5.5, 17.5, 29.5].map((center) => Math.max(0, 1 - Math.abs(index - center) / 12) ** 1.4));
   const eqState = new Array(NBARS).fill(0);
-  const eqProfile = Array.from({ length: NBARS }, (_, index) => 0.24 + Math.sin((index / (NBARS - 1)) * Math.PI) * 0.76);
   const eqLast = new Array(NBARS).fill(null);
   let eqSettled = false;
+  let eqIdleLast = null;
   let eqPeakLast = null;
+  let eqSourceLast = null;
+  let eqRateLast = null;
+  let eqSourceState = null;
+  let eqRateState = null;
+  let eqRmsState = 0;
+  let eqRmsLast = null;
+  let eqQuietTicks = 0;
+  let eqQuiet = false;
+  let eqPeakDb = null;
+  let eqReducedAudioEvents = 0;
 
-  function renderEqualizer(speechDetected, label = null) {
-    const peak = label || (speechDetected ? "speech detected" : "no audio signal");
-    if (peak !== eqPeakLast) {
-      eqPeakLast = peak;
-      $("eq-peak").textContent = peak;
+  const finiteAudioNumber = (value) =>
+    typeof value === "number" && Number.isFinite(value);
+
+  // Validate one complete SSE payload. The daemon owns normalization, so a
+  // partial or out-of-contract response is unavailable, never a zero-filled
+  // spectrum that could look like a real quiet signal.
+  function audioLevelsFromPayload(payload) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    const fields = ["rms", "rms_db", "low", "mid", "high", "sample_rate_hz"];
+    if (!fields.every((field) => finiteAudioNumber(payload[field]))) return null;
+    if (!["rms", "low", "mid", "high"].every((field) => payload[field] >= 0 && payload[field] <= 1)) return null;
+    if (payload.rms_db < -60 || payload.rms_db > 0 || payload.sample_rate_hz <= 0) return null;
+    if (typeof payload.source !== "string" || !payload.source.trim()) return null;
+    if (typeof payload.timestamp !== "string" || !payload.timestamp.trim()) return null;
+    return {
+      rms: payload.rms,
+      low: payload.low,
+      mid: payload.mid,
+      high: payload.high,
+      db: payload.rms_db,
+      rateHz: payload.sample_rate_hz,
+      source: payload.source,
+      timestamp: payload.timestamp,
+    };
+  }
+
+  function formatSampleRate(rateHz) {
+    const khz = rateHz / 1000;
+    return `${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`;
+  }
+
+  function setEqIdle(idle) {
+    if (idle === eqIdleLast) return;
+    eqIdleLast = idle;
+    eqEl.classList.toggle("idle", idle);
+  }
+
+  function setEqPeakText(text) {
+    if (text === eqPeakLast) return;
+    eqPeakLast = text;
+    $("eq-peak").textContent = text;
+  }
+
+  // Update only the in-memory meter model. This function is intentionally free
+  // of DOM writes: every valid 10 Hz sample must advance hysteresis, envelope,
+  // and peak time even when reduced motion skips its paint.
+  function advanceEqModel(levels) {
+    eqSourceState = levels.source;
+    eqRateState = levels.rateHz;
+
+    if (levels.db != null) {
+      eqPeakDb = eqPeakDb == null ? levels.db : Math.max(levels.db, eqPeakDb - EQ_PEAK_DECAY_DB);
     }
-    // Once idle has settled to the floor, do zero per-bar work each tick. The
-    // 20 Hz audio stream otherwise rewrites 36 bar heights forever, and those
-    // bars sit inside a backdrop-filtered panel that iOS re-rasterizes on every
-    // write — the focused-tab battery/heat drain (#36).
-    if (!speechDetected && eqSettled) return;
-    eqEl.classList.toggle("idle", !speechDetected);
-    const normalized = speechDetected ? 0.7 : 0.0;
-    let settled = !speechDetected;
-    bars.forEach((bar, index) => {
-      const target = 5 + normalized * 86 * eqProfile[index];
-      eqState[index] += (target - eqState[index]) * 0.42;
-      if (!speechDetected && Math.abs(eqState[index] - target) < 0.1) {
+
+    if (levels.rms >= EQ_QUIET_EXIT) eqQuietTicks = 0;
+    else if (levels.rms < EQ_QUIET_ENTER) eqQuietTicks += 1;
+    eqQuiet = eqQuietTicks >= EQ_QUIET_TICKS;
+
+    // Reduced motion deliberately snaps the model, but not its clock: the
+    // floor transition happens on the 12th input tick, not the 12th paint.
+    if (eqQuiet && reduceMotion) {
+      eqState.fill(EQ_FLOOR);
+      eqRmsState = 0;
+      eqSettled = true;
+      return;
+    }
+    // A quiet model that has already reached its floor needs no envelope work,
+    // but peak decay above still advances on every input sample.
+    if (eqQuiet && eqSettled) return;
+
+    eqSettled = false;
+    let maxDelta = 0;
+    eqState.forEach((value, index) => {
+      const weights = eqWeights[index];
+      const env = eqQuiet
+        ? 0
+        : clamp(weights[0] * levels.low + weights[1] * levels.mid + weights[2] * levels.high, 0, 1);
+      const target = EQ_FLOOR + EQ_SPAN * env;
+      if (reduceMotion) {
+        // Reduced motion has no interpolated visual step, but the model still
+        // receives every sample and the next scheduled paint sees this value.
         eqState[index] = target;
-      } else if (!speechDetected) {
-        settled = false;
+      } else {
+        const gain = target > value ? EQ_ATTACK : EQ_RELEASE;
+        eqState[index] += (target - value) * gain;
       }
-      const next = `${Math.max(4, eqState[index]).toFixed(1)}%`;
+      maxDelta = Math.max(maxDelta, Math.abs(eqState[index] - target));
+    });
+
+    const rmsTarget = eqQuiet ? 0 : levels.rms * 100;
+    if (reduceMotion) {
+      eqRmsState = rmsTarget;
+    } else {
+      const rmsGain = rmsTarget > eqRmsState ? EQ_RMS_ATTACK : EQ_RMS_RELEASE;
+      eqRmsState += (rmsTarget - eqRmsState) * rmsGain;
+    }
+
+    // Normal mode eases into quiet, while reduced motion pins the model above.
+    if (eqQuiet && maxDelta < 0.5 && eqRmsState < 0.5) {
+      eqState.fill(EQ_FLOOR);
+      eqRmsState = 0;
+      eqSettled = true;
+    }
+  }
+
+  // Commit the latest model snapshot. All calls are guarded so a quiet stream
+  // remains completely still after it has settled.
+  function commitEqModel() {
+    setEqIdle(eqQuiet);
+    bars.forEach((bar, index) => {
+      const next = `${eqState[index].toFixed(1)}%`;
       if (next !== eqLast[index]) {
         eqLast[index] = next;
         bar.style.height = next;
       }
     });
-    eqSettled = settled;
+    const rmsNext = `${(Math.round(eqRmsState * 2) / 2).toFixed(1)}%`;
+    if (rmsNext !== eqRmsLast) {
+      eqRmsLast = rmsNext;
+      eqRmsEl.style.width = rmsNext;
+    }
+  }
+
+  function commitEqualizer(levels, label = null) {
+    if (levels) {
+      if (eqSourceState && eqSourceState !== eqSourceLast) {
+        eqSourceLast = eqSourceState;
+        $("eq-input").textContent = eqSourceState;
+      }
+      if (eqRateState && eqRateState > 0 && eqRateState !== eqRateLast) {
+        eqRateLast = eqRateState;
+        $("eq-rate").textContent = formatSampleRate(eqRateState);
+      }
+      if (eqPeakDb != null) {
+        setEqPeakText(`${clamp(eqPeakDb, -60, 0).toFixed(1)} dBFS`);
+      }
+    } else {
+      setEqPeakText(label || "no audio signal");
+    }
+    commitEqModel();
+  }
+
+  function resetEqModel() {
+    eqQuietTicks = 0;
+    eqQuiet = true;
+    eqPeakDb = null;
+    eqSourceState = null;
+    eqRateState = null;
+    eqState.fill(EQ_FLOOR);
+    eqRmsState = 0;
+    eqSettled = true;
+  }
+
+  function renderAudioLevel(levels) {
+    const shouldRender = !reduceMotion || eqReducedAudioEvents % 5 === 0;
+    eqReducedAudioEvents += 1;
+    advanceEqModel(levels);
+    if (!shouldRender) return false;
+    commitEqualizer(levels);
+    return true;
+  }
+
+  function renderAudioUnavailable(label) {
+    eqReducedAudioEvents = 0;
+    resetEqModel();
+    commitEqualizer(null, label);
+  }
+
+  function renderEqualizer(levels, label = null) {
+    if (!levels) {
+      resetEqModel();
+      commitEqualizer(null, label);
+      return;
+    }
+    advanceEqModel(levels);
+    commitEqualizer(levels);
   }
 
   function syncSlider(id, value) {
@@ -1690,13 +1880,28 @@
     });
     const audio = bindEventSource("/api/audio/levels-stream", {
       "audio-level": (event) => {
-        const payload = readEventPayload(event);
-        const speechDetected = payload && payload.speech_detected === true;
-        renderEqualizer(speechDetected);
+        const levels = audioLevelsFromPayload(readEventPayload(event));
+        if (levels) {
+          setAudioStatus("listening");
+          renderAudioLevel(levels);
+        } else {
+          setAudioStatus("unavailable");
+          renderAudioUnavailable("no audio signal");
+        }
       },
-      "daemon-unavailable": () => renderEqualizer(false, "no audio signal"),
-      error: () => renderEqualizer(false, "audio stream reconnecting"),
+      "daemon-unavailable": () => {
+        setAudioStatus("unavailable");
+        renderAudioUnavailable("no audio signal");
+      },
+      error: () => {
+        setAudioStatus("reconnecting");
+        renderAudioUnavailable("audio stream reconnecting");
+      },
     });
+    if (!audio) {
+      setAudioStatus("reconnecting");
+      renderAudioUnavailable("audio stream reconnecting");
+    }
     state.live.streams.push(telemetry, audio);
     openStatsStream();
     if (state.sysView === "logs") void openLogStream();
@@ -1722,7 +1927,7 @@
   // Poll daemon status on the same cadence as the daemon connectivity check
   setupThemeSelector();
   renderApps();
-  renderEqualizer(false, "no audio signal");
+  renderEqualizer(null, "no audio signal");
   setDaemonOnline(false);
   // Skip if we boot into an already-hidden tab — visibilitychange starts us when shown.
   if (!document.hidden) startLiveConnections();

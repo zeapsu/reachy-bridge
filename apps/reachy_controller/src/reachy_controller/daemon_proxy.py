@@ -97,6 +97,14 @@ class DaemonProxy:
         response = await self.request("GET", path, params=params)
         response.raise_for_status()
         return response.json()
+
+    async def get_audio_levels(self) -> dict[str, Any] | None:
+        """Get the latest fresh daemon microphone spectrum sample."""
+        try:
+            payload = await self.get_json("audio/levels")
+            return payload if isinstance(payload, dict) else None
+        except (httpx.HTTPError, ValueError):
+            return None
     async def get_full_state(self) -> dict[str, Any] | None:
         """Get full robot state from daemon via GET /api/state/full."""
         try:

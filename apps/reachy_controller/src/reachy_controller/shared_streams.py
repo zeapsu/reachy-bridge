@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Callable
-from typing import Any
 
 from reachy_controller.jetson_stats import collect_jetson_stats
 
@@ -165,6 +165,98 @@ class StateBroadcaster(_LazyBroadcaster):
                 await asyncio.sleep(self._reconnect_delay)
 
 
+class AudioLevelsBroadcaster(_LazyBroadcaster):
+    """Share one fresh daemon microphone GET among all SSE consumers."""
+
+    REQUIRED_FIELDS = frozenset(
+        {
+            "rms",
+            "rms_db",
+            "low",
+            "mid",
+            "high",
+            "sample_rate_hz",
+            "source",
+            "timestamp",
+        }
+    )
+
+    def __init__(
+        self,
+        proxy: Any,
+        *,
+        interval: float = 0.1,
+        reconnect_delay: float = 1.0,
+        queue_size: int = 8,
+    ) -> None:
+        super().__init__(queue_size=queue_size)
+        if interval <= 0 or reconnect_delay <= 0:
+            raise ValueError("audio broadcaster intervals must be positive")
+        self._proxy = proxy
+        self._interval = interval
+        self._reconnect_delay = reconnect_delay
+
+    async def _unsubscribe(self, subscription: _Subscription) -> None:
+        if subscription in self._subscribers and len(self._subscribers) == 1:
+            self._latest = _MISSING
+        await super()._unsubscribe(subscription)
+
+    async def aclose(self) -> None:
+        self._latest = _MISSING
+        await super().aclose()
+
+
+    @staticmethod
+    def _finite_number(value: Any) -> bool:
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+        )
+
+    @classmethod
+    def _valid_levels(cls, value: Any) -> bool:
+        if not isinstance(value, dict) or not cls.REQUIRED_FIELDS.issubset(value):
+            return False
+
+        for field in ("rms", "low", "mid", "high"):
+            level = value[field]
+            if not cls._finite_number(level) or not 0 <= level <= 1:
+                return False
+        rms_db = value["rms_db"]
+        if not cls._finite_number(rms_db) or not -60 <= rms_db <= 0:
+            return False
+        sample_rate_hz = value["sample_rate_hz"]
+        if not cls._finite_number(sample_rate_hz) or sample_rate_hz <= 0:
+            return False
+        source = value["source"]
+        if not isinstance(source, str) or not source.strip():
+            return False
+        # The daemon contract uses an RFC 3339 UTC string. Keep the validator
+        # strict about presence/content without reparsing a transport field.
+        timestamp = value["timestamp"]
+        return isinstance(timestamp, str) and bool(timestamp.strip())
+
+    async def _run(self) -> None:
+        while self._subscribers:
+            try:
+                levels = await self._proxy.get_audio_levels()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                levels = None
+
+            if self._valid_levels(levels):
+                self._publish(levels)
+                delay = self._interval
+            else:
+                self._publish({"error": "daemon_unavailable"})
+                delay = self._reconnect_delay
+
+            if self._subscribers:
+                await asyncio.sleep(delay)
+
+
 class StatsBroadcaster(_LazyBroadcaster):
     """Share daemon-gated Jetson samples on the existing 1.5-second cadence."""
 
@@ -208,4 +300,4 @@ class StatsBroadcaster(_LazyBroadcaster):
                 await asyncio.sleep(self._interval)
 
 
-__all__ = ["StateBroadcaster", "StatsBroadcaster"]
+__all__ = ["AudioLevelsBroadcaster", "StateBroadcaster", "StatsBroadcaster"]

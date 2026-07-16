@@ -32,7 +32,7 @@ from reachy_controller.routes.daemon import router as daemon_control_router
 from reachy_controller.routes.expressions import ExpressionPlayer
 from reachy_controller.routes.expressions import router as expressions_router
 from reachy_controller.routes.logs import router as logs_router
-from reachy_controller.shared_streams import StateBroadcaster, StatsBroadcaster
+from reachy_controller.shared_streams import AudioLevelsBroadcaster, StateBroadcaster, StatsBroadcaster
 from reachy_controller.routes.system_stats import router as system_stats_router
 from reachy_controller.routes.telemetry import (
     root_router as telemetry_root_router,
@@ -71,6 +71,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     app_supervisor.set_camera_release_hook(camera_leases.close_all)
     daemon_supervisor = DaemonSupervisor(daemon_proxy=daemon_proxy, log_broker=broker)
     state_broadcaster = StateBroadcaster(daemon_proxy)
+    audio_levels_broadcaster = AudioLevelsBroadcaster(daemon_proxy)
     stats_broadcaster = StatsBroadcaster(daemon_proxy)
     expression_player = ExpressionPlayer(daemon_proxy)
     controller_log_path = app_supervisor._workspace_root / ".reachy-logs" / "controller.log"
@@ -102,6 +103,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
             app.state.controller_log_handler = None
             await app.state.expression_player.aclose()
             await app.state.state_broadcaster.aclose()
+            await app.state.audio_levels_broadcaster.aclose()
             await app.state.stats_broadcaster.aclose()
             await app.state.app_supervisor.aclose()
             await app.state.daemon_supervisor.aclose()
@@ -111,6 +113,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     app = FastAPI(title="Reachy Controller", version="0.1.0", lifespan=lifespan)
     app.state.daemon_proxy = daemon_proxy
     app.state.state_broadcaster = state_broadcaster
+    app.state.audio_levels_broadcaster = audio_levels_broadcaster
     app.state.stats_broadcaster = stats_broadcaster
     app.state.app_supervisor = app_supervisor
     app.state.camera_leases = camera_leases
