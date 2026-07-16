@@ -803,6 +803,79 @@ async def test_camera_app_start_closes_all_leases_before_spawn() -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+
+
+@pytest.mark.asyncio
+async def test_camera_app_start_waits_for_delayed_upstream_entry_cleanup() -> None:
+    class DelayedEntryProxy(FakeProxy):
+        def __init__(self) -> None:
+            super().__init__(FakeUpstreamResponse())
+            self.entry_started = asyncio.Event()
+            self.entry_cancelled = asyncio.Event()
+            self.close_started = asyncio.Event()
+            self.allow_close = asyncio.Event()
+
+        def stream(self, *args: object, **kwargs: object):
+            proxy = self
+
+            class Context:
+                async def __aenter__(self):
+                    proxy.entered += 1
+                    proxy.entry_started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        proxy.entry_cancelled.set()
+                        raise
+
+                async def __aexit__(self, *exc: object) -> None:
+                    proxy.close_started.set()
+                    await proxy.allow_close.wait()
+                    proxy.closed += 1
+
+            return Context()
+
+    proxy = DelayedEntryProxy()
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+    request = SimpleNamespace(app=app)
+    route_task = asyncio.create_task(camera_routes.camera_stream(request))  # type: ignore[arg-type]
+    await proxy.entry_started.wait()
+    assert app.state.camera_leases.active_count == 1
+
+    process = MagicMock()
+    process.pid = 12345
+    events: list[str] = []
+
+    def spawn(*_: object, **__: object) -> MagicMock:
+        assert proxy.entry_cancelled.is_set()
+        assert proxy.closed == 1
+        events.append("spawn")
+        return process
+
+    with patch("reachy_controller.app_supervisor.subprocess.Popen", side_effect=spawn):
+        start_task = asyncio.create_task(app.state.app_supervisor.start_app("reachy_chat"))
+        await proxy.entry_cancelled.wait()
+        await proxy.close_started.wait()
+        assert not start_task.done()
+        assert app.state.camera_leases.active_count == 1
+
+        proxy.allow_close.set()
+        result = await asyncio.wait_for(start_task, 1)
+
+    assert result["status"] == "loading"
+    assert events == ["spawn"]
+    assert proxy.closed == 1
+    assert app.state.camera_leases.active_count == 0
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(route_task, 1)
+
+    tasks = [
+        *app.state.app_supervisor._reaper_tasks.values(),
+        *app.state.app_supervisor._readiness_tasks.values(),
+    ]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 @pytest.mark.asyncio
 async def test_camera_start_reservation_blocks_stream_during_paused_release() -> None:
     proxy = FakeProxy(FakeUpstreamResponse())

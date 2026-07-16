@@ -126,18 +126,31 @@ async def camera_stream(request: Request) -> Response:
     leases: DashboardCameraLeaseManager = request.app.state.camera_leases
     upstream_context: Any | None = None
     upstream: Any | None = None
+    upstream_entered = False
+    startup_task: asyncio.Task[Any] | None = None
     lease: CameraLease | None = None
     close_task: asyncio.Task[None] | None = None
 
     async def _close_and_release() -> None:
-        nonlocal lease
+        nonlocal lease, startup_task, upstream_entered
         try:
-            if upstream_context is not None:
-                # This task is created once and shielded by every caller.
-                # Even a cancelled ASGI task cannot interrupt __aexit__.
+            current_startup = startup_task
+            if current_startup is not None:
+                if not current_startup.done():
+                    current_startup.cancel()
                 with contextlib.suppress(BaseException):
-                    await upstream_context.__aexit__(None, None, None)
+                    await current_startup
+
+            current_context = upstream_context
+            if current_context is not None:
+                # Call the context closer even when entry was cancelled before
+                # completion; adapters use it to release a partially-started
+                # upstream, and failures are contained below.
+                with contextlib.suppress(BaseException):
+                    await current_context.__aexit__(None, None, None)
         finally:
+            startup_task = None
+            upstream_entered = False
             current_lease = lease
             lease = None
             if current_lease is not None:
@@ -165,6 +178,24 @@ async def camera_stream(request: Request) -> Response:
         if cancellation is not None:
             raise cancellation
 
+    async def _enter_upstream() -> Any:
+        nonlocal upstream, upstream_entered
+        assert upstream_context is not None
+        entered = await upstream_context.__aenter__()
+        upstream = entered
+        upstream_entered = True
+        return entered
+
+    async def _await_startup(awaitable: Awaitable[Any], timeout: float) -> Any:
+        nonlocal startup_task
+        task = asyncio.create_task(awaitable)
+        startup_task = task
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout)
+        finally:
+            if task.done() and startup_task is task:
+                startup_task = None
+
     try:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + CAMERA_STREAM_STARTUP_TIMEOUT_S
@@ -180,12 +211,19 @@ async def camera_stream(request: Request) -> Response:
             "camera/stream.mjpg",
             headers={"accept": "multipart/x-mixed-replace"},
         )
-        upstream = await asyncio.wait_for(
-            upstream_context.__aenter__(), remaining_startup()
+        # Register before any daemon startup await so camera-app takeover can
+        # cancel a pending __aenter__ and wait for this route's cleanup.
+        lease = await leases.acquire(release_resources)
+        upstream = await _await_startup(
+            _enter_upstream(),
+            remaining_startup(),
         )
         content_type = upstream.headers.get("content-type", "")
         if upstream.status_code >= 400:
-            content = await asyncio.wait_for(upstream.aread(), remaining_startup())
+            content = await _await_startup(
+                upstream.aread(),
+                remaining_startup(),
+            )
             await release_resources()
             return Response(
                 content=content,
@@ -193,7 +231,6 @@ async def camera_stream(request: Request) -> Response:
                 headers={"content-type": content_type} if content_type else None,
             )
 
-        lease = await leases.acquire(release_resources)
         holder = supervisor.camera_holder()
         if holder is not None:
             raise HTTPException(
@@ -202,8 +239,9 @@ async def camera_stream(request: Request) -> Response:
             )
 
         iterator: AsyncIterator[bytes] = upstream.aiter_raw()
-        first_chunk = await asyncio.wait_for(
-            iterator.__anext__(), remaining_startup()
+        first_chunk = await _await_startup(
+            iterator.__anext__(),
+            remaining_startup(),
         )
         holder = supervisor.camera_holder()
         if holder is not None or close_task is not None:
