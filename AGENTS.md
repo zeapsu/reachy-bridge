@@ -228,7 +228,7 @@ For multi-session work, **open GitHub issues for what's next** (a parent/epic is
 and update **memory + this AGENTS.md** in the same pass — issues track *what's next*, memory/AGENTS.md
 track *what we learned*. PRs reference their issues (`Closes #N`) and may ship in parts (e.g. part 1
 visual/QA → part 2 functional verification). Repo: `zeapsu/reachy-console`; PR base is the default branch
-`feat/reachy-chat-vision`. End sessions with `/close` (do **not** recreate `SESSION_LOG.md` — removed,
+`main`. End sessions with `/close` (do **not** recreate `SESSION_LOG.md` — removed,
 git history + memory replace it).
 
 ### reachy_controller UI gotchas
