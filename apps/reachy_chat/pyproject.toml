@@ -56,7 +56,7 @@ reachy-mini-toolbox = false
 
 [tool.setuptools.package-data]
 reachy_talk_data = [ "profiles/**/*.txt", "profiles/**/*.py",]
-reachy_chat = [ "static/**/*", ".env.example", "prompts/**/*.txt",]
+reachy_chat = [ "static/**/*", ".env.example", "prompts/**/*.txt", "assets/*.wav",]
 
 [tool.ruff.lint]
 select = [ "E", "F", "W", "I", "C4", "D",]

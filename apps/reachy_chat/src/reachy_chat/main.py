@@ -8,12 +8,14 @@ import argparse
 import threading
 from typing import Optional
 from pathlib import Path
+from importlib import resources
 from collections.abc import Callable, Awaitable
 
 from fastapi import FastAPI, Request, Response
 
 from reachy_mini import ReachyMini, ReachyMiniApp
 from reachy_mini.utils import create_head_pose
+from reachy_mini.utils.interpolation import InterpolationTechnique
 from reachy_chat.gstreamer_nvidia_patch import apply_nvidia_unixfd_patch
 from reachy_chat.utils import (
     CameraVisionInitializationError,
@@ -26,21 +28,35 @@ from reachy_chat.utils import (
 # Apply NVIDIA Jetson GStreamer plugin patch before any SDK initialization
 apply_nvidia_unixfd_patch()
 
-SLEEP_CUE_SETTLE_S = 1.0
 
 
 def _return_home(robot: ReachyMini, logger) -> None:
+    home_target = {
+        "head": create_head_pose(degrees=True),
+        "antennas": [-0.1745, 0.1745],
+        "body_yaw": 0.0,
+    }
     try:
-        # Daemon stays up, so the robot stays awake: return to the awake-ready
-        # home posture with the SDK wake_up emote (home + head gesture + wake_up.wav).
-        robot.wake_up()
-        time.sleep(SLEEP_CUE_SETTLE_S)  # let the wake_up.wav cue finish before the process exits/disconnects
+        robot.goto_target(
+            **home_target,
+            duration=2.4,
+            method=InterpolationTechnique.MIN_JERK,
+        )
     except Exception as exc:
-        logger.warning("chat: graceful return-home (wake_up) unavailable; snapping home: %s", exc)
+        logger.warning("chat: graceful return-home unavailable; snapping home: %s", exc)
         try:
-            robot.set_target(head=create_head_pose(degrees=True), body_yaw=0.0)
+            robot.set_target(**home_target)
         except Exception as set_exc:
             logger.warning("chat: failed to snap home on exit: %s", set_exc)
+        return
+
+    try:
+        asset = resources.files("reachy_chat").joinpath("assets", "return_home.wav")
+        with resources.as_file(asset) as sound_path:
+            robot.media.play_sound(str(sound_path))
+            time.sleep(0.5)
+    except Exception as exc:
+        logger.warning("chat: return-home arrival cue unavailable: %s", exc)
 
 
 def main() -> None:
