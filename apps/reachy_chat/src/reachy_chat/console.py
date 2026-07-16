@@ -10,7 +10,8 @@ import time
 import asyncio
 import logging
 import threading
-from typing import List, Optional
+from inspect import isawaitable
+from typing import Awaitable, List, Optional
 from pathlib import Path
 from collections.abc import Callable, AsyncGenerator
 
@@ -65,6 +66,9 @@ except Exception:  # pragma: no cover - only loaded when settings_app is used
     Request = object  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+class VoiceChangeError(RuntimeError):
+    """Raised when a handler did not verify the requested voice change."""
 
 _SSE_KEEPALIVE_INTERVAL_SECONDS = 15.0  # below typical 60s proxy idle timeout
 
@@ -197,6 +201,7 @@ class LocalStream:
         self._settings_app: Optional[FastAPI] = settings_app
         self._instance_path: Optional[str] = instance_path
         self._settings_initialized = False
+        self._personality_routes_initialized = False
         self._asyncio_loop = None
         self._mic_muted = False  # mic starts live; the UI toggles it via /mic
         self._active_backend_name = get_backend_choice()
@@ -549,39 +554,92 @@ class LocalStream:
         return "Applied personality and restarting backend."
 
     async def get_available_voices(self) -> list[str]:
-        """Return voices available for the currently selected backend."""
-        return get_available_voices_for_backend(get_backend_choice())
-
-    def get_current_voice(self) -> str:
-        """Return the currently selected voice override or backend profile voice."""
-        if self._voice_override:
-            return self._voice_override
+        """Return voices from the active handler, falling back only if unavailable."""
+        handler = getattr(self, "handler", None)
+        callback = getattr(handler, "get_available_voices", None)
+        if not callable(callback):
+            return get_available_voices_for_backend(get_backend_choice())
         try:
-            from reachy_chat.prompts import get_session_voice
+            voices = callback()
+            if isawaitable(voices):
+                voices = await voices
+            if not isinstance(voices, list) or not all(isinstance(voice, str) for voice in voices):
+                raise TypeError("handler returned an invalid voice list")
+            return voices
+        except Exception as exc:
+            logger.warning("Unable to enumerate active handler voices: %s", exc)
+            return get_available_voices_for_backend(get_backend_choice())
 
-            return get_session_voice(default=get_default_voice_for_backend(get_backend_choice()))
-        except Exception:
-            return get_default_voice_for_backend(get_backend_choice())
+    def get_current_voice(self) -> str | Awaitable[str]:
+        """Return the active handler voice, falling back only if lookup fails."""
+        fallback = lambda: get_default_voice_for_backend(get_backend_choice())
+        handler = getattr(self, "handler", None)
+        callback = getattr(handler, "get_current_voice", None)
+        if not callable(callback):
+            return fallback()
+        try:
+            current = callback()
+        except Exception as exc:
+            logger.warning("Unable to read active handler voice: %s", exc)
+            return fallback()
+        if isawaitable(current):
+            async def _resolve_async() -> str:
+                try:
+                    value = await current
+                    return value.strip() if isinstance(value, str) and value.strip() else fallback()
+                except Exception as exc:
+                    logger.warning("Unable to read active handler voice: %s", exc)
+                    return fallback()
+
+            return _resolve_async()
+        return current.strip() if isinstance(current, str) and current.strip() else fallback()
 
     async def change_voice(self, voice: str) -> str:
-        """Change the voice through the active handler without rebuilding the backend."""
+        """Apply, verify, and persist a voice through the active handler."""
+        requested = voice.strip()
+        if not requested:
+            raise VoiceChangeError("voice cannot be empty")
+        callback = getattr(getattr(self, "handler", None), "change_voice", None)
+        if not callable(callback):
+            raise VoiceChangeError("active handler has no voice API")
         try:
-            status = await self.handler.change_voice(voice)
+            status = callback(requested)
+            if isawaitable(status):
+                status = await status
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            logger.error("Error changing voice to %r: %s", voice, e)
-            return f"Failed to change voice: {e}"
+        except Exception:
+            raise
 
+        if (
+            status is None
+            or status is False
+            or (
+                isinstance(status, str)
+                and status.strip().lower().startswith(("voice change failed", "failed to change voice"))
+            )
+        ):
+            raise VoiceChangeError(str(status or "voice change failed"))
+
+        current_callback = getattr(getattr(self, "handler", None), "get_current_voice", None)
+        if not callable(current_callback):
+            raise VoiceChangeError("active handler cannot verify voice change")
         try:
-            current_voice = self.handler.get_current_voice()
-            if isinstance(current_voice, str) and current_voice.strip():
-                self._voice_override = current_voice
-        except Exception as e:
-            logger.debug("Could not sync LocalStream voice override after voice change: %s", e)
-        if self._voice_override:
-            self._persist_voice_override(self._voice_override)
-        return status
+            current = current_callback()
+            if isawaitable(current):
+                current = await current
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise
+        if not isinstance(current, str) or current.strip() != requested:
+            raise VoiceChangeError(
+                f"voice change was not applied: requested {requested!r}, current {current!r}"
+            )
+
+        self._voice_override = current.strip()
+        self._persist_voice_override(self._voice_override)
+        return str(status)
 
     def _persist_voice_override(self, voice: str) -> None:
         """Persist the chosen voice as the startup voice, keeping the startup profile."""
@@ -774,6 +832,20 @@ class LocalStream:
                 }
             )
 
+        if not self._personality_routes_initialized:
+            mount_personality_routes(
+                self._settings_app,
+                self.handler,
+                lambda: self._asyncio_loop,
+                persist_personality=self._persist_personality,
+                get_persisted_personality=self._read_persisted_personality,
+                apply_personality=self.apply_personality,
+                get_available_voices=self.get_available_voices,
+                get_current_voice=self.get_current_voice,
+                change_voice=self.change_voice,
+            )
+            self._personality_routes_initialized = True
+
         self._settings_initialized = True
 
     async def _run_handler_startup_loop(self) -> None:
@@ -909,22 +981,6 @@ class LocalStream:
             # Capture loop for cross-thread personality actions
             loop = asyncio.get_running_loop()
             self._asyncio_loop = loop  # type: ignore[assignment]
-            # Mount personality routes now that loop and handler are available
-            try:
-                if self._settings_app is not None:
-                    mount_personality_routes(
-                        self._settings_app,
-                        self.handler,
-                        lambda: self._asyncio_loop,
-                        persist_personality=self._persist_personality,
-                        get_persisted_personality=self._read_persisted_personality,
-                        apply_personality=self.apply_personality,
-                        get_available_voices=self.get_available_voices,
-                        get_current_voice=self.get_current_voice,
-                        change_voice=self.change_voice,
-                    )
-            except Exception:
-                logger.exception("Failed to mount personality routes; the personality UI will be unavailable")
             self._tasks = [
                 asyncio.create_task(self._run_handler_startup_loop(), name="realtime-handler"),
                 asyncio.create_task(self.record_loop(), name="stream-record-loop"),

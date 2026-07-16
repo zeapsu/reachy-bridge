@@ -7,6 +7,7 @@ LocalStream asyncio loop via the supplied get_loop callable.
 
 from __future__ import annotations
 import asyncio
+import inspect
 import logging
 from typing import Any, Callable, Optional, Awaitable
 
@@ -54,13 +55,37 @@ def mount_personality_routes(
     persist_personality: Callable[[Optional[str], Optional[str]], None] | None = None,
     get_persisted_personality: Callable[[], Optional[str]] | None = None,
     apply_personality: Callable[[Optional[str]], Awaitable[str]] | None = None,
-    get_available_voices: Callable[[], Awaitable[list[str]]] | None = None,
-    get_current_voice: Callable[[], str] | None = None,
-    change_voice: Callable[[str], Awaitable[str]] | None = None,
+    get_available_voices: Callable[[], list[str] | Awaitable[list[str]]] | None = None,
+    get_current_voice: Callable[[], str | Awaitable[str]] | None = None,
+    change_voice: Callable[[str], str | Awaitable[str]] | None = None,
 ) -> None:
     """Register personality management endpoints on a FastAPI app."""
     from fastapi.responses import JSONResponse
 
+
+    VOICE_TIMEOUT_SECONDS = 12
+
+    async def _await_if_needed(value: Any) -> Any:
+        return await value if inspect.isawaitable(value) else value
+
+    def _voice_callback(name: str) -> Callable[..., Any] | None:
+        callback = get_available_voices if name == "available" else get_current_voice
+        if callback is not None:
+            return callback
+        fallback = getattr(handler, "get_available_voices" if name == "available" else "get_current_voice", None)
+        return fallback if callable(fallback) else None
+
+    async def _call_voice_callback(name: str) -> Any:
+        callback = _voice_callback(name)
+        if callback is None:
+            raise RuntimeError("active handler voice API unavailable")
+        return await _await_if_needed(callback())
+
+    def _voice_fallback_list() -> list[str]:
+        return get_available_voices_for_backend()
+
+    def _voice_fallback_current() -> str:
+        return get_default_voice_for_backend()
     def _startup_choice() -> Any:
         """Return the persisted startup personality or default."""
         try:
@@ -172,7 +197,9 @@ def mount_personality_routes(
             else:
                 status = await handler.apply_personality(sel)
             current_voice_callback = get_current_voice or getattr(handler, "get_current_voice", None)
-            voice_override = current_voice_callback() if callable(current_voice_callback) else None
+            voice_override = (
+                await _await_if_needed(current_voice_callback()) if callable(current_voice_callback) else None
+            )
             return status, voice_override
 
         try:
@@ -190,58 +217,68 @@ def mount_personality_routes(
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)  # type: ignore
 
+    async def _voice_call_on_runtime(name: str) -> Any:
+        loop = get_loop()
+        if loop is None or loop is asyncio.get_running_loop():
+            return await _call_voice_callback(name)
+        future = asyncio.run_coroutine_threadsafe(_call_voice_callback(name), loop)
+        return await asyncio.wait_for(asyncio.wrap_future(future), timeout=VOICE_TIMEOUT_SECONDS)
+
     @app.get("/voices")
     async def _voices() -> list[str]:
-        loop = get_loop()
-        if loop is None:
-            return get_available_voices_for_backend()
-
-        async def _get_v() -> list[str]:
-            try:
-                if get_available_voices is not None:
-                    return await get_available_voices()
-                return await handler.get_available_voices()
-            except Exception:
-                return get_available_voices_for_backend()
-
         try:
-            fut = asyncio.run_coroutine_threadsafe(_get_v(), loop)
-            return fut.result(timeout=10)
-        except Exception:
-            return get_available_voices_for_backend()
+            voices = await _voice_call_on_runtime("available")
+            if not isinstance(voices, list) or not all(isinstance(voice, str) for voice in voices):
+                raise TypeError("active handler returned an invalid voice list")
+            return voices
+        except Exception as exc:
+            logger.warning("Unable to read active handler voices: %s", exc)
+            return _voice_fallback_list()
 
     @app.get("/voices/current")
-    def _current_voice() -> dict[str, str]:
+    async def _current_voice() -> dict[str, str]:
         try:
-            if get_current_voice is not None:
-                return {"voice": get_current_voice()}
-            return {"voice": handler.get_current_voice()}
-        except Exception:
-            return {"voice": get_default_voice_for_backend()}
+            current = await _voice_call_on_runtime("current")
+            if not isinstance(current, str) or not current.strip():
+                raise TypeError("active handler returned an invalid current voice")
+            return {"voice": current.strip()}
+        except Exception as exc:
+            logger.warning("Unable to read active handler current voice: %s", exc)
+            return {"voice": _voice_fallback_current()}
 
     @app.post("/voices/apply")
     async def _apply_voice(request: Request, voice: str | None = Query(None)) -> dict:  # type: ignore
-        voice = str(voice or "")
-        if not voice:
+        requested = str(voice or "").strip()
+        if not requested:
             try:
                 raw = await request.json()
             except Exception:
                 raw = {}
-            voice = str(raw.get("voice", "") or "")
-        if not voice:
+            requested = str(raw.get("voice", "") or "").strip()
+        if not requested:
             return JSONResponse({"ok": False, "error": "missing_voice"}, status_code=400)  # type: ignore
         loop = get_loop()
         if loop is None:
             return JSONResponse({"ok": False, "error": "loop_unavailable"}, status_code=503)  # type: ignore
 
-        async def _do() -> str:
-            if change_voice is not None:
-                return await change_voice(voice)
-            return await handler.change_voice(voice)
+        async def _do() -> Any:
+            callback = change_voice or getattr(handler, "change_voice", None)
+            if not callable(callback):
+                raise RuntimeError("active handler voice API unavailable")
+            return await _await_if_needed(callback(requested))
 
         try:
-            fut = asyncio.run_coroutine_threadsafe(_do(), loop)
-            status = fut.result(timeout=10)
+            future = asyncio.run_coroutine_threadsafe(_do(), loop)
+            status = await asyncio.wait_for(asyncio.wrap_future(future), timeout=VOICE_TIMEOUT_SECONDS)
+            if (
+                status is None
+                or status is False
+                or (
+                    isinstance(status, str)
+                    and status.strip().lower().startswith(("voice change failed", "failed to change voice"))
+                )
+            ):
+                raise RuntimeError(str(status or "voice change failed"))
             return {"ok": True, "status": status}
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)  # type: ignore

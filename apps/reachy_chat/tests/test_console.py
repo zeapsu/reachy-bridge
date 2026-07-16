@@ -697,6 +697,225 @@ def test_personality_routes_apply_voice_accepts_query_param() -> None:
         thread.join(timeout=1.0)
         loop.close()
 
+def test_personality_routes_current_voice_uses_active_handler_and_falls_back_on_lookup_error() -> None:
+    """The mounted current-voice callback should expose the active handler voice."""
+    app = FastAPI()
+    handler = MagicMock()
+    handler.get_current_voice = MagicMock(return_value="System Default")
+    mount_personality_routes(app, handler, lambda: None)
+
+    client = TestClient(app)
+    response = client.get("/voices/current")
+
+    assert response.status_code == 200
+    assert response.json() == {"voice": "System Default"}
+
+    handler.get_current_voice.side_effect = RuntimeError("handler unavailable")
+    fallback = client.get("/voices/current")
+    assert fallback.status_code == 200
+    assert fallback.json()["voice"]
+
+
+def test_personality_routes_list_uses_active_handler_empty_and_error_honestly() -> None:
+    """Empty handler catalogs stay empty while lookup failures use curated fallback."""
+    app = FastAPI()
+    handler = MagicMock()
+    handler.get_available_voices = AsyncMock(return_value=[])
+    mount_personality_routes(app, handler, lambda: None)
+    client = TestClient(app)
+
+    empty = client.get("/voices")
+    assert empty.status_code == 200
+    assert empty.json() == []
+
+    handler.get_available_voices.side_effect = RuntimeError("enumeration failed")
+    fallback = client.get("/voices")
+    assert fallback.status_code == 200
+    assert fallback.json()
+
+
+def test_local_stream_mounts_voice_routes_before_async_loop_is_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cold settings pages use active OpenRouter/local handler voices, not curated names."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
+    app = FastAPI()
+    handler = MagicMock()
+    handler.get_available_voices = AsyncMock(return_value=["System Default", "local-os-voice"])
+    handler.get_current_voice = MagicMock(return_value="System Default")
+    stream = LocalStream(handler, MagicMock(), settings_app=app)
+
+    stream._init_settings_ui_if_needed()
+    stream._init_settings_ui_if_needed()
+    assert sum(getattr(route, "path", None) == "/voices" for route in app.routes) == 1
+    assert sum(getattr(route, "path", None) == "/voices/current" for route in app.routes) == 1
+    client = TestClient(app)
+
+    assert client.get("/").status_code == 200
+    assert client.get("/voices").json() == ["System Default", "local-os-voice"]
+    assert client.get("/voices/current").json() == {"voice": "System Default"}
+
+
+def test_personality_routes_apply_voice_requires_json_or_query_voice() -> None:
+    """A missing voice request is rejected with the documented 400 schema."""
+    app = FastAPI()
+    mount_personality_routes(app, MagicMock(), lambda: None)
+
+    response = TestClient(app).post("/voices/apply", json={})
+
+    assert response.status_code == 400
+    assert response.json() == {"ok": False, "error": "missing_voice"}
+
+
+def test_personality_routes_apply_voice_reports_unavailable_loop() -> None:
+    """Applying while the stream loop is not ready remains a retryable 503."""
+    app = FastAPI()
+    mount_personality_routes(app, MagicMock(), lambda: None)
+
+    response = TestClient(app).post("/voices/apply", json={"voice": "System Default"})
+
+    assert response.status_code == 503
+    assert response.json() == {"ok": False, "error": "loop_unavailable"}
+
+
+def test_personality_routes_apply_voice_reports_handler_exception() -> None:
+    """A handler exception must never be represented as a successful apply."""
+    app = FastAPI()
+    handler = MagicMock()
+    handler.change_voice = AsyncMock(side_effect=RuntimeError("voice backend failed"))
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        started.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=_run_loop, daemon=True)
+    thread.start()
+    started.wait(timeout=1.0)
+    try:
+        mount_personality_routes(app, handler, lambda: loop)
+        response = TestClient(app).post("/voices/apply", json={"voice": "local-os-voice"})
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1.0)
+        loop.close()
+
+    assert response.status_code == 500
+    assert response.json() == {"ok": False, "error": "voice backend failed"}
+
+
+def test_personality_routes_apply_voice_accepts_json_body(tmp_path: Path) -> None:
+    """The mounted production callback accepts the documented JSON apply body."""
+    app = FastAPI()
+    handler = MagicMock()
+    current = ["System Default"]
+
+    async def _change(voice: str) -> str:
+        current[0] = voice
+        return f"Voice changed to {voice}."
+
+    handler.change_voice = _change
+    handler.get_current_voice = MagicMock(side_effect=lambda: current[0])
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        started.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=_run_loop, daemon=True)
+    thread.start()
+    started.wait(timeout=1.0)
+    try:
+        stream = LocalStream(handler, MagicMock(), settings_app=app, instance_path=str(tmp_path))
+        stream._asyncio_loop = loop
+        stream._init_settings_ui_if_needed()
+        response = TestClient(app).post("/voices/apply", json={"voice": "local-os-voice"})
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1.0)
+        loop.close()
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "status": "Voice changed to local-os-voice."}
+    assert stream._voice_override == "local-os-voice"
+    assert (tmp_path / "startup_settings.json").exists()
+
+def test_mounted_production_voice_failure_returns_non_2xx(tmp_path: Path) -> None:
+    """A handler failure through LocalStream must remain an HTTP error."""
+    app = FastAPI()
+    handler = MagicMock()
+    handler.change_voice = AsyncMock(return_value="Voice change failed: local voice missing.")
+    handler.get_current_voice = MagicMock(return_value="System Default")
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        started.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=_run_loop, daemon=True)
+    thread.start()
+    started.wait(timeout=1.0)
+    try:
+        stream = LocalStream(handler, MagicMock(), settings_app=app, instance_path=str(tmp_path))
+        stream._asyncio_loop = loop
+        stream._init_settings_ui_if_needed()
+        response = TestClient(app).post("/voices/apply", json={"voice": "local-os-voice"})
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1.0)
+        loop.close()
+
+    assert response.status_code == 500
+    assert "local voice missing" in response.json()["error"]
+    assert not (tmp_path / "startup_settings.json").exists()
+
+@pytest.mark.asyncio
+async def test_local_stream_voice_failure_is_not_persisted_or_reported_success() -> None:
+    """Failed handler status strings cross the LocalStream success boundary honestly."""
+    handler = MagicMock()
+    handler.change_voice = AsyncMock(return_value="Voice change failed: local voice missing.")
+    handler.get_current_voice = MagicMock(return_value="System Default")
+    stream = LocalStream(handler, MagicMock())
+
+    with pytest.raises(RuntimeError, match="local voice missing"):
+        await stream.change_voice("local-os-voice")
+
+    assert stream._voice_override is None
+
+
+@pytest.mark.asyncio
+async def test_local_stream_voice_persists_and_restart_handler_receives_saved_voice(tmp_path: Path) -> None:
+    """Applying through LocalStream writes startup settings consumed by a fresh handler."""
+    handler = MagicMock()
+    handler.change_voice = AsyncMock(return_value="Voice changed to local-os-voice.")
+    handler.get_current_voice = MagicMock(return_value="local-os-voice")
+    stream = LocalStream(handler, MagicMock(), instance_path=str(tmp_path))
+
+    await stream.change_voice("local-os-voice")
+
+    settings = load_startup_settings_into_runtime(tmp_path)
+    assert settings.voice == "local-os-voice"
+    assert (tmp_path / "startup_settings.json").exists()
+
+    from reachy_chat.openrouter_chat import OpenRouterChatHandler
+
+    deps = SimpleNamespace(reachy_mini=MagicMock(), camera_worker=MagicMock())
+    fresh_handler = OpenRouterChatHandler(
+        deps,
+        instance_path=str(tmp_path),
+        startup_voice=settings.voice,
+    )
+    try:
+        assert fresh_handler.get_current_voice() == "local-os-voice"
+    finally:
+        fresh_handler._blocking_executor.shutdown(wait=True)
+
 
 def test_personality_routes_persist_startup_with_voice_override() -> None:
     """Saving a startup personality should persist the active manual voice override."""

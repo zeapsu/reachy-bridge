@@ -1,4 +1,6 @@
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const VOICE_REQUEST_TIMEOUT_MS = 12000;
+const VOICE_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 4000];
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 2000) {
   const controller = new AbortController();
@@ -10,12 +12,14 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 2000) {
   }
 }
 
-async function requestJson(url, options = {}) {
-  const response = await fetchWithTimeout(url, options);
+async function requestJson(url, options = {}, timeoutMs = 2000) {
+  const response = await fetchWithTimeout(url, options, timeoutMs);
   const data = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = data && (data.error || data.status);
-    throw new Error(detail || `HTTP ${response.status}`);
+    const error = new Error(detail || `HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
   return data;
 }
@@ -126,6 +130,8 @@ async function init() {
     applying: false,
     voices: [],
     knownCurrent: null,
+    retryAttempts: 0,
+    retryTimer: null,
   };
 
   show(loading, true);
@@ -152,7 +158,23 @@ async function init() {
     }
   }
 
-  async function loadVoices() {
+  function clearVoiceRetryTimer() {
+    if (voiceState.retryTimer !== null) {
+      clearTimeout(voiceState.retryTimer);
+      voiceState.retryTimer = null;
+    }
+  }
+
+  function shouldRetryVoiceLoad(error) {
+    const status = Number(error && error.status);
+    return !Number.isFinite(status) || [404, 502, 503, 504].includes(status);
+  }
+
+  async function loadVoices(automatic = false) {
+    if (!automatic) {
+      voiceState.retryAttempts = 0;
+      clearVoiceRetryTimer();
+    }
     const generation = ++voiceState.generation;
     voiceState.loading = true;
     voiceState.applying = false;
@@ -164,13 +186,15 @@ async function init() {
     setVoiceStatus("Loading voices…");
     try {
       const [voiceList, currentData] = await Promise.all([
-        requestJson("/voices"),
-        requestJson("/voices/current"),
+        requestJson("/voices", {}, VOICE_REQUEST_TIMEOUT_MS),
+        requestJson("/voices/current", {}, VOICE_REQUEST_TIMEOUT_MS),
       ]);
       const voices = normalizeVoices(voiceList);
       const current = normalizeCurrentVoice(currentData);
       if (generation !== voiceState.generation) return;
 
+      voiceState.retryAttempts = 0;
+      clearVoiceRetryTimer();
       voiceState.voices = voices;
       voiceState.knownCurrent = current;
       populateVoiceOptions(voices);
@@ -188,6 +212,19 @@ async function init() {
       }
     } catch (error) {
       if (generation !== voiceState.generation) return;
+      if (
+        shouldRetryVoiceLoad(error) &&
+        voiceState.retryAttempts < VOICE_RETRY_DELAYS_MS.length
+      ) {
+        const retryIndex = voiceState.retryAttempts;
+        voiceState.retryAttempts += 1;
+        setVoiceStatus("Loading voices…");
+        voiceState.retryTimer = setTimeout(() => {
+          voiceState.retryTimer = null;
+          if (generation === voiceState.generation) void loadVoices(true);
+        }, VOICE_RETRY_DELAYS_MS[retryIndex]);
+        return;
+      }
       voiceState.voices = [];
       voiceState.knownCurrent = null;
       populateVoiceOptions([]);
@@ -217,26 +254,52 @@ async function init() {
     syncVoiceControls();
     setVoiceStatus(`Applying ${requestedVoice}…`);
     try {
-      const response = await requestJson("/voices/apply", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voice: requestedVoice }),
-      });
+      const response = await requestJson(
+        "/voices/apply",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ voice: requestedVoice }),
+        },
+        VOICE_REQUEST_TIMEOUT_MS,
+      );
       if (!response || response.ok !== true) {
         throw new Error((response && (response.error || response.status)) || "apply_failed");
       }
-      const current = normalizeCurrentVoice(await requestJson("/voices/current"));
+      const current = normalizeCurrentVoice(
+        await requestJson("/voices/current", {}, VOICE_REQUEST_TIMEOUT_MS),
+      );
       if (generation !== voiceState.generation) return;
-      if (!voiceState.voices.includes(current)) {
-        throw new Error(`backend returned unsupported voice “${current}”`);
+      if (!voiceState.voices.includes(current) || current !== requestedVoice) {
+        throw new Error(`backend returned voice “${current}” instead of “${requestedVoice}”`);
       }
       voiceState.knownCurrent = current;
       voiceSelect.value = current;
       setVoiceStatus(`Voice applied · ${current}`, "ok");
     } catch (error) {
       if (generation !== voiceState.generation) return;
-      voiceSelect.value = requestedVoice;
-      setVoiceStatus(`Voice apply failed · ${conciseError(error)}`, "error");
+      let reconciled = false;
+      try {
+        const current = normalizeCurrentVoice(
+          await requestJson("/voices/current", {}, VOICE_REQUEST_TIMEOUT_MS),
+        );
+        if (
+          generation === voiceState.generation &&
+          current === requestedVoice &&
+          voiceState.voices.includes(current)
+        ) {
+          voiceState.knownCurrent = current;
+          voiceSelect.value = current;
+          setVoiceStatus(`Voice applied · ${current}`, "ok");
+          reconciled = true;
+        }
+      } catch (reconcileError) {
+        // Preserve the original apply error for the user.
+      }
+      if (!reconciled) {
+        voiceSelect.value = requestedVoice;
+        setVoiceStatus(`Voice apply failed · ${conciseError(error)}`, "error");
+      }
     } finally {
       if (generation === voiceState.generation) {
         voiceState.applying = false;
