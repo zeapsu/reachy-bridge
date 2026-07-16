@@ -484,32 +484,49 @@ async def test_change_voice_without_client_fails_and_preserves_previous_override
 
 @pytest.mark.asyncio
 async def test_change_voice_production_restart_failure_restores_previous_override() -> None:
-    """A startup failure before Gemini connects must reject the requested voice."""
+    """A startup owner failure before Gemini connects must reject the requested voice."""
     handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
-    handler.client = object()
     handler._voice_override = "Orus"
 
-    async def _start_up_failure() -> None:
+    async def _restart(_timeout: float | None) -> None:
         raise RuntimeError("Gemini startup failed")
 
-    handler.start_up = _start_up_failure
+    handler.set_startup_owner(_restart)
 
     status = await handler.change_voice("Zephyr")
 
     assert status == "Voice change failed. Will take effect on next connection."
     assert handler._voice_override == "Orus"
     assert handler.get_current_voice() == "Orus"
-    assert handler._session_task is None
+
+
+@pytest.mark.asyncio
+async def test_change_voice_cancellation_restores_previous_override() -> None:
+    """Cancellation during an owner restart restores the exact previous override."""
+    handler = GeminiLiveHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()),
+        startup_voice="Orus",
+    )
+
+    async def _restart(_timeout: float | None) -> None:
+        raise asyncio.CancelledError
+
+    handler.set_startup_owner(_restart)
+
+    with pytest.raises(asyncio.CancelledError):
+        await handler.change_voice("Zephyr")
+
+    assert handler._voice_override == "Orus"
+    assert handler.get_current_voice() == "Orus"
 
 
 @pytest.mark.asyncio
 async def test_change_voice_production_restart_timeout_cancels_startup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A replacement that never connects must be cancelled and rejected."""
+    """A startup owner that times out must cancel its child before rejecting the voice."""
     monkeypatch.setattr(gemini_mod, "GEMINI_RESTART_TIMEOUT_SECONDS", 0.01)
     handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
-    handler.client = object()
     handler._voice_override = "Orus"
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -522,7 +539,16 @@ async def test_change_voice_production_restart_timeout_cancels_startup(
         finally:
             cancelled.set()
 
-    handler.start_up = _start_up_without_connection
+    async def _restart(timeout: float | None) -> None:
+        task = asyncio.create_task(_start_up_without_connection())
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except asyncio.TimeoutError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+
+    handler.set_startup_owner(_restart)
 
     status = await handler.change_voice("Zephyr")
 
@@ -531,38 +557,41 @@ async def test_change_voice_production_restart_timeout_cancels_startup(
     assert status == "Voice change failed. Will take effect on next connection."
     assert handler._voice_override == "Orus"
     assert handler.get_current_voice() == "Orus"
-    assert handler._session_task is None
 
 
 @pytest.mark.asyncio
 async def test_change_voice_production_restart_success_commits_requested_voice() -> None:
-    """A connected replacement keeps running and commits the requested voice."""
+    """A startup owner that connects a replacement commits the requested voice."""
     handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
-    handler.client = object()
     handler._voice_override = "Orus"
     replacement_stopped = asyncio.Event()
     keep_running = asyncio.Event()
 
     async def _start_up_and_connect() -> None:
-        handler._connected_event.set()
         try:
             await keep_running.wait()
         finally:
             replacement_stopped.set()
 
-    handler.start_up = _start_up_and_connect
+    replacement_task: asyncio.Task[None] | None = None
+
+    async def _restart(_timeout: float | None) -> None:
+        nonlocal replacement_task
+        replacement_task = asyncio.create_task(_start_up_and_connect())
+        await asyncio.sleep(0)
+
+    handler.set_startup_owner(_restart)
 
     status = await handler.change_voice("Zephyr")
 
     assert status == "Voice changed to Zephyr."
     assert handler._voice_override == "Zephyr"
     assert handler.get_current_voice() == "Zephyr"
-    replacement_task = handler._session_task
     assert replacement_task is not None
     assert not replacement_task.done()
 
-    await handler._cancel_and_observe_session_task(replacement_task)
-    handler._session_task = None
+    replacement_task.cancel()
+    await asyncio.gather(replacement_task, return_exceptions=True)
     assert replacement_stopped.is_set()
 
 

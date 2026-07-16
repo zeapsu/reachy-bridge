@@ -16,6 +16,7 @@ import random
 import asyncio
 import logging
 from typing import Any, Dict, List, Final, Tuple, Literal, Optional
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 
 import numpy as np
@@ -174,10 +175,10 @@ class GeminiLiveHandler(ConversationHandler):
         # Track API key source (env vs textbox)
         self._key_source: Literal["env", "textbox"] = "env"
         self._provided_api_key: str | None = None
-
         # Internal lifecycle flags
         self._connected_event: asyncio.Event = asyncio.Event()
-        self._session_task: asyncio.Task[None] | None = None
+        self._startup_owner: Callable[[float | None], Awaitable[None]] | None = None
+        self._startup_connection_callback: Callable[[], None] | None = None
 
         # Background tool manager
         self.tool_manager = BackgroundToolManager()
@@ -198,6 +199,17 @@ class GeminiLiveHandler(ConversationHandler):
             self.instance_path,
             startup_voice=self._voice_override,
         )
+
+    def set_startup_owner(
+        self,
+        owner: Callable[[float | None], Awaitable[None]] | None,
+    ) -> None:
+        """Install LocalStream's sole owner for startup generation replacement."""
+        self._startup_owner = owner
+
+    def set_startup_connection_callback(self, callback: Callable[[], None] | None) -> None:
+        """Install a callback captured by the current start_up generation."""
+        self._startup_connection_callback = callback
 
     def _set_listening_state(self, listening: bool) -> None:
         """Avoid queueing redundant listening-state updates."""
@@ -321,15 +333,18 @@ class GeminiLiveHandler(ConversationHandler):
             return f"Failed to apply personality: {e}"
 
     async def change_voice(self, voice: str) -> str:
-        """Change only the voice and restart the session."""
+        """Change the voice through LocalStream's startup owner."""
         previous_voice_override = self._voice_override
         self._voice_override = voice
         try:
             await self._restart_session()
             return f"Voice changed to {voice}."
-        except Exception as e:
+        except asyncio.CancelledError:
             self._voice_override = previous_voice_override
-            logger.warning("Failed to restart session for voice change: %s", e)
+            raise
+        except Exception as error:
+            self._voice_override = previous_voice_override
+            logger.warning("Failed to restart session for voice change: %s", error)
             return "Voice change failed. Will take effect on next connection."
 
     def get_current_voice(self) -> str:
@@ -337,7 +352,9 @@ class GeminiLiveHandler(ConversationHandler):
         return _resolve_gemini_voice(self._voice_override or get_session_voice())
 
     async def start_up(self) -> None:
-        """Start the handler with retries on unexpected closure."""
+        """Start one handler generation with retries on unexpected closure."""
+        self._stop_event.clear()
+        startup_connection_callback = self._startup_connection_callback
         gemini_api_key = config.GEMINI_API_KEY
         if not gemini_api_key or not gemini_api_key.strip():
             logger.warning("GEMINI_API_KEY missing. Proceeding with a placeholder (tests/offline).")
@@ -348,14 +365,14 @@ class GeminiLiveHandler(ConversationHandler):
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
-                await self._run_live_session()
+                await self._run_live_session(startup_connection_callback)
                 return
-            except Exception as e:
+            except Exception as error:
                 logger.warning(
                     "Gemini Live session closed unexpectedly (attempt %d/%d): %s",
                     attempt,
                     max_attempts,
-                    e,
+                    error,
                 )
                 if attempt < max_attempts:
                     base_delay = 2 ** (attempt - 1)
@@ -372,89 +389,12 @@ class GeminiLiveHandler(ConversationHandler):
                 except Exception:
                     pass
 
-    async def _cancel_and_observe_session_task(self, task: asyncio.Task[None]) -> None:
-        """Cancel a session task and explicitly observe its completion."""
-        if not task.done():
-            task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.warning("Gemini Live session task stopped with an error: %s", e)
-
-    def _observe_session_task(self, task: asyncio.Task[None]) -> None:
-        """Consume a failure from a connected background session task."""
-        if self._session_task is task:
-            self._session_task = None
-        if task.cancelled():
-            return
-        try:
-            error = task.exception()
-        except asyncio.CancelledError:
-            return
-        if error is not None:
-            logger.error("Gemini Live session task failed after connection: %s", error)
-
     async def _restart_session(self) -> None:
-        """Force-close the current session and wait for a connected replacement."""
-        if getattr(self, "client", None) is None:
-            raise RuntimeError("Cannot restart: Gemini client not initialized yet.")
-
-        if self.session is not None:
-            try:
-                await self.session.close()
-            except Exception as e:
-                logger.warning("Failed to close the previous Gemini session: %s", e)
-            finally:
-                self.session = None
-
-        previous_task = self._session_task
-        self._session_task = None
-        if previous_task is not None:
-            await self._cancel_and_observe_session_task(previous_task)
-
-        self._connected_event.clear()
-        self._stop_event.set()  # Signal the old receive loop to stop
-        await asyncio.sleep(0.1)
-        self._stop_event.clear()
-
-        restart_task = asyncio.create_task(self.start_up(), name="gemini-live-restart")
-        connected_task = asyncio.create_task(
-            self._connected_event.wait(),
-            name="gemini-live-restart-connected",
-        )
-        try:
-            done, _ = await asyncio.wait(
-                {restart_task, connected_task},
-                timeout=GEMINI_RESTART_TIMEOUT_SECONDS,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if not done:
-                await self._cancel_and_observe_session_task(restart_task)
-                raise TimeoutError("Gemini Live session restart timed out before connecting")
-
-            if restart_task in done:
-                await restart_task
-                raise RuntimeError("Gemini Live session restart ended before connecting")
-
-            if restart_task.done():
-                await restart_task
-                raise RuntimeError("Gemini Live session restart ended after connecting")
-
-            self._session_task = restart_task
-            restart_task.add_done_callback(self._observe_session_task)
-            logger.info("Gemini Live session restarted and connected.")
-        except asyncio.CancelledError:
-            await self._cancel_and_observe_session_task(restart_task)
-            raise
-        finally:
-            if not connected_task.done():
-                connected_task.cancel()
-            try:
-                await connected_task
-            except asyncio.CancelledError:
-                pass
+        """Request a replacement from LocalStream's startup lifecycle owner."""
+        owner = self._startup_owner
+        if owner is None:
+            raise RuntimeError("Gemini startup lifecycle is not owned by LocalStream")
+        await owner(GEMINI_RESTART_TIMEOUT_SECONDS)
 
     def _build_live_config(self) -> types.LiveConnectConfig:
         """Build the LiveConnectConfig for a Gemini Live session."""
@@ -622,7 +562,10 @@ class GeminiLiveHandler(ConversationHandler):
 
         logger.info("Video sender loop stopped")
 
-    async def _run_live_session(self) -> None:
+    async def _run_live_session(
+        self,
+        startup_connection_callback: Callable[[], None] | None = None,
+    ) -> None:
         """Establish and manage a single Gemini Live session."""
         live_config = self._build_live_config()
 
@@ -633,8 +576,11 @@ class GeminiLiveHandler(ConversationHandler):
             self.session = session
             try:
                 self._connected_event.set()
+                callback = startup_connection_callback or self._startup_connection_callback
+                if callback is not None:
+                    callback()
             except Exception:
-                pass
+                logger.debug("Gemini startup connection callback failed", exc_info=True)
 
             logger.info("Gemini Live session connected successfully")
 

@@ -11,7 +11,7 @@ import asyncio
 import logging
 import threading
 from inspect import isawaitable
-from typing import Awaitable, List, Optional
+from typing import Any, Awaitable, List, Optional
 from pathlib import Path
 from collections.abc import Callable, AsyncGenerator
 
@@ -173,6 +173,18 @@ LEGACY_STARTUP_ENV_NAMES = (
 BACKEND_RETRY_DELAY_SECONDS = 5.0
 
 
+class _StartupGeneration:
+    """LocalStream-owned lifecycle state for one handler.start_up() child."""
+
+    def __init__(self, handler: ConversationHandler, generation: int) -> None:
+        loop = asyncio.get_running_loop()
+        self.handler = handler
+        self.generation = generation
+        self.connection_result: asyncio.Future[None] = loop.create_future()
+        self.replaced: asyncio.Future[None] = loop.create_future()
+        self.task: asyncio.Task[None] | None = None
+
+
 class LocalStream:
     """LocalStream using Reachy Mini's recorder/player."""
 
@@ -208,6 +220,14 @@ class LocalStream:
         self._backend_connection_state = "not_started"
         self._backend_error: str | None = None
         self._backend_retry_delay = BACKEND_RETRY_DELAY_SECONDS
+        self._startup_generation: _StartupGeneration | None = None
+        self._startup_generation_counter = 0
+        self._startup_transition_active = False
+        self._startup_transition_done = asyncio.Event()
+        self._startup_transition_done.set()
+        self._startup_transition_lock = asyncio.Lock()
+        self._startup_retry_pending = False
+
         # One bus for the stream's lifetime: the /conversation_events route
         # closes over it, so handler rebuilds must keep publishing into it.
         self._event_bus = ConversationEventBus()
@@ -215,9 +235,209 @@ class LocalStream:
 
     def _install_handler(self, handler: ConversationHandler) -> None:
         """Set the active handler and wire LocalStream-owned helpers into it."""
+        previous = getattr(self, "handler", None)
+        if previous is not None and previous is not handler:
+            setter = getattr(previous, "set_startup_owner", None)
+            if callable(setter):
+                setter(None)
+            callback_setter = getattr(previous, "set_startup_connection_callback", None)
+            if callable(callback_setter):
+                callback_setter(None)
         self.handler = handler
         self.handler._clear_queue = self.clear_audio_queue
+        setter = getattr(handler, "set_startup_owner", None)
+        if callable(setter):
+            setter(lambda timeout=None: self._restart_handler_generation(handler, timeout))
         self._attach_event_bus_to_handler()
+
+    def _set_generation_connection_callback(
+        self,
+        generation: _StartupGeneration,
+    ) -> None:
+        """Give a handler a generation-bound connection callback, when supported."""
+        setter = getattr(generation.handler, "set_startup_connection_callback", None)
+        if callable(setter):
+            setter(lambda: self._mark_generation_connected(generation))
+
+    def _mark_generation_connected(self, generation: _StartupGeneration) -> None:
+        """Resolve only the currently owned generation's connection result."""
+        if self._startup_generation is not generation or generation.connection_result.done():
+            return
+        generation.connection_result.set_result(None)
+        self._set_backend_connection_state("connected")
+
+    def _mark_generation_failed(self, generation: _StartupGeneration, error: BaseException) -> None:
+        """Resolve a generation's readiness result with its own startup failure."""
+        if self._startup_generation is generation:
+            self._set_backend_connection_state("disconnected", error)
+        if not generation.connection_result.done():
+            generation.connection_result.set_exception(error)
+
+    async def _run_startup_generation(self, generation: _StartupGeneration) -> None:
+        """Run exactly one handler.start_up() invocation for a generation."""
+        try:
+            await generation.handler.start_up()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._mark_generation_failed(generation, error)
+            raise
+        else:
+            if not generation.connection_result.done():
+                self._mark_generation_failed(
+                    generation,
+                    RuntimeError("handler startup ended before connecting"),
+                )
+
+    def _create_startup_generation(self) -> _StartupGeneration:
+        """Create and schedule one LocalStream-owned startup child."""
+        self._startup_generation_counter += 1
+        generation = _StartupGeneration(self.handler, self._startup_generation_counter)
+        self._startup_generation = generation
+        self._set_generation_connection_callback(generation)
+        generation.task = asyncio.create_task(
+            self._run_startup_generation(generation),
+            name=f"handler-startup-{generation.generation}",
+        )
+        return generation
+
+    def _infer_generation_connected(self, generation: _StartupGeneration) -> None:
+        """Support existing non-Gemini handlers that expose a live connection directly."""
+        if self._backend_connected():
+            self._mark_generation_connected(generation)
+
+    async def _wait_generation_connected(self, generation: _StartupGeneration) -> None:
+        """Wait for this generation's readiness, never a shared handler event."""
+        while True:
+            if self._startup_generation is not generation:
+                raise RuntimeError("handler startup generation was replaced")
+            self._infer_generation_connected(generation)
+            if generation.connection_result.done():
+                return await generation.connection_result
+            task = generation.task
+            if task is not None and task.done():
+                try:
+                    await task
+                except asyncio.CancelledError as error:
+                    raise RuntimeError("handler startup was cancelled before connecting") from error
+                except Exception as error:
+                    raise error
+                raise RuntimeError("handler startup ended before connecting")
+            await asyncio.sleep(0.01)
+
+    async def _stop_startup_generation(
+        self,
+        generation: _StartupGeneration,
+        *,
+        shutdown_handler: bool = True,
+        timeout: float | None = None,
+    ) -> None:
+        """Stop, cancel, and await one exact startup child."""
+        owner_task = asyncio.current_task()
+        cancellation_count = owner_task.cancelling() if owner_task is not None else 0
+        cancelled_error: asyncio.CancelledError | None = None
+        shutdown_error: TimeoutError | None = None
+        shutdown_task: asyncio.Task[Any] | None = None
+        if shutdown_handler:
+            try:
+                shutdown_result = generation.handler.shutdown()
+                if isawaitable(shutdown_result):
+                    shutdown_task = asyncio.create_task(shutdown_result, name="handler-shutdown")
+                    if timeout is None:
+                        await shutdown_task
+                    else:
+                        try:
+                            await asyncio.wait_for(asyncio.shield(shutdown_task), timeout=timeout)
+                        except asyncio.TimeoutError:
+                            shutdown_task.cancel()
+                            await asyncio.gather(shutdown_task, return_exceptions=True)
+                            shutdown_error = TimeoutError("handler shutdown timed out")
+            except asyncio.CancelledError as error:
+                cancelled_error = error
+                if shutdown_task is not None and not shutdown_task.done():
+                    shutdown_task.cancel()
+                    await asyncio.gather(shutdown_task, return_exceptions=True)
+            except Exception as error:
+                logger.debug("Handler shutdown ignored during startup replacement: %s", error)
+
+        task = generation.task
+        if task is not None and task is not owner_task:
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError as error:
+                if owner_task is not None and owner_task.cancelling() > cancellation_count:
+                    cancelled_error = error
+            except Exception as error:
+                logger.debug("Startup child stopped with an error: %s", error)
+        if generation.connection_result.done():
+            try:
+                generation.connection_result.exception()
+            except BaseException:
+                pass
+        callback_setter = getattr(generation.handler, "set_startup_connection_callback", None)
+        if callable(callback_setter):
+            callback_setter(None)
+        if cancelled_error is not None:
+            raise cancelled_error
+        if shutdown_error is not None:
+            raise shutdown_error
+
+    async def _restart_handler_generation(
+        self,
+        handler: ConversationHandler,
+        timeout: float | None = None,
+    ) -> None:
+        """Replace a handler child under LocalStream's sole lifecycle ownership."""
+        if self.handler is not handler:
+            raise RuntimeError("handler is no longer active")
+        timeout = 5.0 if timeout is None else timeout
+        async with self._startup_transition_lock:
+            generation = self._startup_generation
+            if generation is None or generation.handler is not handler or generation.task is None:
+                raise RuntimeError("handler startup is not owned by LocalStream")
+            if generation.task.done():
+                raise RuntimeError("handler startup ended before replacement")
+
+            self._startup_transition_active = True
+            self._startup_transition_done.clear()
+            if not generation.replaced.done():
+                generation.replaced.set_result(None)
+            try:
+                await self._stop_startup_generation(generation, timeout=timeout)
+                replacement = self._create_startup_generation()
+                await asyncio.sleep(0)
+                self._infer_generation_connected(replacement)
+                try:
+                    await asyncio.wait_for(
+                        self._wait_generation_connected(replacement),
+                        timeout=timeout,
+                    )
+                except BaseException:
+                    self._startup_retry_pending = True
+                    await self._stop_startup_generation(replacement, timeout=timeout)
+                    if self._startup_generation is replacement:
+                        self._startup_generation = None
+                    raise
+            finally:
+                self._startup_transition_active = False
+                self._startup_transition_done.set()
+
+    async def _shutdown_active_handler(self) -> None:
+        """Stop the active handler and its LocalStream-owned startup child."""
+        generation = self._startup_generation
+        if generation is not None:
+            await self._stop_startup_generation(generation, timeout=5.0)
+            return
+        try:
+            result = self.handler.shutdown()
+            if isawaitable(result):
+                await result
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.debug("Active handler shutdown ignored during restart: %s", error)
 
     def _attach_event_bus_to_handler(self) -> None:
         """Wire the event bus as the handler's activity observer, if supported."""
@@ -284,14 +504,6 @@ class LocalStream:
         self._active_backend_name = get_backend_choice()
         return handler
 
-    async def _shutdown_active_handler(self) -> None:
-        """Best-effort shutdown for the currently active handler."""
-        try:
-            await self.handler.shutdown()
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.debug("Active handler shutdown ignored during restart: %s", e)
 
     def _mark_restart_requested(self, reason: str) -> None:
         """Request a backend restart from a synchronous route handler."""
@@ -849,66 +1061,132 @@ class LocalStream:
         self._settings_initialized = True
 
     async def _run_handler_startup_loop(self) -> None:
-        """Start the realtime handler and keep settings UI alive after backend failures."""
-        while not self._stop_event.is_set():
-            selected_backend = get_backend_choice()
-            if selected_backend != self._active_backend() or self._restart_requested.is_set():
-                await self._shutdown_active_handler()
-                if not self._can_rebuild_handler():
+        """Own one explicit start_up child per handler startup generation."""
+        try:
+            while not self._stop_event.is_set():
+                if self._startup_transition_active:
+                    await self._startup_transition_done.wait()
+                    continue
+
+                selected_backend = get_backend_choice()
+                if selected_backend != self._active_backend() or self._restart_requested.is_set():
+                    await self._shutdown_active_handler()
+                    if self._stop_event.is_set():
+                        return
+                    if not self._can_rebuild_handler():
+                        self._restart_requested.clear()
+                        self._set_backend_connection_state("restart_required")
+                        await self._sleep_or_restart_requested(0.5)
+                        continue
                     self._restart_requested.clear()
-                    self._set_backend_connection_state("restart_required")
+                    try:
+                        self._build_handler_for_current_backend()
+                        self._startup_generation = None
+                    except Exception as error:
+                        self._set_backend_connection_state("disconnected", error)
+                        logger.warning(
+                            "%s backend handler failed to initialize: %s. Retrying in %.1f seconds.",
+                            selected_backend,
+                            error,
+                            self._backend_retry_delay,
+                            exc_info=logger.isEnabledFor(logging.DEBUG),
+                        )
+                        await self._sleep_or_restart_requested(self._backend_retry_delay)
+                    continue
+
+                active_backend = self._active_backend()
+                if not self._has_required_key(active_backend):
+                    requirement_name = self._requirement_name(active_backend)
+                    self._set_backend_connection_state(
+                        "waiting_for_config",
+                        f"{requirement_name} is not configured.",
+                    )
                     await self._sleep_or_restart_requested(0.5)
                     continue
-                self._restart_requested.clear()
+
+                generation = self._startup_generation
+                if generation is None:
+                    if self._startup_retry_pending:
+                        self._startup_retry_pending = False
+                        await self._sleep_or_restart_requested(self._backend_retry_delay)
+                        continue
+                    self._set_backend_connection_state("connecting")
+                    generation = self._create_startup_generation()
+                    await asyncio.sleep(0)
+                    self._infer_generation_connected(generation)
+
+                task = generation.task
+                if task is None:
+                    self._startup_generation = None
+                    continue
+                restart_wait = asyncio.create_task(
+                    self._restart_requested.wait(),
+                    name="handler-restart-request",
+                )
+                stop_wait = asyncio.create_task(
+                    self._stop_event.wait(),
+                    name="handler-stop-request",
+                )
                 try:
-                    self._build_handler_for_current_backend()
-                except Exception as e:
-                    self._set_backend_connection_state("disconnected", e)
+                    done, _ = await asyncio.wait(
+                        {task, generation.replaced, restart_wait, stop_wait},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    for waiter in (restart_wait, stop_wait):
+                        if not waiter.done():
+                            waiter.cancel()
+                    await asyncio.gather(restart_wait, stop_wait, return_exceptions=True)
+
+                if self._stop_event.is_set():
+                    return
+                if self._startup_transition_active or generation.replaced.done():
+                    await self._startup_transition_done.wait()
+                    continue
+                if self._startup_generation is not generation:
+                    continue
+                if restart_wait in done:
+                    continue
+                if task not in done:
+                    continue
+
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    if self._stop_event.is_set() or self._restart_requested.is_set():
+                        pass
+                    else:
+                        raise
+                except Exception as error:
+                    self._set_backend_connection_state("disconnected", error)
                     logger.warning(
-                        "%s backend handler failed to initialize: %s. Retrying in %.1f seconds.",
-                        selected_backend,
-                        e,
+                        "%s backend failed to start: %s. Settings UI remains available; retrying in %.1f seconds.",
+                        active_backend,
+                        error,
                         self._backend_retry_delay,
                         exc_info=logger.isEnabledFor(logging.DEBUG),
                     )
-                    await self._sleep_or_restart_requested(self._backend_retry_delay)
-                    continue
-
-            active_backend = self._active_backend()
-            if not self._has_required_key(active_backend):
-                requirement_name = self._requirement_name(active_backend)
-                self._set_backend_connection_state("waiting_for_config", f"{requirement_name} is not configured.")
-                await self._sleep_or_restart_requested(0.5)
-                continue
-
-            self._set_backend_connection_state("connecting")
-            try:
-                await self.handler.start_up()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self._set_backend_connection_state("disconnected", e)
-                logger.warning(
-                    "%s backend failed to start: %s. Settings UI remains available; retrying in %.1f seconds.",
-                    active_backend,
-                    e,
-                    self._backend_retry_delay,
-                    exc_info=logger.isEnabledFor(logging.DEBUG),
-                )
-            else:
-                if self._stop_event.is_set():
-                    return
-                self._set_backend_connection_state("disconnected")
+                else:
+                    self._set_backend_connection_state("disconnected")
+                    logger.info(
+                        "%s backend session ended. Settings UI remains available; retrying in %.1f seconds.",
+                        active_backend,
+                        self._backend_retry_delay,
+                    )
+                if generation.connection_result.done():
+                    try:
+                        generation.connection_result.exception()
+                    except BaseException:
+                        pass
+                if self._startup_generation is generation:
+                    self._startup_generation = None
                 if self._restart_requested.is_set():
-                    logger.info("%s backend stopped for requested restart.", active_backend)
                     continue
-                logger.info(
-                    "%s backend session ended. Settings UI remains available; retrying in %.1f seconds.",
-                    active_backend,
-                    self._backend_retry_delay,
-                )
-
-            await self._sleep_or_restart_requested(self._backend_retry_delay)
+                await self._sleep_or_restart_requested(self._backend_retry_delay)
+        finally:
+            generation = self._startup_generation
+            if generation is not None:
+                await self._stop_startup_generation(generation, timeout=5.0)
 
     def launch(self) -> None:
         """Start the recorder/player and run the async processing loops.
@@ -992,7 +1270,7 @@ class LocalStream:
                 logger.info("Tasks cancelled during shutdown")
             finally:
                 # Ensure handler connection is closed
-                await self.handler.shutdown()
+                await self._shutdown_active_handler()
 
         asyncio.run(runner())
 
