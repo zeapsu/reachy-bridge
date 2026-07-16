@@ -32,6 +32,7 @@
     sliderActive: null,
     simLoop: null,
     live: { streams: [], timers: [], active: false },
+    cameraAvailabilityRequest: 0,
   };
 
   document.querySelectorAll(".glass").forEach((glass) => {
@@ -126,6 +127,12 @@
       $("mic-dot").className = `dot ${online ? "ok" : "error"}`;
       $("mic-state").textContent = online ? "listening" : "unavailable";
       $("stats-dot").className = `dot ${online ? "ok" : "error"}`;
+    }
+    if (!online && state.mode === "camera") {
+      disconnectCameraStream("Daemon offline");
+      $("vp-meta").textContent = "live camera · offline";
+    } else if (online && changed && state.mode === "camera" && !document.hidden) {
+      void refreshCameraAvailability();
     }
     setControlsEnabled(online && !state.controlBusy);
     if (online) void loadExpressions();
@@ -300,9 +307,57 @@
     $("doaTick").setAttribute("cy", ty.toFixed(1));
   }
 
+  function cameraShouldConnect() {
+    return state.mode === "camera" && state.daemonOnline === true && !document.hidden;
+  }
+
+  function setCameraPlaceholder(text, error = false) {
+    const placeholder = $("camera-placeholder");
+    placeholder.textContent = text;
+    placeholder.hidden = false;
+    placeholder.classList.toggle("error", error);
+  }
+
+  function disconnectCameraStream(message = "", error = false) {
+    const image = $("camera-stream");
+    image.removeAttribute("src");
+    image.hidden = true;
+    if (message) setCameraPlaceholder(message, error);
+  }
+
+  function connectCameraStream() {
+    if (!cameraShouldConnect()) return;
+    const image = $("camera-stream");
+    if (image.getAttribute("src")) return;
+    setCameraPlaceholder("Connecting to live camera");
+    image.hidden = true;
+    image.src = `/api/camera/stream?ts=${Date.now()}`;
+  }
+
+  function applyCameraAvailability(availability) {
+    if (!cameraShouldConnect()) return;
+    if (availability && availability.available === true) {
+      $("vp-meta").textContent = "live camera · loading";
+      connectCameraStream();
+      return;
+    }
+    const reason = availability && availability.reason;
+    const message =
+      reason === "in_use"
+        ? `Camera in use by ${availability.holder || "another app"}`
+        : reason === "daemon_down"
+          ? "Daemon offline"
+          : reason === "media_unavailable"
+            ? "Camera media offline"
+            : "Camera unavailable";
+    disconnectCameraStream(message);
+    $("vp-meta").textContent = reason === "in_use" ? "live camera · in use" : "live camera · unavailable";
+  }
+
   function setMode(mode) {
     if (!mode || mode === state.mode) return;
     const previous = state.mode;
+    if (previous === "camera") disconnectCameraStream();
     state.mode = mode;
     document.querySelectorAll(".vp-layer").forEach((layer) => {
       layer.classList.toggle("active", layer.dataset.mode === mode);
@@ -313,40 +368,62 @@
 
     const labels = { camera: "CAMERA", sim: "SIM · MUJOCO", schematic: "SCHEMATIC" };
     const metas = {
-      camera: "availability check · stream disabled",
+      camera: "live camera · waiting",
       sim: "decorative preview · not live",
       schematic: "telemetry 10 hz",
     };
     $("vp-badge-t").textContent = labels[mode] || mode.toUpperCase();
     $("vp-name").textContent = mode === "sim" ? "simulation" : mode;
     $("vp-meta").textContent = metas[mode] || "";
-
     if (previous === "sim" && state.simLoop) state.simLoop.stop();
     if (mode === "sim") {
       if (!state.simLoop) state.simLoop = makeSim($("sim"));
       state.simLoop.start();
     }
-    if (mode === "camera") void refreshCameraAvailability();
+    if (mode === "camera") {
+      if (!cameraShouldConnect()) {
+        const offline = state.daemonOnline !== true;
+        disconnectCameraStream(offline ? "Daemon offline" : "Camera hidden");
+        $("vp-meta").textContent = offline ? "live camera · offline" : "live camera · hidden";
+      } else {
+        void refreshCameraAvailability();
+      }
+    }
   }
 
   async function refreshCameraAvailability() {
-    const placeholder = $("camera-placeholder");
-    placeholder.textContent = "Checking camera availability";
+    if (state.mode !== "camera" || document.hidden) return;
+    const requestId = ++state.cameraAvailabilityRequest;
+    if (state.daemonOnline !== true) {
+      disconnectCameraStream("Daemon offline");
+      return;
+    }
+    setCameraPlaceholder("Checking live camera");
     try {
       const availability = await apiJson("/api/camera/availability");
-      if (availability && availability.available === true) {
-        placeholder.textContent = "Camera available (live view coming soon)";
-      } else if (availability && availability.reason === "in_use") {
-        placeholder.textContent = `Camera in use by ${availability.holder || "another app"}`;
-      } else if (availability && availability.reason === "daemon_down") {
-        placeholder.textContent = "Daemon offline";
-      } else {
-        placeholder.textContent = "Camera unavailable";
-      }
+      if (requestId !== state.cameraAvailabilityRequest || state.mode !== "camera") return;
+      applyCameraAvailability(availability);
     } catch (error) {
-      placeholder.textContent = error.message || "Camera status unavailable";
+      if (requestId !== state.cameraAvailabilityRequest || state.mode !== "camera") return;
+      disconnectCameraStream(error.message || "Camera status unavailable", true);
+      $("vp-meta").textContent = "live camera · error";
     }
   }
+
+  $("camera-stream").addEventListener("load", () => {
+    if (!cameraShouldConnect()) {
+      disconnectCameraStream();
+      return;
+    }
+    $("camera-stream").hidden = false;
+    $("camera-placeholder").hidden = true;
+    $("camera-placeholder").classList.remove("error");
+    $("vp-meta").textContent = "live camera · live";
+  });
+  $("camera-stream").addEventListener("error", () => {
+    disconnectCameraStream("Live camera unavailable", true);
+    $("vp-meta").textContent = "live camera · error";
+  });
 
   function renderApps(statuses = Array.from(appState.values())) {
     const active = statuses.find((app) => app.status === "running" || app.status === "loading" || app.status === "stopping") || null;
@@ -354,6 +431,17 @@
     // reconciles chip disabled-ness at ~10 Hz off this flag; the hint is only
     // touched on the flip.
     const appActive = Boolean(active);
+    const cameraOwner = statuses.find((app) => {
+      if (!["running", "loading", "stopping"].includes(app.status)) return false;
+      if (app.uses_camera === true) return true;
+      return app.uses_camera === undefined && ["reachy_chat", "reachy_lookat"].includes(app.name);
+    });
+    if (state.mode === "camera" && cameraOwner) {
+      disconnectCameraStream(`Camera in use by ${cameraOwner.name}`);
+      $("vp-meta").textContent = "live camera · in use";
+    } else if (state.mode === "camera" && cameraShouldConnect() && !$("camera-stream").getAttribute("src")) {
+      void refreshCameraAvailability();
+    }
     if (appActive !== state.appActive) {
       state.appActive = appActive;
       if (!state.exprBusy) {
@@ -1348,6 +1436,7 @@
   function startLiveConnections() {
     if (state.live.active) return;
     state.live.active = true;
+    if (cameraShouldConnect()) void refreshCameraAvailability();
 
     void pollDaemonStatus();
     void pollAppsStatus();
@@ -1386,6 +1475,10 @@
   function stopLiveConnections() {
     if (!state.live.active) return;
     state.live.active = false;
+    if (state.mode === "camera") {
+      disconnectCameraStream("Camera hidden");
+      $("vp-meta").textContent = "live camera · hidden";
+    }
     state.live.timers.forEach((id) => clearInterval(id));
     state.live.timers = [];
     state.live.streams.forEach((source) => {

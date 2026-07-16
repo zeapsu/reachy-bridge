@@ -123,6 +123,7 @@ class AppSupervisor:
         self._reaper_tasks: dict[str, asyncio.Task[None]] = {}
         self._readiness_tasks: dict[str, asyncio.Task[None]] = {}
         self._camera_release_hook: Callable[[], Awaitable[None]] | None = None
+        self._camera_start_reservations: set[str] = set()
         self._workspace_root = _get_workspace_root()
 
     def set_camera_release_hook(
@@ -136,9 +137,12 @@ class AppSupervisor:
         return self.camera_holder() is None
 
     def camera_holder(self) -> str | None:
-        """Return the running camera-using app name, if any."""
+        """Return the camera app or startup reservation currently owning the camera."""
+        for name in self._camera_start_reservations:
+            if self.APPS.get(name, {}).get("uses_camera", False):
+                return name
         for app in self._apps.values():
-            if app.status in ("running", "loading") and app.uses_camera:
+            if app.status in ("running", "loading", "stopping") and app.uses_camera:
                 return app.name
         return None
 
@@ -235,9 +239,17 @@ class AppSupervisor:
                         "status": "refused",
                     }
 
+            camera_reserved = False
             if app.uses_camera:
-                await self._release_dashboard_camera()
-
+                # Reserve ownership before awaiting dashboard release.  The
+                # synchronous camera_holder() path sees this immediately.
+                self._camera_start_reservations.add(name)
+                camera_reserved = True
+                try:
+                    await self._release_dashboard_camera()
+                except BaseException:
+                    self._camera_start_reservations.discard(name)
+                    raise
             # Launch the app module directly with the shared interpreter. Keep
             # cwd=app_dir because apps load resources relative to their own directory.
             app_dir = self._workspace_root / "apps" / name
@@ -278,6 +290,10 @@ class AppSupervisor:
                 )
                 app.pid = app.process.pid
                 app.status = "loading"
+                # The loading state now owns the camera; clear the provisional
+                # reservation in the same event-loop turn with no visible gap.
+                if camera_reserved:
+                    self._camera_start_reservations.discard(name)
                 app.error = None
                 app.start_time = time.time()
                 logger.info(f"Started app {name} (pid {app.pid}) in loading state")
@@ -295,7 +311,13 @@ class AppSupervisor:
                     "status": "loading",
                     "pid": app.pid,
                 }
+            except asyncio.CancelledError:
+                if camera_reserved:
+                    self._camera_start_reservations.discard(name)
+                raise
             except Exception as e:
+                if camera_reserved:
+                    self._camera_start_reservations.discard(name)
                 app.status = "error"
                 app.error = str(e)
                 logger.error(f"Failed to start app {name}: {e}")
@@ -476,7 +498,7 @@ class AppSupervisor:
         try:
             exit_code = await asyncio.to_thread(app.process.wait)
             async with self._lock:
-                if app.status in ("loading", "running"):
+                if app.status in ("loading", "running", "stopping"):
                     if exit_code == 0:
                         app.status = "stopped"
                         app.external = False
@@ -539,7 +561,7 @@ class AppSupervisor:
         """Get status for all apps. Reconciles dead processes and adopts live external apps."""
         # Liveness check: if a process is marked running but is dead, transition it to stopped
         for app in self._apps.values():
-            if app.status == "running" and app.pid is not None:
+            if app.status in ("running", "stopping") and app.pid is not None:
                 try:
                     proc = psutil.Process(app.pid)
                     # Verify it's still the right process

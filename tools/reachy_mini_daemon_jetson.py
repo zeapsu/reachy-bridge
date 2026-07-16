@@ -294,6 +294,18 @@ def main() -> int:
     _apply_nvidia_unixfd_patch()
     _apply_webrtcsink_compat_patch()
     _apply_camera_ipc_patch()
+    if _is_jetson():
+        # Importing the extension is lazy so this wrapper remains a transparent
+        # daemon pass-through on non-Jetson development machines.
+        from reachy_mini_daemon_media import (
+            apply_jetson_camera_consumer_patch,
+            install_camera_stream_route,
+        )
+
+        # The daemon-side route lazily constructs GStreamerCamera; patch its
+        # consumer branch before the first request can construct that reader.
+        apply_jetson_camera_consumer_patch()
+        install_camera_stream_route()
     _set_reachy_audio_output_volume()
     _ensure_reachymini_asoundrc()
     from reachy_mini.daemon.app.main import main as daemon_main

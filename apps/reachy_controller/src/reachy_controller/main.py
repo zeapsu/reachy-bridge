@@ -23,6 +23,7 @@ from reachy_controller.daemon_proxy import router as daemon_router
 from reachy_controller.daemon_supervisor import DaemonSupervisor
 from reachy_controller.routes.apps import router as apps_router
 from reachy_controller.routes.audio import router as audio_router
+from reachy_controller.routes.camera import DashboardCameraLeaseManager
 from reachy_controller.routes.camera import router as camera_router
 from reachy_controller.routes.controls import router as controls_router
 from reachy_controller.routes.daemon import router as daemon_control_router
@@ -61,7 +62,9 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
         os.getenv("DAEMON_URL", "http://127.0.0.1:8000"),
         timeout=float(os.getenv("DAEMON_TIMEOUT", "2.0")),
     )
+    camera_leases = DashboardCameraLeaseManager()
     app_supervisor = AppSupervisor(daemon_proxy=daemon_proxy)
+    app_supervisor.set_camera_release_hook(camera_leases.close_all)
     daemon_supervisor = DaemonSupervisor(daemon_proxy=daemon_proxy)
     state_broadcaster = StateBroadcaster(daemon_proxy)
     stats_broadcaster = StatsBroadcaster(daemon_proxy)
@@ -86,6 +89,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     app.state.state_broadcaster = state_broadcaster
     app.state.stats_broadcaster = stats_broadcaster
     app.state.app_supervisor = app_supervisor
+    app.state.camera_leases = camera_leases
     app.state.daemon_supervisor = daemon_supervisor
     app.state.expression_player = expression_player
     app.add_middleware(NoCacheMiddleware)
