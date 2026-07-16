@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -12,16 +12,22 @@ from reachy_controller.routes import system_stats
 
 @pytest.mark.asyncio
 async def test_stats_stream_skips_host_read_while_daemon_offline(monkeypatch) -> None:
-    """With the daemon unreachable, the stream emits keepalives only and never samples the host."""
-    monkeypatch.setattr(system_stats, "_STATS_UPDATE_INTERVAL_SECONDS", 0.01)
+    """Offline shared samples produce keepalives and never read host stats."""
     monkeypatch.setattr(system_stats, "_SSE_KEEPALIVE_INTERVAL_SECONDS", 0.03)
     collect = MagicMock(return_value={"cpu_percent": 5})
-    monkeypatch.setattr(system_stats, "collect_jetson_stats", collect)
 
-    proxy = AsyncMock()
-    proxy.get_daemon_status = AsyncMock(return_value=None)
+    class OfflineProxy:
+        probe_count = 0
 
-    gen = system_stats._system_stats_stream_generator(proxy)
+        async def get_daemon_status(self):
+            self.probe_count += 1
+            return None
+
+    proxy = OfflineProxy()
+    from reachy_controller.shared_streams import StatsBroadcaster
+
+    broadcaster = StatsBroadcaster(proxy, collect_stats=collect, interval=0.01)
+    gen = system_stats._system_stats_stream_generator(broadcaster)
     try:
         first = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
     finally:
@@ -30,20 +36,24 @@ async def test_stats_stream_skips_host_read_while_daemon_offline(monkeypatch) ->
     assert "keepalive" in first
     assert "stats-update" not in first
     collect.assert_not_called()
-    assert proxy.get_daemon_status.await_count >= 2  # kept polling, kept skipping
+    assert proxy.probe_count >= 2
 
 
 @pytest.mark.asyncio
-async def test_stats_stream_emits_while_daemon_online(monkeypatch) -> None:
-    """With the daemon reachable, the stream samples the host and emits stats-update."""
-    monkeypatch.setattr(system_stats, "_STATS_UPDATE_INTERVAL_SECONDS", 0.01)
+async def test_stats_stream_emits_while_daemon_online() -> None:
+    """Online shared samples retain the stats-update event contract."""
     collect = MagicMock(return_value={"cpu_percent": 5})
-    monkeypatch.setattr(system_stats, "collect_jetson_stats", collect)
 
-    proxy = AsyncMock()
-    proxy.get_daemon_status = AsyncMock(return_value={"state": "running"})
+    class OnlineProxy:
+        async def get_daemon_status(self):
+            return {"state": "running"}
 
-    gen = system_stats._system_stats_stream_generator(proxy)
+    from reachy_controller.shared_streams import StatsBroadcaster
+
+    broadcaster = StatsBroadcaster(
+        OnlineProxy(), collect_stats=collect, interval=0.01
+    )
+    gen = system_stats._system_stats_stream_generator(broadcaster)
     try:
         first = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
     finally:

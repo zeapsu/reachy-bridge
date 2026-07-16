@@ -129,16 +129,16 @@ async def test_snapshot_routes_report_daemon_unavailable() -> None:
 @pytest.mark.asyncio
 async def test_sse_adapter_maps_daemon_messages_to_spec_events() -> None:
     proxy = BridgeProxy({}, {})
+    broadcaster = telemetry_module.StateBroadcaster(proxy, reconnect_delay=0.01)
+    stream = telemetry_module._daemon_state_stream_generator(broadcaster)
 
-    events = [
-        event
-        async for event in telemetry_module._daemon_state_stream_generator(proxy)
-    ]
-
-    assert events == [
-        'event: state-update\ndata: {"head_pose": [0, 0, 0, 0, 0, 0]}\n\n',
-        "event: daemon-offline\ndata: {}\n\n",
-    ]
+    try:
+        assert await anext(stream) == (
+            'event: state-update\ndata: {"head_pose": [0, 0, 0, 0, 0, 0]}\n\n'
+        )
+        assert await anext(stream) == "event: daemon-offline\ndata: {}\n\n"
+    finally:
+        await stream.aclose()
 
 
 def test_state_stream_uses_root_telemetry_path() -> None:
