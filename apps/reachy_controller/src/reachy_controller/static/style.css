@@ -1025,15 +1025,53 @@ input:disabled,
 
 .eq .bar {
   flex: 1;
+  /* Band tint: low bars carry the scheme accent, mid/high sweep toward the
+     scheme's cool token (both curated per palette), so the three groups read
+     apart in every theme without any hardcoded hex. */
+  --eq-c: var(--amber);
   border-radius: 4px 4px 2px 2px;
-  background: linear-gradient(180deg, var(--amber), color-mix(in srgb, var(--amber) 38%, transparent));
-  box-shadow: 0 0 10px -2px color-mix(in srgb, var(--amber) 55%, transparent);
+  background: linear-gradient(180deg, var(--eq-c), color-mix(in srgb, var(--eq-c) 38%, transparent));
+  box-shadow: 0 0 10px -2px color-mix(in srgb, var(--eq-c) 55%, transparent);
   transform-origin: bottom;
   height: 6%;
   transition: height 0.12s linear, opacity 0.2s;
 }
 
-.eq.idle .bar {
+.eq .bar:nth-child(n + 13) { --eq-c: color-mix(in srgb, var(--amber) 72%, var(--cyan)); }
+
+.eq .bar:nth-child(n + 25) { --eq-c: color-mix(in srgb, var(--amber) 45%, var(--cyan)); }
+
+/* Overall loudness ribbon under the bars — width tracks eased RMS. */
+.eq-rms {
+  height: 3px;
+  margin: 6px 2px 0;
+  border-radius: 2px;
+  width: 0%;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--amber) 70%, transparent), var(--amber));
+  box-shadow: 0 0 8px -2px color-mix(in srgb, var(--amber) 55%, transparent);
+  transition: width 0.12s linear, opacity 0.2s;
+}
+
+/* Band identity labels, tinted to match their bar third. */
+.eq-bands {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-align: center;
+  color: var(--muted);
+}
+
+.eq-bands .b-low { color: color-mix(in srgb, var(--amber) 62%, var(--muted)); }
+
+.eq-bands .b-mid { color: color-mix(in srgb, color-mix(in srgb, var(--amber) 72%, var(--cyan)) 62%, var(--muted)); }
+
+.eq-bands .b-high { color: color-mix(in srgb, color-mix(in srgb, var(--amber) 45%, var(--cyan)) 62%, var(--muted)); }
+
+.eq.idle .bar,
+.eq.idle + .eq-rms {
   opacity: 0.35;
   box-shadow: none;
 }
@@ -1484,6 +1522,9 @@ input[type=range]::-moz-range-thumb {
 @media (max-width: 560px) {
   .brand .sub { display: none; }
   .statusbar { gap: 10px; }
+  /* Keep 36 bars ≥ ~5px wide on 320-390px viewports. */
+  .eq { gap: 2px; }
+  .eq .bar { border-radius: 3px 3px 2px 2px; }
   .vp-foot,
   .eq-foot,
   .log-foot {

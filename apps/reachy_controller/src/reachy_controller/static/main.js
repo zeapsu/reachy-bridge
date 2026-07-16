@@ -367,7 +367,7 @@
       $("expr-hint").textContent = "Expressions enable when the daemon is online.";
       $("expr-hint").className = "panel-hint";
       renderOfflinePose();
-      renderEqualizer(false, "no audio signal");
+      renderEqualizer(null, "no audio signal");
       resetStatsIdle();
     } else if (changed || !state.controlsLoaded) {
       $("control-status").textContent = "online";
@@ -1060,49 +1060,185 @@
     }
   }
 
+  // ── Audio spectrum visualizer ─────────────────────────────────────────
   const NBARS = 36;
+  const EQ_FLOOR = 4; // settled bar height (%)
+  const EQ_SPAN = 88; // full-scale travel above the floor (%)
+  // Meter ballistics at the stream's 20 Hz cadence: fast attack (~90% in
+  // 150 ms), slower release (~90% in 500 ms) — the classic analyzer feel.
+  const EQ_ATTACK = 0.55;
+  const EQ_RELEASE = 0.2;
+  const EQ_RMS_ATTACK = 0.5;
+  const EQ_RMS_RELEASE = 0.15;
+  // Quiet hysteresis: enter below 0.02 sustained for 12 events (~0.6 s at
+  // 20 Hz), wake at 0.04 — then settle to the floor and stop DOM writes.
+  const EQ_QUIET_ENTER = 0.02;
+  const EQ_QUIET_EXIT = 0.04;
+  const EQ_QUIET_TICKS = 12;
+  const EQ_PEAK_DECAY_DB = 1.2; // peak-hold falls ~24 dB/s at 20 Hz
   const eqEl = $("eq");
+  const eqRmsEl = $("eq-rms");
   const bars = Array.from({ length: NBARS }, () => {
     const bar = document.createElement("div");
     bar.className = "bar";
     eqEl.appendChild(bar);
     return bar;
   });
+  // Three overlapping band kernels centred on the low/mid/high thirds. Bar i
+  // renders clamp(w·[low, mid, high]) — three soft humps with smooth valleys
+  // instead of the old decorative sine bell.
+  const eqWeights = Array.from({ length: NBARS }, (_, index) =>
+    [5.5, 17.5, 29.5].map((center) => Math.max(0, 1 - Math.abs(index - center) / 12) ** 1.4));
   const eqState = new Array(NBARS).fill(0);
-  const eqProfile = Array.from({ length: NBARS }, (_, index) => 0.24 + Math.sin((index / (NBARS - 1)) * Math.PI) * 0.76);
   const eqLast = new Array(NBARS).fill(null);
   let eqSettled = false;
+  let eqIdleLast = null;
   let eqPeakLast = null;
+  let eqSourceLast = null;
+  let eqRateLast = null;
+  let eqRmsState = 0;
+  let eqRmsLast = null;
+  let eqQuietTicks = 0;
+  let eqPeakDb = null;
 
-  function renderEqualizer(speechDetected, label = null) {
-    const peak = label || (speechDetected ? "speech detected" : "no audio signal");
-    if (peak !== eqPeakLast) {
-      eqPeakLast = peak;
-      $("eq-peak").textContent = peak;
-    }
-    // Once idle has settled to the floor, do zero per-bar work each tick. The
-    // 20 Hz audio stream otherwise rewrites 36 bar heights forever, and those
-    // bars sit inside a backdrop-filtered panel that iOS re-rasterizes on every
-    // write — the focused-tab battery/heat drain (#36).
-    if (!speechDetected && eqSettled) return;
-    eqEl.classList.toggle("idle", !speechDetected);
-    const normalized = speechDetected ? 0.7 : 0.0;
-    let settled = !speechDetected;
+  // Validate one SSE payload into clamped levels; anything malformed → null
+  // (the caller drops it — the meter never moves on garbage).
+  function audioLevelsFromPayload(payload) {
+    if (!payload || typeof payload !== "object") return null;
+    const rms = finite(payload.rms);
+    const low = finite(payload.low);
+    const mid = finite(payload.mid);
+    const high = finite(payload.high);
+    if (rms == null && low == null && mid == null && high == null) return null;
+    return {
+      rms: clamp(rms ?? 0, 0, 1),
+      low: clamp(low ?? 0, 0, 1),
+      mid: clamp(mid ?? 0, 0, 1),
+      high: clamp(high ?? 0, 0, 1),
+      db: finite(payload.rms_db),
+      rateHz: finite(payload.sample_rate_hz),
+      source: typeof payload.source === "string" && payload.source ? payload.source : null,
+    };
+  }
+
+  function formatSampleRate(rateHz) {
+    const khz = rateHz / 1000;
+    return `${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`;
+  }
+
+  function setEqIdle(idle) {
+    if (idle === eqIdleLast) return;
+    eqIdleLast = idle;
+    eqEl.classList.toggle("idle", idle);
+  }
+
+  function setEqPeakText(text) {
+    if (text === eqPeakLast) return;
+    eqPeakLast = text;
+    $("eq-peak").textContent = text;
+  }
+
+  // Pin every bar and the ribbon to the quiet floor in ONE pass, then stop:
+  // offline/quiet states must not keep 36 heights animating forever. Once
+  // settled, a tick does zero per-bar work — the 20 Hz stream otherwise
+  // rewrites bar heights inside a backdrop-filtered panel that iOS
+  // re-rasterizes on every write, the focused-tab battery drain (#36).
+  function settleEqToFloor() {
+    const floor = `${EQ_FLOOR.toFixed(1)}%`;
     bars.forEach((bar, index) => {
-      const target = 5 + normalized * 86 * eqProfile[index];
-      eqState[index] += (target - eqState[index]) * 0.42;
-      if (!speechDetected && Math.abs(eqState[index] - target) < 0.1) {
-        eqState[index] = target;
-      } else if (!speechDetected) {
-        settled = false;
+      eqState[index] = EQ_FLOOR;
+      if (eqLast[index] !== floor) {
+        eqLast[index] = floor;
+        bar.style.height = floor;
       }
-      const next = `${Math.max(4, eqState[index]).toFixed(1)}%`;
+    });
+    eqRmsState = 0;
+    if (eqRmsLast !== "0.0%") {
+      eqRmsLast = "0.0%";
+      eqRmsEl.style.width = "0.0%";
+    }
+    setEqIdle(true);
+    eqSettled = true;
+  }
+
+  function renderEqualizer(levels, label = null) {
+    if (!levels) {
+      // Offline/reconnecting: update the status copy, settle to the floor
+      // exactly once, and reset the meter memory for a fresh reconnect.
+      eqQuietTicks = 0;
+      eqPeakDb = null;
+      setEqPeakText(label || "no audio signal");
+      if (!eqSettled) settleEqToFloor();
+      return;
+    }
+
+    // Footer facts come straight from the payload — change-guarded.
+    if (levels.source && levels.source !== eqSourceLast) {
+      eqSourceLast = levels.source;
+      $("eq-input").textContent = levels.source;
+    }
+    if (levels.rateHz && levels.rateHz > 0 && levels.rateHz !== eqRateLast) {
+      eqRateLast = levels.rateHz;
+      $("eq-rate").textContent = formatSampleRate(levels.rateHz);
+    }
+
+    // Decaying peak-hold readout as clamped dBFS (e.g. "-18.4 dBFS").
+    if (levels.db != null) {
+      eqPeakDb = eqPeakDb == null ? levels.db : Math.max(levels.db, eqPeakDb - EQ_PEAK_DECAY_DB);
+      setEqPeakText(`${clamp(eqPeakDb, -60, 0).toFixed(1)} dBFS`);
+    }
+
+    if (levels.rms >= EQ_QUIET_EXIT) eqQuietTicks = 0;
+    else if (levels.rms < EQ_QUIET_ENTER) eqQuietTicks += 1;
+    const quiet = eqQuietTicks >= EQ_QUIET_TICKS;
+    // Settled at the floor → zero per-bar DOM work per quiet tick (#36).
+    if (quiet && eqSettled) return;
+    if (quiet && reduceMotion) {
+      settleEqToFloor();
+      return;
+    }
+
+    eqSettled = false;
+    setEqIdle(quiet);
+
+    let maxDelta = 0;
+    bars.forEach((bar, index) => {
+      const weights = eqWeights[index];
+      const env = quiet
+        ? 0
+        : clamp(weights[0] * levels.low + weights[1] * levels.mid + weights[2] * levels.high, 0, 1);
+      const target = EQ_FLOOR + EQ_SPAN * env;
+      if (reduceMotion) {
+        // No interpolated motion — write the truthful current value.
+        eqState[index] = target;
+      } else {
+        const gain = target > eqState[index] ? EQ_ATTACK : EQ_RELEASE;
+        eqState[index] += (target - eqState[index]) * gain;
+      }
+      maxDelta = Math.max(maxDelta, Math.abs(eqState[index] - target));
+      const next = `${eqState[index].toFixed(1)}%`;
       if (next !== eqLast[index]) {
         eqLast[index] = next;
         bar.style.height = next;
       }
     });
-    eqSettled = settled;
+
+    // Overall loudness ribbon — RMS drives the panel's intensity floor.
+    const rmsTarget = quiet ? 0 : levels.rms * 100;
+    if (reduceMotion) {
+      eqRmsState = rmsTarget;
+    } else {
+      const gain = rmsTarget > eqRmsState ? EQ_RMS_ATTACK : EQ_RMS_RELEASE;
+      eqRmsState += (rmsTarget - eqRmsState) * gain;
+    }
+    const rmsNext = `${(Math.round(eqRmsState * 2) / 2).toFixed(1)}%`;
+    if (rmsNext !== eqRmsLast) {
+      eqRmsLast = rmsNext;
+      eqRmsEl.style.width = rmsNext;
+    }
+
+    // Quiet release finished → pin to the floor and go silent.
+    if (quiet && maxDelta < 0.5 && eqRmsState < 0.5) settleEqToFloor();
   }
 
   function syncSlider(id, value) {
@@ -1690,12 +1826,11 @@
     });
     const audio = bindEventSource("/api/audio/levels-stream", {
       "audio-level": (event) => {
-        const payload = readEventPayload(event);
-        const speechDetected = payload && payload.speech_detected === true;
-        renderEqualizer(speechDetected);
+        const levels = audioLevelsFromPayload(readEventPayload(event));
+        if (levels) renderEqualizer(levels);
       },
-      "daemon-unavailable": () => renderEqualizer(false, "no audio signal"),
-      error: () => renderEqualizer(false, "audio stream reconnecting"),
+      "daemon-unavailable": () => renderEqualizer(null, "no audio signal"),
+      error: () => renderEqualizer(null, "audio stream reconnecting"),
     });
     state.live.streams.push(telemetry, audio);
     openStatsStream();
@@ -1722,7 +1857,7 @@
   // Poll daemon status on the same cadence as the daemon connectivity check
   setupThemeSelector();
   renderApps();
-  renderEqualizer(false, "no audio signal");
+  renderEqualizer(null, "no audio signal");
   setDaemonOnline(false);
   // Skip if we boot into an already-hidden tab — visibilitychange starts us when shown.
   if (!document.hidden) startLiveConnections();
