@@ -6,8 +6,9 @@ import asyncio
 import signal
 import subprocess
 import sys
-from unittest.mock import MagicMock, patch
+import threading
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import psutil
 import pytest
@@ -117,6 +118,95 @@ async def test_stop_via_subprocess_handle() -> None:
     assert result["status"] == "stopped"
     assert supervisor._daemon.status == "stopped"
     mock_process.send_signal.assert_called_once_with(signal.SIGINT)
+
+@pytest.mark.asyncio
+async def test_stop_wait_serializes_concurrent_start_and_preserves_new_ownership() -> None:
+    """A start waiting behind stop must not be cleared by the old stop."""
+    with patch.dict("os.environ", {"REACHY_MANAGE_DAEMON": "1"}):
+        supervisor = DaemonSupervisor()
+        old_process = MagicMock(pid=111)
+        wait_started = threading.Event()
+        release_wait = threading.Event()
+
+        def paused_wait(timeout: float) -> int:
+            wait_started.set()
+            assert release_wait.wait(timeout=1.0)
+            return 0
+
+        old_process.wait.side_effect = paused_wait
+        old_pump = MagicMock()
+        old_pump.thread.is_alive.return_value = False
+        supervisor._daemon.process = old_process
+        supervisor._daemon.pid = old_process.pid
+        supervisor._daemon.status = "running"
+        supervisor._daemon.log_pump = old_pump
+
+        new_process = MagicMock(pid=222)
+        new_pump = MagicMock()
+        new_pump.thread.is_alive.return_value = False
+        with (
+            patch(
+                "reachy_controller.daemon_supervisor.subprocess.Popen",
+                return_value=new_process,
+            ) as popen,
+            patch(
+                "reachy_controller.daemon_supervisor.ProcessLogPump",
+                return_value=new_pump,
+            ),
+        ):
+            stop_task = asyncio.create_task(supervisor.stop())
+            await asyncio.wait_for(asyncio.to_thread(wait_started.wait, 1.0), 1.0)
+            start_task = asyncio.create_task(supervisor.start())
+            await asyncio.sleep(0)
+            assert not start_task.done()
+
+            release_wait.set()
+            assert await stop_task == {"status": "stopped"}
+            assert await start_task == {
+                "status": "starting",
+                "pid": new_process.pid,
+                "start_time": supervisor._daemon.start_time,
+            }
+
+        popen.assert_called_once()
+        old_pump.stop.assert_called_once_with(parent_exited=True)
+        new_pump.stop.assert_not_called()
+        assert supervisor._daemon.process is new_process
+        assert supervisor._daemon.pid == new_process.pid
+        assert supervisor._daemon.log_pump is new_pump
+
+
+@pytest.mark.asyncio
+async def test_failed_daemon_pump_cleanup_retains_ownership_and_refuses_restart() -> None:
+    """A failed/live old pump blocks replacement until explicit cleanup succeeds."""
+    with patch.dict("os.environ", {"REACHY_MANAGE_DAEMON": "1"}):
+        supervisor = DaemonSupervisor()
+        process = MagicMock(pid=12345)
+        pump = MagicMock()
+        pump.stop.side_effect = RuntimeError("pump join failed")
+        pump.thread.is_alive.return_value = True
+        supervisor._daemon.process = process
+        supervisor._daemon.pid = process.pid
+        supervisor._daemon.status = "running"
+        supervisor._daemon.log_pump = pump
+
+        result = await supervisor.stop()
+
+        assert result == {"error": "pump join failed", "status": "stopping"}
+        assert supervisor._daemon.status == "stopping"
+        assert supervisor._daemon.process is process
+        assert supervisor._daemon.pid == process.pid
+        assert supervisor._daemon.log_pump is pump
+
+        with patch("reachy_controller.daemon_supervisor.subprocess.Popen") as popen:
+            restart = await supervisor.start()
+
+        assert restart["status"] == "refused"
+        assert "log pump" in restart["error"]
+        popen.assert_not_called()
+        assert supervisor._daemon.process is process
+        assert supervisor._daemon.pid == process.pid
+        assert supervisor._daemon.log_pump is pump
 
 
 @pytest.mark.asyncio

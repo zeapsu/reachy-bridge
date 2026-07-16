@@ -58,6 +58,8 @@ class DaemonSupervisor:
         """Initialize supervisor with empty daemon state."""
         self.daemon_proxy = daemon_proxy
         self.log_broker = log_broker or LogBroker()
+        self._lock = asyncio.Lock()
+
         self._daemon = DaemonState()
         self._manageable = _truthy(os.getenv("REACHY_MANAGE_DAEMON"))
         self._workspace_root = _get_workspace_root()
@@ -82,68 +84,118 @@ class DaemonSupervisor:
         if not self._manageable:
             return {"status": "refused", "error": "Daemon is not locally manageable"}
 
-        # If already running, return running status
-        if self._daemon.pid is not None:
-            try:
-                proc = psutil.Process(self._daemon.pid)
-                if proc.is_running():
-                    return {
-                        "status": "running",
-                        "pid": self._daemon.pid,
-                        "start_time": self._daemon.start_time,
-                    }
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-            # PID is stale; clear it
-            self._daemon.pid = None
-            self._daemon.process = None
+        async with self._lock:
+            if self._daemon.status == "stopping":
+                return {
+                    "status": "refused",
+                    "error": "An existing daemon log pump is still shutting down",
+                }
 
-        # Launch daemon with an immediate merged-pipe pump; DEVNULL would lose
-        # diagnostics and leave no honest source status for the panel.
-        try:
-            self.log_broker.reset("daemon", status="empty")
-            self._daemon.process = subprocess.Popen(
-                self._cmd,
-                cwd=self._workspace_root,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                start_new_session=True,
-            )
-            self._daemon.log_pump = ProcessLogPump(
-                self._daemon.process,
-                "daemon",
-                self.log_broker,
-                self._log_path,
-            )
-            self._daemon.pid = self._daemon.process.pid
-            self._daemon.status = "starting"
-            self._daemon.error = None
-            self._daemon.external = False
-            self._daemon.start_time = time.time()
-            logger.info(f"Started daemon (pid {self._daemon.pid})")
-            return {
-                "status": "starting",
-                "pid": self._daemon.pid,
-                "start_time": self._daemon.start_time,
-            }
-        except Exception as e:
-            self._daemon.status = "error"
-            self._daemon.error = str(e)
-            logger.error(f"Failed to start daemon: {e}")
-            if self._daemon.log_pump is not None:
-                await asyncio.to_thread(self._daemon.log_pump.stop)
-                self._daemon.log_pump = None
-            if self._daemon.process is not None:
+            pump = self._daemon.log_pump
+            if self._daemon.pid is not None:
                 try:
-                    self._daemon.process.kill()
-                    await asyncio.to_thread(self._daemon.process.wait, 1.0)
-                except Exception:
+                    proc = psutil.Process(self._daemon.pid)
+                    if proc.is_running():
+                        return {
+                            "status": "running",
+                            "pid": self._daemon.pid,
+                            "start_time": self._daemon.start_time,
+                        }
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
-                self._daemon.process = None
+
+                # A stale PID is safe to discard only when its old pump has
+                # already released the log file and reader ownership.
+                if pump is not None:
+                    return {
+                        "status": "refused",
+                        "error": "An existing daemon log pump is still shutting down",
+                    }
                 self._daemon.pid = None
-            return {"error": str(e), "status": "error"}
+                self._daemon.process = None
+            elif self._daemon.process is not None or pump is not None:
+                if pump is not None:
+                    return {
+                        "status": "refused",
+                        "error": "An existing daemon log pump is still shutting down",
+                    }
+                self._daemon.process = None
+
+            # Launch daemon with an immediate merged-pipe pump; DEVNULL would
+            # lose diagnostics and leave no honest source status for the panel.
+            process: subprocess.Popen[str] | None = None
+            log_pump: ProcessLogPump | None = None
+            try:
+                self.log_broker.reset("daemon", status="empty")
+                process = subprocess.Popen(
+                    self._cmd,
+                    cwd=self._workspace_root,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    start_new_session=True,
+                )
+                log_pump = ProcessLogPump(
+                    process,
+                    "daemon",
+                    self.log_broker,
+                    self._log_path,
+                )
+                self._daemon.process = process
+                self._daemon.log_pump = log_pump
+                self._daemon.pid = process.pid
+                self._daemon.status = "starting"
+                self._daemon.error = None
+                self._daemon.external = False
+                self._daemon.start_time = time.time()
+                logger.info(f"Started daemon (pid {self._daemon.pid})")
+                return {
+                    "status": "starting",
+                    "pid": self._daemon.pid,
+                    "start_time": self._daemon.start_time,
+                }
+            except Exception as e:
+                self._daemon.status = "error"
+                self._daemon.error = str(e)
+                logger.error(f"Failed to start daemon: {e}")
+                if log_pump is not None:
+                    try:
+                        await asyncio.to_thread(self._close_log_pump, log_pump)
+                    except Exception:
+                        # Keep the failed launch owned if its reader cannot
+                        # be stopped; a later explicit stop can retry it.
+                        self._daemon.process = process
+                        self._daemon.log_pump = log_pump
+                        self._daemon.pid = process.pid if process is not None else None
+                        self._daemon.status = "stopping"
+                        return {"error": str(e), "status": "stopping"}
+                if process is not None:
+                    try:
+                        process.kill()
+                        await asyncio.to_thread(process.wait, 1.0)
+                    except Exception:
+                        pass
+                if self._daemon.process is process:
+                    self._daemon.process = None
+                if self._daemon.pid == (process.pid if process is not None else None):
+                    self._daemon.pid = None
+                if self._daemon.log_pump is log_pump:
+                    self._daemon.log_pump = None
+                return {"error": str(e), "status": "error"}
+
+    @staticmethod
+    def _close_log_pump(
+        pump: ProcessLogPump,
+        parent_exited: bool = False,
+    ) -> None:
+        """Stop a pump and retain ownership if its reader remains alive."""
+        pump.stop(parent_exited=parent_exited)
+        thread = getattr(pump, "thread", None)
+        is_alive = getattr(thread, "is_alive", None)
+        if callable(is_alive) and is_alive() is True:
+            raise RuntimeError("log pump for daemon did not stop")
+
 
     async def stop(self) -> dict[str, Any]:
         """Stop the daemon process gracefully.
@@ -154,35 +206,44 @@ class DaemonSupervisor:
         if not self._manageable:
             return {"status": "refused", "error": "Daemon is not locally manageable"}
 
-        if self._daemon.status == "stopped" and self._daemon.pid is None:
+        async with self._lock:
+            return await self._stop_locked()
+
+    async def _stop_locked(self) -> dict[str, Any]:
+        """Stop the captured daemon ownership while holding ``self._lock``."""
+        process = self._daemon.process
+        pid = self._daemon.pid
+        pump = self._daemon.log_pump
+        if process is None and pid is None and pump is None:
+            if self._daemon.status != "stopped" or self._daemon.error is not None:
+                self.log_broker.set_status("daemon", "stopped")
+                self._daemon.status = "stopped"
+                self._daemon.error = None
             return {"status": "stopped"}
 
+        self._daemon.status = "stopping"
         parent_exited = False
         try:
-            # Handle subprocess.Popen handle (started by this supervisor)
-            if self._daemon.process is not None:
-                # Try SIGINT first (Ctrl-C)
-                self._daemon.process.send_signal(signal.SIGINT)
+            # Handle subprocess.Popen handle (started by this supervisor).
+            if process is not None:
+                process.send_signal(signal.SIGINT)
                 try:
-                    await asyncio.to_thread(self._daemon.process.wait, 3.0)
+                    await asyncio.to_thread(process.wait, 3.0)
                     parent_exited = True
                 except subprocess.TimeoutExpired:
-                    # Escalate to SIGTERM
-                    self._daemon.process.terminate()
+                    process.terminate()
                     try:
-                        await asyncio.to_thread(self._daemon.process.wait, 2.0)
+                        await asyncio.to_thread(process.wait, 2.0)
                         parent_exited = True
                     except subprocess.TimeoutExpired:
-                        # Final escalation: SIGKILL
-                        self._daemon.process.kill()
-                        await asyncio.to_thread(self._daemon.process.wait, 1.0)
+                        process.kill()
+                        await asyncio.to_thread(process.wait, 1.0)
                         parent_exited = True
                 logger.info("Stopped daemon (via subprocess handle)")
-            elif self._daemon.pid is not None:
-                # Handle adopted orphaned process
+            elif pid is not None:
+                # Handle adopted orphaned process.
                 try:
-                    proc = psutil.Process(self._daemon.pid)
-                    # Verify it's still the daemon by checking the command line
+                    proc = psutil.Process(pid)
                     cmdline = " ".join(proc.cmdline() or [])
                     if self._is_daemon_process(cmdline):
                         proc.send_signal(signal.SIGINT)
@@ -195,20 +256,47 @@ class DaemonSupervisor:
                             except psutil.TimeoutExpired:
                                 proc.kill()
                                 await asyncio.to_thread(proc.wait, 1.0)
-                        logger.info(f"Stopped adopted daemon (pid {self._daemon.pid})")
+                        logger.info(f"Stopped adopted daemon (pid {pid})")
                     else:
                         logger.warning(
-                            f"PID {self._daemon.pid} no longer runs daemon (cmdline: {cmdline})"
+                            f"PID {pid} no longer runs daemon (cmdline: {cmdline})"
                         )
                 except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
-                    logger.info(f"Adopted daemon (pid {self._daemon.pid}) already exited: {e}")
+                    logger.info(f"Adopted daemon (pid {pid}) already exited: {e}")
         except Exception as e:
             logger.error(f"Error stopping daemon: {e}")
-        if self._daemon.log_pump is not None:
-            await asyncio.to_thread(self._daemon.log_pump.stop, parent_exited=parent_exited)
+
+        # Never release the captured pump's ownership until it has stopped.
+        # The lifecycle lock prevents a managed start from replacing it while
+        # this await is in progress.
+        if pump is not None:
+            if self._daemon.log_pump is not pump:
+                return {
+                    "status": "stopping",
+                    "error": "Daemon log pump ownership changed during stop",
+                }
+            try:
+                await asyncio.to_thread(self._close_log_pump, pump, parent_exited)
+            except Exception as e:
+                self._daemon.status = "stopping"
+                self._daemon.error = str(e)
+                logger.error(f"Error closing daemon log pump: {e}")
+                return {"error": str(e), "status": "stopping"}
+
+        # Do not clear a process/pid installed by any other owner.
+        if (
+            self._daemon.process is not process
+            or self._daemon.pid != pid
+            or self._daemon.log_pump is not pump
+        ):
+            return {
+                "status": "stopping",
+                "error": "Daemon ownership changed during stop",
+            }
+
+        if pump is not None:
             self._daemon.log_pump = None
         self.log_broker.set_status("daemon", "stopped")
-
         self._daemon.status = "stopped"
         self._daemon.error = None
         self._daemon.pid = None
@@ -216,14 +304,25 @@ class DaemonSupervisor:
         return {"status": "stopped"}
 
 
+
     async def aclose(self) -> None:
         """Close a managed daemon and its pump during lifespan teardown."""
-        if self._daemon.process is not None:
-            await self.stop()
-            return
-        if self._daemon.log_pump is not None:
-            await asyncio.to_thread(self._daemon.log_pump.stop)
-            self._daemon.log_pump = None
+        async with self._lock:
+            if self._daemon.process is not None:
+                await self._stop_locked()
+                return
+            pump = self._daemon.log_pump
+            if pump is None:
+                return
+            try:
+                await asyncio.to_thread(self._close_log_pump, pump)
+            except Exception as e:
+                self._daemon.status = "stopping"
+                self._daemon.error = str(e)
+                logger.error(f"Error closing daemon log pump: {e}")
+                return
+            if self._daemon.log_pump is pump:
+                self._daemon.log_pump = None
     def reconcile_orphans(self) -> None:
         """Adopt an orphaned daemon process without claiming its existing pipes."""
         for proc in psutil.process_iter(["pid", "cmdline"]):
