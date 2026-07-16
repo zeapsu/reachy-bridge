@@ -69,6 +69,15 @@ def test_backend_provider_defaults_to_openai_realtime_when_unset() -> None:
     assert config_mod._normalize_backend_provider(None, "gemini-3.1-flash-live-preview") == config_mod.GEMINI_BACKEND
 
 
+def test_voice_fallbacks_are_provider_specific() -> None:
+    """OpenRouter's platform-default fallback must not inherit Realtime voices."""
+    assert config_mod.get_available_voices_for_backend(config_mod.OPENAI_BACKEND) == [
+        config_mod.OPENROUTER_SYSTEM_DEFAULT_VOICE
+    ]
+    assert config_mod.get_default_voice_for_backend(config_mod.OPENAI_BACKEND) == "System Default"
+    assert config_mod.get_default_voice_for_backend(config_mod.OPENAI_REALTIME_BACKEND) == config_mod.OPENAI_DEFAULT_VOICE
+
+
 def test_backend_provider_rejects_explicit_unknown_backend() -> None:
     """An explicit backend typo should fail instead of falling through to the default backend."""
     with pytest.raises(ValueError, match="Invalid BACKEND_PROVIDER='openia'"):

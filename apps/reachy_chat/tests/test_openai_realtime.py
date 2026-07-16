@@ -621,6 +621,52 @@ async def test_apply_personality_preserves_manual_voice_override(monkeypatch: An
     assert session["audio"]["output"]["voice"] == "marin"
 
 
+@pytest.mark.asyncio
+async def test_change_voice_live_failure_preserves_previous_override_and_current_voice() -> None:
+    """A rejected live update must not make the requested voice current."""
+    handler = OpenaiRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler._voice_override = "marin"
+    update = AsyncMock(side_effect=RuntimeError("session rejected voice"))
+    handler.connection = SimpleNamespace(session=SimpleNamespace(update=update))
+
+    status = await handler.change_voice("cedar")
+
+    assert status == "Voice change failed. Will take effect on next connection."
+    assert handler._voice_override == "marin"
+    assert handler.get_current_voice() == "marin"
+    update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_change_voice_live_success_commits_requested_override() -> None:
+    """A successful live update commits the requested voice."""
+    handler = OpenaiRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    update = AsyncMock()
+    handler.connection = SimpleNamespace(session=SimpleNamespace(update=update))
+
+    status = await handler.change_voice("cedar")
+
+    assert status == "Voice changed to cedar."
+    assert handler._voice_override == "cedar"
+    assert handler.get_current_voice() == "cedar"
+    update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_change_voice_without_connection_commits_next_connection_override() -> None:
+    """A disconnected voice selection is retained for the next connection."""
+    handler = OpenaiRealtimeHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()),
+        startup_voice="marin",
+    )
+
+    status = await handler.change_voice("cedar")
+
+    assert status == "Voice changed. Will take effect on next connection."
+    assert handler._voice_override == "cedar"
+    assert handler.get_current_voice() == "cedar"
+
+
 def test_handler_uses_startup_voice_at_startup(monkeypatch: Any) -> None:
     """OpenAI handler startup should restore a persisted startup voice."""
     monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")

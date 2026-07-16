@@ -47,6 +47,23 @@
           <p id="status" class="status"></p>
         </div>
       </div>
+      <section id="voice-panel" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Voice</p>
+            <h2>Conversation voice</h2>
+          </div>
+          <span class="chip">Backend-aware</span>
+        </div>
+        <p class="muted">Choose a voice supported by the active conversation backend.</p>
+        <label for="voice-select">Voice</label>
+        <select id="voice-select" aria-describedby="voice-status" disabled></select>
+        <div class="actions">
+          <button id="voice-apply" type="button" disabled>Apply voice</button>
+          <button id="voice-retry" class="ghost hidden" type="button">Retry</button>
+          <p id="voice-status" class="status" role="status" aria-live="polite">Loading voices…</p>
+        </div>
+      </section>
     </div>
 
     <script src="/static/main.js"></script>

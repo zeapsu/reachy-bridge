@@ -429,6 +429,172 @@ async def test_apply_personality_preserves_manual_voice_override(monkeypatch) ->
     restart.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_change_voice_restart_failure_restores_previous_override_and_current_voice() -> None:
+    """A failed Gemini restart must leave the previous voice selected."""
+    handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.client = object()
+    handler._voice_override = "Orus"
+    restart = AsyncMock(side_effect=RuntimeError("Gemini rejected voice"))
+    handler._restart_session = restart
+
+    status = await handler.change_voice("Zephyr")
+
+    assert status == "Voice change failed. Will take effect on next connection."
+    assert handler._voice_override == "Orus"
+    assert handler.get_current_voice() == "Orus"
+    restart.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_change_voice_restart_sees_proposed_override_and_commits_it() -> None:
+    """Gemini restart config must see the proposed voice before it commits."""
+    handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.client = object()
+    handler._voice_override = "Orus"
+    observed_voice: list[str] = []
+
+    async def _restart() -> None:
+        observed_voice.append(handler.get_current_voice())
+
+    handler._restart_session = _restart
+
+    status = await handler.change_voice("Zephyr")
+
+    assert status == "Voice changed to Zephyr."
+    assert observed_voice == ["Zephyr"]
+    assert handler._voice_override == "Zephyr"
+    assert handler.get_current_voice() == "Zephyr"
+
+
+@pytest.mark.asyncio
+async def test_change_voice_without_client_fails_and_preserves_previous_override() -> None:
+    """Gemini cannot report a voice change without a client or live replacement."""
+    handler = GeminiLiveHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()),
+        startup_voice="Orus",
+    )
+
+    status = await handler.change_voice("Zephyr")
+
+    assert status == "Voice change failed. Will take effect on next connection."
+    assert handler._voice_override == "Orus"
+    assert handler.get_current_voice() == "Orus"
+
+
+@pytest.mark.asyncio
+async def test_change_voice_production_restart_failure_restores_previous_override() -> None:
+    """A startup owner failure before Gemini connects must reject the requested voice."""
+    handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler._voice_override = "Orus"
+
+    async def _restart(_timeout: float | None) -> None:
+        raise RuntimeError("Gemini startup failed")
+
+    handler.set_startup_owner(_restart)
+
+    status = await handler.change_voice("Zephyr")
+
+    assert status == "Voice change failed. Will take effect on next connection."
+    assert handler._voice_override == "Orus"
+    assert handler.get_current_voice() == "Orus"
+
+
+@pytest.mark.asyncio
+async def test_change_voice_cancellation_restores_previous_override() -> None:
+    """Cancellation during an owner restart restores the exact previous override."""
+    handler = GeminiLiveHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()),
+        startup_voice="Orus",
+    )
+
+    async def _restart(_timeout: float | None) -> None:
+        raise asyncio.CancelledError
+
+    handler.set_startup_owner(_restart)
+
+    with pytest.raises(asyncio.CancelledError):
+        await handler.change_voice("Zephyr")
+
+    assert handler._voice_override == "Orus"
+    assert handler.get_current_voice() == "Orus"
+
+
+@pytest.mark.asyncio
+async def test_change_voice_production_restart_timeout_cancels_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A startup owner that times out must cancel its child before rejecting the voice."""
+    monkeypatch.setattr(gemini_mod, "GEMINI_RESTART_TIMEOUT_SECONDS", 0.01)
+    handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler._voice_override = "Orus"
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    never_connect = asyncio.Event()
+
+    async def _start_up_without_connection() -> None:
+        started.set()
+        try:
+            await never_connect.wait()
+        finally:
+            cancelled.set()
+
+    async def _restart(timeout: float | None) -> None:
+        task = asyncio.create_task(_start_up_without_connection())
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except asyncio.TimeoutError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+
+    handler.set_startup_owner(_restart)
+
+    status = await handler.change_voice("Zephyr")
+
+    assert started.is_set()
+    assert cancelled.is_set()
+    assert status == "Voice change failed. Will take effect on next connection."
+    assert handler._voice_override == "Orus"
+    assert handler.get_current_voice() == "Orus"
+
+
+@pytest.mark.asyncio
+async def test_change_voice_production_restart_success_commits_requested_voice() -> None:
+    """A startup owner that connects a replacement commits the requested voice."""
+    handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler._voice_override = "Orus"
+    replacement_stopped = asyncio.Event()
+    keep_running = asyncio.Event()
+
+    async def _start_up_and_connect() -> None:
+        try:
+            await keep_running.wait()
+        finally:
+            replacement_stopped.set()
+
+    replacement_task: asyncio.Task[None] | None = None
+
+    async def _restart(_timeout: float | None) -> None:
+        nonlocal replacement_task
+        replacement_task = asyncio.create_task(_start_up_and_connect())
+        await asyncio.sleep(0)
+
+    handler.set_startup_owner(_restart)
+
+    status = await handler.change_voice("Zephyr")
+
+    assert status == "Voice changed to Zephyr."
+    assert handler._voice_override == "Zephyr"
+    assert handler.get_current_voice() == "Zephyr"
+    assert replacement_task is not None
+    assert not replacement_task.done()
+
+    replacement_task.cancel()
+    await asyncio.gather(replacement_task, return_exceptions=True)
+    assert replacement_stopped.is_set()
+
+
 def test_handler_uses_startup_voice_at_startup() -> None:
     """Gemini handler startup should restore a persisted startup voice."""
     handler = GeminiLiveHandler(

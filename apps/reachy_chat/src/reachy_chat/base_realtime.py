@@ -308,7 +308,6 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         resolved_voice = (
             self._resolve_backend_voice(voice, source="requested voice", fallback=default_voice) or default_voice
         )
-        self._voice_override = resolved_voice
         if self.connection is not None:
             try:
                 await self.connection.session.update(
@@ -321,10 +320,12 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                         ),
                     ),
                 )
-                return f"Voice changed to {resolved_voice}."
             except Exception as e:
                 logger.warning("Failed to update live session for voice change: %s", e)
                 return "Voice change failed. Will take effect on next connection."
+            self._voice_override = resolved_voice
+            return f"Voice changed to {resolved_voice}."
+        self._voice_override = resolved_voice
         return "Voice changed. Will take effect on next connection."
 
     def get_current_voice(self) -> str:
