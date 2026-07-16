@@ -162,6 +162,14 @@ class AppSupervisor:
         """True when any managed app is running or loading (robot actuating)."""
         return any(a.status in ("running", "loading") for a in self._apps.values())
 
+    def _has_retained_log_ownership(self) -> bool:
+        """Return whether any app still owns a pump or is finishing shutdown."""
+        return any(
+            app.log_pump is not None or app.status == "stopping"
+            for app in self._apps.values()
+        )
+
+
     @staticmethod
     def _cmdline_matches_module(cmdline: list[str], module: str) -> bool:
         """True when ``cmdline`` is a direct ``<python> -m <module>.main`` launch.
@@ -172,10 +180,14 @@ class AppSupervisor:
         return len(cmdline) >= 3 and cmdline[1] == "-m" and cmdline[2] == f"{module}.main"
 
     def _close_log_handle(self, app: LocalApp, parent_exited: bool = False) -> None:
-        """Stop and clear an app's pump (safe to call from a worker thread)."""
+        """Stop a pump before releasing its app ownership."""
         pump = app.log_pump
         if pump is not None:
             pump.stop(parent_exited=parent_exited)
+            thread = getattr(pump, "thread", None)
+            is_alive = getattr(thread, "is_alive", None)
+            if callable(is_alive) and is_alive() is True:
+                raise RuntimeError(f"log pump for {app.name} did not stop")
             app.log_pump = None
             # ProcessLogPump owns this file; avoid closing the same descriptor
             # through the legacy alias a second time.
@@ -224,6 +236,7 @@ class AppSupervisor:
         async with self._lock:
             app = self._apps[name]
 
+
             # Check for external live app (scan-based)
             found = self._scan_for_live_apps()
             if name in found:
@@ -237,6 +250,15 @@ class AppSupervisor:
             if self.any_app_active():
                 return {
                     "error": "Another app is already running",
+                    "name": name,
+                    "status": "refused",
+                }
+
+            # A failed pump shutdown retains ownership of its process and file.
+            # Never launch or overwrite another pump until that ownership clears.
+            if self._has_retained_log_ownership():
+                return {
+                    "error": "An app log pump is still shutting down",
                     "name": name,
                     "status": "refused",
                 }
@@ -396,13 +418,20 @@ class AppSupervisor:
             except Exception as e:
                 logger.error(f"Error stopping app {name}: {e}")
 
+            try:
+                # Do not release process ownership until the pump has fully
+                # stopped and closed its file. A failed join is retryable.
+                await asyncio.to_thread(self._close_log_handle, app, parent_exited)
+            except Exception as e:
+                app.error = str(e)
+                logger.error(f"Error closing log pump for {name}: {e}")
+                return {"error": str(e), "name": name, "status": "stopping"}
+
             app.status = "stopped"
             app.error = None
             app.pid = None
             app.process = None
             app.external = False
-
-            await asyncio.to_thread(self._close_log_handle, app, parent_exited)
             self.log_broker.set_status(name, "stopped")
 
             # Clean up ready file
@@ -420,30 +449,42 @@ class AppSupervisor:
     def stop_all(self) -> None:
         """Stop all launched apps synchronously (call via ``asyncio.to_thread``)."""
         for app in self._apps.values():
-            if app.process is not None and app.status in ("loading", "running", "stopping", "error"):
+            if (
+                app.process is not None or app.log_pump is not None
+            ) and app.status in ("loading", "running", "stopping", "error"):
                 parent_exited = False
-                try:
-                    app.process.terminate()
-                    app.process.wait(timeout=2.0)
-                    parent_exited = True
-                except Exception:
+                if app.process is not None:
                     try:
-                        app.process.kill()
-                        app.process.wait(timeout=1.0)
+                        app.process.terminate()
+                        app.process.wait(timeout=2.0)
                         parent_exited = True
                     except Exception:
-                        pass
-                finally:
-                    app.status = "stopped"
-                    app.process = None
-                    self._close_log_handle(app, parent_exited)
-                    self.log_broker.set_status(app.name, "stopped")
-                    if app.ready_file is not None:
                         try:
-                            app.ready_file.unlink(missing_ok=True)
-                        except OSError:
+                            app.process.kill()
+                            app.process.wait(timeout=1.0)
+                            parent_exited = True
+                        except Exception:
                             pass
-                        app.ready_file = None
+                try:
+                    self._close_log_handle(app, parent_exited)
+                except Exception as e:
+                    app.status = "stopping"
+                    app.error = str(e)
+                    logger.error(f"Error closing log pump for {app.name}: {e}")
+                    continue
+
+                app.status = "stopped"
+                app.error = None
+                app.process = None
+                app.pid = None
+                app.external = False
+                self.log_broker.set_status(app.name, "stopped")
+                if app.ready_file is not None:
+                    try:
+                        app.ready_file.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    app.ready_file = None
 
     async def aclose(self) -> None:
         """Stop launched children without blocking the controller event loop."""
@@ -536,57 +577,66 @@ class AppSupervisor:
             return
 
         parent_exited = False
+        exit_code: int | None = None
+        wait_error: Exception | None = None
         try:
             exit_code = await asyncio.to_thread(process.wait)
             parent_exited = True
-            async with self._lock:
-                # A stop/restart may have replaced this process while its wait
-                # completed.  Never mutate the replacement's state.
-                if app.process is process and app.status in ("loading", "running"):
-                    if exit_code == 0:
-                        app.status = "stopped"
-                        app.external = False
-                        app.error = None
-                    else:
-                        app.status = "error"
-                        app.external = False
-                        app.error = f"Exited with code {exit_code}"
-                    logger.info(
-                        f"App {name} exited (code {exit_code}, status {app.status})"
-                    )
         except Exception as e:
+            wait_error = e
             logger.error(f"Reaper error for {name}: {e}")
-            async with self._lock:
-                if app.process is process and app.status in ("loading", "running"):
-                    app.status = "error"
-                    app.external = False
-                    app.error = str(e)
-        finally:
-            async with self._lock:
-                if self._reaper_tasks.get(name) is current_task:
-                    self._reaper_tasks.pop(name, None)
-                if app.process is not process:
-                    return
 
-                readiness_task = self._readiness_tasks.pop(name, None)
-                if readiness_task is not None and readiness_task is not current_task:
-                    readiness_task.cancel()
-                    try:
-                        await readiness_task
-                    except asyncio.CancelledError:
-                        pass
+        async with self._lock:
+            if self._reaper_tasks.get(name) is current_task:
+                self._reaper_tasks.pop(name, None)
+            # A stop/restart may have replaced this process while its wait
+            # completed. Never mutate the replacement's state.
+            if app.process is not process:
+                return
+            # stop_app owns cleanup while it holds the lifecycle lock. If its
+            # pump join fails, leave all ownership intact for a retry.
+            if app.status == "stopping":
+                return
 
+            readiness_task = self._readiness_tasks.pop(name, None)
+            if readiness_task is not None and readiness_task is not current_task:
+                readiness_task.cancel()
+                try:
+                    await readiness_task
+                except asyncio.CancelledError:
+                    pass
+
+            try:
                 await asyncio.to_thread(self._close_log_handle, app, parent_exited)
-                app.process = None
-                app.pid = None
-                app.external = False
-                if app.ready_file is not None:
-                    try:
-                        app.ready_file.unlink(missing_ok=True)
-                    except Exception as e:
-                        logger.debug(f"Failed to clean up ready file for {name}: {e}")
-                    app.ready_file = None
-                self.log_broker.set_status(name, "stopped")
+            except Exception as e:
+                app.status = "error"
+                app.error = str(e)
+                logger.error(f"Error closing log pump for {name}: {e}")
+                return
+
+            app.process = None
+            app.pid = None
+            app.external = False
+            if app.ready_file is not None:
+                try:
+                    app.ready_file.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"Failed to clean up ready file for {name}: {e}")
+                app.ready_file = None
+
+            if wait_error is not None:
+                app.status = "error"
+                app.error = str(wait_error)
+            elif exit_code == 0:
+                app.status = "stopped"
+                app.error = None
+            else:
+                app.status = "error"
+                app.error = f"Exited with code {exit_code}"
+            self.log_broker.set_status(name, "stopped")
+            logger.info(
+                f"App {name} exited (code {exit_code}, status {app.status})"
+            )
 
     def _scan_for_live_apps(self) -> dict[str, tuple[int, float]]:
         """Scan process table for live apps matching known patterns.

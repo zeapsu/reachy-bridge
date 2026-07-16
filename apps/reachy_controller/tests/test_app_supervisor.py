@@ -136,6 +136,35 @@ async def test_stop_app_closes_log_pump(tmp_path: Path) -> None:
     assert app.log_handle is None
 
 
+
+@pytest.mark.asyncio
+async def test_stop_failure_retains_pump_and_refuses_restart(tmp_path: Path) -> None:
+    supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
+    app = supervisor._apps["reachy_chat"]
+    process = MagicMock(pid=12345)
+    pump = MagicMock()
+    pump.stop.side_effect = RuntimeError("pump join failed")
+    app.process = process
+    app.pid = process.pid
+    app.status = "running"
+    app.log_pump = pump
+
+    with patch("reachy_controller.app_supervisor._signal_process_tree"):
+        result = await supervisor.stop_app("reachy_chat")
+
+    assert result["status"] == "stopping"
+    assert app.status == "stopping"
+    assert app.process is process
+    assert app.pid == process.pid
+    assert app.log_pump is pump
+
+    with patch("reachy_controller.app_supervisor.subprocess.Popen") as popen:
+        restart = await supervisor.start_app("reachy_chat")
+    assert restart["status"] == "refused"
+    assert "log pump" in restart["error"]
+    popen.assert_not_called()
+
 @pytest.mark.asyncio
 async def test_start_app_unknown_app() -> None:
     """Test start with unknown app name."""

@@ -130,22 +130,25 @@ async def log_stream(request: Request, source: str = Query(...)) -> StreamingRes
     # under one broker lock. Never derive a live source's initial state from the
     # asynchronously-read file.
     subscription = await broker.subscribe(source, defer_initial=True)
-    captured_status = subscription.initial_status
-    replay = subscription._initial_lines
-    path = broker.source_file(source)
-    effective_status = captured_status
-    if captured_status == "empty" and subscription.file_end is not None:
-        effective_status = "stopped"
-    if (
-        not replay
-        and captured_status in {"empty", "live", "unavailable"}
-        and path is not None
-        and subscription.file_end is not None
-    ):
-        replay = await asyncio.to_thread(
-            broker.tail_file, path, 200, subscription.file_end
-        )
-    await broker.initialize(subscription, lines=replay, status=effective_status)
+    try:
+        captured_status = subscription.initial_status
+        replay = subscription._initial_lines
+        path = broker.source_file(source)
+        effective_status = captured_status
+        if captured_status == "empty" and subscription.file_end is not None:
+            effective_status = "stopped"
+        if (
+            not replay
+            and path is not None
+            and subscription.file_end is not None
+        ):
+            replay = await asyncio.to_thread(
+                broker.tail_file, path, 200, subscription.file_end
+            )
+        await broker.initialize(subscription, lines=replay, status=effective_status)
+    except BaseException:
+        await subscription.aclose()
+        raise
     return StreamingResponse(
         _stream_events(broker, subscription),
         media_type="text/event-stream",

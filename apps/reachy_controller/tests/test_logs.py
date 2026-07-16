@@ -504,3 +504,119 @@ async def test_unavailable_adopted_subscription_replays_persisted_tail(
     }
     await response.body_iterator.aclose()
     await broker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_offline_daemon_replays_persisted_tail_with_captured_status(
+    tmp_path: Path,
+) -> None:
+    app = create_app()
+    broker = app.state.log_broker
+    path = tmp_path / "daemon.log"
+    path.write_text("offline-file-line\n", encoding="utf-8")
+    broker.set_file("daemon", path)
+    broker.reset("daemon", status="offline")
+
+    response = await log_stream(_stream_request(app), "daemon")  # type: ignore[arg-type]
+    reset = await response.body_iterator.__anext__()
+    assert json.loads(reset.split("data: ", 1)[1]) == {
+        "status": "offline",
+        "lines": ["offline-file-line"],
+    }
+    await response.body_iterator.aclose()
+    await broker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stopped_app_replays_persisted_tail_with_captured_status(
+    tmp_path: Path,
+) -> None:
+    app = create_app()
+    broker = app.state.log_broker
+    path = tmp_path / "reachy_chat.log"
+    path.write_text("stopped-file-line\n", encoding="utf-8")
+    broker.set_file("reachy_chat", path)
+    broker.reset("reachy_chat", status="stopped")
+
+    response = await log_stream(_stream_request(app), "reachy_chat")  # type: ignore[arg-type]
+    reset = await response.body_iterator.__anext__()
+    assert json.loads(reset.split("data: ", 1)[1]) == {
+        "status": "stopped",
+        "lines": ["stopped-file-line"],
+    }
+    await response.body_iterator.aclose()
+    await broker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_publish_after_cutoff_follows_persisted_reset_exactly_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = create_app()
+    broker = app.state.log_broker
+    path = tmp_path / "daemon.log"
+    path.write_text("persisted\n", encoding="utf-8")
+    broker.set_file("daemon", path)
+    broker.reset("daemon", status="offline")
+    entered = threading.Event()
+    release = threading.Event()
+    original_tail = broker.tail_file
+
+    def delayed_tail(path_arg: Path, limit: int, end: int | None = None) -> list[str]:
+        entered.set()
+        assert release.wait(1.0)
+        return original_tail(path_arg, limit, end=end)
+
+    monkeypatch.setattr(broker, "tail_file", delayed_tail)
+    task = asyncio.create_task(log_stream(_stream_request(app), "daemon"))  # type: ignore[arg-type]
+    assert await asyncio.to_thread(entered.wait, 1.0)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("after-cutoff\n")
+    broker.publish("daemon", "after-cutoff")
+    release.set()
+
+    response = await task
+    stream = response.body_iterator
+    reset = await stream.__anext__()
+    assert json.loads(reset.split("data: ", 1)[1]) == {
+        "status": "offline",
+        "lines": ["persisted"],
+    }
+    status = await stream.__anext__()
+    assert json.loads(status.split("data: ", 1)[1]) == {"status": "live"}
+    lines = await stream.__anext__()
+    assert json.loads(lines.split("data: ", 1)[1]) == {"lines": ["after-cutoff"]}
+    await stream.aclose()
+    await broker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_cancellation_during_tail_unregisters_provisional_subscription(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = create_app()
+    broker = app.state.log_broker
+    path = tmp_path / "daemon.log"
+    path.write_text("persisted\n", encoding="utf-8")
+    broker.set_file("daemon", path)
+    broker.reset("daemon", status="offline")
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_tail(_: Path, __: int, ___: int | None = None) -> list[str]:
+        entered.set()
+        release.wait(2.0)
+        return ["persisted"]
+
+    monkeypatch.setattr(broker, "tail_file", blocked_tail)
+    task = asyncio.create_task(log_stream(_stream_request(app), "daemon"))  # type: ignore[arg-type]
+    assert await asyncio.to_thread(entered.wait, 1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+    await asyncio.sleep(0.05)
+    assert broker._subscribers == {}
+    assert broker._pending == {}
+    assert broker._scheduled == set()
+    await broker.aclose()
