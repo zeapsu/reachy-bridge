@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
-from pathlib import Path
+import threading
 import time
-from types import SimpleNamespace
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -59,6 +60,95 @@ class FakeDaemon:
         self.ready = True
         self._media_server = object()
         self.media_released = False
+
+
+def test_jetson_consumer_patch_builds_nvmm_conversion_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeElement:
+        def __init__(self, factory_name: str) -> None:
+            self.factory_name = factory_name
+            self.properties: dict[str, object] = {}
+            self.links: list["FakeElement"] = []
+
+        def set_property(self, name: str, value: object) -> None:
+            self.properties[name] = value
+
+        def link(self, downstream: "FakeElement") -> bool:
+            self.links.append(downstream)
+            return True
+
+    class FakeFactory:
+        calls: list[str] = []
+        elements: list[FakeElement] = []
+
+        @classmethod
+        def make(cls, factory_name: str, *_args: object) -> FakeElement:
+            cls.calls.append(factory_name)
+            element = FakeElement(factory_name)
+            cls.elements.append(element)
+            return element
+
+    class FakeCaps:
+        @staticmethod
+        def from_string(value: str) -> str:
+            return value
+
+    class FakeGst:
+        ElementFactory = FakeFactory
+        Caps = FakeCaps
+
+    class FakePipeline:
+        def __init__(self) -> None:
+            self.elements: list[FakeElement] = []
+
+        def add(self, element: FakeElement) -> None:
+            self.elements.append(element)
+
+    class FakeCamera:
+        def __init__(self) -> None:
+            self.pipeline = FakePipeline()
+            self._appsink_video = FakeElement("appsink")
+
+    gi_module = ModuleType("gi")
+    gi_repository = ModuleType("gi.repository")
+    gi_repository.Gst = FakeGst  # type: ignore[attr-defined]
+    gi_module.repository = gi_repository  # type: ignore[attr-defined]
+    gi_module.require_version = lambda *_args: None  # type: ignore[attr-defined]
+    camera_module = ModuleType("reachy_mini.media.camera_gstreamer")
+    camera_module.GStreamerCamera = FakeCamera  # type: ignore[attr-defined]
+    utils_module = ModuleType("reachy_mini.daemon.utils")
+    utils_module.CAMERA_SOCKET_PATH = "/tmp/reachymini_camera_socket"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gi", gi_module)
+    monkeypatch.setitem(sys.modules, "gi.repository", gi_repository)
+    monkeypatch.setitem(sys.modules, "reachy_mini.media.camera_gstreamer", camera_module)
+    monkeypatch.setitem(sys.modules, "reachy_mini.daemon.utils", utils_module)
+    monkeypatch.setattr(_media, "_is_jetson", lambda: True)
+
+    _media.apply_jetson_camera_consumer_patch()
+    camera = FakeCamera()
+    camera._build_ipc_source()
+
+    assert [element.factory_name for element in camera.pipeline.elements] == [
+        "nvunixfdsrc",
+        "queue",
+        "nvvidconv",
+        "capsfilter",
+        "videoconvert",
+    ]
+    assert camera.pipeline.elements[0].properties["socket-path"] == (
+        "/tmp/reachymini_camera_socket"
+    )
+    assert camera.pipeline.elements[3].properties["caps"] == "video/x-raw,format=BGRx"
+    assert [element.factory_name for element in camera.pipeline.elements[0].links] == ["queue"]
+    assert [element.factory_name for element in camera.pipeline.elements[1].links] == ["nvvidconv"]
+    assert [element.factory_name for element in camera.pipeline.elements[2].links] == ["capsfilter"]
+    assert [element.factory_name for element in camera.pipeline.elements[3].links] == ["videoconvert"]
+    assert [element.factory_name for element in camera.pipeline.elements[4].links] == ["appsink"]
+
+    calls = list(FakeFactory.calls)
+    _media.apply_jetson_camera_consumer_patch()
+    assert FakeFactory.calls == calls
 
 
 @pytest.mark.asyncio
@@ -115,6 +205,52 @@ async def test_new_subscriber_during_last_disconnect_starts_fresh_reader() -> No
     assert FakeCamera.instances[0].closed
     assert not FakeCamera.instances[1].closed
     await streamer.unsubscribe(second)
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_replacement_subscribers_share_one_healthy_reader() -> None:
+    class BlockingCloseCamera(FakeCamera):
+        close_started = threading.Event()
+        allow_close = threading.Event()
+
+        def close(self) -> None:
+            self.__class__.close_started.set()
+            self.__class__.allow_close.wait(1)
+            super().close()
+
+    daemon = FakeDaemon()
+    streamer = CameraMJPEGStreamer(
+        camera_factory=BlockingCloseCamera,
+        encoder=lambda frame: frame,
+        media_ready=lambda d: d.ready,
+        startup_timeout=1,
+    )
+    original = await streamer.subscribe(daemon)
+    await asyncio.wait_for(original.queue.get(), 1)
+    stopping = asyncio.create_task(streamer.unsubscribe(original))
+    await asyncio.to_thread(BlockingCloseCamera.close_started.wait, 1)
+
+    followers = [
+        asyncio.create_task(streamer.subscribe(daemon)),
+        asyncio.create_task(streamer.subscribe(daemon)),
+    ]
+    for _ in range(100):
+        if streamer.subscriber_count == 2:
+            break
+        await asyncio.sleep(0)
+    assert streamer.subscriber_count == 2
+    BlockingCloseCamera.allow_close.set()
+    first, second = await asyncio.gather(*followers)
+    await stopping
+
+    assert len(BlockingCloseCamera.instances) == 2
+    assert BlockingCloseCamera.instances[0].closed
+    assert not BlockingCloseCamera.instances[1].closed
+    assert streamer._reader_thread is not None
+    assert streamer._reader_thread.is_alive()
+    assert await asyncio.wait_for(first.queue.get(), 1)
+    assert await asyncio.wait_for(second.queue.get(), 1)
+    await asyncio.gather(streamer.unsubscribe(first), streamer.unsubscribe(second))
 
 
 @pytest.mark.asyncio
@@ -411,6 +547,40 @@ class FakeProxy:
     async def close(self) -> None:
         return None
 
+
+class NonTerminatingResponse(FakeUpstreamResponse):
+    def __init__(self) -> None:
+        super().__init__(chunks=())
+        self.release = asyncio.Event()
+
+    async def aiter_raw(self):
+        yield b"first"
+        await self.release.wait()
+
+
+class GatedCloseProxy(FakeProxy):
+    def __init__(self, response: FakeUpstreamResponse) -> None:
+        super().__init__(response)
+        self.close_started = asyncio.Event()
+        self.allow_close = asyncio.Event()
+
+    def stream(self, *args: object, **kwargs: object):
+        proxy = self
+
+        class Context:
+            async def __aenter__(self):
+                proxy.entered += 1
+                if proxy.on_enter is not None:
+                    proxy.on_enter()
+                return proxy.response
+
+            async def __aexit__(self, *exc: object) -> None:
+                proxy.close_started.set()
+                await proxy.allow_close.wait()
+                proxy.closed += 1
+
+        return Context()
+
 @pytest.mark.asyncio
 async def test_controller_startup_deadline_closes_stalled_upstream() -> None:
     class StallingProxy(FakeProxy):
@@ -516,6 +686,73 @@ async def test_controller_client_disconnect_closes_upstream() -> None:
     assert proxy.closed == 1
     assert app.state.camera_leases.active_count == 0
 
+
+
+@pytest.mark.asyncio
+async def test_nonterminating_client_disconnect_waits_for_shielded_upstream_close() -> None:
+    proxy = GatedCloseProxy(NonTerminatingResponse())
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+    body_sent = asyncio.Event()
+    receive_calls = 0
+
+    async def receive() -> dict[str, object]:
+        nonlocal receive_calls
+        receive_calls += 1
+        if receive_calls == 1:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await body_sent.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        if message["type"] == "http.response.body" and message.get("body"):
+            body_sent.set()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/api/camera/stream",
+        "raw_path": b"/api/camera/stream",
+        "query_string": b"",
+        "headers": [],
+        "client": ("test", 1234),
+        "server": ("test", 80),
+    }
+    app_task = asyncio.create_task(app(scope, receive, send))
+    await body_sent.wait()
+    await proxy.close_started.wait()
+    assert not app_task.done()
+    assert app.state.camera_leases.active_count == 1
+
+    proxy.allow_close.set()
+    await asyncio.wait_for(app_task, 1)
+    assert proxy.closed == 1
+    assert app.state.camera_leases.active_count == 0
+
+
+@pytest.mark.asyncio
+async def test_camera_takeover_close_all_awaits_inflight_route_cleanup() -> None:
+    proxy = GatedCloseProxy(NonTerminatingResponse())
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+    request = SimpleNamespace(app=app)
+    response = await camera_routes.camera_stream(request)  # type: ignore[arg-type]
+    first_chunk = await response.body_iterator.__anext__()
+    assert first_chunk == b"first"
+
+    route_close = asyncio.create_task(response.body_iterator.aclose())
+    await proxy.close_started.wait()
+    takeover_close = asyncio.create_task(app.state.camera_leases.close_all())
+    await asyncio.sleep(0)
+    assert not takeover_close.done()
+    assert app.state.camera_leases.active_count == 1
+    assert not route_close.done()
+
+    proxy.allow_close.set()
+    await asyncio.wait_for(asyncio.gather(route_close, takeover_close), 1)
+    assert proxy.closed == 1
+    assert app.state.camera_leases.active_count == 0
 
 @pytest.mark.asyncio
 async def test_stream_rechecks_holder_after_lease_acquisition() -> None:

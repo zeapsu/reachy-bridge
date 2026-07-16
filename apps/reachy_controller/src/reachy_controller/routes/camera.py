@@ -59,10 +59,13 @@ class DashboardCameraLeaseManager:
     async def close_all(self) -> None:
         """Close every stream before a camera app takes ownership."""
         async with self._lock:
-            closers = list(self._active.values())
-            self._active.clear()
-        if closers:
-            await asyncio.gather(*(self._close_safely(close) for close in closers))
+            entries = list(self._active.items())
+        if entries:
+            await asyncio.gather(*(self._close_safely(close) for _, close in entries))
+            async with self._lock:
+                for token, close in entries:
+                    if self._active.get(token) is close:
+                        self._active.pop(token, None)
 
     @staticmethod
     async def _close_safely(close: Callable[[], Awaitable[None]]) -> None:
@@ -124,23 +127,43 @@ async def camera_stream(request: Request) -> Response:
     upstream_context: Any | None = None
     upstream: Any | None = None
     lease: CameraLease | None = None
-    close_state = False
+    close_task: asyncio.Task[None] | None = None
 
-    async def close_upstream() -> None:
-        nonlocal close_state
-        if close_state:
-            return
-        close_state = True
-        if upstream_context is not None:
-            with contextlib.suppress(Exception):
-                await upstream_context.__aexit__(None, None, None)
+    async def _close_and_release() -> None:
+        nonlocal lease
+        try:
+            if upstream_context is not None:
+                # This task is created once and shielded by every caller.
+                # Even a cancelled ASGI task cannot interrupt __aexit__.
+                with contextlib.suppress(BaseException):
+                    await upstream_context.__aexit__(None, None, None)
+        finally:
+            current_lease = lease
+            lease = None
+            if current_lease is not None:
+                with contextlib.suppress(BaseException):
+                    await current_lease.release()
 
     async def release_resources() -> None:
-        nonlocal lease
-        await close_upstream()
-        if lease is not None:
-            await lease.release()
-            lease = None
+        nonlocal close_task
+        if close_task is None:
+            close_task = asyncio.create_task(_close_and_release())
+        cleanup = close_task
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(cleanup)
+                break
+            except asyncio.CancelledError as exc:
+                # AnyIO cancellation can be delivered repeatedly.  Keep
+                # observing the same cleanup task until upstream close and
+                # lease release have both completed, then propagate it.
+                cancellation = cancellation or exc
+                current_task = asyncio.current_task()
+                if current_task is not None:
+                    current_task.uncancel()
+        if cancellation is not None:
+            raise cancellation
 
     try:
         loop = asyncio.get_running_loop()
@@ -163,14 +186,14 @@ async def camera_stream(request: Request) -> Response:
         content_type = upstream.headers.get("content-type", "")
         if upstream.status_code >= 400:
             content = await asyncio.wait_for(upstream.aread(), remaining_startup())
-            await close_upstream()
+            await release_resources()
             return Response(
                 content=content,
                 status_code=503 if upstream.status_code >= 500 else upstream.status_code,
                 headers={"content-type": content_type} if content_type else None,
             )
 
-        lease = await leases.acquire(close_upstream)
+        lease = await leases.acquire(release_resources)
         holder = supervisor.camera_holder()
         if holder is not None:
             raise HTTPException(
@@ -183,7 +206,7 @@ async def camera_stream(request: Request) -> Response:
             iterator.__anext__(), remaining_startup()
         )
         holder = supervisor.camera_holder()
-        if holder is not None or close_state:
+        if holder is not None or close_task is not None:
             raise HTTPException(
                 status_code=409 if holder is not None else 503,
                 detail=(

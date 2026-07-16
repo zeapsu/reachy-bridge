@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import platform
 import threading
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
@@ -22,6 +23,76 @@ logger = logging.getLogger(__name__)
 
 MJPEG_CONTENT_TYPE = "multipart/x-mixed-replace; boundary=frame"
 _FRAME_CLOSE = object()
+
+
+def _is_jetson() -> bool:
+    """Return whether this process is running on an NVIDIA Jetson board."""
+    if platform.system() != "Linux":
+        return False
+    try:
+        with open("/proc/device-tree/model", "r") as model_file:
+            model = model_file.read()
+    except OSError:
+        return False
+    return "Tegra" in model or "NVIDIA" in model
+
+
+def apply_jetson_camera_consumer_patch() -> None:
+    """Install the NVMM-to-system-memory consumer pipeline on Jetson.
+
+    The daemon's IPC producer sends NVMM buffers through ``nvunixfdsink``.
+    Stock ``GStreamerCamera`` builds ``unixfdsrc -> queue -> videoconvert``,
+    which cannot negotiate those buffers.  Rebuild only that consumer branch
+    as ``nvunixfdsrc -> queue -> nvvidconv -> BGRx -> videoconvert`` before
+    the streamer can construct a camera.  This is runtime-only and
+    reinstall-proof; non-Jetson processes retain the SDK implementation.
+    """
+    if not _is_jetson():
+        return
+    try:
+        import gi
+
+        gi.require_version("Gst", "1.0")
+        from gi.repository import Gst
+    except (ImportError, ValueError) as exc:
+        logger.warning("GStreamer unavailable; skipping Jetson camera consumer patch: %s", exc)
+        return
+    try:
+        from reachy_mini.media.camera_gstreamer import GStreamerCamera
+        from reachy_mini.daemon.utils import CAMERA_SOCKET_PATH
+    except ImportError as exc:
+        logger.warning("Reachy Mini camera consumer unavailable: %s", exc)
+        return
+
+    if getattr(GStreamerCamera, "_reachy_jetson_camera_consumer_patched", False):
+        return
+
+    def _build_ipc_source(self) -> None:
+        camsrc = Gst.ElementFactory.make("nvunixfdsrc")
+        if camsrc is None:
+            raise RuntimeError("Failed to create nvunixfdsrc (NVIDIA Jetson unixfd plugin)")
+        camsrc.set_property("socket-path", CAMERA_SOCKET_PATH)
+
+        queue = Gst.ElementFactory.make("queue")
+        nvconv = Gst.ElementFactory.make("nvvidconv")
+        capsfilter = Gst.ElementFactory.make("capsfilter")
+        videoconvert = Gst.ElementFactory.make("videoconvert")
+        if None in (queue, nvconv, capsfilter, videoconvert):
+            raise RuntimeError("Failed to create Jetson camera IPC consumer elements")
+        capsfilter.set_property("caps", Gst.Caps.from_string("video/x-raw,format=BGRx"))
+
+        for element in (camsrc, queue, nvconv, capsfilter, videoconvert):
+            self.pipeline.add(element)
+        camsrc.link(queue)
+        queue.link(nvconv)
+        nvconv.link(capsfilter)
+        capsfilter.link(videoconvert)
+        videoconvert.link(self._appsink_video)
+
+    _build_ipc_source._reachy_jetson_camera_consumer_patched = True  # type: ignore[attr-defined]
+    GStreamerCamera._build_ipc_source = _build_ipc_source
+    GStreamerCamera._reachy_jetson_camera_consumer_patched = True
+    logger.info("Installed Jetson NVMM camera consumer pipeline")
 
 
 class CameraStreamUnavailable(RuntimeError):
@@ -311,7 +382,7 @@ class CameraMJPEGStreamer:
 
         try:
             if stopping_reader is not None:
-                await asyncio.to_thread(stopping_reader.join, self._startup_timeout)
+                await self._join_reader_bounded(stopping_reader)
                 if stopping_reader.is_alive():
                     raise CameraStreamUnavailable("previous camera reader did not stop")
                 with self._lock:
@@ -319,8 +390,16 @@ class CameraMJPEGStreamer:
                         raise CameraStreamUnavailable("camera media became unavailable")
                     reader = self._reader_thread
                     if reader is not None and reader.is_alive():
-                        raise CameraStreamUnavailable("previous camera reader did not stop")
-                    startup_event = self._start_reader_locked(daemon)
+                        # Another subscriber may have won the replacement race.
+                        # Followers share that reader's startup event rather
+                        # than treating the healthy replacement as stuck.
+                        if reader is stopping_reader or self._stop_event.is_set():
+                            raise CameraStreamUnavailable("previous camera reader did not stop")
+                        startup_event = self._startup_event
+                        if startup_event is None:
+                            raise CameraStreamUnavailable("camera reader stopped during replacement")
+                    else:
+                        startup_event = self._start_reader_locked(daemon)
 
             if startup_event is not None:
                 ready = await asyncio.to_thread(startup_event.wait, self._startup_timeout)
@@ -420,6 +499,7 @@ class CameraMJPEGStreamer:
 
 def install_camera_stream_route() -> None:
     """Wrap daemon ``create_app`` so every daemon app has the MJPEG route."""
+    apply_jetson_camera_consumer_patch()
     from reachy_mini.daemon.app import main as daemon_main
 
     original = daemon_main.create_app
