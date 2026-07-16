@@ -468,8 +468,8 @@ async def test_change_voice_restart_sees_proposed_override_and_commits_it() -> N
 
 
 @pytest.mark.asyncio
-async def test_change_voice_without_client_commits_next_connection_override() -> None:
-    """Gemini keeps a selected voice while disconnected for the next session."""
+async def test_change_voice_without_client_fails_and_preserves_previous_override() -> None:
+    """Gemini cannot report a voice change without a client or live replacement."""
     handler = GeminiLiveHandler(
         ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()),
         startup_voice="Orus",
@@ -477,9 +477,93 @@ async def test_change_voice_without_client_commits_next_connection_override() ->
 
     status = await handler.change_voice("Zephyr")
 
-    assert status == "Voice changed. Will take effect on next connection."
+    assert status == "Voice change failed. Will take effect on next connection."
+    assert handler._voice_override == "Orus"
+    assert handler.get_current_voice() == "Orus"
+
+
+@pytest.mark.asyncio
+async def test_change_voice_production_restart_failure_restores_previous_override() -> None:
+    """A startup failure before Gemini connects must reject the requested voice."""
+    handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.client = object()
+    handler._voice_override = "Orus"
+
+    async def _start_up_failure() -> None:
+        raise RuntimeError("Gemini startup failed")
+
+    handler.start_up = _start_up_failure
+
+    status = await handler.change_voice("Zephyr")
+
+    assert status == "Voice change failed. Will take effect on next connection."
+    assert handler._voice_override == "Orus"
+    assert handler.get_current_voice() == "Orus"
+    assert handler._session_task is None
+
+
+@pytest.mark.asyncio
+async def test_change_voice_production_restart_timeout_cancels_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replacement that never connects must be cancelled and rejected."""
+    monkeypatch.setattr(gemini_mod, "GEMINI_RESTART_TIMEOUT_SECONDS", 0.01)
+    handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.client = object()
+    handler._voice_override = "Orus"
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    never_connect = asyncio.Event()
+
+    async def _start_up_without_connection() -> None:
+        started.set()
+        try:
+            await never_connect.wait()
+        finally:
+            cancelled.set()
+
+    handler.start_up = _start_up_without_connection
+
+    status = await handler.change_voice("Zephyr")
+
+    assert started.is_set()
+    assert cancelled.is_set()
+    assert status == "Voice change failed. Will take effect on next connection."
+    assert handler._voice_override == "Orus"
+    assert handler.get_current_voice() == "Orus"
+    assert handler._session_task is None
+
+
+@pytest.mark.asyncio
+async def test_change_voice_production_restart_success_commits_requested_voice() -> None:
+    """A connected replacement keeps running and commits the requested voice."""
+    handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.client = object()
+    handler._voice_override = "Orus"
+    replacement_stopped = asyncio.Event()
+    keep_running = asyncio.Event()
+
+    async def _start_up_and_connect() -> None:
+        handler._connected_event.set()
+        try:
+            await keep_running.wait()
+        finally:
+            replacement_stopped.set()
+
+    handler.start_up = _start_up_and_connect
+
+    status = await handler.change_voice("Zephyr")
+
+    assert status == "Voice changed to Zephyr."
     assert handler._voice_override == "Zephyr"
     assert handler.get_current_voice() == "Zephyr"
+    replacement_task = handler._session_task
+    assert replacement_task is not None
+    assert not replacement_task.done()
+
+    await handler._cancel_and_observe_session_task(replacement_task)
+    handler._session_task = None
+    assert replacement_stopped.is_set()
 
 
 def test_handler_uses_startup_voice_at_startup() -> None:

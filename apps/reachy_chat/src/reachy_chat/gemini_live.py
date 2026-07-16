@@ -50,6 +50,7 @@ from reachy_chat.tools.background_tool_manager import (
 logger = logging.getLogger(__name__)
 
 MIC_GATE_CHECK_INTERVAL_SECONDS: Final = 0.2
+GEMINI_RESTART_TIMEOUT_SECONDS: Final = 5.0
 
 GEMINI_INPUT_SAMPLE_RATE: Final[int] = 16000
 GEMINI_OUTPUT_SAMPLE_RATE: Final[int] = 24000
@@ -176,6 +177,7 @@ class GeminiLiveHandler(ConversationHandler):
 
         # Internal lifecycle flags
         self._connected_event: asyncio.Event = asyncio.Event()
+        self._session_task: asyncio.Task[None] | None = None
 
         # Background tool manager
         self.tool_manager = BackgroundToolManager()
@@ -322,15 +324,13 @@ class GeminiLiveHandler(ConversationHandler):
         """Change only the voice and restart the session."""
         previous_voice_override = self._voice_override
         self._voice_override = voice
-        if getattr(self, "client", None) is not None:
-            try:
-                await self._restart_session()
-                return f"Voice changed to {voice}."
-            except Exception as e:
-                self._voice_override = previous_voice_override
-                logger.warning("Failed to restart session for voice change: %s", e)
-                return "Voice change failed. Will take effect on next connection."
-        return "Voice changed. Will take effect on next connection."
+        try:
+            await self._restart_session()
+            return f"Voice changed to {voice}."
+        except Exception as e:
+            self._voice_override = previous_voice_override
+            logger.warning("Failed to restart session for voice change: %s", e)
+            return "Voice change failed. Will take effect on next connection."
 
     def get_current_voice(self) -> str:
         """Return the resolved Gemini voice currently selected for this handler."""
@@ -372,36 +372,89 @@ class GeminiLiveHandler(ConversationHandler):
                 except Exception:
                     pass
 
-    async def _restart_session(self) -> None:
-        """Force-close the current session and start a fresh one."""
+    async def _cancel_and_observe_session_task(self, task: asyncio.Task[None]) -> None:
+        """Cancel a session task and explicitly observe its completion."""
+        if not task.done():
+            task.cancel()
         try:
-            if self.session is not None:
-                try:
-                    await self.session.close()
-                except Exception:
-                    pass
-                finally:
-                    self.session = None
-
-            if getattr(self, "client", None) is None:
-                logger.warning("Cannot restart: Gemini client not initialized yet.")
-                return
-
-            try:
-                self._connected_event.clear()
-            except Exception:
-                pass
-            self._stop_event.set()  # Signal the old receive loop to stop
-            await asyncio.sleep(0.1)
-            self._stop_event.clear()
-            asyncio.create_task(self.start_up(), name="gemini-live-restart")
-            try:
-                await asyncio.wait_for(self._connected_event.wait(), timeout=5.0)
-                logger.info("Gemini Live session restarted and connected.")
-            except asyncio.TimeoutError:
-                logger.warning("Gemini Live session restart timed out; continuing in background.")
+            await task
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
-            logger.warning("_restart_session failed: %s", e)
+            logger.warning("Gemini Live session task stopped with an error: %s", e)
+
+    def _observe_session_task(self, task: asyncio.Task[None]) -> None:
+        """Consume a failure from a connected background session task."""
+        if self._session_task is task:
+            self._session_task = None
+        if task.cancelled():
+            return
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            return
+        if error is not None:
+            logger.error("Gemini Live session task failed after connection: %s", error)
+
+    async def _restart_session(self) -> None:
+        """Force-close the current session and wait for a connected replacement."""
+        if getattr(self, "client", None) is None:
+            raise RuntimeError("Cannot restart: Gemini client not initialized yet.")
+
+        if self.session is not None:
+            try:
+                await self.session.close()
+            except Exception as e:
+                logger.warning("Failed to close the previous Gemini session: %s", e)
+            finally:
+                self.session = None
+
+        previous_task = self._session_task
+        self._session_task = None
+        if previous_task is not None:
+            await self._cancel_and_observe_session_task(previous_task)
+
+        self._connected_event.clear()
+        self._stop_event.set()  # Signal the old receive loop to stop
+        await asyncio.sleep(0.1)
+        self._stop_event.clear()
+
+        restart_task = asyncio.create_task(self.start_up(), name="gemini-live-restart")
+        connected_task = asyncio.create_task(
+            self._connected_event.wait(),
+            name="gemini-live-restart-connected",
+        )
+        try:
+            done, _ = await asyncio.wait(
+                {restart_task, connected_task},
+                timeout=GEMINI_RESTART_TIMEOUT_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                await self._cancel_and_observe_session_task(restart_task)
+                raise TimeoutError("Gemini Live session restart timed out before connecting")
+
+            if restart_task in done:
+                await restart_task
+                raise RuntimeError("Gemini Live session restart ended before connecting")
+
+            if restart_task.done():
+                await restart_task
+                raise RuntimeError("Gemini Live session restart ended after connecting")
+
+            self._session_task = restart_task
+            restart_task.add_done_callback(self._observe_session_task)
+            logger.info("Gemini Live session restarted and connected.")
+        except asyncio.CancelledError:
+            await self._cancel_and_observe_session_task(restart_task)
+            raise
+        finally:
+            if not connected_task.done():
+                connected_task.cancel()
+            try:
+                await connected_task
+            except asyncio.CancelledError:
+                pass
 
     def _build_live_config(self) -> types.LiveConnectConfig:
         """Build the LiveConnectConfig for a Gemini Live session."""

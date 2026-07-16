@@ -15,6 +15,8 @@ from fastapi.testclient import TestClient
 from reachy_chat.config import GEMINI_AVAILABLE_VOICES, config
 from reachy_chat.console import LocalStream
 from reachy_chat.openai_realtime import OpenaiRealtimeHandler
+from reachy_chat.gemini_live import GeminiLiveHandler
+from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.startup_settings import (
     StartupSettings,
     load_startup_settings_into_runtime,
@@ -958,6 +960,69 @@ def test_mounted_live_voice_rejection_preserves_current_and_persistence(tmp_path
     assert stream._voice_override == "marin"
     assert not (tmp_path / "startup_settings.json").exists()
     update.assert_awaited_once()
+
+
+def test_mounted_gemini_voice_success_requires_connected_replacement_and_persists(
+    tmp_path: Path,
+) -> None:
+    """A connected Gemini replacement is required before /voices/apply persists success."""
+    handler = GeminiLiveHandler(
+        ToolDependencies(
+            reachy_mini=MagicMock(),
+            movement_manager=MagicMock(),
+        ),
+        instance_path=str(tmp_path),
+        startup_voice="Orus",
+    )
+    handler.client = object()
+
+    async def _start_up_and_connect() -> None:
+        handler._connected_event.set()
+        while not handler._stop_event.is_set():
+            await asyncio.sleep(0.01)
+
+    handler.start_up = _start_up_and_connect
+    app = FastAPI()
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        started.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=_run_loop, daemon=True)
+    thread.start()
+    started.wait(timeout=1.0)
+    try:
+        stream = LocalStream(
+            handler,
+            MagicMock(),
+            settings_app=app,
+            instance_path=str(tmp_path),
+            startup_voice="Orus",
+        )
+        stream._asyncio_loop = loop
+        stream._init_settings_ui_if_needed()
+        response = TestClient(app).post("/voices/apply", json={"voice": "Zephyr"})
+        replacement_task = handler._session_task
+        assert replacement_task is not None
+        cleanup = asyncio.run_coroutine_threadsafe(
+            handler._cancel_and_observe_session_task(replacement_task),
+            loop,
+        )
+        cleanup.result(timeout=1.0)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1.0)
+        loop.close()
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "status": "Voice changed to Zephyr."}
+    assert handler.get_current_voice() == "Zephyr"
+    assert stream._voice_override == "Zephyr"
+    settings = load_startup_settings_into_runtime(tmp_path)
+    assert settings.voice == "Zephyr"
 
 @pytest.mark.asyncio
 async def test_local_stream_voice_failure_is_not_persisted_or_reported_success() -> None:
