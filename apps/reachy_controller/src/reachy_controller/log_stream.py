@@ -557,12 +557,13 @@ class ProcessLogPump:
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=budget)
         if parent_exited and thread is not None and thread.is_alive():
-            # The descriptor loop is nonblocking; do not let an unexpected
-            # reader stall turn an exited child into an unbounded shutdown.
+            # Force the reader out of its bounded exit-drain window, then give
+            # it one more bounded turn to close its file and release ownership.
             self._stop_requested.set()
-        if thread is None or not thread.is_alive():
-            self.broker.set_status(self.source, "stopped")
-
+            thread.join(timeout=min(max(0.05, budget), self.EXIT_DRAIN_MAX_S))
+        if thread is not None and thread.is_alive():
+            raise RuntimeError(f"log pump for {self.source} did not stop")
+        self.broker.set_status(self.source, "stopped")
     @property
     def done(self) -> bool:
         return self._done.is_set()

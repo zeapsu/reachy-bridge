@@ -152,6 +152,67 @@ async def test_process_pump_stop_does_not_wait_for_inherited_pipe(tmp_path: Path
         await broker.aclose()
 
 
+@pytest.mark.asyncio
+async def test_process_pump_forced_join_releases_reader_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The forced second join waits for the reader before ownership is released."""
+    broker = LogBroker()
+    broker.bind_source("forced-join")
+    select_entered = threading.Event()
+    release_select = threading.Event()
+    original_select = log_stream_module.select.select
+
+    def paused_select(*args: object) -> tuple[list[int], list[int], list[int]]:
+        select_entered.set()
+        release_select.wait(timeout=1.0)
+        return original_select(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(log_stream_module.select, "select", paused_select)
+    process = subprocess.Popen(
+        [sys.executable, "-c", "print('forced-tail', flush=True)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    pump = ProcessLogPump(process, "forced-join", broker, tmp_path / "forced-join.log")
+    thread = pump.thread
+    assert thread is not None
+    real_join = thread.join
+    join_timeouts: list[float | None] = []
+    second_join_entered = threading.Event()
+
+    def first_join(timeout: float | None = None) -> None:
+        join_timeouts.append(timeout)
+        if len(join_timeouts) > 1:
+            second_join_entered.set()
+            real_join(timeout)
+
+    thread.join = first_join  # type: ignore[method-assign]
+    try:
+        assert await asyncio.to_thread(select_entered.wait, 1.0)
+        await asyncio.to_thread(process.wait)
+        stop_task = asyncio.create_task(asyncio.to_thread(pump.stop, 0.05, True))
+        assert await asyncio.to_thread(second_join_entered.wait, 1.0)
+        assert len(join_timeouts) == 2
+        assert join_timeouts[0] == 0.05
+        assert join_timeouts[1] <= ProcessLogPump.EXIT_DRAIN_MAX_S
+        assert not stop_task.done()
+        release_select.set()
+        await stop_task
+        assert not thread.is_alive()
+        assert pump.file_handle is None
+    finally:
+        release_select.set()
+        if thread.is_alive():
+            thread.join(timeout=1.0)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        await broker.aclose()
+
+
 def _stream_request(app: object) -> object:
     from starlette.requests import Request
 
@@ -372,7 +433,7 @@ async def test_live_publish_during_tail_is_not_replayed_twice(
     path = tmp_path / "reachy_chat.log"
     path.write_text("persisted\n", encoding="utf-8")
     broker.set_file("reachy_chat", path)
-    broker.reset("reachy_chat", status="empty")
+    broker.reset("reachy_chat", status="live")
     entered = asyncio.Event()
     release = asyncio.Event()
     original_tail = broker.tail_file
@@ -397,8 +458,6 @@ async def test_live_publish_during_tail_is_not_replayed_twice(
     stream = response.body_iterator
     reset = await stream.__anext__()
     assert json.loads(reset.split("data: ", 1)[1])["lines"] == ["persisted"]
-    status = await stream.__anext__()
-    assert status.startswith("event: source-status")
     lines = await stream.__anext__()
     assert json.loads(lines.split("data: ", 1)[1]) == {"lines": ["during-tail"]}
     await stream.aclose()
@@ -406,16 +465,42 @@ async def test_live_publish_during_tail_is_not_replayed_twice(
 
 
 @pytest.mark.asyncio
-async def test_live_subscription_uses_ring_not_persisted_fallback(tmp_path: Path) -> None:
+async def test_live_subscription_replays_persisted_tail_for_empty_ring(
+    tmp_path: Path,
+) -> None:
     app = create_app()
     broker = app.state.log_broker
     path = tmp_path / "reachy_chat.log"
     path.write_text("stale-file-line\n", encoding="utf-8")
     broker.set_file("reachy_chat", path)
-    broker.reset("reachy_chat", status="empty")
-    broker.set_status("reachy_chat", "live")
+    broker.reset("reachy_chat", status="live")
+
     response = await log_stream(_stream_request(app), "reachy_chat")  # type: ignore[arg-type]
     reset = await response.body_iterator.__anext__()
-    assert json.loads(reset.split("data: ", 1)[1]) == {"status": "live", "lines": []}
+    assert json.loads(reset.split("data: ", 1)[1]) == {
+        "status": "live",
+        "lines": ["stale-file-line"],
+    }
+    await response.body_iterator.aclose()
+    await broker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_adopted_subscription_replays_persisted_tail(
+    tmp_path: Path,
+) -> None:
+    app = create_app()
+    broker = app.state.log_broker
+    path = tmp_path / "reachy_chat.log"
+    path.write_text("adopted-file-line\n", encoding="utf-8")
+    broker.set_file("reachy_chat", path)
+    broker.reset("reachy_chat", status="unavailable")
+
+    response = await log_stream(_stream_request(app), "reachy_chat")  # type: ignore[arg-type]
+    reset = await response.body_iterator.__anext__()
+    assert json.loads(reset.split("data: ", 1)[1]) == {
+        "status": "unavailable",
+        "lines": ["adopted-file-line"],
+    }
     await response.body_iterator.aclose()
     await broker.aclose()

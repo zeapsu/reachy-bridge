@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import signal
 import subprocess
+import sys
 from unittest.mock import MagicMock, patch
+from pathlib import Path
 
 import psutil
 import pytest
 
 from reachy_controller.app_supervisor import _get_workspace_root
 from reachy_controller.daemon_supervisor import DaemonSupervisor
+from reachy_controller.log_stream import LogBroker, ProcessLogPump
 
 
 @pytest.mark.asyncio
@@ -113,6 +117,68 @@ async def test_stop_via_subprocess_handle() -> None:
     assert result["status"] == "stopped"
     assert supervisor._daemon.status == "stopped"
     mock_process.send_signal.assert_called_once_with(signal.SIGINT)
+
+
+@pytest.mark.asyncio
+async def test_stop_passes_parent_exited_keyword_and_drains_buffered_tail(
+    tmp_path: Path,
+) -> None:
+    with patch.dict("os.environ", {"REACHY_MANAGE_DAEMON": "1"}):
+        broker = LogBroker()
+        supervisor = DaemonSupervisor(log_broker=broker)
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import signal,sys\n"
+                    "def on_sigint(signum, frame):\n"
+                    "    sys.stdout.write('buffered-exit-tail\\n')\n"
+                    "    sys.stdout.flush()\n"
+                    "    raise SystemExit(0)\n"
+                    "signal.signal(signal.SIGINT, on_sigint)\n"
+                    "print('ready', flush=True)\n"
+                    "signal.pause()\n"
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+        )
+        pump = ProcessLogPump(process, "daemon", broker, tmp_path / "daemon.log")
+        calls: dict[str, bool] = {}
+        original_stop = pump.stop
+
+        def strict_stop(*, parent_exited: bool) -> None:
+            calls["parent_exited"] = parent_exited
+            original_stop(parent_exited=parent_exited)
+
+        pump.stop = strict_stop  # type: ignore[method-assign]
+        supervisor._daemon.process = process
+        supervisor._daemon.log_pump = pump
+        supervisor._daemon.pid = process.pid
+        for _ in range(100):
+            if broker.ring("daemon") == ["ready"]:
+                break
+            await asyncio.sleep(0.01)
+        assert broker.ring("daemon") == ["ready"]
+        supervisor._daemon.status = "running"
+        try:
+            result = await supervisor.stop()
+            assert result["status"] == "stopped"
+            assert calls == {"parent_exited": True}
+            assert (tmp_path / "daemon.log").read_text().splitlines() == [
+                "ready",
+                "buffered-exit-tail",
+            ]
+            assert pump.thread is not None and not pump.thread.is_alive()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            await broker.aclose()
 
 
 @pytest.mark.asyncio

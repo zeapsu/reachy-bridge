@@ -113,7 +113,7 @@
 
   function emptyLogMessage(status) {
     if (status === "offline") return "daemon offline — no output";
-    if (status === "unavailable") return "daemon output isn't captured yet";
+    if (status === "unavailable") return "output isn't captured yet";
     return "waiting for output";
   }
 
@@ -240,7 +240,7 @@
         replaceLogLines(payload.lines);
         const status = payload.status || "empty";
         if (!payload.lines?.length) {
-          $("log-empty").textContent = status === "offline" ? "daemon offline — no output" : status === "unavailable" ? "daemon output isn't captured yet" : "waiting for output";
+          $("log-empty").textContent = status === "offline" ? "daemon offline — no output" : status === "unavailable" ? "output isn't captured yet" : "waiting for output";
         }
         setLogStatus(status);
       },

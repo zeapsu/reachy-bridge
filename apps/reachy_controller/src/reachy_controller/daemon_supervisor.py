@@ -205,7 +205,7 @@ class DaemonSupervisor:
         except Exception as e:
             logger.error(f"Error stopping daemon: {e}")
         if self._daemon.log_pump is not None:
-            await asyncio.to_thread(self._daemon.log_pump.stop, parent_exited)
+            await asyncio.to_thread(self._daemon.log_pump.stop, parent_exited=parent_exited)
             self._daemon.log_pump = None
         self.log_broker.set_status("daemon", "stopped")
 

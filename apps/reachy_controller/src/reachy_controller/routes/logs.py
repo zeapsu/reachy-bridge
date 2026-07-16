@@ -132,14 +132,19 @@ async def log_stream(request: Request, source: str = Query(...)) -> StreamingRes
     subscription = await broker.subscribe(source, defer_initial=True)
     captured_status = subscription.initial_status
     replay = subscription._initial_lines
-    effective_status = captured_status
     path = broker.source_file(source)
-    if not replay and captured_status == "empty" and path is not None:
+    effective_status = captured_status
+    if captured_status == "empty" and subscription.file_end is not None:
+        effective_status = "stopped"
+    if (
+        not replay
+        and captured_status in {"empty", "live", "unavailable"}
+        and path is not None
+        and subscription.file_end is not None
+    ):
         replay = await asyncio.to_thread(
             broker.tail_file, path, 200, subscription.file_end
         )
-        if replay:
-            effective_status = "stopped"
     await broker.initialize(subscription, lines=replay, status=effective_status)
     return StreamingResponse(
         _stream_events(broker, subscription),
