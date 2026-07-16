@@ -126,12 +126,20 @@ async def log_stream(request: Request, source: str = Query(...)) -> StreamingRes
     if source not in _source_ids(request):
         raise HTTPException(status_code=404, detail="Unknown log source")
     broker: LogBroker = request.app.state.log_broker
-    replay = broker.replay(source)
+    initial_status = _status_for_source(request, source)
+    # Register before the persisted tail read.  The broker captures the ring
+    # snapshot/status under its lock and holds live events in bounded staging.
+    subscription = await broker.subscribe(
+        source,
+        initial_status=initial_status,
+        defer_initial=True,
+    )
+    replay = subscription._initial_lines
     if not replay:
         path = broker.source_file(source)
         if path is not None:
             replay = await asyncio.to_thread(broker.tail_file, path, 200)
-    subscription = await broker.subscribe(source, replay=replay)
+    await broker.initialize(subscription, lines=replay, status=initial_status)
     return StreamingResponse(
         _stream_events(broker, subscription),
         media_type="text/event-stream",

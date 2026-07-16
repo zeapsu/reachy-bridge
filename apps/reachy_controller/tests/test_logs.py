@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import signal
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -12,7 +17,7 @@ import pytest
 
 from reachy_controller.log_stream import ControllerLogHandler, LogBroker, ProcessLogPump
 from reachy_controller.main import create_app
-from reachy_controller.routes.logs import _stream_events
+from reachy_controller.routes.logs import _stream_events, log_stream
 
 
 @pytest.mark.asyncio
@@ -52,6 +57,110 @@ async def test_process_pump_merges_and_flushes_burst(tmp_path: Path) -> None:
     assert (tmp_path / "burst.log").read_text().splitlines() == ["stdout", "stderr"]
     assert broker.ring("burst") == ["stdout", "stderr"]
     assert pump.thread is not None and not pump.thread.is_alive()
+    await broker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_process_pump_stop_does_not_wait_for_inherited_pipe(tmp_path: Path) -> None:
+    """A descendant holding stdout must not keep the pump thread alive."""
+    broker = LogBroker()
+    broker.bind_source("inherited")
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import subprocess,sys,time; "
+                "subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+                "print('partial', end='', flush=True)"
+            ),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+    pump = ProcessLogPump(process, "inherited", broker, tmp_path / "inherited.log")
+    try:
+        await asyncio.to_thread(process.wait)
+        started = time.monotonic()
+        await asyncio.to_thread(pump.stop, 0.5)
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.0
+        assert pump.thread is not None and not pump.thread.is_alive()
+        assert (tmp_path / "inherited.log").read_text() == "partial\n"
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        await broker.aclose()
+
+
+def _stream_request(app: object) -> object:
+    from starlette.requests import Request
+
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/logs/stream",
+            "query_string": b"source=reachy_chat",
+            "headers": [],
+            "scheme": "http",
+            "app": app,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_keeps_lines_published_during_persisted_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = create_app()
+    broker = app.state.log_broker
+    path = tmp_path / "reachy_chat.log"
+    path.write_text("persisted\n", encoding="utf-8")
+    broker.set_file("reachy_chat", path)
+    broker.reset("reachy_chat", status="empty")
+
+    def delayed_tail(_: Path, __: int) -> list[str]:
+        broker.publish("reachy_chat", "during-tail")
+        time.sleep(0.02)
+        return ["persisted"]
+
+    monkeypatch.setattr(broker, "tail_file", delayed_tail)
+    response = await log_stream(_stream_request(app), "reachy_chat")  # type: ignore[arg-type]
+    stream = response.body_iterator
+    reset = await stream.__anext__()
+    assert json.loads(reset.split("data: ", 1)[1]) == {
+        "status": "stopped",
+        "lines": ["persisted"],
+    }
+    status = await stream.__anext__()
+    lines = await stream.__anext__()
+    assert status.startswith("event: source-status")
+    assert json.loads(lines.split("data: ", 1)[1]) == {"lines": ["during-tail"]}
+    await stream.aclose()
+    await broker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_reset_status_matches_persisted_source_status(tmp_path: Path) -> None:
+    app = create_app()
+    broker = app.state.log_broker
+    path = tmp_path / "reachy_chat.log"
+    path.write_text("persisted\n", encoding="utf-8")
+    broker.set_file("reachy_chat", path)
+    broker.reset("reachy_chat", status="empty")
+
+    response = await log_stream(_stream_request(app), "reachy_chat")  # type: ignore[arg-type]
+    reset = await response.body_iterator.__anext__()
+    payload = json.loads(reset.split("data: ", 1)[1])
+    assert payload["status"] == "stopped"
+    assert payload["lines"] == ["persisted"]
+    await response.body_iterator.aclose()
     await broker.aclose()
 
 

@@ -416,6 +416,76 @@ async def test_reap_app_uses_thread_for_wait() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("exit_code,expected_status", [(0, "stopped"), (7, "error")])
+async def test_reaper_finally_cleans_all_state_before_restart(
+    tmp_path: Path, exit_code: int, expected_status: str
+) -> None:
+    supervisor = AppSupervisor()
+    app = supervisor._apps["reachy_chat"]
+
+    async def reap_once(process: MagicMock, code: int, suffix: str) -> None:
+        process.wait.return_value = code
+        app.process = process
+        app.pid = process.pid
+        app.status = "loading"
+        app.error = None
+        app.external = False
+        pump = MagicMock()
+        app.log_pump = pump
+        app.log_handle = MagicMock()
+        app.ready_file = tmp_path / f"{suffix}.ready"
+        app.ready_file.write_text("ready")
+        task = asyncio.create_task(supervisor._reap_app(app.name))
+        supervisor._reaper_tasks[app.name] = task
+        await asyncio.wait_for(task, timeout=1)
+        assert app.process is None
+        assert app.pid is None
+        assert app.log_pump is None
+        assert app.log_handle is None
+        assert app.ready_file is None
+        assert not (tmp_path / f"{suffix}.ready").exists()
+        assert app.name not in supervisor._reaper_tasks
+        pump.stop.assert_called_once()
+
+    await reap_once(MagicMock(pid=12345), exit_code, "first")
+    assert app.status == expected_status
+
+    await reap_once(MagicMock(pid=12346), 0, "replacement")
+    assert app.status == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_reaper_finally_cleans_after_wait_exception(tmp_path: Path) -> None:
+    supervisor = AppSupervisor()
+    app = supervisor._apps["reachy_chat"]
+    process = MagicMock(pid=12347)
+    process.wait.side_effect = RuntimeError("wait failed")
+    pump = MagicMock()
+    ready_file = tmp_path / "exception.ready"
+    ready_file.write_text("ready")
+    app.process = process
+    app.pid = process.pid
+    app.status = "loading"
+    app.log_pump = pump
+    app.log_handle = MagicMock()
+    app.ready_file = ready_file
+
+    task = asyncio.create_task(supervisor._reap_app(app.name))
+    supervisor._reaper_tasks[app.name] = task
+    await asyncio.wait_for(task, timeout=1)
+
+    assert app.status == "error"
+    assert app.process is None
+    assert app.pid is None
+    assert app.log_pump is None
+    assert app.log_handle is None
+    assert app.ready_file is None
+    assert not ready_file.exists()
+    assert app.name not in supervisor._reaper_tasks
+    pump.stop.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_stop_app_uses_thread_for_wait() -> None:
     """Test that stop_app uses asyncio.to_thread for wait() calls.
 

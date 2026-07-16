@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import logging
+import os
+import select
 import threading
 import time
 from collections import deque
@@ -24,6 +27,7 @@ class LogSubscription:
         self._queue = queue
         self._loop: asyncio.AbstractEventLoop | None = None
         self._closed = False
+        self._initial_lines: list[str] = []
 
     def __aiter__(self) -> AsyncIterator[dict[str, Any]]:
         return self
@@ -129,21 +133,65 @@ class LogBroker:
             self._schedule(source, {"kind": "status", "status": "live"})
         self._schedule(source, {"kind": "line", "line": text})
 
-    async def subscribe(self, source: str, *, replay: list[str] | None = None) -> LogSubscription:
+    async def subscribe(
+        self,
+        source: str,
+        *,
+        replay: list[str] | None = None,
+        initial_status: str | None = None,
+        defer_initial: bool = False,
+    ) -> LogSubscription:
         loop = asyncio.get_running_loop()
         with self._lock:
             if self._closed:
                 raise RuntimeError("log broker is closed")
             self._rings.setdefault(source, deque(maxlen=self.ring_size))
-            status = self._statuses.get(source, "empty")
+            status = self._statuses.get(source, "empty") if initial_status is None else initial_status
             lines = self.replay(source) if replay is None else list(replay[-200:])
             queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=self.queue_size)
             subscription = LogSubscription(self, source, queue)
             subscription._loop = loop
+            subscription._initial_lines = lines
             self._subscribers[subscription] = queue
             self._pending[subscription] = deque()
-            queue.put_nowait({"kind": "reset", "status": status, "lines": lines})
+            if not defer_initial:
+                queue.put_nowait({"kind": "reset", "status": status, "lines": lines})
             return subscription
+
+    async def initialize(
+        self,
+        subscription: LogSubscription,
+        *,
+        lines: list[str],
+        status: str,
+    ) -> None:
+        """Emit one initial reset after an optional persisted tail read.
+
+        Registration occurs before the tail read.  Anything published while that
+        read is in progress is moved behind this reset without dropping it.
+        """
+        with self._lock:
+            queue = self._subscribers.get(subscription)
+            pending = self._pending.get(subscription)
+            if queue is None or pending is None:
+                return
+            queued = list(queue._queue)
+            queued.extend(pending)
+            self._clear_queue(queue)
+            pending.clear()
+            initial = {"kind": "reset", "status": status, "lines": list(lines[-200:])}
+            queue.put_nowait(initial)
+            for event in queued:
+                if event is _CLOSED:
+                    continue
+                if event.get("kind") == "reset":
+                    # Keep the initial reset while preserving a restart reset
+                    # that was generated during the tail read.
+                    self._clear_queue(queue)
+                    queue.put_nowait(initial)
+                    queue.put_nowait(event)
+                else:
+                    self._queue_event(queue, event)
 
     async def unsubscribe(self, subscription: LogSubscription) -> None:
         with self._lock:
@@ -294,6 +342,8 @@ class ProcessLogPump:
         self.log_path = log_path
         self._file: TextIO | None = None
         self._file_lock = threading.Lock()
+        self._stream_close_lock = threading.Lock()
+        self._stream_closed = False
         self._done = threading.Event()
         self._stop_requested = threading.Event()
         self._thread: threading.Thread | None = None
@@ -318,29 +368,90 @@ class ProcessLogPump:
         except OSError:
             self._file = None
 
+    @staticmethod
+    def _stream_fd(stream: Any) -> int | None:
+        try:
+            fd = stream.fileno()
+        except (AttributeError, OSError, ValueError):
+            return None
+        return fd if type(fd) is int and fd >= 0 else None
+
+    def _write_line(self, text: str) -> None:
+        with self._file_lock:
+            if self._file is not None:
+                try:
+                    self._file.write(text + "\n")
+                    self._file.flush()
+                except (OSError, TypeError):
+                    pass
+        self.broker.publish(self.source, text)
+
+    def _close_stream(self, stream: Any) -> None:
+        with self._stream_close_lock:
+            if self._stream_closed:
+                return
+            self._stream_closed = True
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+    def _drain_text_stream(self, stream: Any) -> None:
+        """Fallback for file-like test doubles that do not expose a descriptor."""
+        while not self._stop_requested.is_set():
+            try:
+                line = stream.readline()
+            except Exception:
+                return
+            if line == "" or not isinstance(line, str):
+                return
+            self._write_line(line.rstrip("\r\n"))
+
     def _drain(self) -> None:
         stream = getattr(self.process, "stdout", None)
         try:
             if stream is None:
                 return
-            for line in iter(stream.readline, ""):
-                if line == "" or not isinstance(line, str):
-                    break
-                text = line.rstrip("\r\n")
-                with self._file_lock:
-                    if self._file is not None:
-                        try:
-                            self._file.write(text + "\n")
-                            self._file.flush()
-                        except (OSError, TypeError):
-                            pass
-                self.broker.publish(self.source, text)
-        finally:
+            fd = self._stream_fd(stream)
+            if fd is None:
+                self._drain_text_stream(stream)
+                return
+
+            # TextIOWrapper.readline() can stay blocked forever when a descendant
+            # inherited the parent's pipe.  Read the descriptor directly in
+            # bounded, nonblocking chunks so stop_event, not EOF, controls exit.
             try:
-                if stream is not None:
-                    stream.close()
-            except Exception:
+                os.set_blocking(fd, False)
+            except OSError:
                 pass
+            decoder = codecs.getincrementaldecoder("utf-8")("replace")
+            pending = ""
+            while not self._stop_requested.is_set():
+                try:
+                    readable, _, _ = select.select((fd,), (), (), 0.05)
+                except (OSError, ValueError):
+                    break
+                if not readable:
+                    continue
+                try:
+                    chunk = os.read(fd, 64 * 1024)
+                except BlockingIOError:
+                    continue
+                except (OSError, ValueError):
+                    break
+                if not chunk:
+                    break
+                pending += decoder.decode(chunk)
+                while "\n" in pending:
+                    line, pending = pending.split("\n", 1)
+                    self._write_line(line.rstrip("\r"))
+
+            pending += decoder.decode(b"", final=True)
+            if pending:
+                self._write_line(pending.rstrip("\r\n"))
+        finally:
+            if stream is not None:
+                self._close_stream(stream)
             with self._file_lock:
                 if self._file is not None:
                     try:
@@ -354,26 +465,11 @@ class ProcessLogPump:
                 self.broker.set_status(self.source, "stopped")
 
     def stop(self, timeout: float = 5.0) -> None:
-        """Close and join the reader; callers in async code must use ``to_thread``."""
+        """Stop and join the reader within a bounded timeout."""
         self._stop_requested.set()
-        stream = getattr(self.process, "stdout", None)
-        process_alive = True
-        try:
-            process_alive = self.process.poll() is None
-        except (AttributeError, TypeError):
-            pass
-        if process_alive:
-            try:
-                if stream is not None:
-                    stream.close()
-            except Exception:
-                pass
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
-            if process_alive:
-                thread.join(timeout=timeout)
-            else:
-                thread.join()
+            thread.join(timeout=max(0.0, timeout))
         if thread is None or not thread.is_alive():
             self.broker.set_status(self.source, "stopped")
 

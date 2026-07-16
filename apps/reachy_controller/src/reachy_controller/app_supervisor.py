@@ -177,6 +177,10 @@ class AppSupervisor:
         if pump is not None:
             pump.stop()
             app.log_pump = None
+            # ProcessLogPump owns this file; avoid closing the same descriptor
+            # through the legacy alias a second time.
+            app.log_handle = None
+            return
         if app.log_handle is not None:
             try:
                 app.log_handle.close()
@@ -519,13 +523,19 @@ class AppSupervisor:
     async def _reap_app(self, name: str) -> None:
         """Monitor a child process and update status when it exits."""
         app = self._apps[name]
-        if app.process is None:
+        process = app.process
+        current_task = asyncio.current_task()
+        if process is None:
+            if self._reaper_tasks.get(name) is current_task:
+                self._reaper_tasks.pop(name, None)
             return
 
         try:
-            exit_code = await asyncio.to_thread(app.process.wait)
+            exit_code = await asyncio.to_thread(process.wait)
             async with self._lock:
-                if app.status in ("loading", "running", "stopping"):
+                # A stop/restart may have replaced this process while its wait
+                # completed.  Never mutate the replacement's state.
+                if app.process is process and app.status in ("loading", "running"):
                     if exit_code == 0:
                         app.status = "stopped"
                         app.external = False
@@ -539,16 +549,37 @@ class AppSupervisor:
                     )
         except Exception as e:
             logger.error(f"Reaper error for {name}: {e}")
-            self._reaper_tasks.pop(name, None)
-            await asyncio.to_thread(self._close_log_handle, app)
-            self.log_broker.set_status(name, "stopped")
-            # Clean up ready file
-            if app.ready_file is not None:
-                try:
-                    app.ready_file.unlink(missing_ok=True)
-                except Exception as e:
-                    logger.debug(f"Failed to clean up ready file for {name}: {e}")
-                app.ready_file = None
+            async with self._lock:
+                if app.process is process and app.status in ("loading", "running"):
+                    app.status = "error"
+                    app.external = False
+                    app.error = str(e)
+        finally:
+            async with self._lock:
+                if self._reaper_tasks.get(name) is current_task:
+                    self._reaper_tasks.pop(name, None)
+                if app.process is not process:
+                    return
+
+                readiness_task = self._readiness_tasks.pop(name, None)
+                if readiness_task is not None and readiness_task is not current_task:
+                    readiness_task.cancel()
+                    try:
+                        await readiness_task
+                    except asyncio.CancelledError:
+                        pass
+
+                await asyncio.to_thread(self._close_log_handle, app)
+                app.process = None
+                app.pid = None
+                app.external = False
+                if app.ready_file is not None:
+                    try:
+                        app.ready_file.unlink(missing_ok=True)
+                    except Exception as e:
+                        logger.debug(f"Failed to clean up ready file for {name}: {e}")
+                    app.ready_file = None
+                self.log_broker.set_status(name, "stopped")
 
     def _scan_for_live_apps(self) -> dict[str, tuple[int, float]]:
         """Scan process table for live apps matching known patterns.
