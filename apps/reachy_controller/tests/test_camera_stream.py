@@ -183,6 +183,76 @@ async def test_unready_media_is_an_honest_503_before_stream_headers() -> None:
     assert exc_info.value.status_code == 503
     assert streamer.subscriber_count == 0
 
+
+@pytest.mark.asyncio
+async def test_subscribe_cancellation_during_reader_join_removes_subscriber(monkeypatch: pytest.MonkeyPatch) -> None:
+    class BlockingReader:
+        def __init__(self) -> None:
+            self.joined = False
+            self.closed = False
+
+        def is_alive(self) -> bool:
+            return not self.joined
+
+        def join(self, _timeout: float | None = None) -> None:
+            self.joined = True
+            self.closed = True
+    daemon = FakeDaemon()
+    streamer = CameraMJPEGStreamer(media_ready=lambda d: d.ready)
+    reader = BlockingReader()
+    streamer._reader_thread = reader  # type: ignore[assignment]
+    streamer._stop_event.set()
+    join_started = asyncio.Event()
+    release_join = asyncio.Event()
+    calls = 0
+
+    async def blocking_to_thread(func: object, *args: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            join_started.set()
+            await release_join.wait()
+        else:
+            func(*args)  # type: ignore[operator]
+
+    monkeypatch.setattr(asyncio, "to_thread", blocking_to_thread)
+    task = asyncio.create_task(streamer.subscribe(daemon))
+    await join_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert streamer.subscriber_count == 0
+    assert reader.joined
+    assert reader.closed
+    assert not streamer.reader_alive
+
+
+@pytest.mark.asyncio
+async def test_startup_timeout_removes_subscriber_and_stops_reader() -> None:
+    daemon = FakeDaemon()
+    checks = 0
+
+    def media_ready(_daemon: FakeDaemon) -> bool:
+        nonlocal checks
+        checks += 1
+        return checks == 1
+
+    streamer = CameraMJPEGStreamer(
+        camera_factory=FakeCamera,
+        encoder=lambda frame: frame,
+        media_ready=media_ready,
+        startup_timeout=0.02,
+        retry_interval=0.001,
+    )
+
+    with pytest.raises(CameraStreamUnavailable, match="did not become ready"):
+        await streamer.subscribe(daemon)
+
+    assert streamer.subscriber_count == 0
+    assert not streamer.reader_alive
+    assert streamer._stop_event.is_set()
+
 @pytest.mark.asyncio
 async def test_daemon_stream_keeps_connect_timeout_and_disables_read_timeout() -> None:
     class RecordingClient:
