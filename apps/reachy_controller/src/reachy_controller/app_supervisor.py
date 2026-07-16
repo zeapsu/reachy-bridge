@@ -18,7 +18,10 @@ from typing import Any, TextIO
 
 import psutil
 
+from reachy_controller.log_stream import LogBroker, ProcessLogPump
+
 logger = logging.getLogger(__name__)
+
 
 _STOP_SIGINT_GRACE_S = 8.0  # generous: the app's graceful shutdown (return-home + sleep cue)
 # takes ~4-5s; wait() returns as soon as the process exits, so a larger ceiling never slows a
@@ -78,6 +81,7 @@ class LocalApp:
     start_time: float | None = None
     external: bool = False
     log_handle: TextIO | None = None
+    log_pump: ProcessLogPump | None = None
     ready_file: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -104,13 +108,15 @@ class AppSupervisor:
         "reachy_simon": {"module": "reachy_simon", "uses_camera": False},
     }
 
-    def __init__(self, daemon_proxy: Any | None = None) -> None:
+    def __init__(self, daemon_proxy: Any | None = None, log_broker: LogBroker | None = None) -> None:
         """Initialize supervisor with empty app state.
 
         Args:
             daemon_proxy: Optional DaemonProxy instance for lock checks.
+            log_broker: Optional app-scoped broker shared with the controller.
         """
         self.daemon_proxy = daemon_proxy
+        self.log_broker = log_broker or LogBroker()
         self._lock = asyncio.Lock()
         self._apps: dict[str, LocalApp] = {
             name: LocalApp(
@@ -125,6 +131,12 @@ class AppSupervisor:
         self._camera_release_hook: Callable[[], Awaitable[None]] | None = None
         self._camera_start_reservations: set[str] = set()
         self._workspace_root = _get_workspace_root()
+        for name in self.APPS:
+            self.log_broker.bind_source(
+                name,
+                status="empty",
+                file_path=self._workspace_root / ".reachy-logs" / f"{name}.log",
+            )
 
     def set_camera_release_hook(
         self, callback: Callable[[], Awaitable[None]] | None
@@ -160,12 +172,16 @@ class AppSupervisor:
         return len(cmdline) >= 3 and cmdline[1] == "-m" and cmdline[2] == f"{module}.main"
 
     def _close_log_handle(self, app: LocalApp) -> None:
-        """Close and clear an app's log handle if open (best-effort)."""
+        """Stop and clear an app's pump (safe to call from a worker thread)."""
+        pump = app.log_pump
+        if pump is not None:
+            pump.stop()
+            app.log_pump = None
         if app.log_handle is not None:
             try:
                 app.log_handle.close()
-            except Exception as close_err:
-                logger.error(f"Failed to close log handle for {app.name}: {close_err}")
+            except Exception:
+                pass
             app.log_handle = None
 
     async def _escalate_stop(self, pid: int, wait_fn: Callable, timeout_exc: type[BaseException]) -> None:
@@ -259,35 +275,29 @@ class AppSupervisor:
             ready_path = Path(tempfile.gettempdir()) / f"reachy_ready_{name}_{uuid.uuid4().hex}"
             app.ready_file = ready_path
 
-            # Open log file for app output
-            log_dir = self._workspace_root / ".reachy-logs"
-            try:
-                log_dir.mkdir(parents=True, exist_ok=True)
-                log_file_path = log_dir / f"{name}.log"
-                app.log_handle = open(log_file_path, "w")
-                stdout_target = app.log_handle
-                stderr_target = subprocess.STDOUT
-            except Exception as e:
-                logger.warning(f"Failed to open log file for {name}: {e}, falling back to DEVNULL")
-                app.log_handle = None
-                stdout_target = subprocess.DEVNULL
-                stderr_target = subprocess.DEVNULL
+            # Every launch truncates its file, clears the prior ring, and immediately
+            # starts a dedicated drain for the merged stdout/stderr pipe.
+            log_file_path = self._workspace_root / ".reachy-logs" / f"{name}.log"
+            self.log_broker.set_file(name, log_file_path)
+            self.log_broker.reset(name, status="empty")
 
             try:
                 app.process = subprocess.Popen(
                     argv,
                     cwd=app_dir,
-                    stdout=stdout_target,
-                    stderr=stderr_target,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     text=True,
+                    bufsize=1,
                     env={
                         **os.environ,
                         "REACHY_READY_FILE": str(ready_path),
-                        # Unbuffered so the per-app log flushes line-by-line — otherwise a
-                        # non-clean exit loses the buffered tail (incl. the shutdown sequence).
+                        # Unbuffered so the pump receives each child line promptly.
                         "PYTHONUNBUFFERED": "1",
                     },
                 )
+                app.log_pump = ProcessLogPump(app.process, name, self.log_broker, log_file_path)
+                app.log_handle = app.log_pump.file_handle
                 app.pid = app.process.pid
                 app.status = "loading"
                 # The loading state now owns the camera; clear the provisional
@@ -321,7 +331,15 @@ class AppSupervisor:
                 app.status = "error"
                 app.error = str(e)
                 logger.error(f"Failed to start app {name}: {e}")
-                self._close_log_handle(app)
+                await asyncio.to_thread(self._close_log_handle, app)
+                if app.process is not None:
+                    try:
+                        app.process.kill()
+                        await asyncio.to_thread(app.process.wait, 1.0)
+                    except Exception:
+                        pass
+                    app.process = None
+                    app.pid = None
                 return {"error": str(e), "name": name, "status": "error"}
 
     async def stop_app(self, name: str) -> dict[str, Any]:
@@ -378,7 +396,8 @@ class AppSupervisor:
             app.process = None
             app.external = False
 
-            self._close_log_handle(app)
+            await asyncio.to_thread(self._close_log_handle, app)
+            self.log_broker.set_status(name, "stopped")
 
             # Clean up ready file
             if app.ready_file is not None:
@@ -393,25 +412,33 @@ class AppSupervisor:
             return {"name": name, "status": "stopped"}
 
     def stop_all(self) -> None:
-        """Stop all running apps synchronously (for shutdown)."""
+        """Stop all launched apps synchronously (call via ``asyncio.to_thread``)."""
         for app in self._apps.values():
-            if app.process is not None and app.status == "running":
+            if app.process is not None and app.status in ("loading", "running", "stopping", "error"):
                 try:
                     app.process.terminate()
                     app.process.wait(timeout=2.0)
                 except Exception:
-                    app.process.kill()
+                    try:
+                        app.process.kill()
+                        app.process.wait(timeout=1.0)
+                    except Exception:
+                        pass
                 finally:
                     app.status = "stopped"
                     app.process = None
                     self._close_log_handle(app)
-                    # Clean up ready file
+                    self.log_broker.set_status(app.name, "stopped")
                     if app.ready_file is not None:
                         try:
                             app.ready_file.unlink(missing_ok=True)
-                        except Exception as e:
-                            logger.debug(f"Failed to clean up ready file for {app.name}: {e}")
+                        except OSError:
+                            pass
                         app.ready_file = None
+
+    async def aclose(self) -> None:
+        """Stop launched children without blocking the controller event loop."""
+        await asyncio.to_thread(self.stop_all)
 
     async def _monitor_readiness(self, name: str) -> None:
         """Monitor app readiness and promote from loading to running.
@@ -512,9 +539,9 @@ class AppSupervisor:
                     )
         except Exception as e:
             logger.error(f"Reaper error for {name}: {e}")
-        finally:
             self._reaper_tasks.pop(name, None)
-            self._close_log_handle(app)
+            await asyncio.to_thread(self._close_log_handle, app)
+            self.log_broker.set_status(name, "stopped")
             # Clean up ready file
             if app.ready_file is not None:
                 try:
@@ -546,15 +573,16 @@ class AppSupervisor:
         return found
 
     def reconcile_orphans(self) -> None:
-        """Adopt orphaned app processes on startup."""
+        """Adopt orphaned app processes on startup without claiming their pipes."""
         found = self._scan_for_live_apps()
         for name, (pid, create_time) in found.items():
             app = self._apps[name]
-            app.process = None  # Don't keep subprocess.Popen handle
+            app.process = None
             app.pid = pid
             app.status = "running"
             app.start_time = create_time
             app.external = True
+            self.log_broker.set_status(name, "unavailable")
             logger.info(f"Reconciled orphaned app {name} (pid {pid})")
 
     def get_all_status(self) -> list[dict[str, Any]]:
@@ -572,12 +600,14 @@ class AppSupervisor:
                             f"PID {app.pid} no longer runs {app.module}.main; transition to stopped"
                         )
                         app.status = "stopped"
+                        self.log_broker.set_status(app.name, "stopped")
                         app.external = False
                         app.pid = None
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     # Process is dead; transition to stopped
                     logger.info(f"App {app.name} (pid {app.pid}) is dead; transition to stopped")
                     app.status = "stopped"
+                    self.log_broker.set_status(app.name, "stopped")
                     app.external = False
                     app.pid = None
 
@@ -594,6 +624,7 @@ class AppSupervisor:
                 app.status = "running"
                 app.process = None
                 app.start_time = create_time
+                self.log_broker.set_status(name, "unavailable")
                 app.external = True
                 logger.info(f"Adopted external app {name} (pid {pid})")
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import signal
 import sys
 from pathlib import Path
@@ -67,7 +68,7 @@ async def test_start_app_argv_direct_interpreter(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_start_app_creates_log_file(tmp_path: Path) -> None:
-    """Test that start_app creates a log file and passes it to Popen."""
+    """Test that start_app creates a file and starts a merged-pipe pump."""
     supervisor = AppSupervisor()
     # Monkeypatch workspace root to temp directory
     supervisor._workspace_root = tmp_path
@@ -93,52 +94,42 @@ async def test_start_app_creates_log_file(tmp_path: Path) -> None:
     log_file = tmp_path / ".reachy-logs" / "reachy_chat.log"
     assert log_file.exists(), f"Log file not created at {log_file}"
 
-    # Verify stdout was a file handle (not DEVNULL)
-    assert popen_kwargs.get("stdout") is not None
-    assert popen_kwargs["stdout"] != -3  # -3 is DEVNULL
-    assert hasattr(popen_kwargs["stdout"], "close"), "stdout should be a file handle"
+    # The child output is drained from a merged line-buffered pipe.
+    assert popen_kwargs.get("stdout") == subprocess.PIPE
+    assert popen_kwargs["stderr"] == subprocess.STDOUT
+    assert popen_kwargs["text"] is True
+    assert popen_kwargs["bufsize"] == 1
 
-    # Verify stderr is redirected to stdout
-    assert popen_kwargs["stderr"] == -2  # -2 is subprocess.STDOUT
-
-    # Verify log_handle is stored on the app
+    # The pump owns the file lifecycle; fake processes may finish immediately.
     app = supervisor._apps["reachy_chat"]
-    assert app.log_handle is not None
-    assert hasattr(app.log_handle, "close")
-
+    assert app.log_pump is not None
+    if app.log_pump:
+        app.log_pump.stop()
     # Close the handle to avoid resource leak in test
     if app.log_handle:
         app.log_handle.close()
 
 
 @pytest.mark.asyncio
-async def test_stop_app_closes_log_handle(tmp_path: Path) -> None:
-    """Test that stop_app closes the log file handle."""
+async def test_stop_app_closes_log_pump(tmp_path: Path) -> None:
+    """Test that stop_app joins and clears the output pump."""
     supervisor = AppSupervisor()
     supervisor._workspace_root = tmp_path
 
-    # Mock subprocess.Popen
     mock_process = MagicMock()
     mock_process.pid = 12345
 
     with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
         await supervisor.start_app("reachy_chat")
 
-    # Verify log handle is open
     app = supervisor._apps["reachy_chat"]
-    assert app.log_handle is not None
-    log_handle = app.log_handle
-    assert not log_handle.closed
+    assert app.log_pump is not None
 
-    # Stop the app (patch the tree-signaller so we never signal a real pid 12345)
     with patch("reachy_controller.app_supervisor._signal_process_tree"):
         result = await supervisor.stop_app("reachy_chat")
 
-    # Verify stop succeeded
     assert result["status"] == "stopped"
-
-    # Verify log handle is closed
-    assert log_handle.closed
+    assert app.log_pump is None
     assert app.log_handle is None
 
 

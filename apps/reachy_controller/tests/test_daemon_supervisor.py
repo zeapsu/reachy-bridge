@@ -48,8 +48,10 @@ async def test_start_when_manageable() -> None:
 
         # Check keyword arguments
         assert call_args.kwargs["cwd"] == _get_workspace_root()
-        assert call_args.kwargs["stdout"] == subprocess.DEVNULL
-        assert call_args.kwargs["stderr"] == subprocess.DEVNULL
+        assert call_args.kwargs["stdout"] == subprocess.PIPE
+        assert call_args.kwargs["stderr"] == subprocess.STDOUT
+        assert call_args.kwargs["text"] is True
+        assert call_args.kwargs["bufsize"] == 1
         assert call_args.kwargs["start_new_session"] is True
 
     assert result["status"] == "starting"

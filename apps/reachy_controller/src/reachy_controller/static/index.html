@@ -168,11 +168,32 @@
           <div class="eq-foot"><span>input · <span class="v">XVF3800</span></span><span>peak <span class="v" id="eq-peak">no audio signal</span></span><span>rate <span class="v">16 kHz</span></span></div>
         </section>
 
-        <section class="glass pad instrument">
-          <div class="head"><h2>jetson</h2><div class="rule"></div><span class="pill"><span class="dot" id="stats-dot"></span><span id="v-host">waiting</span></span></div>
-          <div class="gauges"><div class="gauge" id="g-cpu"></div><div class="gauge" id="g-gpu"></div><div class="gauge" id="g-temp"></div></div>
-          <div class="meminfo"><div class="bar-row"><span>memory</span><span id="v-mem">— / — GB</span></div><div class="barline"><span id="bar-mem"></span></div></div>
-          <div class="route"><div class="row"><span>reachy alsa card</span><span id="v-card">detecting</span></div><div class="row"><span>pipewire sink</span><span id="v-sink">detecting</span></div></div>
+        <section class="glass pad instrument" id="system-panel">
+          <div class="head">
+            <h2>system</h2><div class="rule"></div>
+            <div class="viewtabs" id="sys-tabs" role="tablist" aria-label="System panel view">
+              <button type="button" role="tab" id="sys-tab-stats" aria-selected="true" aria-controls="sys-view-stats" data-view="stats">stats</button>
+              <button type="button" role="tab" id="sys-tab-logs" aria-selected="false" aria-controls="sys-view-logs" tabindex="-1" data-view="logs">logs</button>
+            </div>
+            <span class="pill" id="stats-pill"><span class="dot" id="stats-dot"></span><span id="v-host">waiting</span></span>
+            <span class="pill" id="logs-pill" hidden><span class="dot" id="log-dot"></span><span id="log-state">idle</span></span>
+          </div>
+          <div class="sys-view" id="sys-view-stats" role="tabpanel" aria-labelledby="sys-tab-stats">
+            <div class="gauges"><div class="gauge" id="g-cpu"></div><div class="gauge" id="g-gpu"></div><div class="gauge" id="g-temp"></div></div>
+            <div class="meminfo"><div class="bar-row"><span>memory</span><span id="v-mem">— / — GB</span></div><div class="barline"><span id="bar-mem"></span></div></div>
+            <div class="route"><div class="row"><span>reachy alsa card</span><span id="v-card">detecting</span></div><div class="row"><span>pipewire sink</span><span id="v-sink">detecting</span></div></div>
+          </div>
+          <div class="sys-view" id="sys-view-logs" role="tabpanel" aria-labelledby="sys-tab-logs" hidden>
+            <div class="log-bar"><select id="log-source" aria-label="Log source"></select></div>
+            <div class="log-body">
+              <div class="log-scroll" id="log-scroll" role="log" aria-live="off" aria-label="Live log output" tabindex="0">
+                <pre class="log-out" id="log-out"></pre>
+                <p class="log-empty" id="log-empty">connecting…</p>
+              </div>
+              <button class="log-follow" id="log-follow" type="button" hidden>follow live</button>
+            </div>
+            <div class="log-foot"><span>source · <span class="v" id="log-src-v">controller</span></span><span id="log-count">0 lines · cap 500</span></div>
+          </div>
         </section>
       </div>
 

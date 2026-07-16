@@ -6,6 +6,8 @@
   const TAU = Math.PI * 2;
   const APP_NAMES = ["reachy_chat", "reachy_dance", "reachy_lookat", "reachy_simon"];
   const appState = new Map(APP_NAMES.map((name) => [name, { name, status: "stopped" }]));
+  const LOG_CAP = 500;
+  const LOG_DEFAULT_SOURCE = "controller";
   const LOADING_FRAGMENTS = ["Booting…", "Resolving env…", "Connecting to daemon…", "Activating motors…", "Waking up…"];
   let loadingTick = 0;
   let lastAppsSig = null;
@@ -31,8 +33,10 @@
     daemonStopping: false,
     sliderActive: null,
     simLoop: null,
-    live: { streams: [], timers: [], active: false },
+    live: { streams: [], timers: [], active: false, statsStream: null },
     cameraAvailabilityRequest: 0,
+    sysView: "stats",
+    log: { source: LOG_DEFAULT_SOURCE, stream: null, lines: 0, follow: true, loading: false },
   };
 
   document.querySelectorAll(".glass").forEach((glass) => {
@@ -106,6 +110,170 @@
       return null;
     }
   }
+
+  function setLogStatus(status) {
+    const stateText = status === "unavailable" ? "not captured" : status;
+    $("log-state").textContent = stateText || "idle";
+    const dotClass = status === "live" ? "ok" : status === "offline" ? "error" : status === "connecting" || status === "reconnecting" ? "loading" : "";
+    $("log-dot").className = `dot ${dotClass}`;
+  }
+
+  function updateLogCount() {
+    $("log-count").textContent = `${state.log.lines} lines · cap ${LOG_CAP}`;
+  }
+
+  function clearLogOutput(copy = "connecting…") {
+    $("log-out").replaceChildren();
+    state.log.lines = 0;
+    state.log.follow = true;
+    $("log-empty").textContent = copy;
+    $("log-empty").hidden = false;
+    $("log-follow").hidden = true;
+    updateLogCount();
+  }
+
+  function appendLogLines(lines) {
+    if (!Array.isArray(lines) || !lines.length) return;
+    const fragment = document.createDocumentFragment();
+    lines.forEach((line) => {
+      const node = document.createElement("span");
+      node.className = "ln";
+      node.textContent = String(line ?? "");
+      fragment.appendChild(node);
+    });
+    $("log-out").appendChild(fragment);
+    const output = $("log-out");
+    while (output.childElementCount > LOG_CAP) output.firstElementChild?.remove();
+    state.log.lines = output.childElementCount;
+    $("log-empty").hidden = state.log.lines > 0;
+    updateLogCount();
+    if (state.log.follow) $("log-scroll").scrollTop = $("log-scroll").scrollHeight;
+  }
+
+  function replaceLogLines(lines) {
+    $("log-out").replaceChildren();
+    state.log.lines = 0;
+    appendLogLines(Array.isArray(lines) ? lines : []);
+  }
+
+  async function loadLogSources() {
+    try {
+      const payload = await apiJson("/api/logs/sources");
+      const sources = Array.isArray(payload?.sources) ? payload.sources : [];
+      const select = $("log-source");
+      const selected = state.log.source;
+      select.replaceChildren();
+      sources.forEach((item) => {
+        if (!item || typeof item.id !== "string") return;
+        const option = document.createElement("option");
+        option.value = item.id;
+        option.textContent = item.id;
+        select.appendChild(option);
+      });
+      if (!sources.some((item) => item?.id === selected)) {
+        state.log.source = sources[0]?.id || LOG_DEFAULT_SOURCE;
+      }
+      select.value = state.log.source;
+      $("log-src-v").textContent = state.log.source;
+    } catch (_) {
+      $("log-source").replaceChildren();
+      const option = document.createElement("option");
+      option.value = LOG_DEFAULT_SOURCE;
+      option.textContent = LOG_DEFAULT_SOURCE;
+      $("log-source").appendChild(option);
+      $("log-source").value = state.log.source;
+    }
+  }
+
+  function closeLogStream() {
+    if (state.log.stream) state.log.stream.close();
+    state.log.stream = null;
+    state.log.loading = false;
+    setLogStatus("idle");
+  }
+
+  async function openLogStream() {
+    if (document.hidden || state.sysView !== "logs" || state.log.stream || state.log.loading) return;
+    state.log.loading = true;
+    setLogStatus("connecting");
+    await loadLogSources();
+    if (document.hidden || state.sysView !== "logs") {
+      state.log.loading = false;
+      return;
+    }
+    const source = encodeURIComponent(state.log.source);
+    const stream = bindEventSource(`/api/logs/stream?source=${source}`, {
+      "log-reset": (event) => {
+        const payload = readEventPayload(event) || {};
+        replaceLogLines(payload.lines);
+        const status = payload.status || "empty";
+        if (!payload.lines?.length) {
+          $("log-empty").textContent = status === "offline" ? "daemon offline — no output" : status === "unavailable" ? "daemon output isn't captured yet" : "waiting for output";
+        }
+        setLogStatus(status);
+      },
+      "log-lines": (event) => appendLogLines((readEventPayload(event) || {}).lines),
+      "source-status": (event) => setLogStatus((readEventPayload(event) || {}).status || "empty"),
+      error: () => setLogStatus("reconnecting"),
+    });
+    state.log.loading = false;
+    if (stream) state.log.stream = stream;
+    else setLogStatus("reconnecting");
+  }
+
+  function setSysView(view) {
+    if (view !== "stats" && view !== "logs") return;
+    const changed = state.sysView !== view;
+    state.sysView = view;
+    $("sys-view-stats").hidden = view !== "stats";
+    $("sys-view-logs").hidden = view !== "logs";
+    $("sys-tab-stats").setAttribute("aria-selected", String(view === "stats"));
+    $("sys-tab-logs").setAttribute("aria-selected", String(view === "logs"));
+    $("sys-tab-stats").tabIndex = view === "stats" ? 0 : -1;
+    $("sys-tab-logs").tabIndex = view === "logs" ? 0 : -1;
+    $("stats-pill").hidden = view !== "stats";
+    $("logs-pill").hidden = view !== "logs";
+    if (!changed && state.live.active) return;
+    if (view === "logs") {
+      closeStatsStream();
+      if (!document.hidden) void openLogStream();
+    } else {
+      closeLogStream();
+      if (!document.hidden && state.live.active) openStatsStream();
+    }
+  }
+
+  $("sys-tabs").addEventListener("click", (event) => {
+    const tab = event.target.closest("button[data-view]");
+    if (tab) setSysView(tab.dataset.view);
+  });
+  $("sys-tabs").addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const tabs = [$("sys-tab-stats"), $("sys-tab-logs")];
+    const current = tabs.indexOf(document.activeElement);
+    const next = tabs[(current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
+    next.focus();
+    setSysView(next.dataset.view);
+  });
+  $("log-source").addEventListener("change", () => {
+    state.log.source = $("log-source").value || LOG_DEFAULT_SOURCE;
+    $("log-src-v").textContent = state.log.source;
+    closeLogStream();
+    clearLogOutput(`${state.log.source} hasn't run yet`);
+    if (state.sysView === "logs" && !document.hidden) void openLogStream();
+  });
+  $("log-scroll").addEventListener("scroll", () => {
+    const scroll = $("log-scroll");
+    state.log.follow = scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 8;
+    $("log-follow").hidden = state.log.follow;
+  });
+  $("log-follow").addEventListener("click", () => {
+    const scroll = $("log-scroll");
+    scroll.scrollTop = scroll.scrollHeight;
+    state.log.follow = true;
+    $("log-follow").hidden = true;
+  });
 
   function setDaemonOnline(online) {
     const changed = state.daemonOnline !== online;
@@ -1433,6 +1601,21 @@
     });
   }
 
+  function openStatsStream() {
+    if (state.live.statsStream || document.hidden || state.sysView !== "stats") return;
+    state.live.statsStream = bindEventSource("/api/system/stats-stream", {
+      "stats-update": (event) => updateStats(readEventPayload(event)),
+      error: () => {
+        $("v-host").textContent = "stats reconnecting";
+      },
+    });
+  }
+
+  function closeStatsStream() {
+    if (state.live.statsStream) state.live.statsStream.close();
+    state.live.statsStream = null;
+  }
+
   function startLiveConnections() {
     if (state.live.active) return;
     state.live.active = true;
@@ -1454,12 +1637,6 @@
       "daemon-offline": () => setDaemonOnline(false),
       error: () => setDaemonOnline(false),
     });
-    const stats = bindEventSource("/api/system/stats-stream", {
-      "stats-update": (event) => updateStats(readEventPayload(event)),
-      error: () => {
-        $("v-host").textContent = "stats reconnecting";
-      },
-    });
     const audio = bindEventSource("/api/audio/levels-stream", {
       "audio-level": (event) => {
         const payload = readEventPayload(event);
@@ -1469,7 +1646,9 @@
       "daemon-unavailable": () => renderEqualizer(false, "no audio signal"),
       error: () => renderEqualizer(false, "audio stream reconnecting"),
     });
-    state.live.streams.push(telemetry, stats, audio);
+    state.live.streams.push(telemetry, audio);
+    openStatsStream();
+    if (state.sysView === "logs") void openLogStream();
   }
 
   function stopLiveConnections() {
@@ -1485,6 +1664,8 @@
       if (source) source.close();
     });
     state.live.streams = [];
+    closeStatsStream();
+    closeLogStream();
   }
 
   // Poll daemon status on the same cadence as the daemon connectivity check
