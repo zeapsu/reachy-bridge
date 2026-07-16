@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from contextlib import asynccontextmanager
 import json
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from typing import Any
 
 import httpx
@@ -63,6 +64,29 @@ class DaemonProxy:
             headers=headers,
         )
 
+    @asynccontextmanager
+    async def stream(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Mapping[str, str] | None = None,
+        content: bytes | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> AsyncIterator[httpx.Response]:
+        """Yield a live daemon response without buffering its body."""
+        await self.start()
+        assert self._client is not None
+        daemon_path = "/api/" + path.removeprefix("/api/").lstrip("/")
+        async with self._client.stream(
+            method,
+            daemon_path,
+            params=params,
+            content=content,
+            headers=headers,
+        ) as response:
+            yield response
+
     async def get_json(
         self,
         path: str,
@@ -72,7 +96,6 @@ class DaemonProxy:
         response = await self.request("GET", path, params=params)
         response.raise_for_status()
         return response.json()
-
     async def get_full_state(self) -> dict[str, Any] | None:
         """Get full robot state from daemon via GET /api/state/full."""
         try:

@@ -294,6 +294,12 @@ def main() -> int:
     _apply_nvidia_unixfd_patch()
     _apply_webrtcsink_compat_patch()
     _apply_camera_ipc_patch()
+    if _is_jetson():
+        # Importing the extension is lazy so this wrapper remains a transparent
+        # daemon pass-through on non-Jetson development machines.
+        from reachy_mini_daemon_media import install_camera_stream_route
+
+        install_camera_stream_route()
     _set_reachy_audio_output_volume()
     _ensure_reachymini_asoundrc()
     from reachy_mini.daemon.app.main import main as daemon_main
