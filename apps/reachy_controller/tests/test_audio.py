@@ -124,6 +124,21 @@ async def test_audio_broadcaster_does_no_idle_work_and_replays_latest() -> None:
     await replay.aclose()
 
 
+
+@pytest.mark.asyncio
+async def test_audio_broadcaster_drops_idle_snapshot_before_resubscribe() -> None:
+    proxy = AudioProxy([LEVELS, None])
+    broadcaster = AudioLevelsBroadcaster(proxy, interval=0.01, reconnect_delay=0.01)
+
+    first = await broadcaster.subscribe()
+    assert await first.__anext__() == LEVELS
+    await first.aclose()
+
+    second = await broadcaster.subscribe()
+    assert await second.__anext__() == {"error": "daemon_unavailable"}
+    assert proxy.calls == 2
+    await second.aclose()
+
 @pytest.mark.asyncio
 async def test_audio_stream_keepalive_and_close() -> None:
     from reachy_controller.routes import audio

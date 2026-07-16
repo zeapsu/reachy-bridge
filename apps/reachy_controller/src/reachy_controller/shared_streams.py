@@ -196,6 +196,16 @@ class AudioLevelsBroadcaster(_LazyBroadcaster):
         self._interval = interval
         self._reconnect_delay = reconnect_delay
 
+    async def _unsubscribe(self, subscription: _Subscription) -> None:
+        if subscription in self._subscribers and len(self._subscribers) == 1:
+            self._latest = _MISSING
+        await super()._unsubscribe(subscription)
+
+    async def aclose(self) -> None:
+        self._latest = _MISSING
+        await super().aclose()
+
+
     @classmethod
     def _valid_levels(cls, value: Any) -> bool:
         return isinstance(value, dict) and cls.REQUIRED_FIELDS.issubset(value)

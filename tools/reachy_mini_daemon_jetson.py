@@ -310,6 +310,7 @@ def main() -> int:
         apply_jetson_camera_consumer_patch()
         install_camera_stream_route()
         install_audio_levels_route()
+    _set_reachy_audio_output_volume()
     _ensure_reachymini_asoundrc()
     from reachy_mini.daemon.app.main import main as daemon_main
 

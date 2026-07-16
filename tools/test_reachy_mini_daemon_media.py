@@ -96,19 +96,22 @@ def test_gstreamer_patch_preserves_webrtc_and_adds_one_analysis_branch(monkeypat
         def __init__(self, factory: str, name: str | None = None) -> None:
             self.factory = factory
             self.name = name or factory
-            self.linked_to: Element | None = None
+            self.downstream: list[Element] = []
+            self.upstream: list[Element] = []
             self.properties: dict[str, object] = {}
             self.callbacks: dict[str, object] = {}
 
         def link(self, other: Element) -> bool:
-            self.linked_to = other
+            if other not in self.downstream:
+                self.downstream.append(other)
+            if self not in other.upstream:
+                other.upstream.append(self)
             return True
 
-        def unlink(self, other: Element) -> bool:
-            if self.linked_to is other:
-                self.linked_to = None
-                return True
-            return False
+        def unlink(self, other: Element) -> None:
+            if other in self.downstream:
+                self.downstream.remove(other)
+                other.upstream.remove(self)
 
         def set_property(self, key: str, value: object) -> None:
             self.properties[key] = value
@@ -120,8 +123,15 @@ def test_gstreamer_patch_preserves_webrtc_and_adds_one_analysis_branch(monkeypat
         def __init__(self) -> None:
             self.elements: dict[str, Element] = {}
 
-        def add(self, element: Element) -> None:
+        def add(self, element: Element) -> bool:
             self.elements[element.name] = element
+            return True
+
+        def remove(self, element: Element) -> bool:
+            if self.elements.get(element.name) is not element:
+                return False
+            del self.elements[element.name]
+            return True
 
         def get_by_name(self, name: str) -> Element | None:
             return self.elements.get(name)
@@ -175,17 +185,123 @@ def test_gstreamer_patch_preserves_webrtc_and_adds_one_analysis_branch(monkeypat
     source = pipeline.get_by_name("audiosrc")
     queue = pipeline.get_by_name("queue_audiosrc")
     tee = pipeline.get_by_name("audio_capture_tee")
+    webrtc_queue = pipeline.get_by_name("queue_audio_webrtc")
+    analysis_queue = pipeline.get_by_name("queue_audio_analysis")
     analysis_sink = pipeline.get_by_name("audio_spectrum_sink")
     assert source is not None and queue is not None and tee is not None
-    assert queue.linked_to is tee
-    assert pipeline.get_by_name("queue_audio_webrtc").linked_to is sink
-    assert tee.linked_to is pipeline.get_by_name("queue_audio_analysis")
+    assert webrtc_queue is not None and analysis_queue is not None
+    assert queue.downstream == [tee]
+    assert tee.downstream == [webrtc_queue, analysis_queue]
+    assert webrtc_queue.downstream == [sink]
+    assert analysis_queue.downstream == [pipeline.get_by_name("audio_spectrum_convert")]
     assert analysis_sink is not None
     assert analysis_sink.callbacks["new-sample"]
     assert isinstance(server._reachy_audio_spectrum_tap, AudioSpectrumTap)
+    audio_sources = [
+        element
+        for element in pipeline.elements.values()
+        if element.factory in {"alsasrc", "autoaudiosrc", "pulsesrc", "pipewiresrc"}
+    ]
+    assert len(audio_sources) == 1
     assert sum(factory == "alsasrc" for factory, _ in created) == 0
     assert sum(factory == "tee" for factory, _ in created) == 1
 
+
+def test_gstreamer_patch_rolls_back_false_link_and_restores_webrtc(monkeypatch) -> None:
+    import types
+
+    import reachy_mini_daemon_media as media
+
+    class Element:
+        def __init__(self, factory: str, name: str | None = None) -> None:
+            self.factory = factory
+            self.name = name or factory
+            self.downstream: list[Element] = []
+            self.upstream: list[Element] = []
+
+        def link(self, other: Element) -> bool:
+            if self.name == "audio_spectrum_convert":
+                return False
+            if other not in self.downstream:
+                self.downstream.append(other)
+            if self not in other.upstream:
+                other.upstream.append(self)
+            return True
+
+        def unlink(self, other: Element) -> None:
+            if other in self.downstream:
+                self.downstream.remove(other)
+                other.upstream.remove(self)
+
+        def set_property(self, *_args: object) -> None:
+            return None
+
+        def connect(self, *_args: object) -> None:
+            return None
+
+    class Pipeline:
+        def __init__(self) -> None:
+            self.elements: dict[str, Element] = {}
+
+        def add(self, element: Element) -> bool:
+            self.elements[element.name] = element
+            return True
+
+        def remove(self, element: Element) -> bool:
+            if self.elements.get(element.name) is not element:
+                return False
+            del self.elements[element.name]
+            return True
+
+        def get_by_name(self, name: str) -> Element | None:
+            return self.elements.get(name)
+
+    class Factory:
+        @staticmethod
+        def make(factory: str, name: str | None = None) -> Element:
+            return Element(factory, name)
+
+    class GstMediaServer:
+        _reachy_audio_spectrum_patched = False
+
+        def _configure_audio(self, pipeline: Pipeline, sink: Element) -> None:
+            source = Element("alsasrc", "audiosrc")
+            queue = Element("queue", "queue_audiosrc")
+            pipeline.add(source)
+            pipeline.add(queue)
+            source.link(queue)
+            queue.link(sink)
+
+    fake_gst = types.SimpleNamespace(
+        ElementFactory=Factory,
+        Caps=types.SimpleNamespace(from_string=lambda value: value),
+    )
+    fake_gi = types.ModuleType("gi")
+    fake_gi.require_version = lambda *_args: None
+    fake_repository = types.ModuleType("gi.repository")
+    fake_repository.Gst = fake_gst
+    fake_media = types.ModuleType("reachy_mini.media.media_server")
+    fake_media.GstMediaServer = GstMediaServer
+    monkeypatch.setattr(media, "_is_jetson", lambda: True)
+    monkeypatch.setitem(sys.modules, "gi", fake_gi)
+    monkeypatch.setitem(sys.modules, "gi.repository", fake_repository)
+    monkeypatch.setitem(sys.modules, "reachy_mini.media.media_server", fake_media)
+
+    media.apply_jetson_audio_spectrum_patch()
+    pipeline = Pipeline()
+    sink = Element("webrtcsink", "webrtcsink")
+    server = GstMediaServer()
+    server._configure_audio(pipeline, sink)
+
+    queue = pipeline.get_by_name("queue_audiosrc")
+    assert queue is not None
+    assert queue.downstream == [sink]
+    assert getattr(server, "_reachy_audio_spectrum_tap", None) is None
+    assert set(pipeline.elements) == {"audiosrc", "queue_audiosrc"}
+    assert sum(
+        element.factory in {"alsasrc", "autoaudiosrc", "pulsesrc", "pipewiresrc"}
+        for element in pipeline.elements.values()
+    ) == 1
 
 def test_gstreamer_patch_keeps_audio_when_optional_tap_element_missing(monkeypatch) -> None:
     import types
@@ -260,6 +376,34 @@ def test_gstreamer_patch_keeps_audio_when_optional_tap_element_missing(monkeypat
     assert pipeline.get_by_name("queue_audiosrc").linked_to is sink
     assert getattr(server, "_reachy_audio_spectrum_tap", None) is None
 
+
+def test_jetson_wrapper_sets_volume_before_asoundrc_and_daemon(monkeypatch) -> None:
+    import types
+
+    import reachy_mini_daemon_jetson as jetson
+    import reachy_mini_daemon_media as media
+
+    calls: list[str] = []
+    monkeypatch.setattr(jetson, "_is_jetson", lambda: True)
+    monkeypatch.setattr(jetson, "_apply_nvidia_unixfd_patch", lambda: calls.append("unixfd"))
+    monkeypatch.setattr(jetson, "_apply_webrtcsink_compat_patch", lambda: calls.append("webrtc"))
+    monkeypatch.setattr(jetson, "_apply_camera_ipc_patch", lambda: calls.append("camera"))
+    monkeypatch.setattr(jetson, "_set_reachy_audio_output_volume", lambda: calls.append("volume"))
+    monkeypatch.setattr(jetson, "_ensure_reachymini_asoundrc", lambda: calls.append("asoundrc"))
+    for name in (
+        "apply_jetson_audio_spectrum_patch",
+        "apply_jetson_camera_consumer_patch",
+        "install_camera_stream_route",
+        "install_audio_levels_route",
+    ):
+        monkeypatch.setattr(media, name, lambda name=name: calls.append(name))
+
+    daemon_main = types.ModuleType("reachy_mini.daemon.app.main")
+    daemon_main.main = lambda: calls.append("daemon") or 23
+    monkeypatch.setitem(sys.modules, "reachy_mini.daemon.app.main", daemon_main)
+
+    assert jetson.main() == 23
+    assert calls.index("volume") < calls.index("asoundrc") < calls.index("daemon")
 
 @pytest.mark.asyncio
 async def test_audio_levels_route_requires_media_and_fresh_tap_then_reacquires(monkeypatch) -> None:

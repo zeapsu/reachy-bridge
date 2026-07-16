@@ -237,23 +237,48 @@ def apply_jetson_audio_spectrum_patch() -> None:
                 return
             elements.append(element)
         tee, queue_webrtc, queue_analysis, convert, resample, capsfilter, appsink = elements
+        added: list[Any] = []
+        links = (
+            (queue_audiosrc, tee),
+            (tee, queue_webrtc),
+            (queue_webrtc, webrtcsink),
+            (tee, queue_analysis),
+            (queue_analysis, convert),
+            (convert, resample),
+            (resample, capsfilter),
+            (capsfilter, appsink),
+        )
+
+        def _rollback() -> None:
+            for source, target in links:
+                with contextlib.suppress(Exception):
+                    source.unlink(target)
+            remove = getattr(pipeline, "remove", None)
+            if remove is not None:
+                for element in reversed(added):
+                    with contextlib.suppress(Exception):
+                        remove(element)
+            try:
+                if not queue_audiosrc.link(webrtcsink):
+                    logger.error("Could not restore direct queue_audiosrc to WebRTC audio link")
+            except Exception:
+                logger.exception("Could not restore direct queue_audiosrc to WebRTC audio link")
 
         try:
             queue_audiosrc.unlink(webrtcsink)
             for element in elements:
-                pipeline.add(element)
-            queue_audiosrc.link(tee)
-            tee.link(queue_webrtc)
-            queue_webrtc.link(webrtcsink)
-            tee.link(queue_analysis)
-            queue_analysis.link(convert)
-            convert.link(resample)
-            resample.link(capsfilter)
+                added.append(element)
+                if not pipeline.add(element):
+                    raise RuntimeError(f"Could not add audio spectrum element {element!r}")
+            for source, target in links:
+                if not source.link(target):
+                    raise RuntimeError(
+                        f"Could not link audio spectrum elements {source!r} -> {target!r}"
+                    )
             capsfilter.set_property(
                 "caps",
                 Gst.Caps.from_string("audio/x-raw,format=F32LE,channels=1,rate=16000"),
             )
-            capsfilter.link(appsink)
             queue_analysis.set_property("leaky", 2)
             queue_analysis.set_property("max-size-buffers", 2)
             queue_analysis.set_property("max-size-bytes", 0)
@@ -264,9 +289,7 @@ def apply_jetson_audio_spectrum_patch() -> None:
             appsink.set_property("drop", True)
         except Exception:
             logger.exception("Could not install audio spectrum branch; keeping WebRTC audio")
-            with contextlib.suppress(Exception):
-                queue_audiosrc.unlink(tee)
-                queue_audiosrc.link(webrtcsink)
+            _rollback()
             return
 
         tap = AudioSpectrumTap()
