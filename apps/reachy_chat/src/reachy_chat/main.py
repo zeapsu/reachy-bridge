@@ -16,7 +16,6 @@ from fastapi import FastAPI, Request, Response
 from reachy_mini import ReachyMini, ReachyMiniApp
 from reachy_mini.utils import create_head_pose
 from reachy_mini.utils.interpolation import InterpolationTechnique
-from reachy_chat.gstreamer_nvidia_patch import apply_nvidia_unixfd_patch
 from reachy_chat.utils import (
     CameraVisionInitializationError,
     parse_args,
@@ -24,10 +23,11 @@ from reachy_chat.utils import (
     initialize_camera_and_vision,
     log_connection_troubleshooting,
 )
+from reachy_chat.gstreamer_nvidia_patch import apply_nvidia_unixfd_patch
+
 
 # Apply NVIDIA Jetson GStreamer plugin patch before any SDK initialization
 apply_nvidia_unixfd_patch()
-
 
 
 def _return_home(robot: ReachyMini, logger) -> None:
@@ -262,7 +262,7 @@ def run(
 
         @effective_settings_app.middleware("http")
         async def _no_cache(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
-            """Serve everything no-store so browsers don't keep stale UI modules."""
+            """Keep the internal settings API uncached."""
             response = await call_next(request)
             response.headers["Cache-Control"] = "no-store"
             return response
@@ -283,10 +283,10 @@ def run(
         stream_manager._init_settings_ui_if_needed()
 
         own_ui_server = uvicorn.Server(
-            uvicorn.Config(effective_settings_app, host="0.0.0.0", port=7860, log_level="warning")
+            uvicorn.Config(effective_settings_app, host="127.0.0.1", port=7860, log_level="warning")
         )
-        threading.Thread(target=own_ui_server.run, daemon=True, name="ui-server").start()
-        logger.info("Web UI available at http://localhost:7860")
+        threading.Thread(target=own_ui_server.run, daemon=True, name="settings-api-server").start()
+        logger.info("Settings API available at http://127.0.0.1:7860")
 
     # Each async service → its own thread/loop
     movement_manager.start()
@@ -377,7 +377,7 @@ class ReachyChat(ReachyMiniApp):  # type: ignore[misc]
     # to use WebRTC for wireless robot setups.
     request_media_backend = os.getenv("REACHY_MINI_MEDIA_BACKEND", "local")
 
-    custom_app_url = "http://0.0.0.0:7860/"
+    custom_app_url = "http://127.0.0.1:7860/"
     dont_start_webserver = False
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:

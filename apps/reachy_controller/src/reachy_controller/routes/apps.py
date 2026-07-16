@@ -11,9 +11,11 @@ router = APIRouter(prefix="/api", tags=["apps"])
 
 @router.get("/apps/status")
 async def get_apps_status(request: Request) -> list[dict[str, Any]]:
-    """Get status for all managed apps."""
+    """Get status for all managed apps, including native settings support."""
     supervisor = request.app.state.app_supervisor
-    return await supervisor.aget_all_status()
+    statuses = await supervisor.aget_all_status()
+    settings = request.app.state.app_settings
+    return [{**status, "has_settings": settings.supports(status["name"])} for status in statuses]
 
 
 @router.post("/apps/start/{name}")

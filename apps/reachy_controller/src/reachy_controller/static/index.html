@@ -205,6 +205,17 @@
           <div class="apps" id="apps" aria-live="polite"></div>
           <p class="panel-hint" id="apps-message" role="status"></p>
         </section>
+        <section class="glass pad instrument" id="app-settings" hidden>
+          <div class="head">
+            <h2>settings</h2>
+            <span class="settings-app" id="app-settings-app"></span>
+            <div class="rule"></div>
+            <span class="pill"><span class="dot" id="app-settings-dot"></span><span id="app-settings-state">idle</span></span>
+            <button class="btn settings-close" id="app-settings-close" type="button" aria-label="Close settings">close</button>
+          </div>
+          <div class="settings-fields" id="app-settings-fields"></div>
+          <p class="panel-hint" id="app-settings-hint" role="status"></p>
+        </section>
 
         <section class="glass pad instrument">
           <div class="head"><h2>expressions</h2><div class="rule"></div><button class="btn stop expr-cancel" id="expr-cancel" hidden>cancel</button></div>

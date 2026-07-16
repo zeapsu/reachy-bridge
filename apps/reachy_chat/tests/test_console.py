@@ -12,16 +12,16 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import reachy_chat.gemini_live as gemini_mod
 from reachy_chat.config import GEMINI_AVAILABLE_VOICES, config
 from reachy_chat.console import LocalStream
-from reachy_chat.openai_realtime import OpenaiRealtimeHandler
 from reachy_chat.gemini_live import GeminiLiveHandler
-import reachy_chat.gemini_live as gemini_mod
-from reachy_chat.tools.core_tools import ToolDependencies
+from reachy_chat.openai_realtime import OpenaiRealtimeHandler
 from reachy_chat.startup_settings import (
     StartupSettings,
     load_startup_settings_into_runtime,
 )
+from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.personality_routes import mount_personality_routes
 
 
@@ -162,6 +162,8 @@ def test_backend_config_persists_gemini_selection_and_status(
     assert data["backend_provider"] == "gemini"
     assert data["active_backend"] == "openai"
     assert data["has_gemini_key"] is True
+    assert data["has_openai_realtime_key"] is False
+    assert data["has_openrouter_key"] is False
     assert data["has_key"] is False
     assert data["can_proceed"] is False
     assert data["can_proceed_with_openai"] is False
@@ -174,6 +176,8 @@ def test_backend_config_persists_gemini_selection_and_status(
     assert status_data["backend_provider"] == "gemini"
     assert status_data["active_backend"] == "openai"
     assert status_data["has_gemini_key"] is True
+    assert status_data["has_openai_realtime_key"] is False
+    assert status_data["has_openrouter_key"] is False
     assert status_data["can_proceed"] is False
     assert status_data["can_proceed_with_openai"] is False
     assert status_data["can_proceed_with_gemini"] is True
@@ -701,6 +705,7 @@ def test_personality_routes_apply_voice_accepts_query_param() -> None:
         thread.join(timeout=1.0)
         loop.close()
 
+
 def test_personality_routes_current_voice_uses_active_handler_and_falls_back_on_lookup_error() -> None:
     """The mounted current-voice callback should expose the active handler voice."""
     app = FastAPI()
@@ -774,7 +779,7 @@ def test_personality_routes_openrouter_current_callback_error_uses_system_defaul
 def test_local_stream_mounts_voice_routes_before_async_loop_is_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Cold settings pages use active OpenRouter/local handler voices, not curated names."""
+    """Internal settings API exposes active OpenRouter voices without a standalone page."""
     monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
     app = FastAPI()
     handler = MagicMock()
@@ -788,10 +793,7 @@ def test_local_stream_mounts_voice_routes_before_async_loop_is_ready(
     assert sum(getattr(route, "path", None) == "/voices/current" for route in app.routes) == 1
     client = TestClient(app)
 
-    root = client.get("/")
-    assert root.status_code == 200
-    assert 'id="voice-select"' in root.text
-    assert 'id="voice-apply"' in root.text
+    assert client.get("/").status_code == 404
     assert client.get("/voices").json() == ["System Default", "local-os-voice"]
     assert client.get("/voices/current").json() == {"voice": "System Default"}
 
@@ -883,6 +885,7 @@ def test_personality_routes_apply_voice_accepts_json_body(tmp_path: Path) -> Non
     assert response.json() == {"ok": True, "status": "Voice changed to local-os-voice."}
     assert stream._voice_override == "local-os-voice"
     assert (tmp_path / "startup_settings.json").exists()
+
 
 def test_mounted_production_voice_failure_returns_non_2xx(tmp_path: Path) -> None:
     """A handler failure through LocalStream must remain an HTTP error."""
@@ -1112,6 +1115,7 @@ def test_mounted_gemini_voice_timeout_hanging_close_preserves_previous_and_does_
         thread.join(timeout=1.0)
         loop.close()
 
+
 @pytest.mark.asyncio
 async def test_local_stream_hanging_old_shutdown_retries_after_failed_voice_change(
     tmp_path: Path,
@@ -1253,7 +1257,6 @@ async def test_local_stream_gemini_replacement_owns_generations_and_ignores_stal
     finally:
         stream._stop_event.set()
         await asyncio.wait_for(startup_task, timeout=1.0)
-
 
 
 @pytest.mark.asyncio
@@ -1426,9 +1429,7 @@ def test_headless_personality_routes_can_use_stream_callbacks() -> None:
 async def test_apply_personality_propagates_restart_cancellation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Cancellation during backend restart should not be converted into a status string."""
     monkeypatch.setattr("reachy_chat.config.set_custom_profile", lambda _profile: None)
-    monkeypatch.setattr(
-        "reachy_chat.prompts.get_session_instructions", lambda _instance_path=None: "instructions"
-    )
+    monkeypatch.setattr("reachy_chat.prompts.get_session_instructions", lambda _instance_path=None: "instructions")
     monkeypatch.setattr("reachy_chat.prompts.get_session_voice", lambda default: default)
 
     stream = LocalStream(MagicMock(), MagicMock())
