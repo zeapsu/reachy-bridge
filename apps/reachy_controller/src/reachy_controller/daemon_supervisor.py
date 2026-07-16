@@ -301,6 +301,7 @@ class DaemonSupervisor:
         self._daemon.error = None
         self._daemon.pid = None
         self._daemon.process = None
+        self._daemon.external = False
         return {"status": "stopped"}
 
 

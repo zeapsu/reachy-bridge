@@ -294,6 +294,7 @@ async def test_stop_via_adopted_pid() -> None:
         supervisor._daemon.process = None
         supervisor._daemon.pid = 12345
         supervisor._daemon.status = "running"
+        supervisor._daemon.external = True
 
         with patch(
             "reachy_controller.daemon_supervisor.psutil.Process",
@@ -304,6 +305,7 @@ async def test_stop_via_adopted_pid() -> None:
     assert result["status"] == "stopped"
     assert supervisor._daemon.status == "stopped"
     assert supervisor._daemon.pid is None
+    assert supervisor._daemon.external is False
     mock_psutil_proc.send_signal.assert_called_once_with(signal.SIGINT)
 
 
@@ -330,6 +332,7 @@ async def test_stop_via_adopted_stopped_pid() -> None:
         supervisor._daemon.process = None
         supervisor._daemon.pid = 12345
         supervisor._daemon.status = "stopped"
+        supervisor._daemon.external = True
 
         with patch(
             "reachy_controller.daemon_supervisor.psutil.Process",
@@ -340,6 +343,7 @@ async def test_stop_via_adopted_stopped_pid() -> None:
     assert result["status"] == "stopped"
     assert supervisor._daemon.status == "stopped"
     assert supervisor._daemon.pid is None
+    assert supervisor._daemon.external is False
     mock_psutil_proc.send_signal.assert_called_once_with(signal.SIGINT)
 
 
