@@ -231,6 +231,7 @@ class ReachyDance(ReachyMiniApp):
             asset = resources.files("reachy_dance").joinpath("assets", "return_home.wav")
             with resources.as_file(asset) as sound_path:
                 reachy_mini.media.play_sound(str(sound_path))
+                time.sleep(0.5)
         except Exception as exc:
             logger.warning("dance: return-home arrival cue unavailable: %s", exc)
 

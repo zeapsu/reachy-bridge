@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 from reachy_mini.utils.interpolation import InterpolationTechnique
 
+import reachy_lookat.main as lookat_main
 from reachy_lookat.main import ReachyLookat
 
 
@@ -43,8 +44,10 @@ def _assert_target(target: dict[str, object]) -> None:
     assert target["body_yaw"] == 0.0
 
 
-def test_return_to_neutral_moves_before_playing_packaged_sound() -> None:
+def test_return_to_neutral_moves_before_playing_packaged_sound(monkeypatch) -> None:
     reachy = _FakeReachy()
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(lookat_main.time, "sleep", sleep_calls.append)
 
     ReachyLookat._return_to_neutral(reachy)
 
@@ -55,6 +58,7 @@ def test_return_to_neutral_moves_before_playing_packaged_sound() -> None:
     assert target["duration"] == 2.4
     assert target["method"] is InterpolationTechnique.MIN_JERK
     assert Path(reachy.events[1][1]).name == "return_home.wav"
+    assert sleep_calls == [0.5]
 
 
 def test_return_to_neutral_falls_back_when_motion_fails(caplog) -> None:
@@ -70,12 +74,15 @@ def test_return_to_neutral_falls_back_when_motion_fails(caplog) -> None:
     assert "return-home" in caplog.text
 
 
-def test_return_to_neutral_audio_failure_does_not_escape() -> None:
+def test_return_to_neutral_audio_failure_does_not_escape(monkeypatch) -> None:
     reachy = _FakeReachy(audio_error=RuntimeError("audio unavailable"))
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(lookat_main.time, "sleep", sleep_calls.append)
 
     ReachyLookat._return_to_neutral(reachy)
 
     assert [name for name, _ in reachy.events] == ["goto", "audio"]
+    assert sleep_calls == []
 
 
 def test_return_to_neutral_resource_is_a_decodable_pcm_wav() -> None:

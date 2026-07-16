@@ -43,8 +43,10 @@ def _assert_target(target: dict[str, object]) -> None:
     assert target["body_yaw"] == 0.0
 
 
-def test_return_home_moves_before_playing_packaged_sound() -> None:
+def test_return_home_moves_before_playing_packaged_sound(monkeypatch) -> None:
     robot = _FakeRobot()
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(main.time, "sleep", sleep_calls.append)
 
     main._return_home(robot, logging.getLogger("test-chat-return-home"))
 
@@ -55,6 +57,7 @@ def test_return_home_moves_before_playing_packaged_sound() -> None:
     assert target["duration"] == 2.4
     assert target["method"] is InterpolationTechnique.MIN_JERK
     assert Path(robot.events[1][1]).name == "return_home.wav"
+    assert sleep_calls == [0.5]
 
 
 def test_return_home_falls_back_to_immediate_target_when_motion_fails(caplog) -> None:
@@ -69,13 +72,15 @@ def test_return_home_falls_back_to_immediate_target_when_motion_fails(caplog) ->
     _assert_target(fallback)
     assert "return-home" in caplog.text
 
-
-def test_return_home_audio_failure_does_not_escape() -> None:
+def test_return_home_audio_failure_does_not_escape(monkeypatch) -> None:
     robot = _FakeRobot(audio_error=RuntimeError("audio unavailable"))
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(main.time, "sleep", sleep_calls.append)
 
     main._return_home(robot, logging.getLogger("test-chat-return-home"))
 
     assert [name for name, _ in robot.events] == ["goto", "audio"]
+    assert sleep_calls == []
 
 
 def test_return_home_resource_is_a_decodable_pcm_wav() -> None:

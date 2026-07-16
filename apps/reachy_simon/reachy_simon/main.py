@@ -107,6 +107,7 @@ class ReachySimon(ReachyMiniApp):
             asset = resources.files("reachy_simon").joinpath("assets", "return_home.wav")
             with resources.as_file(asset) as sound_path:
                 reachy_mini.media.play_sound(str(sound_path))
+                time.sleep(0.5)
         except Exception as exc:
             logger.warning("simon: return-home arrival cue unavailable: %s", exc)
 

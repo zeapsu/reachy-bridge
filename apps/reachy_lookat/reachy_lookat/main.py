@@ -233,6 +233,7 @@ class ReachyLookat(ReachyMiniApp):
             asset = resources.files("reachy_lookat").joinpath("assets", "return_home.wav")
             with resources.as_file(asset) as sound_path:
                 reachy_mini.media.play_sound(str(sound_path))
+                time.sleep(0.5)
         except Exception as exc:
             logger.warning("lookat: return-home arrival cue unavailable: %s", exc)
 

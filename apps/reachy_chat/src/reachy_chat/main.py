@@ -54,6 +54,7 @@ def _return_home(robot: ReachyMini, logger) -> None:
         asset = resources.files("reachy_chat").joinpath("assets", "return_home.wav")
         with resources.as_file(asset) as sound_path:
             robot.media.play_sound(str(sound_path))
+            time.sleep(0.5)
     except Exception as exc:
         logger.warning("chat: return-home arrival cue unavailable: %s", exc)
 
