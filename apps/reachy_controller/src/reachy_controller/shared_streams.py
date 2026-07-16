@@ -165,6 +165,61 @@ class StateBroadcaster(_LazyBroadcaster):
                 await asyncio.sleep(self._reconnect_delay)
 
 
+class AudioLevelsBroadcaster(_LazyBroadcaster):
+    """Share one fresh daemon microphone GET among all SSE consumers."""
+
+    REQUIRED_FIELDS = frozenset(
+        {
+            "rms",
+            "rms_db",
+            "low",
+            "mid",
+            "high",
+            "sample_rate_hz",
+            "source",
+            "timestamp",
+        }
+    )
+
+    def __init__(
+        self,
+        proxy: Any,
+        *,
+        interval: float = 0.1,
+        reconnect_delay: float = 1.0,
+        queue_size: int = 8,
+    ) -> None:
+        super().__init__(queue_size=queue_size)
+        if interval <= 0 or reconnect_delay <= 0:
+            raise ValueError("audio broadcaster intervals must be positive")
+        self._proxy = proxy
+        self._interval = interval
+        self._reconnect_delay = reconnect_delay
+
+    @classmethod
+    def _valid_levels(cls, value: Any) -> bool:
+        return isinstance(value, dict) and cls.REQUIRED_FIELDS.issubset(value)
+
+    async def _run(self) -> None:
+        while self._subscribers:
+            try:
+                levels = await self._proxy.get_audio_levels()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                levels = None
+
+            if self._valid_levels(levels):
+                self._publish(levels)
+                delay = self._interval
+            else:
+                self._publish({"error": "daemon_unavailable"})
+                delay = self._reconnect_delay
+
+            if self._subscribers:
+                await asyncio.sleep(delay)
+
+
 class StatsBroadcaster(_LazyBroadcaster):
     """Share daemon-gated Jetson samples on the existing 1.5-second cadence."""
 
@@ -208,4 +263,4 @@ class StatsBroadcaster(_LazyBroadcaster):
                 await asyncio.sleep(self._interval)
 
 
-__all__ = ["StateBroadcaster", "StatsBroadcaster"]
+__all__ = ["AudioLevelsBroadcaster", "StateBroadcaster", "StatsBroadcaster"]

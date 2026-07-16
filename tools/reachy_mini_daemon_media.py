@@ -10,11 +10,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import platform
 import threading
+import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
+
+import numpy as np
 
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -23,6 +28,273 @@ logger = logging.getLogger(__name__)
 
 MJPEG_CONTENT_TYPE = "multipart/x-mixed-replace; boundary=frame"
 _FRAME_CLOSE = object()
+
+
+class AudioSpectrumTap:
+    """Compute a bounded, latest-only spectrum from the daemon mic pipeline.
+
+    GStreamer invokes :meth:`process_samples` from its streaming thread.  The
+    method does not touch asyncio and keeps only one reusable analysis buffer.
+    Levels are mapped from ``-60 dBFS`` (zero) to ``-6 dBFS`` (one), then
+    clamped to ``0..1``.  ``rms_db`` remains the clamped dBFS value for a
+    useful peak readout.
+    """
+
+    DB_FLOOR = -60.0
+    DB_CEILING = -6.0
+    SOURCE = "daemon mic tap"
+    BAND_RANGES_HZ = ((80.0, 300.0), (300.0, 2_000.0), (2_000.0, 7_500.0))
+
+    def __init__(
+        self,
+        *,
+        compute_interval: float = 0.05,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if compute_interval < 0:
+            raise ValueError("compute_interval must be non-negative")
+        self.compute_interval = compute_interval
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._latest: dict[str, Any] | None = None
+        self._latest_monotonic: float | None = None
+        self._last_compute_monotonic: float | None = None
+        self._cache_key: tuple[int, int] | None = None
+        self._window: np.ndarray | None = None
+        self._windowed: np.ndarray | None = None
+        self._magnitude: np.ndarray | None = None
+        self._window_rms = 1.0
+        self._frequency_masks: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        self.compute_count = 0
+        self.fft_count = 0
+        self.frequency_cache_builds = 0
+
+    @property
+    def latest(self) -> dict[str, Any] | None:
+        """Return a defensive copy of the latest computed sample."""
+        with self._lock:
+            return None if self._latest is None else dict(self._latest)
+
+    @property
+    def latest_age(self) -> float | None:
+        with self._lock:
+            if self._latest_monotonic is None:
+                return None
+            return max(0.0, self._clock() - self._latest_monotonic)
+
+    def latest_if_fresh(self, *, max_age: float = 1.0) -> dict[str, Any] | None:
+        """Return the latest sample only while it is younger than ``max_age``."""
+        with self._lock:
+            if self._latest is None or self._latest_monotonic is None:
+                return None
+            if self._clock() - self._latest_monotonic > max_age:
+                return None
+            return dict(self._latest)
+
+    @classmethod
+    def _db_to_level(cls, dbfs: float) -> float:
+        if not math.isfinite(dbfs):
+            return 0.0
+        return max(0.0, min(1.0, (dbfs - cls.DB_FLOOR) / (cls.DB_CEILING - cls.DB_FLOOR)))
+
+    @classmethod
+    def _clamped_dbfs(cls, amplitude: float) -> float:
+        if not math.isfinite(amplitude) or amplitude <= 1e-12:
+            return cls.DB_FLOOR
+        return max(cls.DB_FLOOR, min(0.0, 20.0 * math.log10(amplitude)))
+
+    def _ensure_frequency_cache(self, sample_count: int, sample_rate_hz: int) -> None:
+        key = (sample_count, sample_rate_hz)
+        if key == self._cache_key:
+            return
+        window = np.hanning(sample_count).astype(np.float32)
+        frequencies = np.fft.rfftfreq(sample_count, d=1.0 / sample_rate_hz)
+        masks = tuple(
+            (frequencies >= low) & (frequencies < high)
+            for low, high in self.BAND_RANGES_HZ
+        )
+        self._cache_key = key
+        self._window = window
+        self._windowed = np.empty_like(window)
+        self._magnitude = np.empty(frequencies.shape, dtype=np.float32)
+        self._window_rms = max(float(np.sqrt(np.mean(window.astype(np.float64) ** 2))), 1e-12)
+        self._frequency_masks = masks  # type: ignore[assignment]
+        self.frequency_cache_builds += 1
+
+    def process_samples(
+        self,
+        samples: Any,
+        *,
+        sample_rate_hz: int = 16_000,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Rate-cap and compute one mono float32 buffer.
+
+        ``samples`` should be a contiguous float32 view from a mapped Gst
+        buffer.  Other array-like inputs are accepted for unit tests and are
+        converted only when necessary.
+        """
+        array = np.asarray(samples)
+        if array.size == 0:
+            return None
+        if array.ndim != 1:
+            array = array.reshape(-1)
+        if array.dtype != np.float32:
+            array = array.astype(np.float32, copy=False)
+        if not np.isfinite(array).all():
+            array = np.nan_to_num(array, copy=True, nan=0.0, posinf=0.0, neginf=0.0)
+        sample_rate = max(1, int(sample_rate_hz))
+        compute_time = self._clock() if now is None else now
+
+        with self._lock:
+            previous = self._last_compute_monotonic
+            if previous is not None and compute_time - previous < self.compute_interval:
+                return None
+            self._last_compute_monotonic = compute_time
+
+        self._ensure_frequency_cache(len(array), sample_rate)
+        assert self._window is not None
+        assert self._windowed is not None
+        assert self._magnitude is not None
+        assert self._frequency_masks is not None
+
+        rms = float(np.sqrt(np.mean(np.square(array, dtype=np.float64))))
+        rms_db = self._clamped_dbfs(rms)
+        np.multiply(array, self._window, out=self._windowed)
+        spectrum = np.fft.rfft(self._windowed)
+        np.abs(spectrum, out=self._magnitude)
+        self._magnitude /= len(array)
+        bands: list[float] = []
+        for mask in self._frequency_masks:
+            band_power = float(np.sum(np.square(self._magnitude[mask], dtype=np.float64)) * 2.0)
+            band_rms = math.sqrt(band_power) / self._window_rms
+            bands.append(self._db_to_level(self._clamped_dbfs(band_rms)))
+
+        snapshot = {
+            "rms": self._db_to_level(rms_db),
+            "rms_db": rms_db,
+            "low": bands[0],
+            "mid": bands[1],
+            "high": bands[2],
+            "sample_rate_hz": sample_rate,
+            "source": self.SOURCE,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        with self._lock:
+            self._latest = snapshot
+            self._latest_monotonic = compute_time
+            self.compute_count += 1
+            self.fft_count += 1
+        return dict(snapshot)
+
+
+def apply_jetson_audio_spectrum_patch() -> None:
+    """Tee the daemon-owned mic capture into one bounded analysis appsink."""
+    if not _is_jetson():
+        return
+    try:
+        import gi
+
+        gi.require_version("Gst", "1.0")
+        from gi.repository import Gst
+    except (ImportError, ValueError) as exc:
+        logger.warning("GStreamer unavailable; skipping audio spectrum tap: %s", exc)
+        return
+    try:
+        from reachy_mini.media.media_server import GstMediaServer
+    except ImportError as exc:
+        logger.warning("Reachy Mini media server unavailable: %s", exc)
+        return
+
+    if getattr(GstMediaServer, "_reachy_audio_spectrum_patched", False):
+        return
+    original_configure_audio = GstMediaServer._configure_audio
+
+    def _configure_audio(self: Any, pipeline: Any, webrtcsink: Any) -> None:
+        self._reachy_audio_spectrum_tap = None
+        original_configure_audio(self, pipeline, webrtcsink)
+        queue_audiosrc = pipeline.get_by_name("queue_audiosrc")
+        if queue_audiosrc is None:
+            return
+
+        element_specs = (
+            ("tee", "audio_capture_tee"),
+            ("queue", "queue_audio_webrtc"),
+            ("queue", "queue_audio_analysis"),
+            ("audioconvert", "audio_spectrum_convert"),
+            ("audioresample", "audio_spectrum_resample"),
+            ("capsfilter", "audio_spectrum_caps"),
+            ("appsink", "audio_spectrum_sink"),
+        )
+        elements: list[Any] = []
+        for factory_name, element_name in element_specs:
+            element = Gst.ElementFactory.make(factory_name, element_name)
+            if element is None:
+                logger.warning(
+                    "Audio spectrum unavailable: missing GStreamer element %s",
+                    factory_name,
+                )
+                return
+            elements.append(element)
+        tee, queue_webrtc, queue_analysis, convert, resample, capsfilter, appsink = elements
+
+        try:
+            queue_audiosrc.unlink(webrtcsink)
+            for element in elements:
+                pipeline.add(element)
+            queue_audiosrc.link(tee)
+            tee.link(queue_webrtc)
+            queue_webrtc.link(webrtcsink)
+            tee.link(queue_analysis)
+            queue_analysis.link(convert)
+            convert.link(resample)
+            resample.link(capsfilter)
+            capsfilter.set_property(
+                "caps",
+                Gst.Caps.from_string("audio/x-raw,format=F32LE,channels=1,rate=16000"),
+            )
+            capsfilter.link(appsink)
+            queue_analysis.set_property("leaky", 2)
+            queue_analysis.set_property("max-size-buffers", 2)
+            queue_analysis.set_property("max-size-bytes", 0)
+            queue_analysis.set_property("max-size-time", 0)
+            appsink.set_property("emit-signals", True)
+            appsink.set_property("sync", False)
+            appsink.set_property("max-buffers", 2)
+            appsink.set_property("drop", True)
+        except Exception:
+            logger.exception("Could not install audio spectrum branch; keeping WebRTC audio")
+            with contextlib.suppress(Exception):
+                queue_audiosrc.unlink(tee)
+                queue_audiosrc.link(webrtcsink)
+            return
+
+        tap = AudioSpectrumTap()
+
+        def _on_new_sample(sink: Any) -> Any:
+            try:
+                sample = sink.emit("pull-sample")
+                if sample is None:
+                    return getattr(Gst.FlowReturn, "OK", 0)
+                buffer = sample.get_buffer()
+                mapped, map_info = buffer.map(Gst.MapFlags.READ)
+                if not mapped:
+                    return getattr(Gst.FlowReturn, "OK", 0)
+                try:
+                    samples = np.frombuffer(map_info.data, dtype=np.float32)
+                    tap.process_samples(samples, sample_rate_hz=16_000)
+                finally:
+                    buffer.unmap(map_info)
+            except Exception:
+                logger.debug("Audio spectrum sample processing failed", exc_info=True)
+            return getattr(Gst.FlowReturn, "OK", 0)
+
+        appsink.connect("new-sample", _on_new_sample)
+        self._reachy_audio_spectrum_tap = tap
+
+    GstMediaServer._configure_audio = _configure_audio
+    GstMediaServer._reachy_audio_spectrum_patched = True
+    logger.info("Installed shared daemon audio spectrum tap")
 
 
 def _is_jetson() -> bool:
@@ -520,3 +792,39 @@ def install_camera_stream_route() -> None:
     create_app._reachy_camera_stream_patch = True  # type: ignore[attr-defined]
     daemon_main.create_app = create_app
     logger.info("Installed shared daemon camera MJPEG route")
+ 
+def install_audio_levels_route() -> None:
+    """Wrap daemon ``create_app`` with the fresh mic-level endpoint."""
+    from reachy_mini.daemon.app import main as daemon_main
+
+    original = daemon_main.create_app
+    if getattr(original, "_reachy_audio_levels_route_patch", False):
+        return
+
+    def create_app(*args: Any, **kwargs: Any) -> Any:
+        app = original(*args, **kwargs)
+
+        @app.get("/api/audio/levels", include_in_schema=False)
+        async def audio_levels(request: Request) -> dict[str, Any]:
+            daemon = getattr(request.app.state, "daemon", None)
+            if daemon is None:
+                raise HTTPException(status_code=503, detail="Audio media unavailable")
+            released = getattr(daemon, "media_released", False)
+            if callable(released):
+                released = released()
+            if released:
+                raise HTTPException(status_code=503, detail="Audio media released")
+            media_server = getattr(daemon, "_media_server", None)
+            tap = getattr(media_server, "_reachy_audio_spectrum_tap", None)
+            if tap is None:
+                raise HTTPException(status_code=503, detail="Audio spectrum unavailable")
+            levels = tap.latest_if_fresh(max_age=1.0)
+            if levels is None:
+                raise HTTPException(status_code=503, detail="Audio spectrum is stale")
+            return levels
+
+        return app
+
+    create_app._reachy_audio_levels_route_patch = True  # type: ignore[attr-defined]
+    daemon_main.create_app = create_app
+    logger.info("Installed daemon audio levels route")

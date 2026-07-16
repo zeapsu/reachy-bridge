@@ -55,6 +55,34 @@ async def test_daemon_proxy_snapshot_helpers_use_spec_paths() -> None:
 
 
 @pytest.mark.asyncio
+async def test_daemon_proxy_audio_levels_uses_fresh_signal_path() -> None:
+    seen: list[httpx.Request] = []
+    levels = {
+        "rms": 0.5,
+        "rms_db": -18.0,
+        "low": 0.4,
+        "mid": 0.2,
+        "high": 0.1,
+        "sample_rate_hz": 16_000,
+        "source": "daemon mic tap",
+        "timestamp": "2026-07-16T08:00:00+00:00",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=levels)
+
+    proxy = DaemonProxy("http://daemon.local:8000", transport=httpx.MockTransport(handler))
+    try:
+        assert await proxy.get_audio_levels() == levels
+    finally:
+        await proxy.close()
+
+    assert [str(request.url) for request in seen] == [
+        "http://daemon.local:8000/api/audio/levels"
+    ]
+
+@pytest.mark.asyncio
 async def test_daemon_proxy_snapshot_helpers_return_none_on_error() -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("offline")

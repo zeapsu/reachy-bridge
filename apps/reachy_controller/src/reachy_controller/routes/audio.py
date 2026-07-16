@@ -1,25 +1,34 @@
-"""Real-signal audio level Server-Sent Events."""
+"""Real microphone spectrum Server-Sent Events."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from reachy_controller.shared_streams import StateBroadcaster
+from reachy_controller.shared_streams import AudioLevelsBroadcaster
 
 router = APIRouter(prefix="/api", tags=["audio"])
 
-_POLL_INTERVAL_SECONDS = 0.10
 _KEEPALIVE_INTERVAL_SECONDS = 15.0
+_AUDIO_PAYLOAD_FIELDS = (
+    "rms",
+    "rms_db",
+    "low",
+    "mid",
+    "high",
+    "sample_rate_hz",
+    "source",
+    "timestamp",
+)
 
 
 async def _audio_level_stream_generator(
-    broadcaster: StateBroadcaster,
+    broadcaster: AudioLevelsBroadcaster,
 ) -> AsyncGenerator[str, None]:
     subscription = await broadcaster.subscribe()
     last_keepalive = asyncio.get_running_loop().time()
@@ -29,7 +38,7 @@ async def _audio_level_stream_generator(
                 asyncio.get_running_loop().time() - last_keepalive
             )
             try:
-                state = await asyncio.wait_for(
+                levels: Any = await asyncio.wait_for(
                     subscription.__anext__(), timeout=max(remaining, 0.0)
                 )
             except asyncio.TimeoutError:
@@ -39,16 +48,11 @@ async def _audio_level_stream_generator(
             except StopAsyncIteration:
                 return
 
-            if isinstance(state, dict) and "error" in state:
+            if not isinstance(levels, dict) or "error" in levels:
                 yield "event: daemon-unavailable\ndata: {}\n\n"
-            else:
-                doa = state.get("doa") if isinstance(state, dict) else None
-                speech_detected = isinstance(doa, dict) and doa.get("speech_detected") is True
-                payload = {
-                    "speech_detected": speech_detected,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                }
-                yield f"event: audio-level\ndata: {json.dumps(payload)}\n\n"
+                continue
+            payload = {field: levels[field] for field in _AUDIO_PAYLOAD_FIELDS}
+            yield f"event: audio-level\ndata: {json.dumps(payload)}\n\n"
     except asyncio.CancelledError:
         return
     finally:
@@ -57,7 +61,7 @@ async def _audio_level_stream_generator(
 
 @router.get("/audio/levels-stream")
 async def audio_levels_stream(request: Request) -> StreamingResponse:
-    broadcaster: StateBroadcaster = request.app.state.state_broadcaster
+    broadcaster: AudioLevelsBroadcaster = request.app.state.audio_levels_broadcaster
     return StreamingResponse(
         _audio_level_stream_generator(broadcaster),
         media_type="text/event-stream",

@@ -1,80 +1,89 @@
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import datetime
 
 import pytest
 
+from reachy_controller.shared_streams import AudioLevelsBroadcaster
 
-class AudioProxy:
-    def __init__(self, states: list[dict | None]) -> None:
-        self.states = iter(states)
 
-    async def ws_stream_full_state(self):
-        for state in self.states:
-            yield state if state is not None else {"error": "daemon_unavailable"}
+LEVELS = {
+    "rms": 0.62,
+    "rms_db": -14.5,
+    "low": 0.8,
+    "mid": 0.2,
+    "high": 0.05,
+    "sample_rate_hz": 16_000,
+    "source": "daemon mic tap",
+    "timestamp": "2026-07-16T08:00:00+00:00",
+}
+
 
 def parse_sse_data(event: str) -> dict:
     data_line = next(line for line in event.splitlines() if line.startswith("data: "))
     return json.loads(data_line.removeprefix("data: "))
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("state", "expected_speech_detected"),
-    [
-        ({"doa": {"speech_detected": True}}, True),
-        ({"doa": {"speech_detected": False}}, False),
-        ({}, False),
-    ],
-)
-async def test_audio_stream_reports_honest_speech_detected_signal(
-    state: dict, expected_speech_detected: bool
-) -> None:
-    from reachy_controller.routes.audio import _audio_level_stream_generator
-    from reachy_controller.shared_streams import StateBroadcaster
+class AudioProxy:
+    def __init__(self, levels: list[dict | None]) -> None:
+        self.levels = iter(levels)
+        self.calls = 0
+        self.full_state_calls = 0
 
-    stream = _audio_level_stream_generator(
-        StateBroadcaster(AudioProxy([state]), reconnect_delay=0.01)
-    )
+    async def get_audio_levels(self):
+        self.calls += 1
+        try:
+            return next(self.levels)
+        except StopIteration:
+            await asyncio.Event().wait()
+            return None
+
+    async def get_full_state(self):
+        self.full_state_calls += 1
+        raise AssertionError("audio must not poll full state")
+
+
+@pytest.mark.asyncio
+async def test_audio_stream_reports_real_levels_payload() -> None:
+    from reachy_controller.routes.audio import _audio_level_stream_generator
+
+    proxy = AudioProxy([LEVELS])
+    broadcaster = AudioLevelsBroadcaster(proxy, interval=0.01, reconnect_delay=0.01)
+    stream = _audio_level_stream_generator(broadcaster)
+
     event = await anext(stream)
     await stream.aclose()
 
     assert event.startswith("event: audio-level\n")
-    payload = parse_sse_data(event)
-    assert payload["speech_detected"] == expected_speech_detected
-    timestamp = datetime.fromisoformat(payload["timestamp"])
-    assert timestamp.utcoffset() is not None
-    assert timestamp.utcoffset().total_seconds() == 0
+    assert parse_sse_data(event) == LEVELS
+    assert proxy.full_state_calls == 0
 
 
 @pytest.mark.asyncio
-async def test_audio_stream_reports_offline_then_recovers_from_shared_state() -> None:
+async def test_audio_stream_reports_offline_then_recovers() -> None:
     from reachy_controller.routes import audio
-    from reachy_controller.shared_streams import StateBroadcaster
 
-    stream = audio._audio_level_stream_generator(
-        StateBroadcaster(
-            AudioProxy([None, {"doa": {"speech_detected": True}}]),
-            reconnect_delay=0.01,
-        )
-    )
+    recovered = dict(LEVELS, rms=0.9)
+    proxy = AudioProxy([None, recovered])
+    broadcaster = AudioLevelsBroadcaster(proxy, interval=0.01, reconnect_delay=0.01)
+    stream = audio._audio_level_stream_generator(broadcaster)
 
     offline = await anext(stream)
-    recovered = await anext(stream)
+    online = await anext(stream)
     await stream.aclose()
 
     assert offline == "event: daemon-unavailable\ndata: {}\n\n"
-    assert parse_sse_data(recovered)["speech_detected"] is True
+    assert parse_sse_data(online) == recovered
+    assert proxy.calls == 2
 
 
 @pytest.mark.asyncio
-async def test_audio_stream_cleanup_unsubscribes_from_shared_state() -> None:
+async def test_audio_stream_cleanup_unsubscribes_and_cancels_poll() -> None:
     from reachy_controller.routes.audio import _audio_level_stream_generator
-    from reachy_controller.shared_streams import StateBroadcaster
 
-    proxy = AudioProxy([{"doa": {"speech_detected": True}}])
-    broadcaster = StateBroadcaster(proxy)
+    proxy = AudioProxy([LEVELS])
+    broadcaster = AudioLevelsBroadcaster(proxy)
     stream = _audio_level_stream_generator(broadcaster)
 
     await anext(stream)
@@ -85,27 +94,49 @@ async def test_audio_stream_cleanup_unsubscribes_from_shared_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_audio_stream_uses_each_shared_state_update() -> None:
+async def test_audio_stream_shares_one_daemon_get_for_multiple_clients() -> None:
+
+    proxy = AudioProxy([LEVELS])
+    broadcaster = AudioLevelsBroadcaster(proxy, interval=1.0)
+    first = await broadcaster.subscribe()
+    second = await broadcaster.subscribe()
+
+    assert await first.__anext__() == LEVELS
+    assert await second.__anext__() == LEVELS
+    assert proxy.calls == 1
+    await first.aclose()
+    await second.aclose()
+
+
+@pytest.mark.asyncio
+async def test_audio_broadcaster_does_no_idle_work_and_replays_latest() -> None:
+    proxy = AudioProxy([LEVELS])
+    broadcaster = AudioLevelsBroadcaster(proxy, interval=0.01)
+
+    await asyncio.sleep(0.02)
+    assert proxy.calls == 0
+
+    subscriber = await broadcaster.subscribe()
+    assert await subscriber.__anext__() == LEVELS
+    replay = await broadcaster.subscribe()
+    assert await replay.__anext__() == LEVELS
+    await subscriber.aclose()
+    await replay.aclose()
+
+
+@pytest.mark.asyncio
+async def test_audio_stream_keepalive_and_close() -> None:
+    from reachy_controller.routes import audio
     from reachy_controller.routes.audio import _audio_level_stream_generator
-    from reachy_controller.shared_streams import StateBroadcaster
 
-    stream = _audio_level_stream_generator(
-        StateBroadcaster(
-            AudioProxy(
-                [
-                    {"doa": {"speech_detected": True}},
-                    {"doa": {"speech_detected": False}},
-                    {"doa": {"speech_detected": True}},
-                ]
-            )
-        )
-    )
-
-    events = [await anext(stream) for _ in range(3)]
-    await stream.aclose()
-
-    assert [parse_sse_data(event)["speech_detected"] for event in events] == [
-        True,
-        False,
-        True,
-    ]
+    original_interval = audio._KEEPALIVE_INTERVAL_SECONDS
+    audio._KEEPALIVE_INTERVAL_SECONDS = 0.01
+    try:
+        proxy = AudioProxy([])
+        broadcaster = AudioLevelsBroadcaster(proxy, reconnect_delay=1.0)
+        stream = _audio_level_stream_generator(broadcaster)
+        event = await anext(stream)
+        assert event == ": keepalive\n\n"
+        await stream.aclose()
+    finally:
+        audio._KEEPALIVE_INTERVAL_SECONDS = original_interval
