@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -21,6 +22,7 @@ from reachy_controller.app_supervisor import AppSupervisor
 from reachy_controller.daemon_proxy import DaemonProxy
 from reachy_controller.daemon_proxy import router as daemon_router
 from reachy_controller.daemon_supervisor import DaemonSupervisor
+from reachy_controller.log_stream import ControllerLogHandler, LogBroker
 from reachy_controller.routes.apps import router as apps_router
 from reachy_controller.routes.audio import router as audio_router
 from reachy_controller.routes.camera import DashboardCameraLeaseManager
@@ -29,6 +31,7 @@ from reachy_controller.routes.controls import router as controls_router
 from reachy_controller.routes.daemon import router as daemon_control_router
 from reachy_controller.routes.expressions import ExpressionPlayer
 from reachy_controller.routes.expressions import router as expressions_router
+from reachy_controller.routes.logs import router as logs_router
 from reachy_controller.shared_streams import StateBroadcaster, StatsBroadcaster
 from reachy_controller.routes.system_stats import router as system_stats_router
 from reachy_controller.routes.telemetry import (
@@ -58,30 +61,51 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
 
 
 def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
+    broker = LogBroker()
     daemon_proxy = proxy or DaemonProxy(
         os.getenv("DAEMON_URL", "http://127.0.0.1:8000"),
         timeout=float(os.getenv("DAEMON_TIMEOUT", "2.0")),
     )
     camera_leases = DashboardCameraLeaseManager()
-    app_supervisor = AppSupervisor(daemon_proxy=daemon_proxy)
+    app_supervisor = AppSupervisor(daemon_proxy=daemon_proxy, log_broker=broker)
     app_supervisor.set_camera_release_hook(camera_leases.close_all)
-    daemon_supervisor = DaemonSupervisor(daemon_proxy=daemon_proxy)
+    daemon_supervisor = DaemonSupervisor(daemon_proxy=daemon_proxy, log_broker=broker)
     state_broadcaster = StateBroadcaster(daemon_proxy)
     stats_broadcaster = StatsBroadcaster(daemon_proxy)
     expression_player = ExpressionPlayer(daemon_proxy)
+    controller_log_path = app_supervisor._workspace_root / ".reachy-logs" / "controller.log"
+    root_logger = logging.getLogger()
+    controller_loggers = (root_logger, logging.getLogger("uvicorn.error"), logging.getLogger("uvicorn.access"))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        await app.state.daemon_proxy.start()
-        app.state.app_supervisor.reconcile_orphans()
-        app.state.daemon_supervisor.reconcile_orphans()
+        # File ownership starts with lifespan startup, not app construction.
+        # This keeps factory-created ASGI apps descriptor-free until they are
+        # actually run.
+        controller_handler = ControllerLogHandler(broker, controller_log_path)
+        app.state.controller_log_handler = controller_handler
         try:
-            yield
+            await app.state.daemon_proxy.start()
+            app.state.app_supervisor.reconcile_orphans()
+            app.state.daemon_supervisor.reconcile_orphans()
+            for target_logger in controller_loggers:
+                target_logger.addHandler(controller_handler)
+            try:
+                yield
+            finally:
+                # Detach the handler first; then stop all reader pumps before
+                # closing their broker so no background thread survives teardown.
+                for target_logger in controller_loggers:
+                    target_logger.removeHandler(controller_handler)
         finally:
+            controller_handler.close()
+            app.state.controller_log_handler = None
             await app.state.expression_player.aclose()
             await app.state.state_broadcaster.aclose()
             await app.state.stats_broadcaster.aclose()
-            app.state.app_supervisor.stop_all()
+            await app.state.app_supervisor.aclose()
+            await app.state.daemon_supervisor.aclose()
+            await app.state.log_broker.aclose()
             await app.state.daemon_proxy.close()
 
     app = FastAPI(title="Reachy Controller", version="0.1.0", lifespan=lifespan)
@@ -92,6 +116,8 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     app.state.camera_leases = camera_leases
     app.state.daemon_supervisor = daemon_supervisor
     app.state.expression_player = expression_player
+    app.state.log_broker = broker
+    app.state.controller_log_handler = None
     app.add_middleware(NoCacheMiddleware)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -118,6 +144,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     app.include_router(camera_router)
     app.include_router(daemon_control_router)
     app.include_router(expressions_router)
+    app.include_router(logs_router)
     app.include_router(daemon_router)
     return app
 

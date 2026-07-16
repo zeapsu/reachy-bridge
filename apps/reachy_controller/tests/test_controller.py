@@ -197,6 +197,29 @@ def test_static_ui_wires_liquid_glass_to_live_controller_endpoints() -> None:
     assert "/api/motors/set_mode/" in script
 
 
+
+
+@pytest.mark.asyncio
+async def test_served_theme_swatch_is_token_driven_for_all_themes() -> None:
+    app = create_app(proxy=FakeProxy({}))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        index = await client.get("/")
+        styles = await client.get("/static/style.css")
+
+    assert index.status_code == 200
+    assert styles.status_code == 200
+    assert 'class="cur"' in index.text
+    rule = styles.text.split(".theme-btn .cur", 1)[1].split("}", 1)[0]
+    assert "background: var(--amber)" in rule
+    assert "box-shadow: 0 0 8px 0 var(--amber)" in rule
+    assert "transparent" not in rule
+    for scheme in ("arctic", "emerald", "ultraviolet", "ember"):
+        assert f'html[data-scheme="{scheme}"]' in styles.text
+
 @pytest.mark.asyncio
 async def test_index_includes_cache_control_no_cache_header() -> None:
     app = create_app(proxy=FakeProxy({}))

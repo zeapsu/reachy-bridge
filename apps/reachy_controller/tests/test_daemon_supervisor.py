@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import signal
 import subprocess
+import sys
+import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import psutil
@@ -11,6 +15,7 @@ import pytest
 
 from reachy_controller.app_supervisor import _get_workspace_root
 from reachy_controller.daemon_supervisor import DaemonSupervisor
+from reachy_controller.log_stream import LogBroker, ProcessLogPump
 
 
 @pytest.mark.asyncio
@@ -48,8 +53,10 @@ async def test_start_when_manageable() -> None:
 
         # Check keyword arguments
         assert call_args.kwargs["cwd"] == _get_workspace_root()
-        assert call_args.kwargs["stdout"] == subprocess.DEVNULL
-        assert call_args.kwargs["stderr"] == subprocess.DEVNULL
+        assert call_args.kwargs["stdout"] == subprocess.PIPE
+        assert call_args.kwargs["stderr"] == subprocess.STDOUT
+        assert call_args.kwargs["text"] is True
+        assert call_args.kwargs["bufsize"] == 1
         assert call_args.kwargs["start_new_session"] is True
 
     assert result["status"] == "starting"
@@ -112,6 +119,157 @@ async def test_stop_via_subprocess_handle() -> None:
     assert supervisor._daemon.status == "stopped"
     mock_process.send_signal.assert_called_once_with(signal.SIGINT)
 
+@pytest.mark.asyncio
+async def test_stop_wait_serializes_concurrent_start_and_preserves_new_ownership() -> None:
+    """A start waiting behind stop must not be cleared by the old stop."""
+    with patch.dict("os.environ", {"REACHY_MANAGE_DAEMON": "1"}):
+        supervisor = DaemonSupervisor()
+        old_process = MagicMock(pid=111)
+        wait_started = threading.Event()
+        release_wait = threading.Event()
+
+        def paused_wait(timeout: float) -> int:
+            wait_started.set()
+            assert release_wait.wait(timeout=1.0)
+            return 0
+
+        old_process.wait.side_effect = paused_wait
+        old_pump = MagicMock()
+        old_pump.thread.is_alive.return_value = False
+        supervisor._daemon.process = old_process
+        supervisor._daemon.pid = old_process.pid
+        supervisor._daemon.status = "running"
+        supervisor._daemon.log_pump = old_pump
+
+        new_process = MagicMock(pid=222)
+        new_pump = MagicMock()
+        new_pump.thread.is_alive.return_value = False
+        with (
+            patch(
+                "reachy_controller.daemon_supervisor.subprocess.Popen",
+                return_value=new_process,
+            ) as popen,
+            patch(
+                "reachy_controller.daemon_supervisor.ProcessLogPump",
+                return_value=new_pump,
+            ),
+        ):
+            stop_task = asyncio.create_task(supervisor.stop())
+            await asyncio.wait_for(asyncio.to_thread(wait_started.wait, 1.0), 1.0)
+            start_task = asyncio.create_task(supervisor.start())
+            await asyncio.sleep(0)
+            assert not start_task.done()
+
+            release_wait.set()
+            assert await stop_task == {"status": "stopped"}
+            assert await start_task == {
+                "status": "starting",
+                "pid": new_process.pid,
+                "start_time": supervisor._daemon.start_time,
+            }
+
+        popen.assert_called_once()
+        old_pump.stop.assert_called_once_with(parent_exited=True)
+        new_pump.stop.assert_not_called()
+        assert supervisor._daemon.process is new_process
+        assert supervisor._daemon.pid == new_process.pid
+        assert supervisor._daemon.log_pump is new_pump
+
+
+@pytest.mark.asyncio
+async def test_failed_daemon_pump_cleanup_retains_ownership_and_refuses_restart() -> None:
+    """A failed/live old pump blocks replacement until explicit cleanup succeeds."""
+    with patch.dict("os.environ", {"REACHY_MANAGE_DAEMON": "1"}):
+        supervisor = DaemonSupervisor()
+        process = MagicMock(pid=12345)
+        pump = MagicMock()
+        pump.stop.side_effect = RuntimeError("pump join failed")
+        pump.thread.is_alive.return_value = True
+        supervisor._daemon.process = process
+        supervisor._daemon.pid = process.pid
+        supervisor._daemon.status = "running"
+        supervisor._daemon.log_pump = pump
+
+        result = await supervisor.stop()
+
+        assert result == {"error": "pump join failed", "status": "stopping"}
+        assert supervisor._daemon.status == "stopping"
+        assert supervisor._daemon.process is process
+        assert supervisor._daemon.pid == process.pid
+        assert supervisor._daemon.log_pump is pump
+
+        with patch("reachy_controller.daemon_supervisor.subprocess.Popen") as popen:
+            restart = await supervisor.start()
+
+        assert restart["status"] == "refused"
+        assert "log pump" in restart["error"]
+        popen.assert_not_called()
+        assert supervisor._daemon.process is process
+        assert supervisor._daemon.pid == process.pid
+        assert supervisor._daemon.log_pump is pump
+
+
+@pytest.mark.asyncio
+async def test_stop_passes_parent_exited_keyword_and_drains_buffered_tail(
+    tmp_path: Path,
+) -> None:
+    with patch.dict("os.environ", {"REACHY_MANAGE_DAEMON": "1"}):
+        broker = LogBroker()
+        supervisor = DaemonSupervisor(log_broker=broker)
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import signal,sys\n"
+                    "def on_sigint(signum, frame):\n"
+                    "    sys.stdout.write('buffered-exit-tail\\n')\n"
+                    "    sys.stdout.flush()\n"
+                    "    raise SystemExit(0)\n"
+                    "signal.signal(signal.SIGINT, on_sigint)\n"
+                    "print('ready', flush=True)\n"
+                    "signal.pause()\n"
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+        )
+        pump = ProcessLogPump(process, "daemon", broker, tmp_path / "daemon.log")
+        calls: dict[str, bool] = {}
+        original_stop = pump.stop
+
+        def strict_stop(*, parent_exited: bool) -> None:
+            calls["parent_exited"] = parent_exited
+            original_stop(parent_exited=parent_exited)
+
+        pump.stop = strict_stop  # type: ignore[method-assign]
+        supervisor._daemon.process = process
+        supervisor._daemon.log_pump = pump
+        supervisor._daemon.pid = process.pid
+        for _ in range(100):
+            if broker.ring("daemon") == ["ready"]:
+                break
+            await asyncio.sleep(0.01)
+        assert broker.ring("daemon") == ["ready"]
+        supervisor._daemon.status = "running"
+        try:
+            result = await supervisor.stop()
+            assert result["status"] == "stopped"
+            assert calls == {"parent_exited": True}
+            assert (tmp_path / "daemon.log").read_text().splitlines() == [
+                "ready",
+                "buffered-exit-tail",
+            ]
+            assert pump.thread is not None and not pump.thread.is_alive()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            await broker.aclose()
+
 
 @pytest.mark.asyncio
 async def test_stop_via_adopted_pid() -> None:
@@ -136,6 +294,7 @@ async def test_stop_via_adopted_pid() -> None:
         supervisor._daemon.process = None
         supervisor._daemon.pid = 12345
         supervisor._daemon.status = "running"
+        supervisor._daemon.external = True
 
         with patch(
             "reachy_controller.daemon_supervisor.psutil.Process",
@@ -146,6 +305,7 @@ async def test_stop_via_adopted_pid() -> None:
     assert result["status"] == "stopped"
     assert supervisor._daemon.status == "stopped"
     assert supervisor._daemon.pid is None
+    assert supervisor._daemon.external is False
     mock_psutil_proc.send_signal.assert_called_once_with(signal.SIGINT)
 
 
@@ -172,6 +332,7 @@ async def test_stop_via_adopted_stopped_pid() -> None:
         supervisor._daemon.process = None
         supervisor._daemon.pid = 12345
         supervisor._daemon.status = "stopped"
+        supervisor._daemon.external = True
 
         with patch(
             "reachy_controller.daemon_supervisor.psutil.Process",
@@ -182,7 +343,28 @@ async def test_stop_via_adopted_stopped_pid() -> None:
     assert result["status"] == "stopped"
     assert supervisor._daemon.status == "stopped"
     assert supervisor._daemon.pid is None
+    assert supervisor._daemon.external is False
     mock_psutil_proc.send_signal.assert_called_once_with(signal.SIGINT)
+
+@pytest.mark.asyncio
+async def test_empty_stop_releases_stale_adopted_ownership() -> None:
+    with patch.dict("os.environ", {"REACHY_MANAGE_DAEMON": "1"}):
+        supervisor = DaemonSupervisor()
+        supervisor._daemon.pid = 12345
+        supervisor._daemon.status = "running"
+        supervisor._daemon.external = True
+        supervisor.log_broker.set_status("daemon", "unavailable")
+
+        status = supervisor.status(False)
+        assert status["status"] == "stopped"
+        assert supervisor._daemon.pid is None
+
+        result = await supervisor.stop()
+
+        assert result["status"] == "stopped"
+        assert supervisor._daemon.external is False
+        assert supervisor.log_broker.source_status("daemon") == "stopped"
+
 
 
 @pytest.mark.asyncio
@@ -353,3 +535,53 @@ def test_start_command_default() -> None:
     """Test default daemon start command."""
     supervisor = DaemonSupervisor()
     assert supervisor._cmd == ["uv", "run", "python", "tools/reachy_mini_daemon_jetson.py"]
+
+
+@pytest.mark.asyncio
+async def test_crashed_managed_daemon_reaps_pump_before_restart(tmp_path: Path) -> None:
+    """A crashed managed daemon drains its tail before a replacement starts."""
+    command = (
+        f"{sys.executable} -c "
+        '"import sys; print(\'crashed-tail\', flush=True); raise SystemExit(17)"'
+    )
+    with patch.dict(
+        "os.environ",
+        {"REACHY_MANAGE_DAEMON": "1", "REACHY_DAEMON_CMD": command},
+    ):
+        broker = LogBroker()
+        supervisor = DaemonSupervisor(log_broker=broker)
+        supervisor._log_path = tmp_path / "daemon.log"
+        broker.set_file("daemon", supervisor._log_path)
+        try:
+            first = await supervisor.start()
+            assert first["status"] == "starting"
+            old_process = supervisor._daemon.process
+            old_pump = supervisor._daemon.log_pump
+            assert old_process is not None
+            assert old_pump is not None
+
+            await asyncio.to_thread(old_process.wait, 2.0)
+            for _ in range(100):
+                if old_pump.done:
+                    break
+                await asyncio.sleep(0.01)
+            assert old_pump.done
+
+            # Model the last reachability poll after the child crashed.
+            supervisor._daemon.status = "running"
+            status = supervisor.status(running=False)
+            assert status["status"] == "stopped"
+            assert supervisor._daemon.pid is None
+            assert supervisor._daemon.process is old_process
+            assert supervisor._daemon.log_pump is old_pump
+            assert broker.ring("daemon") == ["crashed-tail"]
+            assert supervisor._log_path.read_text().splitlines() == ["crashed-tail"]
+
+            second = await supervisor.start()
+            assert second["status"] == "starting"
+            assert supervisor._daemon.process is not old_process
+            assert supervisor._daemon.log_pump is not old_pump
+            assert old_pump.thread is not None and not old_pump.thread.is_alive()
+        finally:
+            await supervisor.aclose()
+            await broker.aclose()

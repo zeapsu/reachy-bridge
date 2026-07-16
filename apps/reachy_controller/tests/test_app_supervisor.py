@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import signal
 import sys
+import threading
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import psutil
 import pytest
+
 
 from reachy_controller.app_supervisor import (
     _APP_READINESS_POLL_S,
@@ -67,7 +71,7 @@ async def test_start_app_argv_direct_interpreter(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_start_app_creates_log_file(tmp_path: Path) -> None:
-    """Test that start_app creates a log file and passes it to Popen."""
+    """Test that start_app creates a file and starts a merged-pipe pump."""
     supervisor = AppSupervisor()
     # Monkeypatch workspace root to temp directory
     supervisor._workspace_root = tmp_path
@@ -93,54 +97,73 @@ async def test_start_app_creates_log_file(tmp_path: Path) -> None:
     log_file = tmp_path / ".reachy-logs" / "reachy_chat.log"
     assert log_file.exists(), f"Log file not created at {log_file}"
 
-    # Verify stdout was a file handle (not DEVNULL)
-    assert popen_kwargs.get("stdout") is not None
-    assert popen_kwargs["stdout"] != -3  # -3 is DEVNULL
-    assert hasattr(popen_kwargs["stdout"], "close"), "stdout should be a file handle"
+    # The child output is drained from a merged line-buffered pipe.
+    assert popen_kwargs.get("stdout") == subprocess.PIPE
+    assert popen_kwargs["stderr"] == subprocess.STDOUT
+    assert popen_kwargs["text"] is True
+    assert popen_kwargs["bufsize"] == 1
 
-    # Verify stderr is redirected to stdout
-    assert popen_kwargs["stderr"] == -2  # -2 is subprocess.STDOUT
-
-    # Verify log_handle is stored on the app
+    # The pump owns the file lifecycle; fake processes may finish immediately.
     app = supervisor._apps["reachy_chat"]
-    assert app.log_handle is not None
-    assert hasattr(app.log_handle, "close")
-
+    assert app.log_pump is not None
+    if app.log_pump:
+        app.log_pump.stop()
     # Close the handle to avoid resource leak in test
     if app.log_handle:
         app.log_handle.close()
 
 
 @pytest.mark.asyncio
-async def test_stop_app_closes_log_handle(tmp_path: Path) -> None:
-    """Test that stop_app closes the log file handle."""
+async def test_stop_app_closes_log_pump(tmp_path: Path) -> None:
+    """Test that stop_app joins and clears the output pump."""
     supervisor = AppSupervisor()
     supervisor._workspace_root = tmp_path
 
-    # Mock subprocess.Popen
     mock_process = MagicMock()
     mock_process.pid = 12345
 
     with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
         await supervisor.start_app("reachy_chat")
 
-    # Verify log handle is open
     app = supervisor._apps["reachy_chat"]
-    assert app.log_handle is not None
-    log_handle = app.log_handle
-    assert not log_handle.closed
+    assert app.log_pump is not None
 
-    # Stop the app (patch the tree-signaller so we never signal a real pid 12345)
     with patch("reachy_controller.app_supervisor._signal_process_tree"):
         result = await supervisor.stop_app("reachy_chat")
 
-    # Verify stop succeeded
     assert result["status"] == "stopped"
-
-    # Verify log handle is closed
-    assert log_handle.closed
+    assert app.log_pump is None
     assert app.log_handle is None
 
+
+
+@pytest.mark.asyncio
+async def test_stop_failure_retains_pump_and_refuses_restart(tmp_path: Path) -> None:
+    supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
+    app = supervisor._apps["reachy_chat"]
+    process = MagicMock(pid=12345)
+    pump = MagicMock()
+    pump.stop.side_effect = RuntimeError("pump join failed")
+    app.process = process
+    app.pid = process.pid
+    app.status = "running"
+    app.log_pump = pump
+
+    with patch("reachy_controller.app_supervisor._signal_process_tree"):
+        result = await supervisor.stop_app("reachy_chat")
+
+    assert result["status"] == "stopping"
+    assert app.status == "stopping"
+    assert app.process is process
+    assert app.pid == process.pid
+    assert app.log_pump is pump
+
+    with patch("reachy_controller.app_supervisor.subprocess.Popen") as popen:
+        restart = await supervisor.start_app("reachy_chat")
+    assert restart["status"] == "refused"
+    assert "log pump" in restart["error"]
+    popen.assert_not_called()
 
 @pytest.mark.asyncio
 async def test_start_app_unknown_app() -> None:
@@ -422,6 +445,76 @@ async def test_reap_app_uses_thread_for_wait() -> None:
     # Verify wait was called and app transitioned to stopped
     assert wait_called, "Process.wait() was not called"
     assert supervisor._apps["reachy_chat"].status == "stopped"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exit_code,expected_status", [(0, "stopped"), (7, "error")])
+async def test_reaper_finally_cleans_all_state_before_restart(
+    tmp_path: Path, exit_code: int, expected_status: str
+) -> None:
+    supervisor = AppSupervisor()
+    app = supervisor._apps["reachy_chat"]
+
+    async def reap_once(process: MagicMock, code: int, suffix: str) -> None:
+        process.wait.return_value = code
+        app.process = process
+        app.pid = process.pid
+        app.status = "loading"
+        app.error = None
+        app.external = False
+        pump = MagicMock()
+        app.log_pump = pump
+        app.log_handle = MagicMock()
+        app.ready_file = tmp_path / f"{suffix}.ready"
+        app.ready_file.write_text("ready")
+        task = asyncio.create_task(supervisor._reap_app(app.name))
+        supervisor._reaper_tasks[app.name] = task
+        await asyncio.wait_for(task, timeout=1)
+        assert app.process is None
+        assert app.pid is None
+        assert app.log_pump is None
+        assert app.log_handle is None
+        assert app.ready_file is None
+        assert not (tmp_path / f"{suffix}.ready").exists()
+        assert app.name not in supervisor._reaper_tasks
+        pump.stop.assert_called_once()
+
+    await reap_once(MagicMock(pid=12345), exit_code, "first")
+    assert app.status == expected_status
+
+    await reap_once(MagicMock(pid=12346), 0, "replacement")
+    assert app.status == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_reaper_finally_cleans_after_wait_exception(tmp_path: Path) -> None:
+    supervisor = AppSupervisor()
+    app = supervisor._apps["reachy_chat"]
+    process = MagicMock(pid=12347)
+    process.wait.side_effect = RuntimeError("wait failed")
+    pump = MagicMock()
+    ready_file = tmp_path / "exception.ready"
+    ready_file.write_text("ready")
+    app.process = process
+    app.pid = process.pid
+    app.status = "loading"
+    app.log_pump = pump
+    app.log_handle = MagicMock()
+    app.ready_file = ready_file
+
+    task = asyncio.create_task(supervisor._reap_app(app.name))
+    supervisor._reaper_tasks[app.name] = task
+    await asyncio.wait_for(task, timeout=1)
+
+    assert app.status == "error"
+    assert app.process is None
+    assert app.pid is None
+    assert app.log_pump is None
+    assert app.log_handle is None
+    assert app.ready_file is None
+    assert not ready_file.exists()
+    assert app.name not in supervisor._reaper_tasks
+    pump.stop.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -1325,3 +1418,119 @@ def test_get_all_status_rejects_confusingly_named_module() -> None:
     assert dance_status["status"] == "stopped"
     assert supervisor._apps["reachy_dance"].status == "stopped"
     assert supervisor._apps["reachy_dance"].pid is None
+
+
+@pytest.mark.asyncio
+async def test_async_status_reconciliation_does_not_erase_loading_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor = AppSupervisor()
+    scanned = asyncio.Event()
+    release = threading.Event()
+    found = {"reachy_chat": (9001, 12.5)}
+    loop = asyncio.get_running_loop()
+    app = supervisor._apps["reachy_chat"]
+    process = object()
+    app.process = process  # type: ignore[assignment]
+    app.pid = 42
+    app.status = "loading"
+    app.external = False
+
+    def delayed_scan() -> dict[str, tuple[int, float]]:
+        # This function executes in a worker; signal the event-loop task safely.
+        loop.call_soon_threadsafe(scanned.set)
+        while not release.is_set():
+            time.sleep(0.001)
+        return found
+
+    monkeypatch.setattr(supervisor, "_scan_for_live_apps", delayed_scan)
+    task = asyncio.create_task(supervisor.aget_all_status())
+    await scanned.wait()
+    release.set()
+    await task
+    assert app.process is process
+    assert app.pid == 42
+    assert app.status == "loading"
+
+
+@pytest.mark.asyncio
+async def test_async_status_scan_serializes_concurrent_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
+    scanned = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    process = MagicMock(pid=4242, stdout=None)
+
+    async def noop_reap(_: str) -> None:
+        return
+
+    async def noop_readiness(_: str) -> None:
+        return
+
+    def delayed_scan() -> dict[str, tuple[int, float]]:
+        loop.call_soon_threadsafe(scanned.set)
+        release.wait(timeout=2.0)
+        return {}
+
+    monkeypatch.setattr(supervisor, "_scan_for_live_apps", delayed_scan)
+    monkeypatch.setattr(supervisor, "_reap_app", noop_reap)
+    monkeypatch.setattr(supervisor, "_monitor_readiness", noop_readiness)
+    with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=process):
+        scan_task = asyncio.create_task(supervisor.aget_all_status())
+        await scanned.wait()
+        start_task = asyncio.create_task(supervisor.start_app("reachy_chat"))
+        await asyncio.sleep(0.01)
+        assert not start_task.done()
+        release.set()
+        await scan_task
+        result = await start_task
+
+    app = supervisor._apps["reachy_chat"]
+    assert result == {"name": "reachy_chat", "status": "loading", "pid": 4242}
+    assert app.process is process
+    assert app.pid == 4242
+    assert app.status == "loading"
+    assert not app.external
+    with patch("reachy_controller.app_supervisor._signal_process_tree"):
+        await supervisor.stop_app("reachy_chat")
+
+
+@pytest.mark.asyncio
+async def test_async_status_scan_serializes_concurrent_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor = AppSupervisor()
+    app = supervisor._apps["reachy_chat"]
+    process = MagicMock(pid=4343)
+    app.process = process
+    app.pid = process.pid
+    app.status = "running"
+    app.external = False
+    scanned = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def delayed_scan() -> dict[str, tuple[int, float]]:
+        loop.call_soon_threadsafe(scanned.set)
+        release.wait(timeout=2.0)
+        return {"reachy_chat": (process.pid, 12.5)}
+
+    monkeypatch.setattr(supervisor, "_scan_for_live_apps", delayed_scan)
+    with patch("reachy_controller.app_supervisor._signal_process_tree"):
+        scan_task = asyncio.create_task(supervisor.aget_all_status())
+        await scanned.wait()
+        stop_task = asyncio.create_task(supervisor.stop_app("reachy_chat"))
+        await asyncio.sleep(0.01)
+        assert not stop_task.done()
+        release.set()
+        await scan_task
+        result = await stop_task
+
+    assert result == {"name": "reachy_chat", "status": "stopped"}
+    assert app.process is None
+    assert app.pid is None
+    assert app.status == "stopped"
+    assert not app.external
