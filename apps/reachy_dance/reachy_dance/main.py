@@ -4,15 +4,16 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from importlib import resources
 
 import numpy as np
 from reachy_mini import ReachyMini, ReachyMiniApp
 from reachy_mini.utils import create_head_pose
+from reachy_mini.utils.interpolation import InterpolationTechnique
 
 
 CONTROL_PERIOD_S = 0.02
 ANTENNA_AMPLITUDE_RAD = 0.28
-SLEEP_CUE_SETTLE_S = 1.0
 
 logger = logging.getLogger(__name__)
 
@@ -207,21 +208,31 @@ class ReachyDance(ReachyMiniApp):
 
     @staticmethod
     def _return_home(reachy_mini: ReachyMini) -> None:
+        home_target = {
+            "head": create_head_pose(degrees=True),
+            "antennas": np.array([-0.1745, 0.1745], dtype=float),
+            "body_yaw": 0.0,
+        }
         try:
-            # Daemon stays up, so the robot stays awake: return to the awake-ready
-            # home posture with the SDK wake_up emote (home + head gesture + wake_up.wav).
-            reachy_mini.wake_up()
-            time.sleep(SLEEP_CUE_SETTLE_S)  # let the wake_up.wav cue finish before the process exits/disconnects
+            reachy_mini.goto_target(
+                **home_target,
+                duration=2.4,
+                method=InterpolationTechnique.MIN_JERK,
+            )
         except Exception as exc:
-            logger.warning("dance: graceful return-home (wake_up) unavailable; snapping home: %s", exc)
+            logger.warning("dance: graceful return-home unavailable; snapping home: %s", exc)
             try:
-                reachy_mini.set_target(
-                    head=create_head_pose(degrees=True),
-                    antennas=np.array([0.0, 0.0], dtype=float),
-                    body_yaw=0.0,
-                )
+                reachy_mini.set_target(**home_target)
             except Exception as set_exc:
                 logger.warning("dance: failed to snap home on exit: %s", set_exc)
+            return
+
+        try:
+            asset = resources.files("reachy_dance").joinpath("assets", "return_home.wav")
+            with resources.as_file(asset) as sound_path:
+                reachy_mini.media.play_sound(str(sound_path))
+        except Exception as exc:
+            logger.warning("dance: return-home arrival cue unavailable: %s", exc)
 
 
 if __name__ == "__main__":

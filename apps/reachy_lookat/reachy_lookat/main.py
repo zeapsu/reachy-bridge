@@ -4,10 +4,12 @@ import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from importlib import resources
 
 import cv2
 from reachy_mini import ReachyMini, ReachyMiniApp
 from reachy_mini.utils import create_head_pose
+from reachy_mini.utils.interpolation import InterpolationTechnique
 
 from reachy_lookat.gstreamer_nvidia_patch import apply_nvidia_unixfd_patch
 
@@ -35,7 +37,6 @@ def _warn_once(key: str, message: str, exc: Exception | None = None) -> None:
 CONTROL_PERIOD_SECONDS = 0.02
 SMOOTHING_ALPHA = 0.4
 TRACKING_RANGE_DEGREES = 30.0
-SLEEP_CUE_SETTLE_SECONDS = 1.0
 YAW_LIMITS = (-180.0, 180.0)
 PITCH_LIMITS = (-40.0, 40.0)
 
@@ -209,20 +210,31 @@ class ReachyLookat(ReachyMiniApp):
     @staticmethod
     def _return_to_neutral(reachy_mini: ReachyMini) -> None:
         """Recenter the head on exit so the robot isn't left stuck mid-motion (#9)."""
+        home_target = {
+            "head": create_head_pose(degrees=True),
+            "antennas": [-0.1745, 0.1745],
+            "body_yaw": 0.0,
+        }
         try:
-            # Daemon stays up, so the robot stays awake: return to the awake-ready
-            # home posture with the SDK wake_up emote (home + head gesture + wake_up.wav).
-            reachy_mini.wake_up()
-            time.sleep(SLEEP_CUE_SETTLE_SECONDS)  # let the wake_up.wav cue finish before the process exits/disconnects
+            reachy_mini.goto_target(
+                **home_target,
+                duration=2.4,
+                method=InterpolationTechnique.MIN_JERK,
+            )
         except Exception as exc:
-            logger.warning("lookat: graceful return-home (wake_up) unavailable; snapping home: %s", exc)
+            logger.warning("lookat: graceful return-home unavailable; snapping home: %s", exc)
             try:
-                reachy_mini.set_target(
-                    head=create_head_pose(degrees=True),
-                    body_yaw=0.0,
-                )
+                reachy_mini.set_target(**home_target)
             except Exception as set_exc:
                 logger.warning("lookat: failed to snap home on exit: %s", set_exc)
+            return
+
+        try:
+            asset = resources.files("reachy_lookat").joinpath("assets", "return_home.wav")
+            with resources.as_file(asset) as sound_path:
+                reachy_mini.media.play_sound(str(sound_path))
+        except Exception as exc:
+            logger.warning("lookat: return-home arrival cue unavailable: %s", exc)
 
 
 if __name__ == "__main__":
