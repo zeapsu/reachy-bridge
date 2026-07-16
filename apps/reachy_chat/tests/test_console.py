@@ -14,6 +14,10 @@ from fastapi.testclient import TestClient
 
 from reachy_chat.config import GEMINI_AVAILABLE_VOICES, config
 from reachy_chat.console import LocalStream
+from reachy_chat.openai_realtime import OpenaiRealtimeHandler
+from reachy_chat.gemini_live import GeminiLiveHandler
+import reachy_chat.gemini_live as gemini_mod
+from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.startup_settings import (
     StartupSettings,
     load_startup_settings_into_runtime,
@@ -132,10 +136,12 @@ def test_backend_config_persists_gemini_selection_and_status(
     monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
     monkeypatch.setattr(config, "MODEL_NAME", "gpt-realtime-2")
     monkeypatch.setattr(config, "OPENAI_API_KEY", None)
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", None)
     monkeypatch.setattr(config, "GEMINI_API_KEY", None)
     monkeypatch.setenv("BACKEND_PROVIDER", "openai")
     monkeypatch.setenv("MODEL_NAME", "gpt-realtime-2")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     app = FastAPI()
@@ -230,10 +236,12 @@ def test_backend_config_preserves_explicit_model_override_when_saving_key(
     monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
     monkeypatch.setattr(config, "MODEL_NAME", custom_model)
     monkeypatch.setattr(config, "OPENAI_API_KEY", None)
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", None)
     monkeypatch.setattr(config, "GEMINI_API_KEY", None)
     monkeypatch.setenv("BACKEND_PROVIDER", "openai")
     monkeypatch.setenv("MODEL_NAME", custom_model)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     app = FastAPI()
@@ -259,7 +267,7 @@ def test_backend_config_preserves_explicit_model_override_when_saving_key(
     assert "BACKEND_PROVIDER=openai" in env_text
     assert f"MODEL_NAME={custom_model}" in env_text
     assert "MODEL_NAME=gpt-realtime-2" not in env_text
-    assert "OPENAI_API_KEY=openai-test-key" in env_text
+    assert "OPENROUTER_API_KEY=openai-test-key" in env_text
 
 
 def test_backend_config_persists_local_hf_selection_and_status(
@@ -692,6 +700,646 @@ def test_personality_routes_apply_voice_accepts_query_param() -> None:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=1.0)
         loop.close()
+
+def test_personality_routes_current_voice_uses_active_handler_and_falls_back_on_lookup_error() -> None:
+    """The mounted current-voice callback should expose the active handler voice."""
+    app = FastAPI()
+    handler = MagicMock()
+    handler.get_current_voice = MagicMock(return_value="System Default")
+    mount_personality_routes(app, handler, lambda: None)
+
+    client = TestClient(app)
+    response = client.get("/voices/current")
+
+    assert response.status_code == 200
+    assert response.json() == {"voice": "System Default"}
+
+    handler.get_current_voice.side_effect = RuntimeError("handler unavailable")
+    fallback = client.get("/voices/current")
+    assert fallback.status_code == 200
+    assert fallback.json()["voice"]
+
+
+def test_personality_routes_list_uses_active_handler_empty_and_error_honestly() -> None:
+    """Empty handler catalogs stay empty while lookup failures use curated fallback."""
+    app = FastAPI()
+    handler = MagicMock()
+    handler.get_available_voices = AsyncMock(return_value=[])
+    mount_personality_routes(app, handler, lambda: None)
+    client = TestClient(app)
+
+    empty = client.get("/voices")
+    assert empty.status_code == 200
+    assert empty.json() == []
+
+    handler.get_available_voices.side_effect = RuntimeError("enumeration failed")
+    fallback = client.get("/voices")
+    assert fallback.status_code == 200
+    assert fallback.json()
+
+
+def test_personality_routes_openrouter_list_callback_error_uses_system_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenRouter list lookup failures must not fall back to OpenAI Realtime voices."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
+    app = FastAPI()
+    handler = MagicMock()
+    handler.get_available_voices = AsyncMock(side_effect=RuntimeError("enumeration failed"))
+    mount_personality_routes(app, handler, lambda: None)
+
+    response = TestClient(app).get("/voices")
+
+    assert response.status_code == 200
+    assert response.json() == ["System Default"]
+    assert not {"cedar", "marin"}.intersection(response.json())
+
+
+def test_personality_routes_openrouter_current_callback_error_uses_system_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenRouter current-voice lookup failures must use its platform-default marker."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
+    app = FastAPI()
+    handler = MagicMock()
+    handler.get_current_voice = MagicMock(side_effect=RuntimeError("current voice unavailable"))
+    mount_personality_routes(app, handler, lambda: None)
+
+    response = TestClient(app).get("/voices/current")
+
+    assert response.status_code == 200
+    assert response.json() == {"voice": "System Default"}
+
+
+def test_local_stream_mounts_voice_routes_before_async_loop_is_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cold settings pages use active OpenRouter/local handler voices, not curated names."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
+    app = FastAPI()
+    handler = MagicMock()
+    handler.get_available_voices = AsyncMock(return_value=["System Default", "local-os-voice"])
+    handler.get_current_voice = MagicMock(return_value="System Default")
+    stream = LocalStream(handler, MagicMock(), settings_app=app)
+
+    stream._init_settings_ui_if_needed()
+    stream._init_settings_ui_if_needed()
+    assert sum(getattr(route, "path", None) == "/voices" for route in app.routes) == 1
+    assert sum(getattr(route, "path", None) == "/voices/current" for route in app.routes) == 1
+    client = TestClient(app)
+
+    assert client.get("/").status_code == 200
+    assert client.get("/voices").json() == ["System Default", "local-os-voice"]
+    assert client.get("/voices/current").json() == {"voice": "System Default"}
+
+
+def test_personality_routes_apply_voice_requires_json_or_query_voice() -> None:
+    """A missing voice request is rejected with the documented 400 schema."""
+    app = FastAPI()
+    mount_personality_routes(app, MagicMock(), lambda: None)
+
+    response = TestClient(app).post("/voices/apply", json={})
+
+    assert response.status_code == 400
+    assert response.json() == {"ok": False, "error": "missing_voice"}
+
+
+def test_personality_routes_apply_voice_reports_unavailable_loop() -> None:
+    """Applying while the stream loop is not ready remains a retryable 503."""
+    app = FastAPI()
+    mount_personality_routes(app, MagicMock(), lambda: None)
+
+    response = TestClient(app).post("/voices/apply", json={"voice": "System Default"})
+
+    assert response.status_code == 503
+    assert response.json() == {"ok": False, "error": "loop_unavailable"}
+
+
+def test_personality_routes_apply_voice_reports_handler_exception() -> None:
+    """A handler exception must never be represented as a successful apply."""
+    app = FastAPI()
+    handler = MagicMock()
+    handler.change_voice = AsyncMock(side_effect=RuntimeError("voice backend failed"))
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        started.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=_run_loop, daemon=True)
+    thread.start()
+    started.wait(timeout=1.0)
+    try:
+        mount_personality_routes(app, handler, lambda: loop)
+        response = TestClient(app).post("/voices/apply", json={"voice": "local-os-voice"})
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1.0)
+        loop.close()
+
+    assert response.status_code == 500
+    assert response.json() == {"ok": False, "error": "voice backend failed"}
+
+
+def test_personality_routes_apply_voice_accepts_json_body(tmp_path: Path) -> None:
+    """The mounted production callback accepts the documented JSON apply body."""
+    app = FastAPI()
+    handler = MagicMock()
+    current = ["System Default"]
+
+    async def _change(voice: str) -> str:
+        current[0] = voice
+        return f"Voice changed to {voice}."
+
+    handler.change_voice = _change
+    handler.get_current_voice = MagicMock(side_effect=lambda: current[0])
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        started.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=_run_loop, daemon=True)
+    thread.start()
+    started.wait(timeout=1.0)
+    try:
+        stream = LocalStream(handler, MagicMock(), settings_app=app, instance_path=str(tmp_path))
+        stream._asyncio_loop = loop
+        stream._init_settings_ui_if_needed()
+        response = TestClient(app).post("/voices/apply", json={"voice": "local-os-voice"})
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1.0)
+        loop.close()
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "status": "Voice changed to local-os-voice."}
+    assert stream._voice_override == "local-os-voice"
+    assert (tmp_path / "startup_settings.json").exists()
+
+def test_mounted_production_voice_failure_returns_non_2xx(tmp_path: Path) -> None:
+    """A handler failure through LocalStream must remain an HTTP error."""
+    app = FastAPI()
+    handler = MagicMock()
+    handler.change_voice = AsyncMock(return_value="Voice change failed: local voice missing.")
+    handler.get_current_voice = MagicMock(return_value="System Default")
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        started.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=_run_loop, daemon=True)
+    thread.start()
+    started.wait(timeout=1.0)
+    try:
+        stream = LocalStream(handler, MagicMock(), settings_app=app, instance_path=str(tmp_path))
+        stream._asyncio_loop = loop
+        stream._init_settings_ui_if_needed()
+        response = TestClient(app).post("/voices/apply", json={"voice": "local-os-voice"})
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1.0)
+        loop.close()
+
+    assert response.status_code == 500
+    assert "local voice missing" in response.json()["error"]
+    assert not (tmp_path / "startup_settings.json").exists()
+
+
+def test_mounted_live_voice_rejection_preserves_current_and_persistence(tmp_path: Path) -> None:
+    """A real live-session rejection returns HTTP 500 without mutating state or disk."""
+    handler = OpenaiRealtimeHandler(
+        SimpleNamespace(
+            reachy_mini=MagicMock(),
+            movement_manager=MagicMock(),
+            camera_worker=MagicMock(),
+        ),
+        instance_path=str(tmp_path),
+        startup_voice="marin",
+    )
+    update = AsyncMock(side_effect=RuntimeError("session rejected voice"))
+    handler.connection = SimpleNamespace(session=SimpleNamespace(update=update))
+    app = FastAPI()
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        started.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=_run_loop, daemon=True)
+    thread.start()
+    started.wait(timeout=1.0)
+    try:
+        stream = LocalStream(
+            handler,
+            MagicMock(),
+            settings_app=app,
+            instance_path=str(tmp_path),
+            startup_voice="marin",
+        )
+        stream._asyncio_loop = loop
+        stream._init_settings_ui_if_needed()
+        response = TestClient(app).post("/voices/apply", json={"voice": "cedar"})
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1.0)
+        loop.close()
+
+    assert response.status_code == 500
+    assert "Voice change failed" in response.json()["error"]
+    assert handler._voice_override == "marin"
+    assert handler.get_current_voice() == "marin"
+    assert stream._voice_override == "marin"
+    assert not (tmp_path / "startup_settings.json").exists()
+    update.assert_awaited_once()
+
+
+def test_mounted_gemini_voice_success_requires_connected_replacement_and_persists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connected Gemini replacement is required before /voices/apply persists success."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "MODEL_NAME", "gemini-3.1-flash-live-preview")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "gemini-test-key")
+    handler = GeminiLiveHandler(
+        ToolDependencies(
+            reachy_mini=MagicMock(),
+            movement_manager=MagicMock(),
+        ),
+        instance_path=str(tmp_path),
+        startup_voice="Orus",
+    )
+    startup_calls = 0
+    initial_ready = threading.Event()
+
+    async def _start_up_and_connect() -> None:
+        nonlocal startup_calls
+        startup_calls += 1
+        handler._stop_event.clear()
+        handler.session = object()
+        callback = handler._startup_connection_callback
+        if callback is not None:
+            callback()
+        if startup_calls == 1:
+            initial_ready.set()
+        while not handler._stop_event.is_set():
+            await asyncio.sleep(0.01)
+
+    handler.start_up = _start_up_and_connect
+    app = FastAPI()
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        started.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=_run_loop, daemon=True)
+    thread.start()
+    started.wait(timeout=1.0)
+    stream = LocalStream(
+        handler,
+        MagicMock(),
+        settings_app=app,
+        instance_path=str(tmp_path),
+        startup_voice="Orus",
+    )
+    stream._asyncio_loop = loop
+    stream._init_settings_ui_if_needed()
+    startup_future = asyncio.run_coroutine_threadsafe(stream._run_handler_startup_loop(), loop)
+    try:
+        assert initial_ready.wait(timeout=1.0)
+        response = TestClient(app).post("/voices/apply", json={"voice": "Zephyr"})
+        assert response.status_code == 200
+        assert response.json() == {"ok": True, "status": "Voice changed to Zephyr."}
+        assert startup_calls == 2
+        assert stream._startup_generation is not None
+        assert stream._startup_generation.generation == 2
+    finally:
+        stream._stop_event.set()
+        try:
+            startup_future.result(timeout=1.0)
+        except Exception:
+            startup_future.cancel()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1.0)
+        loop.close()
+
+    assert handler.get_current_voice() == "Zephyr"
+    assert stream._voice_override == "Zephyr"
+    settings = load_startup_settings_into_runtime(tmp_path)
+    assert settings.voice == "Zephyr"
+
+
+def test_mounted_gemini_voice_timeout_hanging_close_preserves_previous_and_does_not_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hanging old-session close must return a route error without mutating voice state."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "MODEL_NAME", "gemini-3.1-flash-live-preview")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setattr(gemini_mod, "GEMINI_RESTART_TIMEOUT_SECONDS", 0.01)
+    handler = GeminiLiveHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()),
+        instance_path=str(tmp_path),
+        startup_voice="Orus",
+    )
+    initial_ready = threading.Event()
+    never_close = asyncio.Event()
+    close_started = threading.Event()
+
+    async def _start_up_and_connect() -> None:
+        handler._stop_event.clear()
+        handler.session = object()
+        callback = handler._startup_connection_callback
+        assert callback is not None
+        callback()
+        initial_ready.set()
+        await asyncio.Event().wait()
+
+    async def _hanging_shutdown() -> None:
+        close_started.set()
+        await never_close.wait()
+
+    handler.start_up = _start_up_and_connect
+    handler.shutdown = _hanging_shutdown
+    app = FastAPI()
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        started.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=_run_loop, daemon=True)
+    thread.start()
+    started.wait(timeout=1.0)
+    stream = LocalStream(handler, MagicMock(), settings_app=app, instance_path=str(tmp_path), startup_voice="Orus")
+    stream._asyncio_loop = loop
+    stream._init_settings_ui_if_needed()
+    startup_future = asyncio.run_coroutine_threadsafe(stream._run_handler_startup_loop(), loop)
+    try:
+        assert initial_ready.wait(timeout=1.0)
+        response = TestClient(app).post("/voices/apply", json={"voice": "Zephyr"})
+        assert response.status_code == 500
+        assert close_started.is_set()
+        assert handler.get_current_voice() == "Orus"
+        assert not (tmp_path / "startup_settings.json").exists()
+    finally:
+        handler.shutdown = AsyncMock()
+        stream._stop_event.set()
+        try:
+            startup_future.result(timeout=1.0)
+        except Exception:
+            startup_future.cancel()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1.0)
+        loop.close()
+
+@pytest.mark.asyncio
+async def test_local_stream_hanging_old_shutdown_retries_after_failed_voice_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed replacement must clear stale ownership so the supervisor can retry once."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "MODEL_NAME", "gemini-3.1-flash-live-preview")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setattr(gemini_mod, "GEMINI_RESTART_TIMEOUT_SECONDS", 0.01)
+    handler = GeminiLiveHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()),
+        instance_path=str(tmp_path),
+        startup_voice="Orus",
+    )
+    stream = LocalStream(handler, MagicMock(), instance_path=str(tmp_path), startup_voice="Orus")
+    stream._backend_retry_delay = 0.01
+    initial_connected = asyncio.Event()
+    replacement_connected = asyncio.Event()
+    first_shutdown_started = asyncio.Event()
+    shutdown_calls = 0
+    startup_calls = 0
+
+    async def _fake_start_up() -> None:
+        nonlocal startup_calls
+        startup_calls += 1
+        handler._stop_event.clear()
+        handler.session = object()
+        callback = handler._startup_connection_callback
+        assert callback is not None
+        callback()
+        if startup_calls == 1:
+            initial_connected.set()
+        else:
+            replacement_connected.set()
+        await asyncio.Event().wait()
+
+    async def _hanging_shutdown() -> None:
+        nonlocal shutdown_calls
+        shutdown_calls += 1
+        if shutdown_calls == 1:
+            first_shutdown_started.set()
+            await asyncio.Event().wait()
+
+    async def _restored_shutdown() -> None:
+        nonlocal shutdown_calls
+        shutdown_calls += 1
+
+    handler.start_up = _fake_start_up
+    handler.shutdown = _hanging_shutdown
+    startup_task = asyncio.create_task(stream._run_handler_startup_loop())
+    try:
+        await asyncio.wait_for(initial_connected.wait(), timeout=1.0)
+
+        with pytest.raises(RuntimeError, match="Voice change failed"):
+            await stream.change_voice("Zephyr")
+
+        assert first_shutdown_started.is_set()
+        assert handler.get_current_voice() == "Orus"
+        assert stream._voice_override == "Orus"
+        assert not (tmp_path / "startup_settings.json").exists()
+        assert stream._startup_generation is None
+        assert stream._startup_retry_pending is True
+
+        handler.shutdown = _restored_shutdown
+        await asyncio.wait_for(replacement_connected.wait(), timeout=1.0)
+        await asyncio.sleep(0.05)
+
+        assert startup_calls == 2
+        assert stream._startup_generation is not None
+        assert stream._startup_generation.generation == 2
+        assert stream._startup_retry_pending is False
+        assert not startup_task.done()
+    finally:
+        stream._stop_event.set()
+        await asyncio.wait_for(startup_task, timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_local_stream_gemini_replacement_owns_generations_and_ignores_stale_connect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One owner must serialize startup children and await the replacement generation."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "MODEL_NAME", "gemini-3.1-flash-live-preview")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "gemini-test-key")
+    handler = GeminiLiveHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()),
+        instance_path=str(tmp_path),
+        startup_voice="Orus",
+    )
+    stream = LocalStream(handler, MagicMock(), instance_path=str(tmp_path), startup_voice="Orus")
+    stream._backend_retry_delay = 10.0
+    initial_connected = asyncio.Event()
+    replacement_connected = asyncio.Event()
+    callbacks: list[Any] = []
+    startup_calls = 0
+    active_startups = 0
+    max_active_startups = 0
+
+    async def _fake_start_up() -> None:
+        nonlocal startup_calls, active_startups, max_active_startups
+        startup_calls += 1
+        active_startups += 1
+        max_active_startups = max(max_active_startups, active_startups)
+        handler._stop_event.clear()
+        handler.session = object()
+        callback = handler._startup_connection_callback
+        assert callback is not None
+        callbacks.append(callback)
+        try:
+            if startup_calls == 1:
+                callback()
+                initial_connected.set()
+            else:
+                callbacks[0]()
+                await asyncio.sleep(0.02)
+                callback()
+                replacement_connected.set()
+            await asyncio.Event().wait()
+        finally:
+            active_startups -= 1
+
+    handler.start_up = _fake_start_up
+    startup_task = asyncio.create_task(stream._run_handler_startup_loop())
+    try:
+        await asyncio.wait_for(initial_connected.wait(), timeout=1.0)
+        status = await stream.change_voice("Zephyr")
+        assert status == "Voice changed to Zephyr."
+        await asyncio.wait_for(replacement_connected.wait(), timeout=1.0)
+        await asyncio.sleep(0.05)
+        assert startup_calls == 2
+        assert max_active_startups == 1
+        assert stream._startup_generation is not None
+        assert stream._startup_generation.generation == 2
+        assert handler.get_current_voice() == "Zephyr"
+        assert load_startup_settings_into_runtime(tmp_path).voice == "Zephyr"
+    finally:
+        stream._stop_event.set()
+        await asyncio.wait_for(startup_task, timeout=1.0)
+
+
+
+@pytest.mark.asyncio
+async def test_local_stream_gemini_replacement_failure_is_not_persisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replacement startup failure must cross the HTTP success boundary honestly."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "MODEL_NAME", "gemini-3.1-flash-live-preview")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "gemini-test-key")
+    handler = GeminiLiveHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()),
+        instance_path=str(tmp_path),
+        startup_voice="Orus",
+    )
+    stream = LocalStream(handler, MagicMock(), instance_path=str(tmp_path), startup_voice="Orus")
+    stream._backend_retry_delay = 10.0
+    initial_connected = asyncio.Event()
+    startup_calls = 0
+
+    async def _fake_start_up() -> None:
+        nonlocal startup_calls
+        startup_calls += 1
+        handler._stop_event.clear()
+        if startup_calls == 1:
+            handler.session = object()
+            callback = handler._startup_connection_callback
+            assert callback is not None
+            callback()
+            initial_connected.set()
+            await asyncio.Event().wait()
+        raise RuntimeError("replacement failed")
+
+    handler.start_up = _fake_start_up
+    startup_task = asyncio.create_task(stream._run_handler_startup_loop())
+    try:
+        await asyncio.wait_for(initial_connected.wait(), timeout=1.0)
+        with pytest.raises(RuntimeError, match="Voice change failed"):
+            await stream.change_voice("Zephyr")
+        assert handler.get_current_voice() == "Orus"
+        assert stream._voice_override == "Orus"
+        assert not (tmp_path / "startup_settings.json").exists()
+        assert startup_calls == 2
+    finally:
+        stream._stop_event.set()
+        await asyncio.wait_for(startup_task, timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_local_stream_voice_failure_is_not_persisted_or_reported_success() -> None:
+    """Failed handler status strings cross the LocalStream success boundary honestly."""
+    handler = MagicMock()
+    handler.change_voice = AsyncMock(return_value="Voice change failed: local voice missing.")
+    handler.get_current_voice = MagicMock(return_value="System Default")
+    stream = LocalStream(handler, MagicMock())
+
+    with pytest.raises(RuntimeError, match="local voice missing"):
+        await stream.change_voice("local-os-voice")
+
+    assert stream._voice_override is None
+
+
+@pytest.mark.asyncio
+async def test_local_stream_voice_persists_and_restart_handler_receives_saved_voice(tmp_path: Path) -> None:
+    """Applying through LocalStream writes startup settings consumed by a fresh handler."""
+    handler = MagicMock()
+    handler.change_voice = AsyncMock(return_value="Voice changed to local-os-voice.")
+    handler.get_current_voice = MagicMock(return_value="local-os-voice")
+    stream = LocalStream(handler, MagicMock(), instance_path=str(tmp_path))
+
+    await stream.change_voice("local-os-voice")
+
+    settings = load_startup_settings_into_runtime(tmp_path)
+    assert settings.voice == "local-os-voice"
+    assert (tmp_path / "startup_settings.json").exists()
+
+    from reachy_chat.openrouter_chat import OpenRouterChatHandler
+
+    deps = SimpleNamespace(reachy_mini=MagicMock(), camera_worker=MagicMock())
+    fresh_handler = OpenRouterChatHandler(
+        deps,
+        instance_path=str(tmp_path),
+        startup_voice=settings.voice,
+    )
+    try:
+        assert fresh_handler.get_current_voice() == "local-os-voice"
+    finally:
+        fresh_handler._blocking_executor.shutdown(wait=True)
 
 
 def test_personality_routes_persist_startup_with_voice_override() -> None:

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 import os
+import re
 import sys
 import time
+import base64
 import asyncio
 import logging
 import tempfile
@@ -17,16 +19,30 @@ from openai import AsyncOpenAI
 from fastrtc import AdditionalOutputs
 from numpy.typing import NDArray
 
-from reachy_chat.config import OPENAI_BACKEND, config
+from reachy_chat.config import OPENAI_BACKEND, OPENROUTER_SYSTEM_DEFAULT_VOICE, config
+from reachy_chat.address_gate import AddressGate
 from reachy_chat.prompts import get_session_instructions
 from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.conversation_handler import AudioFrame, HandlerOutput, ConversationHandler
+from reachy_chat.camera_frame_encoding import encode_bgr_frame_as_jpeg
 
 
 logger = logging.getLogger(__name__)
 
 Role = Literal["user", "assistant"]
 Message = dict[str, str]
+
+
+_VISUAL_REQUEST_PATTERN = re.compile(
+    r"\b(?:see|look|looking|this|that|read|colou?r|describe|holding|camera)\b"
+    r"|\bin\s+front\s+of\b|\bshow\s+you\b|\bwhat\s+is\b",
+    re.IGNORECASE,
+)
+
+
+def looks_visual(transcript: str) -> bool:
+    """Return whether a transcript conservatively asks about the camera view."""
+    return _VISUAL_REQUEST_PATTERN.search(transcript) is not None
 
 
 class OpenRouterChatHandler(ConversationHandler):
@@ -41,7 +57,7 @@ class OpenRouterChatHandler(ConversationHandler):
     MAX_HISTORY_MESSAGES = 10
     OUTPUT_CHUNK_SAMPLES = 3_200
     FALLBACK_REPLY = "Sorry, I couldn't answer that just now."
-    SYSTEM_DEFAULT_VOICE = "system-default"
+    SYSTEM_DEFAULT_VOICE = OPENROUTER_SYSTEM_DEFAULT_VOICE
 
     def __init__(
         self,
@@ -56,6 +72,7 @@ class OpenRouterChatHandler(ConversationHandler):
             input_sample_rate=self.SAMPLE_RATE,
         )
         self.deps = deps
+        self.address_gate = AddressGate(self.deps.reachy_mini, self.deps.camera_worker)
         self.instance_path = instance_path
         self.output_queue: asyncio.Queue[AudioFrame | AdditionalOutputs] = asyncio.Queue()
         self.conversation_history: list[Message] = []
@@ -247,12 +264,30 @@ class OpenRouterChatHandler(ConversationHandler):
                 logger.debug("Ignoring empty transcription")
                 return
 
+            address_result = self.address_gate.semantic_check(transcript)
+            logger.debug(
+                "Address gate semantic check: open=%s confidence=%.1f reason=%s",
+                address_result.is_open,
+                address_result.confidence,
+                address_result.reason,
+            )
+            if not address_result.is_open:
+                logger.info(
+                    "filtered_overheard_speech confidence=%.1f reason=%s transcript=%r",
+                    address_result.confidence,
+                    address_result.reason,
+                    transcript,
+                )
+                return
+
             self._record_message("user", transcript)
+            want_vision = looks_visual(transcript)
+            image_jpeg = await self._capture_frame_jpeg() if want_vision else None
             await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
             self._mark_activity("user_transcription_completed")
 
             try:
-                reply = await self._request_completion()
+                reply = await self._request_completion(image_jpeg=image_jpeg)
             except Exception as exc:
                 logger.exception("OpenRouter chat completion failed: %s", exc)
                 reply = self.FALLBACK_REPLY
@@ -276,7 +311,23 @@ class OpenRouterChatHandler(ConversationHandler):
             self._processing_turn = False
             self._reset_input_buffer()
 
-    async def _request_completion(self) -> str:
+    async def _capture_frame_jpeg(self) -> bytes | None:
+        """Capture and encode the latest camera frame without failing the turn."""
+        try:
+            camera_worker = self.deps.camera_worker
+            if camera_worker is None:
+                logger.debug("OpenRouter vision requested without a camera worker")
+                return None
+            frame = camera_worker.get_latest_frame()
+            if frame is None:
+                logger.debug("OpenRouter vision requested without an available camera frame")
+                return None
+            return cast(bytes, await self._run_blocking(encode_bgr_frame_as_jpeg, frame))
+        except Exception:
+            logger.debug("Unable to capture camera frame for OpenRouter", exc_info=True)
+            return None
+
+    async def _request_completion(self, image_jpeg: bytes | None = None) -> str:
         client = self._ensure_client()
         if self._system_prompt is None:
             self._system_prompt = get_session_instructions(self.instance_path)
@@ -284,9 +335,21 @@ class OpenRouterChatHandler(ConversationHandler):
             {"role": "system", "content": self._system_prompt},
             *self.conversation_history,
         ]
+        request_messages: list[Message] | list[dict[str, Any]] = messages
+        if image_jpeg is not None and messages[-1]["role"] == "user":
+            request_messages = [message.copy() for message in messages]
+            original_text = messages[-1]["content"]
+            encoded_image = base64.b64encode(image_jpeg).decode("ascii")
+            request_messages[-1]["content"] = [
+                {"type": "text", "text": original_text},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"},
+                },
+            ]
         response = await client.chat.completions.create(
             model=config.MODEL_NAME,
-            messages=messages,
+            messages=request_messages,
         )
         content = response.choices[0].message.content
         if not isinstance(content, str) or not content.strip():
@@ -300,15 +363,20 @@ class OpenRouterChatHandler(ConversationHandler):
     async def _transcribe(self, audio: NDArray[np.float32]) -> str:
         return cast(str, await self._run_blocking(self._transcribe_blocking, audio))
 
-    def _transcribe_blocking(self, audio: NDArray[np.float32]) -> str:
-        if self._whisper_model is None:
-            from faster_whisper import WhisperModel
+    def ensure_whisper_loaded(self) -> None:
+        """Ensure the faster-whisper model is loaded (idempotent)."""
+        if self._whisper_model is not None:
+            return  # Already loaded
+        from faster_whisper import WhisperModel
 
-            model_name = os.getenv("WHISPER_MODEL", "base.en")
-            device = os.getenv("WHISPER_DEVICE", "cpu")
-            compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
-            logger.info("Loading faster-whisper model %s on %s", model_name, device)
-            self._whisper_model = WhisperModel(model_name, device=device, compute_type=compute_type)
+        model_name = os.getenv("WHISPER_MODEL", "base.en")
+        device = os.getenv("WHISPER_DEVICE", "cpu")
+        compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+        logger.info("Loading faster-whisper model %s on %s", model_name, device)
+        self._whisper_model = WhisperModel(model_name, device=device, compute_type=compute_type)
+
+    def _transcribe_blocking(self, audio: NDArray[np.float32]) -> str:
+        self.ensure_whisper_loaded()
         segments, _ = self._whisper_model.transcribe(
             audio,
             beam_size=5,
@@ -550,4 +618,4 @@ class OpenRouterChatHandler(ConversationHandler):
                 break
 
 
-__all__ = ["OpenRouterChatHandler"]
+__all__ = ["OpenRouterChatHandler", "looks_visual"]

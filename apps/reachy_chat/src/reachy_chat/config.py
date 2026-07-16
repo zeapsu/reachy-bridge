@@ -11,7 +11,7 @@ from dotenv import find_dotenv, load_dotenv
 
 # Locked profile: set to a profile name (e.g., "astronomer") to lock the app
 # to that profile and disable all profile switching. Leave as None for normal behavior.
-LOCKED_PROFILE: str | None = "_reachy_chat_locked_profile"
+LOCKED_PROFILE: str | None = None
 PROJECT_ROOT = Path(__file__).parents[2].resolve()
 
 
@@ -62,6 +62,7 @@ AVAILABLE_VOICES: list[str] = [
     "verse",
 ]
 OPENAI_DEFAULT_VOICE = "cedar"
+OPENROUTER_SYSTEM_DEFAULT_VOICE = "System Default"
 
 # Qwen3-TTS CustomVoice speaker catalog from the deployed Hugging Face backend.
 HF_AVAILABLE_VOICES: list[str] = [
@@ -89,11 +90,12 @@ GEMINI_AVAILABLE_VOICES: list[str] = [
 ]
 
 OPENAI_BACKEND = "openai"
+OPENAI_REALTIME_BACKEND = "openai_realtime"
 GEMINI_BACKEND = "gemini"
 HF_BACKEND = "huggingface"
-DEFAULT_BACKEND_PROVIDER = OPENAI_BACKEND
+DEFAULT_BACKEND_PROVIDER = OPENAI_REALTIME_BACKEND
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+OPENROUTER_DEFAULT_MODEL = "minimax/minimax-m3"
 HF_REALTIME_CONNECTION_MODE_ENV = "HF_REALTIME_CONNECTION_MODE"
 HF_REALTIME_WS_URL_ENV = "HF_REALTIME_WS_URL"
 REALTIME_TRANSCRIPTION_LANGUAGE_ENV = "REALTIME_TRANSCRIPTION_LANGUAGE"
@@ -119,17 +121,20 @@ class HFBackendDefaults:
 
 HF_DEFAULTS = HFBackendDefaults()
 DEFAULT_MODEL_NAME_BY_BACKEND = {
+    OPENAI_REALTIME_BACKEND: "gpt-realtime",
     OPENAI_BACKEND: OPENROUTER_DEFAULT_MODEL,
     GEMINI_BACKEND: "gemini-3.1-flash-live-preview",
     HF_BACKEND: HF_DEFAULTS.model_name,
 }
 BACKEND_LABEL_BY_PROVIDER = {
+    OPENAI_REALTIME_BACKEND: "OpenAI Realtime",
     OPENAI_BACKEND: "OpenRouter Chat",
     GEMINI_BACKEND: "Gemini Live",
     HF_BACKEND: "Hugging Face",
 }
 DEFAULT_VOICE_BY_BACKEND = {
-    OPENAI_BACKEND: OPENAI_DEFAULT_VOICE,
+    OPENAI_REALTIME_BACKEND: OPENAI_DEFAULT_VOICE,
+    OPENAI_BACKEND: OPENROUTER_SYSTEM_DEFAULT_VOICE,
     GEMINI_BACKEND: "Kore",
     HF_BACKEND: HF_DEFAULTS.voice,
 }
@@ -166,7 +171,9 @@ def _resolve_model_name(
     if normalized_backend == HF_BACKEND:
         return DEFAULT_MODEL_NAME_BY_BACKEND[HF_BACKEND]
 
-    if normalized_backend == OPENAI_BACKEND:
+    if normalized_backend == OPENAI_REALTIME_BACKEND:
+        candidate = (os.getenv("OPENAI_REALTIME_MODEL") or model_name or "").strip()
+    elif normalized_backend == OPENAI_BACKEND:
         candidate = (os.getenv("OPENROUTER_MODEL") or model_name or "").strip()
     else:
         candidate = (model_name or "").strip()
@@ -348,15 +355,24 @@ _skip_dotenv = _env_flag("REACHY_MINI_SKIP_DOTENV", default=False)
 if _skip_dotenv:
     logger.info("Skipping .env loading because REACHY_MINI_SKIP_DOTENV is set")
 else:
-    # Locate .env file (search upward from current working directory)
-    dotenv_path = find_dotenv(usecwd=True)
+    # First, try loading from app root (.../apps/reachy_chat/.env) deterministically
+    # regardless of current working directory. PROJECT_ROOT = Path(__file__).parents[2]
+    app_root_dotenv = PROJECT_ROOT / ".env"
+    dotenv_path = None
 
-    if dotenv_path:
-        # Load .env and override environment variables
+    if app_root_dotenv.exists():
+        dotenv_path = str(app_root_dotenv)
         load_dotenv(dotenv_path=dotenv_path, override=True)
         logger.info(f"Configuration loaded from {dotenv_path}")
     else:
-        logger.warning("No .env file found, using environment variables")
+        # Fallback: search upward from current working directory
+        fallback_dotenv = find_dotenv(usecwd=True)
+        if fallback_dotenv:
+            dotenv_path = fallback_dotenv
+            load_dotenv(dotenv_path=dotenv_path, override=True)
+            logger.info(f"Configuration loaded from {dotenv_path}")
+        else:
+            logger.warning("No .env file found, using environment variables")
 
 
 class Config:
@@ -364,7 +380,7 @@ class Config:
 
     # Required (one of these depending on BACKEND_PROVIDER)
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-    OPENAI_API_KEY = OPENROUTER_API_KEY  # Backward-compatible internal name for the OpenAI-compatible handler.
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     OPENROUTER_BASE_URL = OPENROUTER_BASE_URL
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
@@ -485,7 +501,7 @@ config = Config()
 def refresh_runtime_config_from_env() -> None:
     """Refresh mutable runtime config fields from the current environment."""
     config.OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-    config.OPENAI_API_KEY = config.OPENROUTER_API_KEY
+    config.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     config.GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     config.BACKEND_PROVIDER = _normalize_backend_provider(
         os.getenv("BACKEND_PROVIDER"),
@@ -528,6 +544,8 @@ def get_backend_label(backend: str | None = None) -> str:
 def get_available_voices_for_backend(backend: str | None = None) -> list[str]:
     """Return the curated voice list for a backend selector value."""
     normalized_backend = get_backend_choice() if backend is None else _normalize_backend_provider(backend)
+    if normalized_backend == OPENAI_BACKEND:
+        return [OPENROUTER_SYSTEM_DEFAULT_VOICE]
     if normalized_backend == GEMINI_BACKEND:
         return list(GEMINI_AVAILABLE_VOICES)
     if normalized_backend == HF_BACKEND:

@@ -9,7 +9,7 @@ hardware is connected; the same code runs on the real robot by switching the dae
 ## Layout
 
 ```
-~/reachy/
+~/reachy-console/
 ├── .venv/                       # uv venv (Python 3.12, reachy-mini 1.8.3, mujoco 3.3.7)  [gitignored]
 ├── hello.py                     # SDK smoke test (antenna wiggle)
 ├── apps/
@@ -27,15 +27,15 @@ hardware is connected; the same code runs on the real robot by switching the dae
 ```bash
 # 1. Start the daemon
 #    Simulation (no robot, headless — this Mac has no MuJoCo GUI):
-~/reachy/.venv/bin/python -m reachy_mini.daemon.app.main --sim --headless
+~/reachy-console/.venv/bin/python -m reachy_mini.daemon.app.main --sim --headless
 #    Real hardware (Lite over USB):
 reachy-mini-daemon
 
 # 2. Smoke test
-~/reachy/.venv/bin/python ~/reachy/hello.py
+~/reachy-console/.venv/bin/python ~/reachy-console/hello.py
 
 # 3. Run an app
-cd ~/reachy/apps/reachy_dance && ~/reachy/.venv/bin/python -m reachy_dance.main
+cd ~/reachy-console/apps/reachy_dance && ~/reachy-console/.venv/bin/python -m reachy_dance.main
 ```
 
 Dashboard + API: <http://localhost:8000/> · API docs: <http://localhost:8000/docs>

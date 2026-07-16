@@ -1,5 +1,6 @@
 """Entrypoint for the Reachy Mini conversation app."""
 
+import os
 import sys
 import time
 import asyncio
@@ -7,11 +8,15 @@ import argparse
 import threading
 from typing import Optional
 from pathlib import Path
+from importlib import resources
 from collections.abc import Callable, Awaitable
 
 from fastapi import FastAPI, Request, Response
 
 from reachy_mini import ReachyMini, ReachyMiniApp
+from reachy_mini.utils import create_head_pose
+from reachy_mini.utils.interpolation import InterpolationTechnique
+from reachy_chat.gstreamer_nvidia_patch import apply_nvidia_unixfd_patch
 from reachy_chat.utils import (
     CameraVisionInitializationError,
     parse_args,
@@ -19,6 +24,39 @@ from reachy_chat.utils import (
     initialize_camera_and_vision,
     log_connection_troubleshooting,
 )
+
+# Apply NVIDIA Jetson GStreamer plugin patch before any SDK initialization
+apply_nvidia_unixfd_patch()
+
+
+
+def _return_home(robot: ReachyMini, logger) -> None:
+    home_target = {
+        "head": create_head_pose(degrees=True),
+        "antennas": [-0.1745, 0.1745],
+        "body_yaw": 0.0,
+    }
+    try:
+        robot.goto_target(
+            **home_target,
+            duration=2.4,
+            method=InterpolationTechnique.MIN_JERK,
+        )
+    except Exception as exc:
+        logger.warning("chat: graceful return-home unavailable; snapping home: %s", exc)
+        try:
+            robot.set_target(**home_target)
+        except Exception as set_exc:
+            logger.warning("chat: failed to snap home on exit: %s", set_exc)
+        return
+
+    try:
+        asset = resources.files("reachy_chat").joinpath("assets", "return_home.wav")
+        with resources.as_file(asset) as sound_path:
+            robot.media.play_sound(str(sound_path))
+            time.sleep(0.5)
+    except Exception as exc:
+        logger.warning("chat: return-home arrival cue unavailable: %s", exc)
 
 
 def main() -> None:
@@ -48,6 +86,7 @@ def run(
     from reachy_chat.moves import MovementManager
     from reachy_chat.config import (
         HF_BACKEND,
+        OPENAI_REALTIME_BACKEND,
         HF_LOCAL_CONNECTION_MODE,
         config,
         is_gemini_model,
@@ -187,6 +226,18 @@ def run(
                 instance_path=instance_path,
                 startup_voice=startup_voice,
             )
+        if config.BACKEND_PROVIDER == OPENAI_REALTIME_BACKEND:
+            from reachy_chat.openai_realtime import OpenaiRealtimeHandler
+
+            logger.info(
+                "Using %s via OpenaiRealtimeHandler",
+                get_backend_label(config.BACKEND_PROVIDER),
+            )
+            return OpenaiRealtimeHandler(
+                deps,
+                instance_path=instance_path,
+                startup_voice=startup_voice,
+            )
 
         from reachy_chat.openrouter_chat import OpenRouterChatHandler
 
@@ -261,6 +312,32 @@ def run(
         threading.Thread(target=poll_stop_event, daemon=True).start()
 
     try:
+        # Pre-warm the whisper model SYNCHRONOUSLY (OpenRouter handler only) before
+        # signalling readiness, so the controller's "loading" spinner stays up through
+        # the (first-run ~200 MB) model load instead of flipping to "running" while the
+        # model is still loading. A load failure degrades gracefully — whisper then
+        # loads lazily on the first utterance, and we still signal ready (a chat that
+        # can't load whisper is still "running", just degraded). This runs inside the
+        # try so a stop (SIGINT) during the load still reaches the shutdown finally; and
+        # because launch() (which drives transcription) only starts after this returns,
+        # there is no concurrent second load. The controller's 60 s readiness ceiling
+        # covers a cold first-run download that runs longer.
+        if hasattr(handler, "ensure_whisper_loaded"):
+            try:
+                handler.ensure_whisper_loaded()
+                logger.info("Whisper model pre-warmed")
+            except Exception as e:
+                logger.warning("Failed to pre-warm whisper model: %s", e)
+
+        # Signal readiness (touch the ready file) only after whisper is loaded.
+        _ready_file = os.getenv("REACHY_READY_FILE")
+        if _ready_file:
+            try:
+                Path(_ready_file).touch()
+                logger.debug("Signalled app readiness via %s", _ready_file)
+            except Exception as exc:
+                logger.debug("could not write readiness file: %s", exc)
+
         stream_manager.launch()
     except KeyboardInterrupt:
         logger.info("Keyboard interruption in main thread... closing server.")
@@ -268,11 +345,15 @@ def run(
         if own_ui_server is not None:
             own_ui_server.should_exit = True
 
-        movement_manager.stop()
+        try:
+            movement_manager.stop()
+        except Exception as e:
+            logger.debug(f"Error stopping movement manager during shutdown: {e}")
         try:
             robot.disable_wobbling()
         except Exception as e:
             logger.debug(f"Error disabling wobbling during shutdown: {e}")
+        _return_home(robot, logger)
         if camera_worker:
             camera_worker.stop()
 
@@ -290,6 +371,11 @@ def run(
 
 class ReachyChat(ReachyMiniApp):  # type: ignore[misc]
     """Reachy Mini Apps entry point for the conversation app."""
+
+    # Default to LOCAL media backend; Lite daemon doesn't expose WebRTC signalling (:8443),
+    # so auto-detect's WebRTC fallback would crash. Override via REACHY_MINI_MEDIA_BACKEND env var
+    # to use WebRTC for wireless robot setups.
+    request_media_backend = os.getenv("REACHY_MINI_MEDIA_BACKEND", "local")
 
     custom_app_url = "http://0.0.0.0:7860/"
     dont_start_webserver = False

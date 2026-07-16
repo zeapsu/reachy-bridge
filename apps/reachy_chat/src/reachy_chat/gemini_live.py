@@ -16,6 +16,7 @@ import random
 import asyncio
 import logging
 from typing import Any, Dict, List, Final, Tuple, Literal, Optional
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 
 import numpy as np
@@ -31,6 +32,7 @@ from reachy_chat.config import (
     DEFAULT_VOICE_BY_BACKEND,
     config,
 )
+from reachy_chat.address_gate import AddressGate
 from reachy_chat.prompts import get_session_voice, get_session_instructions
 from reachy_chat.idle_policy import start_idle_tool_call
 from reachy_chat.tools.core_tools import (
@@ -47,6 +49,9 @@ from reachy_chat.tools.background_tool_manager import (
 
 
 logger = logging.getLogger(__name__)
+
+MIC_GATE_CHECK_INTERVAL_SECONDS: Final = 0.2
+GEMINI_RESTART_TIMEOUT_SECONDS: Final = 5.0
 
 GEMINI_INPUT_SAMPLE_RATE: Final[int] = 16000
 GEMINI_OUTPUT_SAMPLE_RATE: Final[int] = 24000
@@ -156,6 +161,7 @@ class GeminiLiveHandler(ConversationHandler):
         )
 
         self.deps = deps
+        self.address_gate = AddressGate(self.deps.reachy_mini, self.deps.camera_worker)
         self.instance_path = instance_path
         self._voice_override: str | None = _resolve_gemini_startup_voice(startup_voice)
 
@@ -169,9 +175,10 @@ class GeminiLiveHandler(ConversationHandler):
         # Track API key source (env vs textbox)
         self._key_source: Literal["env", "textbox"] = "env"
         self._provided_api_key: str | None = None
-
         # Internal lifecycle flags
         self._connected_event: asyncio.Event = asyncio.Event()
+        self._startup_owner: Callable[[float | None], Awaitable[None]] | None = None
+        self._startup_connection_callback: Callable[[], None] | None = None
 
         # Background tool manager
         self.tool_manager = BackgroundToolManager()
@@ -181,6 +188,9 @@ class GeminiLiveHandler(ConversationHandler):
         self._pending_user_transcript_chunks: list[str] = []
         self._pending_assistant_transcript_chunks: list[str] = []
         self._listening_state = False
+        self._assistant_is_speaking = False
+        self._last_gate_check_time = 0.0
+        self._last_gate_decision: bool | None = None
 
     def copy(self) -> "GeminiLiveHandler":
         """Return a fresh handler, preserving deps and voice override."""
@@ -190,12 +200,47 @@ class GeminiLiveHandler(ConversationHandler):
             startup_voice=self._voice_override,
         )
 
+    def set_startup_owner(
+        self,
+        owner: Callable[[float | None], Awaitable[None]] | None,
+    ) -> None:
+        """Install LocalStream's sole owner for startup generation replacement."""
+        self._startup_owner = owner
+
+    def set_startup_connection_callback(self, callback: Callable[[], None] | None) -> None:
+        """Install a callback captured by the current start_up generation."""
+        self._startup_connection_callback = callback
+
     def _set_listening_state(self, listening: bool) -> None:
         """Avoid queueing redundant listening-state updates."""
         if self._listening_state == listening:
             return
         self._listening_state = listening
         self.deps.movement_manager.set_listening(listening)
+
+    def _should_forward_mic_frame(self) -> bool:
+        """Return whether mic audio should reach Gemini, failing open."""
+        if not self._assistant_is_speaking:
+            return True
+
+        now = time.monotonic()
+        if (
+            self._last_gate_decision is not None
+            and now - self._last_gate_check_time < MIC_GATE_CHECK_INTERVAL_SECONDS
+        ):
+            return self._last_gate_decision
+
+        try:
+            decision = self.address_gate.fast_check().is_open
+            if not isinstance(decision, bool):
+                raise ValueError(f"uncertain address gate decision: {decision!r}")
+        except Exception:
+            logger.debug("Address gate mic check failed; forwarding audio", exc_info=True)
+            decision = True
+
+        self._last_gate_check_time = now
+        self._last_gate_decision = decision
+        return decision
 
     async def _flush_transcript_chunks(self, role: str, chunks: list[str]) -> None:
         """Emit one finalized transcript message for the current turn."""
@@ -230,8 +275,21 @@ class GeminiLiveHandler(ConversationHandler):
         """Stop current playback and preserve any transcript already spoken."""
         logger.debug("Gemini: user interrupted")
         await self._flush_transcript_chunks("assistant", self._pending_assistant_transcript_chunks)
-        if self._clear_queue:
+        address_result = self.address_gate.fast_check()
+        logger.debug(
+            "Address gate interruption check: open=%s confidence=%.1f reason=%s",
+            address_result.is_open,
+            address_result.confidence,
+            address_result.reason,
+        )
+        if address_result.is_open and self._clear_queue:
             self._clear_queue()
+        elif not address_result.is_open:
+            logger.info(
+                "suppressed_interruption confidence=%.1f reason=%s",
+                address_result.confidence,
+                address_result.reason,
+            )
         self._set_listening_state(True)
 
     async def _handle_turn_complete(self) -> None:
@@ -275,23 +333,28 @@ class GeminiLiveHandler(ConversationHandler):
             return f"Failed to apply personality: {e}"
 
     async def change_voice(self, voice: str) -> str:
-        """Change only the voice and restart the session."""
+        """Change the voice through LocalStream's startup owner."""
+        previous_voice_override = self._voice_override
         self._voice_override = voice
-        if getattr(self, "client", None) is not None:
-            try:
-                await self._restart_session()
-                return f"Voice changed to {voice}."
-            except Exception as e:
-                logger.warning("Failed to restart session for voice change: %s", e)
-                return "Voice change failed. Will take effect on next connection."
-        return "Voice changed. Will take effect on next connection."
+        try:
+            await self._restart_session()
+            return f"Voice changed to {voice}."
+        except asyncio.CancelledError:
+            self._voice_override = previous_voice_override
+            raise
+        except Exception as error:
+            self._voice_override = previous_voice_override
+            logger.warning("Failed to restart session for voice change: %s", error)
+            return "Voice change failed. Will take effect on next connection."
 
     def get_current_voice(self) -> str:
         """Return the resolved Gemini voice currently selected for this handler."""
         return _resolve_gemini_voice(self._voice_override or get_session_voice())
 
     async def start_up(self) -> None:
-        """Start the handler with retries on unexpected closure."""
+        """Start one handler generation with retries on unexpected closure."""
+        self._stop_event.clear()
+        startup_connection_callback = self._startup_connection_callback
         gemini_api_key = config.GEMINI_API_KEY
         if not gemini_api_key or not gemini_api_key.strip():
             logger.warning("GEMINI_API_KEY missing. Proceeding with a placeholder (tests/offline).")
@@ -302,14 +365,14 @@ class GeminiLiveHandler(ConversationHandler):
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
-                await self._run_live_session()
+                await self._run_live_session(startup_connection_callback)
                 return
-            except Exception as e:
+            except Exception as error:
                 logger.warning(
                     "Gemini Live session closed unexpectedly (attempt %d/%d): %s",
                     attempt,
                     max_attempts,
-                    e,
+                    error,
                 )
                 if attempt < max_attempts:
                     base_delay = 2 ** (attempt - 1)
@@ -327,35 +390,11 @@ class GeminiLiveHandler(ConversationHandler):
                     pass
 
     async def _restart_session(self) -> None:
-        """Force-close the current session and start a fresh one."""
-        try:
-            if self.session is not None:
-                try:
-                    await self.session.close()
-                except Exception:
-                    pass
-                finally:
-                    self.session = None
-
-            if getattr(self, "client", None) is None:
-                logger.warning("Cannot restart: Gemini client not initialized yet.")
-                return
-
-            try:
-                self._connected_event.clear()
-            except Exception:
-                pass
-            self._stop_event.set()  # Signal the old receive loop to stop
-            await asyncio.sleep(0.1)
-            self._stop_event.clear()
-            asyncio.create_task(self.start_up(), name="gemini-live-restart")
-            try:
-                await asyncio.wait_for(self._connected_event.wait(), timeout=5.0)
-                logger.info("Gemini Live session restarted and connected.")
-            except asyncio.TimeoutError:
-                logger.warning("Gemini Live session restart timed out; continuing in background.")
-        except Exception as e:
-            logger.warning("_restart_session failed: %s", e)
+        """Request a replacement from LocalStream's startup lifecycle owner."""
+        owner = self._startup_owner
+        if owner is None:
+            raise RuntimeError("Gemini startup lifecycle is not owned by LocalStream")
+        await owner(GEMINI_RESTART_TIMEOUT_SECONDS)
 
     def _build_live_config(self) -> types.LiveConnectConfig:
         """Build the LiveConnectConfig for a Gemini Live session."""
@@ -523,7 +562,10 @@ class GeminiLiveHandler(ConversationHandler):
 
         logger.info("Video sender loop stopped")
 
-    async def _run_live_session(self) -> None:
+    async def _run_live_session(
+        self,
+        startup_connection_callback: Callable[[], None] | None = None,
+    ) -> None:
         """Establish and manage a single Gemini Live session."""
         live_config = self._build_live_config()
 
@@ -534,8 +576,11 @@ class GeminiLiveHandler(ConversationHandler):
             self.session = session
             try:
                 self._connected_event.set()
+                callback = startup_connection_callback or self._startup_connection_callback
+                if callback is not None:
+                    callback()
             except Exception:
-                pass
+                logger.debug("Gemini startup connection callback failed", exc_info=True)
 
             logger.info("Gemini Live session connected successfully")
 
@@ -563,6 +608,7 @@ class GeminiLiveHandler(ConversationHandler):
 
                                 # Handle interruption / barge-in
                                 if content.interrupted is True:
+                                    self._assistant_is_speaking = False
                                     await self._handle_interruption()
 
                                 # Handle audio output from model
@@ -587,6 +633,7 @@ class GeminiLiveHandler(ConversationHandler):
                                             if len(audio_array) == 0:
                                                 continue
 
+                                            self._assistant_is_speaking = True
                                             self._mark_activity("assistant_audio_delta")
 
                                             await self.output_queue.put(
@@ -610,6 +657,7 @@ class GeminiLiveHandler(ConversationHandler):
 
                                 # Turn complete
                                 if content.turn_complete:
+                                    self._assistant_is_speaking = False
                                     self._mark_activity("assistant_transcript_done")
                                     await self._handle_turn_complete()
 
@@ -636,6 +684,9 @@ class GeminiLiveHandler(ConversationHandler):
     async def receive(self, frame: Tuple[int, NDArray[np.int16]]) -> None:
         """Receive audio frame from microphone and send to Gemini."""
         if not self.session:
+            return
+
+        if not self._should_forward_mic_frame():
             return
 
         input_sample_rate, audio_frame = frame

@@ -26,8 +26,10 @@ from websockets.exceptions import ConnectionClosedError
 from openai.resources.realtime.realtime import AsyncRealtimeConnection
 
 from reachy_chat.tools import core_tools
+from reachy_chat.address_gate import AddressGate
 from reachy_chat.config import (
     config,
+    HF_BACKEND,
     get_default_voice_for_backend,
     get_available_voices_for_backend,
 )
@@ -42,6 +44,8 @@ from reachy_chat.tools.background_tool_manager import (
 
 
 logger = logging.getLogger(__name__)
+
+MIC_GATE_CHECK_INTERVAL_SECONDS: Final = 0.2
 
 _RESPONSE_DONE_TIMEOUT: Final[float] = 30.0
 _RESPONSE_REJECTION_RETRY_DELAY: Final[float] = 0.5
@@ -122,6 +126,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         )
 
         self.deps = deps
+        self.address_gate = AddressGate(self.deps.reachy_mini, self.deps.camera_worker)
 
         self.output_sample_rate = sample_rate
         self.input_sample_rate = sample_rate
@@ -162,6 +167,33 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         self._turn_user_done_at: float | None = None
         self._turn_response_created_at: float | None = None
         self._turn_first_audio_at: float | None = None
+        self._assistant_is_speaking = False
+        self._last_gate_check_time = 0.0
+        self._last_gate_decision: bool | None = None
+
+    def _should_forward_mic_frame(self) -> bool:
+        """Return whether mic audio should reach the backend, failing open."""
+        if not self._assistant_is_speaking:
+            return True
+
+        now = time.monotonic()
+        if (
+            self._last_gate_decision is not None
+            and now - self._last_gate_check_time < MIC_GATE_CHECK_INTERVAL_SECONDS
+        ):
+            return self._last_gate_decision
+
+        try:
+            decision = self.address_gate.fast_check().is_open
+            if not isinstance(decision, bool):
+                raise ValueError(f"uncertain address gate decision: {decision!r}")
+        except Exception:
+            logger.debug("Address gate mic check failed; forwarding audio", exc_info=True)
+            decision = True
+
+        self._last_gate_check_time = now
+        self._last_gate_decision = decision
+        return decision
 
     @staticmethod
     def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
@@ -276,7 +308,6 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         resolved_voice = (
             self._resolve_backend_voice(voice, source="requested voice", fallback=default_voice) or default_voice
         )
-        self._voice_override = resolved_voice
         if self.connection is not None:
             try:
                 await self.connection.session.update(
@@ -289,10 +320,12 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                         ),
                     ),
                 )
-                return f"Voice changed to {resolved_voice}."
             except Exception as e:
                 logger.warning("Failed to update live session for voice change: %s", e)
                 return "Voice change failed. Will take effect on next connection."
+            self._voice_override = resolved_voice
+            return f"Voice changed to {resolved_voice}."
+        self._voice_override = resolved_voice
         return "Voice changed. Will take effect on next connection."
 
     def get_current_voice(self) -> str:
@@ -689,7 +722,9 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
             [tool["name"] for tool in tool_specs],
         )
         connect_kwargs: dict[str, Any] = {}
-        if config.MODEL_NAME:
+        # Hugging Face realtime connects to a session-allocated URL where the
+        # model is fixed by the deployment, so passing `model` is rejected.
+        if config.MODEL_NAME and self.BACKEND_PROVIDER != HF_BACKEND:
             connect_kwargs["model"] = config.MODEL_NAME
         if self._realtime_connect_query:
             connect_kwargs["extra_query"] = self._realtime_connect_query
@@ -735,8 +770,21 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                         self._turn_user_done_at = None
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
-                        if self._clear_queue:
+                        address_result = self.address_gate.fast_check()
+                        logger.debug(
+                            "Address gate interruption check: open=%s confidence=%.1f reason=%s",
+                            address_result.is_open,
+                            address_result.confidence,
+                            address_result.reason,
+                        )
+                        if address_result.is_open and self._clear_queue:
                             self._clear_queue()
+                        elif not address_result.is_open:
+                            logger.info(
+                                "suppressed_interruption confidence=%.1f reason=%s",
+                                address_result.confidence,
+                                address_result.reason,
+                            )
                         self.deps.movement_manager.set_listening(True)
                         logger.debug("User speech started")
 
@@ -746,6 +794,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                         logger.debug("User speech stopped - server will auto-commit with VAD")
 
                     if event.type == "response.output_audio.done":
+                        self._assistant_is_speaking = False
                         logger.debug("response completed")
 
                     if event.type == "response.output_text.delta":
@@ -766,6 +815,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
 
                     if event.type == "response.done":
                         # Doesn't mean the audio is done playing
+                        self._assistant_is_speaking = False
                         self._response_done_event.set()
                         self._response_started_or_rejected_event.set()
                         logger.debug("Response done")
@@ -830,6 +880,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
 
                     # Handle audio delta
                     if event.type == "response.output_audio.delta":
+                        self._assistant_is_speaking = True
                         decoded_pcm_bytes = base64.b64decode(event.delta)
                         decoded_pcm = np.frombuffer(decoded_pcm_bytes, dtype=np.int16).reshape(1, -1)
                         self._mark_activity("assistant_audio_delta")
@@ -943,6 +994,9 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
 
         """
         if not self.connection:
+            return
+
+        if not self._should_forward_mic_frame():
             return
 
         input_sample_rate, audio_frame = frame

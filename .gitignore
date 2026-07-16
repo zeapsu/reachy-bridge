@@ -16,6 +16,7 @@ env/
 # --- Secrets & local config (keep the examples) ---
 .env
 *.local.env
+*.local.sh
 !.env.example
 
 # --- Model / data caches (e.g. faster-whisper downloads) ---
@@ -35,3 +36,10 @@ Thumbs.db
 # --- Third-party upstream clones (cloned for reference; not this project's source) ---
 /reachy_mini/
 /reachy_mini_conversation_app/
+
+# --- Agent scratch / local QA artifacts (not committed) ---
+/.claude/
+/.superpowers/
+/.playwright-mcp/
+/.reachy-logs/
+/issue23-*.png

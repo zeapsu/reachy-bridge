@@ -1,0 +1,29 @@
+[project]
+name = "reachy-console"
+version = "0.1.0"
+description = "Reachy Mini Lite workspace root: pins the daemon/SDK so a fresh clone can run the daemon and the root diagnostic scripts. Apps under apps/ have their own independent uv projects."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # Brings the ReachyMini SDK + the `reachy-mini-daemon` entry point.
+    # Pinned: SDK/daemon versions must match our apps (see CLAUDE.md).
+    "reachy-mini==1.8.3",
+    # 3.2.x throws `unrecognized attribute: site1` on the Reachy model (see CLAUDE.md).
+    "mujoco==3.3.7",
+    # Used directly by mic_test.py (RMS probe).
+    "numpy",
+]
+
+[tool.uv]
+# Workspace root is a virtual project (not an installable package): it pins the
+# daemon/SDK for the shared env and anchors the workspace below.
+package = false
+# Pin uv minor version to prevent lockfile marker churn (issue #39).
+# 0.11 allows the desktop app's bundled 0.11.23, <0.12 forces coordinated minor bumps.
+required-version = ">=0.11,<0.12"
+
+[tool.uv.workspace]
+# One lockfile + one shared .venv for the whole repo, while each app under apps/
+# stays a distinct, independently-launchable package (issue #33). No
+# [tool.uv.sources] needed — apps have zero cross-app imports.
+members = ["apps/*"]

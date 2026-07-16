@@ -144,7 +144,8 @@ label {
   letter-spacing: 0.2px;
 }
 input[type="password"],
-input[type="text"] {
+input[type="text"],
+select {
   width: 100%;
   padding: 12px 14px;
   border: 1px solid var(--border);
@@ -153,7 +154,11 @@ input[type="text"] {
   color: var(--text);
   transition: border 0.15s ease, box-shadow 0.15s ease;
 }
-input:focus {
+select {
+  color-scheme: dark;
+}
+input:focus,
+select:focus {
   border-color: rgba(94, 240, 193, 0.7);
   outline: none;
   box-shadow: 0 0 0 3px rgba(94, 240, 193, 0.15);
@@ -181,6 +186,12 @@ button {
 }
 button:hover { filter: brightness(1.06); transform: translateY(-1px); }
 button:active { transform: translateY(0); }
+button:disabled {
+  cursor: not-allowed;
+  filter: none;
+  opacity: 0.55;
+  transform: none;
+}
 button.ghost {
   background: rgba(255, 255, 255, 0.05);
   color: var(--text);

@@ -61,12 +61,21 @@ def test_config_raises_when_selected_external_profile_is_missing(
         config_mod.Config()
 
 
-def test_backend_provider_defaults_to_hf_when_unset() -> None:
-    """Non-Gemini models should default to the Hugging Face backend."""
-    assert config_mod._normalize_backend_provider(None, None) == config_mod.HF_BACKEND
-    assert config_mod._normalize_backend_provider("", None) == config_mod.HF_BACKEND
-    assert config_mod._normalize_backend_provider(None, "gpt-realtime-2") == config_mod.HF_BACKEND
+def test_backend_provider_defaults_to_openai_realtime_when_unset() -> None:
+    """Non-Gemini models should default to the OpenAI Realtime backend."""
+    assert config_mod._normalize_backend_provider(None, None) == config_mod.OPENAI_REALTIME_BACKEND
+    assert config_mod._normalize_backend_provider("", None) == config_mod.OPENAI_REALTIME_BACKEND
+    assert config_mod._normalize_backend_provider(None, "gpt-realtime-2") == config_mod.OPENAI_REALTIME_BACKEND
     assert config_mod._normalize_backend_provider(None, "gemini-3.1-flash-live-preview") == config_mod.GEMINI_BACKEND
+
+
+def test_voice_fallbacks_are_provider_specific() -> None:
+    """OpenRouter's platform-default fallback must not inherit Realtime voices."""
+    assert config_mod.get_available_voices_for_backend(config_mod.OPENAI_BACKEND) == [
+        config_mod.OPENROUTER_SYSTEM_DEFAULT_VOICE
+    ]
+    assert config_mod.get_default_voice_for_backend(config_mod.OPENAI_BACKEND) == "System Default"
+    assert config_mod.get_default_voice_for_backend(config_mod.OPENAI_REALTIME_BACKEND) == config_mod.OPENAI_DEFAULT_VOICE
 
 
 def test_backend_provider_rejects_explicit_unknown_backend() -> None:

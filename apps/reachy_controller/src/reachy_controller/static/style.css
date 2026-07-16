@@ -1,0 +1,1655 @@
+/* Liquid Glass design tokens */
+:root {
+  --bg-0: #070810;
+  --bg-1: #0e1018;
+  --bg-2: #141826;
+  --glass-fill: rgba(255, 255, 255, 0.06);
+  --glass-fill-2: rgba(255, 255, 255, 0.10);
+  --glass-edge: rgba(255, 255, 255, 0.16);
+  --rim: rgba(255, 255, 255, 0.42);
+  --amber: #ffc857;
+  --cyan: #6fe3ff;
+  --coral: #ff6b6b;
+  --mint: #36e8a4;
+  --text: #edf0f4;
+  --muted: #8a92a6;
+  /* Atmosphere glow colours (the three drifting blobs). Tokenised so a colour
+     scheme recolours the whole scene, not just the panels. */
+  --glow-a: rgba(255, 200, 87, 0.55);
+  --glow-b: rgba(111, 227, 255, 0.5);
+  --glow-c: rgba(54, 232, 164, 0.4);
+  --r-lg: 26px;
+  --r-md: 18px;
+  --r-sm: 12px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --lg-blur: 26px;
+}
+
+/* Colour schemes — chosen at runtime via the status-bar theme selector (sets
+   data-scheme on <html>). Amber is the default (the :root values above); each
+   block overrides ONLY the palette tokens + atmosphere glows, never layout, so
+   the design stays identical across themes. */
+html[data-scheme="arctic"] {
+  --bg-0: #05080f; --bg-1: #0b111c; --bg-2: #121a2a;
+  --amber: #7fe0ff; --cyan: #9db8ff; --coral: #ff6b6b; --mint: #4be0c0;
+  --glow-a: rgba(127, 224, 255, 0.55); --glow-b: rgba(157, 184, 255, 0.44); --glow-c: rgba(75, 224, 192, 0.34);
+}
+html[data-scheme="emerald"] {
+  --bg-0: #060f0b; --bg-1: #0c1712; --bg-2: #12211a;
+  --amber: #3ce3a0; --cyan: #63e6ff; --coral: #ff6b6b; --mint: #3ce3a0;
+  --glow-a: rgba(60, 227, 160, 0.55); --glow-b: rgba(99, 230, 255, 0.44); --glow-c: rgba(47, 209, 140, 0.34);
+}
+html[data-scheme="ultraviolet"] {
+  --bg-0: #08060f; --bg-1: #100c1c; --bg-2: #1a1430;
+  --amber: #c199ff; --cyan: #6fd0ff; --coral: #ff7aa8; --mint: #66e8c4;
+  --glow-a: rgba(193, 153, 255, 0.55); --glow-b: rgba(111, 208, 255, 0.42); --glow-c: rgba(224, 140, 255, 0.34);
+}
+html[data-scheme="ember"] {
+  --bg-0: #0c0708; --bg-1: #160f0d; --bg-2: #211613;
+  --amber: #ff8a5c; --cyan: #4fe0d0; --coral: #ff5d5d; --mint: #ffd27a;
+  --glow-a: rgba(255, 138, 92, 0.55); --glow-b: rgba(79, 224, 208, 0.4); --glow-c: rgba(255, 107, 107, 0.32);
+}
+
+* { box-sizing: border-box; }
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: "Inter", system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg-0);
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 3px;
+}
+
+.atmosphere {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background: linear-gradient(160deg, var(--bg-2), var(--bg-0) 72%);
+  overflow: hidden;
+}
+
+/* Vignette + static grain kill the flat-gradient read of the backdrop. Both
+   are static — no animation, no battery cost. */
+.atmosphere::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(130% 100% at 50% 0%, transparent 44%, rgba(2, 3, 8, 0.5) 100%);
+}
+
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 240px 240px;
+  mix-blend-mode: overlay;
+}
+
+.blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: 0.55;
+  mix-blend-mode: screen;
+}
+
+.blob.a {
+  width: 46vw;
+  height: 46vw;
+  left: -8vw;
+  top: -10vw;
+  background: radial-gradient(circle, var(--glow-a), transparent 60%);
+  animation: drift1 26s var(--ease) infinite;
+}
+
+.blob.b {
+  width: 50vw;
+  height: 50vw;
+  right: -12vw;
+  top: 2vw;
+  background: radial-gradient(circle, var(--glow-b), transparent 60%);
+  animation: drift2 32s var(--ease) infinite;
+}
+
+.blob.c {
+  width: 52vw;
+  height: 52vw;
+  left: 22vw;
+  bottom: -24vw;
+  background: radial-gradient(circle, var(--glow-c), transparent 60%);
+  animation: drift3 38s var(--ease) infinite;
+}
+
+@keyframes drift1 {
+  50% { transform: translate(8vw, 6vw) scale(1.12); }
+}
+
+@keyframes drift2 {
+  0%, 100% { transform: scale(1.05); }
+  50% { transform: translate(-6vw, 8vw) scale(0.95); }
+}
+
+@keyframes drift3 {
+  50% { transform: translate(-7vw, -6vw) scale(1.1); }
+}
+
+.liquid-filter {
+  position: absolute;
+}
+
+.shell {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 22px clamp(14px, 3vw, 34px) 64px;
+  position: relative;
+}
+
+.glass {
+  position: relative;
+  border-radius: var(--r-lg);
+  /* Directional fill: brighter at the top-left, fading out — reads as a lit
+     pane of glass rather than a flat translucent rectangle. */
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.03) 42%, rgba(255, 255, 255, 0.015) 100%),
+    var(--glass-fill);
+  backdrop-filter: blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+  -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+  border: 1px solid var(--glass-edge);
+  /* Directional specular rim: light catches the top-left edge, shadow gathers
+     bottom-right, with an inner top glow and bottom depth for thickness. */
+  box-shadow:
+    inset 1.5px 1.5px 0 rgba(255, 255, 255, 0.5),
+    inset -1.5px -1.5px 0 rgba(0, 0, 0, 0.28),
+    inset 0 1.5px 0 var(--rim),
+    inset 0 10px 26px -20px rgba(255, 255, 255, 0.22),
+    inset 0 -22px 48px -34px rgba(0, 0, 0, 0.82),
+    0 32px 70px -40px rgba(0, 0, 0, 0.95);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* Continuous-radius (squircle) corners where supported — softer, more
+   Apple-like than a plain border-radius; falls back to --r-lg elsewhere. */
+@supports (corner-shape: squircle) {
+  .glass {
+    corner-shape: squircle;
+  }
+}
+
+/* Real background refraction (Chromium): bend the drifting atmosphere glows
+   through the glass via the SVG filter. Other engines ignore url() in
+   backdrop-filter and keep the CSS-only material above. */
+@supports (backdrop-filter: url("#lg-refract")) or (-webkit-backdrop-filter: url("#lg-refract")) {
+  .glass {
+    /* Displace the backdrop first (so the glow shapes actually bend), then
+       frost it — order matters; blur-then-displace washes the refraction out. */
+    backdrop-filter: url("#lg-refract") blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+    -webkit-backdrop-filter: url("#lg-refract") blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+  }
+}
+
+.glass::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.10) 46%, rgba(255, 255, 255, 0.02) 54%, transparent 70%);
+  background-size: 280% 280%;
+  animation: sheen 11s linear infinite;
+  mix-blend-mode: screen;
+}
+
+@keyframes sheen {
+  0% { background-position: 120% 0; }
+  100% { background-position: -60% 0; }
+}
+
+.glass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 0%), rgba(255, 255, 255, 0.16), transparent 62%);
+  opacity: 0;
+  transition: opacity 0.4s var(--ease);
+}
+
+.glass:hover::after { opacity: 1; }
+
+.glass > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Glass altitudes: the viewport stays the one hyperreal pane (full material,
+   refraction, sheen). Every other panel is INSTRUMENT GLASS — flatter fill,
+   thinner edge, no ambient sheen, lighter frost — so it recedes and the stage
+   leads. Hierarchy through material, not size. */
+.glass.instrument {
+  border-radius: 22px;
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.014) 58%);
+  border-color: rgba(255, 255, 255, 0.11);
+  backdrop-filter: blur(18px) saturate(1.45);
+  -webkit-backdrop-filter: blur(18px) saturate(1.45);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -14px 30px -26px rgba(0, 0, 0, 0.6),
+    0 18px 44px -30px rgba(0, 0, 0, 0.85);
+}
+
+/* No ambient sheen sweep on instruments — decoration belongs to the hero only
+   (also drops five always-running animations; only the stage keeps one). */
+.glass.instrument::before { display: none; }
+
+/* Hero pane: a touch more outer depth so it visibly sits above the rail. */
+.viewport {
+  box-shadow:
+    inset 1.5px 1.5px 0 rgba(255, 255, 255, 0.5),
+    inset -1.5px -1.5px 0 rgba(0, 0, 0, 0.28),
+    inset 0 1.5px 0 var(--rim),
+    inset 0 10px 26px -20px rgba(255, 255, 255, 0.22),
+    inset 0 -22px 48px -34px rgba(0, 0, 0, 0.82),
+    0 44px 96px -44px rgba(0, 0, 0, 0.98);
+}
+
+/* One-time entrance: the stage lights up first, instruments rise in behind it. */
+.glass { animation: panel-in 0.55s var(--ease) backwards; }
+.viewport { animation-delay: 0.05s; }
+.col:first-child .glass:nth-child(2) { animation-delay: 0.12s; }
+.col:first-child .glass:nth-child(3) { animation-delay: 0.18s; }
+.col:last-child .glass:nth-child(1) { animation-delay: 0.1s; }
+.col:last-child .glass:nth-child(2) { animation-delay: 0.16s; }
+.col:last-child .glass:nth-child(3) { animation-delay: 0.22s; }
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+.pad { padding: 18px 20px 20px; }
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 13px 20px;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-right: auto;
+}
+
+.brand .mark {
+  font-family: "Space Grotesk", sans-serif;
+  font-weight: 700;
+  font-size: 19px;
+  letter-spacing: 0;
+}
+
+.brand .mark b,
+.footnote b {
+  color: var(--amber);
+}
+
+.brand .sub {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--muted);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+  white-space: nowrap;
+}
+
+/* The three status pills join into one segmented strip — one object to read,
+   not three floating fragments. Unjoins on narrow screens (media block below). */
+.pillbar {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--glass-edge);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  padding: 5px 4px;
+}
+
+.pillbar .pill { padding: 2px 13px; }
+
+.pillbar .pill + .pill { border-left: 1px solid rgba(255, 255, 255, 0.08); }
+
+@media (max-width: 700px) {
+  .pillbar {
+    border: none;
+    background: none;
+    box-shadow: none;
+    padding: 0;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .pillbar .pill { padding: 0; }
+  .pillbar .pill + .pill { border-left: none; }
+}
+
+.pill .val { color: var(--text); }
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: 0 0 auto;
+}
+
+.dot.ok {
+  background: var(--mint);
+  box-shadow: 0 0 10px 1px rgba(54, 232, 164, 0.7);
+  animation: pulse 2.6s var(--ease) infinite;
+}
+
+.dot.live {
+  background: var(--amber);
+  box-shadow: 0 0 12px 1px color-mix(in srgb, var(--amber) 80%, transparent);
+}
+
+.dot.error {
+  background: var(--coral);
+  box-shadow: 0 0 10px 1px rgba(255, 107, 107, 0.65);
+}
+
+.dot.loading {
+  background: var(--cyan);
+  box-shadow: 0 0 10px 1px rgba(111, 227, 255, 0.7);
+  animation: pulse 2.6s var(--ease) infinite;
+}
+
+.dot.stopping {
+  background: var(--muted);
+  box-shadow: 0 0 8px 1px rgba(138, 146, 166, 0.5);
+  animation: pulse 2.6s var(--ease) infinite;
+}
+
+@keyframes pulse {
+  50% { opacity: 0.45; }
+}
+
+.grid {
+  margin-top: 20px;
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+.col {
+  display: grid;
+  gap: 20px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.head h2 {
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0;
+}
+
+.head .rule {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.09), transparent);
+}
+
+.viewport { padding: 0; }
+
+.vp-stage {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  width: 100%;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  overflow: hidden;
+  background: #05060c;
+  /* NOTE: do not apply `filter: url(#...)` here — it warps the live camera/
+     sim/schematic content. Refraction lives on the glass rim (.vp-stage::after)
+     and panel backdrop, never on the content layers. */
+}
+
+/* Decorative liquid-glass rim for the viewport (no effect on content). */
+.vp-stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow:
+    inset 0 1.5px 0 var(--rim),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+    inset 0 -40px 70px -50px rgba(0, 0, 0, 0.9);
+}
+
+.vp-layer {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.5s var(--ease);
+}
+
+.vp-layer.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.vp-stage canvas,
+.vp-stage svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.vp-stage img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  line-height: 1.5;
+  background: radial-gradient(circle at 50% 55%, rgba(255, 255, 255, 0.05), transparent 40%);
+}
+
+.sim-label {
+  align-content: end;
+  padding-bottom: 32px;
+  background: linear-gradient(180deg, transparent 58%, rgba(5, 6, 12, 0.72));
+}
+
+/* Offline note: quieter chrome — the sleeping creature already tells the story;
+   the note just names the cause. Coral stays as the semantic dot. */
+.rig-note {
+  position: absolute;
+  left: 50%;
+  bottom: 30px;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 7px 10px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(10, 12, 20, 0.6);
+  color: var(--muted);
+  font: 11px "JetBrains Mono", monospace;
+}
+
+.rig-note::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--coral);
+  box-shadow: 0 0 8px 1px rgba(255, 107, 107, 0.55);
+}
+
+/* display:inline-flex above would defeat the hidden attribute main.js toggles. */
+.rig-note[hidden] { display: none; }
+
+.vp-power {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 13px;
+  background: rgba(10, 12, 20, 0.42);
+  backdrop-filter: blur(14px) saturate(1.5);
+  -webkit-backdrop-filter: blur(14px) saturate(1.5);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--rim);
+}
+
+.vp-power button {
+  width: 34px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--coral);
+  border-radius: 9px;
+  cursor: pointer;
+  transition: 0.2s var(--ease);
+}
+
+.vp-power button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.vp-power button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.vp-power.running button {
+  color: var(--mint);
+}
+
+.vp-power.starting button {
+  animation: pulse 1s var(--ease) infinite;
+  color: var(--mint);
+}
+
+.vp-power.stopping button {
+  color: var(--coral);
+  animation: pulse 1s var(--ease) infinite;
+}
+
+.vp-power.disabled button {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.vp-switch {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 13px;
+  background: rgba(10, 12, 20, 0.42);
+  backdrop-filter: blur(14px) saturate(1.5);
+  -webkit-backdrop-filter: blur(14px) saturate(1.5);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--rim);
+}
+
+.vp-switch button {
+  width: 34px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 9px;
+  cursor: pointer;
+  transition: 0.2s var(--ease);
+}
+
+.vp-switch button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.vp-switch button:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.vp-switch button.active {
+  color: #10130b;
+  background: var(--amber);
+  box-shadow: 0 6px 16px -6px color-mix(in srgb, var(--amber) 80%, transparent);
+}
+
+.vp-badge {
+  position: absolute;
+  top: 60px;
+  left: 14px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--text);
+  padding: 5px 10px;
+  border-radius: 9px;
+  background: rgba(10, 12, 20, 0.42);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--glass-edge);
+}
+
+.vp-badge .rec {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--coral);
+  box-shadow: 0 0 9px 1px rgba(255, 107, 107, 0.8);
+  animation: pulse 1.6s infinite;
+}
+
+.vp-badge .rec.ok {
+  background: var(--mint);
+  box-shadow: 0 0 9px 1px rgba(54, 232, 164, 0.8);
+}
+
+.hud {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  right: 14px;
+  z-index: 5;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.hud-readout {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 3px 12px;
+  padding: 10px 13px;
+  border-radius: 13px;
+  background: rgba(10, 12, 20, 0.40);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--rim);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  align-items: baseline;
+}
+
+.hud-readout .k { color: var(--muted); }
+
+.hud-readout .v {
+  color: var(--text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* DOA is the signature readout — where the robot is listening. It leads the HUD
+   at display size. */
+.hud-readout .v.amber {
+  color: var(--amber);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.05;
+}
+
+.vp-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 18px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.vp-foot .v { color: var(--text); }
+
+#rig.offline {
+  opacity: 0.55;
+  filter: saturate(0.45);
+}
+
+#doaArc,
+#doaTick {
+  opacity: 0.35;
+  transition: opacity 0.25s var(--ease);
+}
+
+#rig.speaking #doaArc,
+#rig.speaking #doaTick {
+  opacity: 1;
+}
+
+/* The creature. Breathing rides a wrapper <g class="breath"> so CSS never
+   fights the transform ATTRIBUTES main.js writes on #head/#body/#antL/#antR
+   (pivots preserved: head 160,104 · body 160,152 · antennas 132,70 / 188,70).
+   Sleep + listening states ride the existing .offline/.speaking classes. */
+.breath {
+  animation: breathe 4.6s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  50% { transform: translateY(-1.8px); }
+}
+
+#rig.offline .breath { animation-duration: 8s; }
+
+#rig .halo {
+  opacity: 0.75;
+  transition: opacity 0.4s var(--ease);
+}
+
+#rig.speaking .halo { opacity: 1; }
+
+#rig.speaking #doaArc { filter: drop-shadow(0 0 7px var(--amber)); }
+#rig.speaking #doaTick { filter: drop-shadow(0 0 6px var(--amber)); }
+
+#rig .lid,
+#rig .iris,
+#rig .pupil,
+#rig .glint {
+  transition: opacity 0.35s var(--ease);
+}
+
+/* Asleep when the daemon is offline: eyes close, floor glow dims. */
+#rig .lid { opacity: 0; }
+#rig.offline .lid { opacity: 1; }
+#rig.offline .iris,
+#rig.offline .pupil,
+#rig.offline .glint { opacity: 0; }
+#rig.offline .floor { opacity: 0.4; }
+
+.apps {
+  display: grid;
+  gap: 11px;
+}
+
+.app-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  border-radius: var(--r-md);
+  background: var(--glass-fill);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transition: transform 0.25s var(--ease), border-color 0.25s var(--ease), background 0.25s var(--ease);
+}
+
+.app-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--rim);
+  background: var(--glass-fill-2);
+}
+
+.app-card.running {
+  border-color: color-mix(in srgb, var(--amber) 50%, transparent);
+  background: color-mix(in srgb, var(--amber) 7%, transparent);
+}
+
+.app-card.error {
+  border-color: rgba(255, 107, 107, 0.42);
+}
+
+.app-card.loading {
+  border-color: rgba(111, 227, 255, 0.5);
+  background: rgba(111, 227, 255, 0.07);
+}
+
+.app-card.stopping {
+  border-color: rgba(138, 146, 166, 0.3);
+  background: rgba(138, 146, 166, 0.04);
+}
+
+/* Let the middle (text) grid cell shrink so long names can ellipsize. */
+.app-card > div { min-width: 0; }
+
+.app-name {
+  font-family: "Space Grotesk", sans-serif;
+  font-weight: 600;
+  font-size: 14.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-state {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.app-state .up { color: var(--amber); }
+.app-state .err { color: var(--coral); }
+.app-state .loading-frag { color: var(--cyan); }
+.app-state .stopping-label { color: var(--muted); }
+.app-state .spinner-glyph {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, var(--amber) 0deg, color-mix(in srgb, var(--amber) 30%, transparent) 360deg);
+  animation: spin 1.2s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.btn {
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text);
+  padding: 8px 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--glass-edge);
+  background: var(--glass-fill-2);
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  transition: transform 0.15s var(--ease), background 0.2s, border-color 0.2s, opacity 0.2s;
+}
+
+.btn:hover { transform: translateY(-1px); }
+
+/* Press feedback — felt, not watched. */
+.btn:active:not(:disabled) { transform: scale(0.98); }
+.segmented button:active:not(:disabled) { transform: scale(0.97); }
+.vp-switch button:active,
+.vp-power button:active { transform: scale(0.94); }
+
+.btn.start {
+  color: #1a1407;
+  background: var(--amber);
+  border-color: transparent;
+}
+
+.btn.start:hover { box-shadow: 0 8px 22px -8px color-mix(in srgb, var(--amber) 80%, transparent); }
+
+.btn.stop {
+  color: var(--coral);
+  border-color: rgba(255, 107, 107, 0.42);
+}
+
+.btn.stop:hover { background: rgba(255, 107, 107, 0.12); }
+
+.btn.pending {
+  color: var(--muted);
+  background: rgba(138, 146, 166, 0.15);
+  border-color: rgba(138, 146, 166, 0.3);
+  cursor: not-allowed;
+}
+
+.btn.pending:hover { transform: none; }
+
+.btn:disabled,
+input:disabled,
+.segmented button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.wide { width: 100%; }
+
+/* Expressions filmstrip (#48): two horizontal, scrollable chip-strips. */
+.expr-group + .expr-group { margin-top: 14px; }
+.expr-label {
+  display: block;
+  margin-bottom: 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.expr-strip {
+  display: flex;
+  gap: 9px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 5px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--glass-edge) transparent;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  /* Edge fades signal there's more to scroll. */
+  mask-image: linear-gradient(90deg, transparent, #000 16px, #000 calc(100% - 26px), transparent);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 16px, #000 calc(100% - 26px), transparent);
+}
+.expr-strip::-webkit-scrollbar { height: 6px; }
+.expr-strip::-webkit-scrollbar-thumb { background: var(--glass-edge); border-radius: 3px; }
+.expr-strip:empty::before {
+  content: "—";
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+}
+.chip {
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 9px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-edge);
+  background: var(--glass-fill);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chip:disabled { opacity: 0.3; cursor: not-allowed; }
+.chip:hover:not(:disabled) { border-color: var(--rim); background: var(--glass-fill-2); }
+.chip:active:not(:disabled) { transform: scale(0.97); }
+/* Currently-playing move: accent border + text + a pulsing cue dot, all
+   token-driven so it follows the active colour scheme. */
+.chip.playing {
+  position: relative;
+  padding-left: 26px;
+  border-color: var(--amber);
+  color: var(--amber);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 0 14px -6px var(--amber);
+}
+
+.chip.playing::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transform: translateY(-50%);
+  background: var(--amber);
+  box-shadow: 0 0 8px 0 var(--amber);
+  animation: pulse 1.2s var(--ease) infinite;
+}
+
+.eq {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 92px;
+  padding: 6px 2px 0;
+}
+
+.eq .bar {
+  flex: 1;
+  /* Band tint: low bars carry the scheme accent, mid/high sweep toward the
+     scheme's cool token (both curated per palette), so the three groups read
+     apart in every theme without any hardcoded hex. */
+  --eq-c: var(--amber);
+  border-radius: 4px 4px 2px 2px;
+  background: linear-gradient(180deg, var(--eq-c), color-mix(in srgb, var(--eq-c) 38%, transparent));
+  box-shadow: 0 0 10px -2px color-mix(in srgb, var(--eq-c) 55%, transparent);
+  transform-origin: bottom;
+  height: 6%;
+  transition: height 0.12s linear, opacity 0.2s;
+}
+
+.eq .bar:nth-child(n + 13) { --eq-c: color-mix(in srgb, var(--amber) 72%, var(--cyan)); }
+
+.eq .bar:nth-child(n + 25) { --eq-c: color-mix(in srgb, var(--amber) 45%, var(--cyan)); }
+
+/* Overall loudness ribbon under the bars — width tracks eased RMS. */
+.eq-rms {
+  height: 3px;
+  margin: 6px 2px 0;
+  border-radius: 2px;
+  width: 0%;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--amber) 70%, transparent), var(--amber));
+  box-shadow: 0 0 8px -2px color-mix(in srgb, var(--amber) 55%, transparent);
+  transition: width 0.12s linear, opacity 0.2s;
+}
+
+/* Band identity labels, tinted to match their bar third. */
+.eq-bands {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-align: center;
+  color: var(--muted);
+}
+
+.eq-bands .b-low { color: color-mix(in srgb, var(--amber) 62%, var(--muted)); }
+
+.eq-bands .b-mid { color: color-mix(in srgb, color-mix(in srgb, var(--amber) 72%, var(--cyan)) 62%, var(--muted)); }
+
+.eq-bands .b-high { color: color-mix(in srgb, color-mix(in srgb, var(--amber) 45%, var(--cyan)) 62%, var(--muted)); }
+
+.eq.idle .bar,
+.eq.idle + .eq-rms {
+  opacity: 0.35;
+  box-shadow: none;
+}
+
+.eq-foot,
+.log-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.eq-foot .v,
+.log-foot .v { color: var(--text); }
+
+.gauges {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.gauge {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+}
+
+.gauge svg {
+  width: 84px;
+  height: 84px;
+}
+
+.gauge .gv {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 18px;
+  font-weight: 600;
+  fill: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.gauge .gu {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  fill: var(--muted);
+}
+
+.gauge .gl {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.meminfo { margin-top: 14px; }
+
+.bar-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 6px;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.barline {
+  height: 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+
+.barline > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 6px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--amber) 70%, transparent), var(--amber));
+  transition: width 0.6s var(--ease);
+}
+
+.route {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--glass-edge);
+  display: grid;
+  gap: 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+}
+
+.route .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+
+/* System panel: compact stats/logs views. */
+.viewtabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--glass-edge);
+  border-radius: 9px;
+}
+
+.viewtabs button {
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s;
+}
+
+.viewtabs button:hover { color: var(--text); }
+.viewtabs button[aria-selected="true"] { color: #10130b; background: var(--amber); }
+.sys-view[hidden], .pill[hidden] { display: none; }
+.log-bar { margin-bottom: 10px; }
+
+#log-source {
+  width: 100%;
+  font: 11px "JetBrains Mono", monospace;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--glass-edge);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.log-body { position: relative; }
+.log-scroll {
+  height: 155px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--r-sm);
+  background: rgba(5, 6, 12, 0.55);
+  padding: 10px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--glass-edge) transparent;
+}
+.log-scroll::-webkit-scrollbar { width: 6px; }
+.log-scroll::-webkit-scrollbar-thumb { background: var(--glass-edge); border-radius: 3px; }
+.log-out {
+  margin: 0;
+  font: 11px/1.55 "JetBrains Mono", monospace;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.log-out .ln { display: block; }
+.log-empty { margin: 0; color: var(--muted); font: 11px "JetBrains Mono", monospace; }
+.log-follow {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  font: 11px "JetBrains Mono", monospace;
+  color: var(--text);
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-edge);
+  background: rgba(10, 12, 20, 0.82);
+  cursor: pointer;
+}
+.log-follow:hover { background: rgba(255, 255, 255, 0.08); }
+.route .row span:first-child { color: var(--muted); }
+.route .row span:last-child { text-align: right; }
+
+.panel-hint {
+  margin: -4px 0 14px;
+  color: var(--muted);
+  font: 11px "JetBrains Mono", monospace;
+  min-height: 15px;
+}
+
+.panel-hint.error { color: var(--coral); }
+.panel-hint.ok { color: var(--mint); }
+
+/* The apps status line ("… is running.") and the expressions hint sit directly
+   below cards/chip-strips with no header above them, so the hint's default
+   negative top margin cramps them against the content. Give them breathing room. */
+.apps + .panel-hint,
+.expr-group + .panel-hint { margin-top: 11px; }
+
+.control { margin-bottom: 16px; }
+.control:last-child { margin-bottom: 0; }
+
+.control > label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  letter-spacing: 0.04em;
+}
+
+.with-val {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+input[type=range] {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  height: 6px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--amber) var(--fill, 60%), rgba(255, 255, 255, 0.09) var(--fill, 60%));
+  outline: none;
+}
+
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber) 26%, transparent);
+}
+
+input[type=range]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber) 26%, transparent);
+}
+
+.ctl-val {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12.5px;
+  width: 42px;
+  text-align: right;
+}
+
+.segmented {
+  display: flex;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 4px;
+  border-radius: 11px;
+  border: 1px solid var(--glass-edge);
+}
+
+.segmented button {
+  flex: 1;
+  min-width: 0;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  padding: 7px 4px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s;
+  overflow-wrap: anywhere;
+}
+
+.segmented button.active {
+  color: #10130b;
+  background: var(--amber);
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.toggle-row label { margin: 0; }
+
+.switch {
+  position: relative;
+  width: 46px;
+  height: 26px;
+  flex: 0 0 auto;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+  border-radius: 26px;
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid var(--glass-edge);
+  transition: 0.25s;
+}
+
+.slider::before {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 3px;
+  top: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: 0.25s var(--ease);
+}
+
+.switch input:checked + .slider {
+  background: color-mix(in srgb, var(--amber) 50%, transparent);
+  border-color: transparent;
+}
+
+.switch input:checked + .slider::before {
+  transform: translateX(20px);
+}
+
+.action { margin-top: 18px; }
+
+.footnote {
+  margin-top: 26px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+  letter-spacing: 0.04em;
+}
+
+/* Theme selector — a global colour-scheme preference, so it lives in the
+   status-bar chrome (right of the pills), not a content panel. Quiet palette
+   button whose swatch shows the active theme; opens a top-layer popover of
+   schemes so the menu escapes the status bar's overflow:hidden. */
+.theme-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-edge);
+  background: var(--glass-fill);
+  color: var(--muted);
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+
+.theme-btn:hover {
+  color: var(--text);
+  border-color: var(--rim);
+  background: var(--glass-fill-2);
+}
+
+.theme-btn svg { width: 15px; height: 15px; }
+
+.theme-btn .cur {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--amber);          /* reflects the active theme's accent */
+  box-shadow: 0 0 8px 0 var(--amber);
+}
+
+.theme-pop {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  min-width: 204px;
+  padding: 7px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 16px;
+  background: rgba(14, 16, 24, 0.74);
+  backdrop-filter: blur(24px) saturate(1.6);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  box-shadow: 0 26px 64px -26px rgba(0, 0, 0, 0.9), inset 0 1px 0 var(--rim);
+}
+
+.theme-pop .ttl {
+  padding: 4px 10px 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.theme-opt {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: 11px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.theme-opt:hover { background: var(--glass-fill-2); }
+
+.theme-opt[aria-checked="true"] {
+  border-color: var(--glass-edge);
+  background: var(--glass-fill);
+}
+
+.theme-opt .sw {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+}
+
+.theme-opt .nm { margin-right: auto; }
+
+.theme-opt .chk {
+  width: 15px;
+  height: 15px;
+  color: var(--amber);
+  opacity: 0;
+}
+
+.theme-opt[aria-checked="true"] .chk { opacity: 1; }
+
+@media (max-width: 900px) {
+  .grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 560px) {
+  .brand .sub { display: none; }
+  .statusbar { gap: 10px; }
+  /* Keep 36 bars ≥ ~5px wide on 320-390px viewports. */
+  .eq { gap: 2px; }
+  .eq .bar { border-radius: 3px 3px 2px 2px; }
+  .vp-foot,
+  .eq-foot,
+  .log-foot {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  /* The enlarged DOA readout would crowd the (now smaller) creature. */
+  .hud-readout {
+    font-size: 10px;
+    padding: 8px 10px;
+    gap: 2px 10px;
+  }
+  .hud-readout .v.amber { font-size: 15px; }
+  /* On a narrow stage the centered offline note collides with the bottom-left
+     HUD readout — float it into the open space above the robot instead. */
+  .rig-note {
+    top: 48px;
+    bottom: auto;
+  }
+  .gauges { gap: 4px; }
+  .gauge svg {
+    width: 72px;
+    height: 72px;
+  }
+  .log-scroll { height: 176px; }
+  .app-card {
+    grid-template-columns: auto 1fr;
+  }
+  .app-card .btn {
+    grid-column: 1 / -1;
+  }
+  /* Perf: the animated refraction filter is GPU-heavy across stacked panels on
+     phones — drop to a lighter frost; the CSS rim keeps the glass read. */
+  .glass,
+  .glass.instrument {
+    backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
+    -webkit-backdrop-filter: blur(16px) saturate(1.55) brightness(1.05);
+  }
+  .blob { animation: none; }
+  .glass::before { animation: none; }
+}
+
+/* Touch devices (phones/tablets) match (hover: none) and (pointer: coarse)
+   regardless of the viewport width a home-screen PWA reports — so key the
+   GPU-heavy reductions off capability, not the px breakpoint above (which a
+   wide-reporting PWA can miss). Drop the animated refraction to a lighter
+   frost and stop the always-on idle animations: each kept the iOS compositor
+   re-rasterizing every frame while the tab is focused (#36). */
+@media (hover: none) and (pointer: coarse) {
+  /* .glass.instrument repeated so this override outranks the instrument rule's
+     higher specificity — otherwise phones would get its backdrop blur back. */
+  .glass,
+  .glass.instrument {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: rgba(18, 21, 32, 0.97);
+  }
+  /* The viewport overlays sit ON TOP of the live schematic (the default vp-stage
+     layer, updated ~10 Hz), so their backdrop-filter blurs recomposite on the GPU
+     every frame the pose changes — the per-frame cost #43's .glass fix missed.
+     Drop the blur on touch and lift the background opacity so the chips stay
+     legible over the now-unblurred (dark) stage. Desktop keeps the full effect. */
+  .vp-power,
+  .vp-switch,
+  .vp-badge,
+  .hud-readout {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: rgba(10, 12, 20, 0.82);
+  }
+  .blob,
+  .glass::before,
+  .dot.ok,
+  .dot.loading,
+  .dot.stopping,
+  .vp-badge .rec,
+  .breath {
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blob,
+  .glass::before,
+  .glass,
+  .dot.ok,
+  .dot.loading,
+  .dot.stopping,
+  .spinner-glyph,
+  .vp-badge .rec,
+  .breath,
+  .chip.playing::before {
+    animation: none;
+  }
+
+  .vp-power.starting button,
+  .vp-power.stopping button {
+    animation: none;
+  }
+
+  /* The refraction filter animates its turbulence — swap to the static frost. */
+  .glass {
+    backdrop-filter: blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+    -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(1.7) brightness(1.06);
+  }
+
+  * {
+    transition: none !important;
+  }
+}
+
+/* Solidify the glass for users who ask for reduced transparency: opaque panels,
+   no blur/refraction, no decorative sheen/pointer layers, dimmed backdrop. */
+@media (prefers-reduced-transparency: reduce) {
+  .glass,
+  .glass.instrument,
+  .theme-pop {
+    background: rgba(18, 21, 32, 0.97);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .glass::before,
+  .glass::after {
+    display: none;
+  }
+  .atmosphere { opacity: 0.18; }
+  .grain { display: none; }
+}

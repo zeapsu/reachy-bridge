@@ -15,7 +15,7 @@ def _reload_core_tools() -> ModuleType:
             sys.modules.pop(module_name, None)
     # External file-loaded modules are registered by bare tool name.
     sys.modules.pop("ext_ping", None)
-    sys.modules.pop("sweep_look", None)
+    sys.modules.pop("local_ping", None)
     sys.modules.pop("ext_dup_a", None)
     sys.modules.pop("ext_dup_b", None)
 
@@ -23,6 +23,41 @@ def _reload_core_tools() -> ModuleType:
     core_tools_mod = importlib.import_module("reachy_chat.tools.core_tools")
     core_tools_mod.initialize_tools()
     return core_tools_mod
+
+
+# A minimal profile-local tool, written into a tmp profile to exercise the
+# profile-local loader without depending on any shipping tool (sweep_look used
+# to serve this role before it was promoted to a core tool).
+_PROFILE_LOCAL_TOOL_SRC = "\n".join(
+    [
+        "from typing import Any, Dict",
+        "from reachy_chat.tools.core_tools import Tool, ToolDependencies",
+        "",
+        "class LocalPingTool(Tool):",
+        '    name = "local_ping"',
+        '    description = "Profile-local ping tool"',
+        '    parameters_schema = {"type": "object", "properties": {}, "required": []}',
+        "",
+        "    async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> Dict[str, Any]:",
+        '        return {"status": "ok"}',
+        "",
+    ]
+)
+
+
+def _make_local_tool_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Create a tmp profile that ships its own profile-local tool .py file."""
+    profile_name = "local_tool_profile"
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / profile_name
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "instructions.txt").write_text("hi\n", encoding="utf-8")
+    (profile_dir / "tools.txt").write_text("local_ping\n", encoding="utf-8")
+    (profile_dir / "local_ping.py").write_text(_PROFILE_LOCAL_TOOL_SRC, encoding="utf-8")
+    monkeypatch.setattr(config_mod.config, "REACHY_MINI_CUSTOM_PROFILE", profile_name)
+    monkeypatch.setattr(config_mod.config, "PROFILES_DIRECTORY", profiles_root)
+    monkeypatch.setattr(config_mod.config, "TOOLS_DIRECTORY", None)
+    monkeypatch.setattr(config_mod.config, "AUTOLOAD_EXTERNAL_TOOLS", False)
 
 
 def test_external_profile_can_use_builtin_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,18 +148,16 @@ def test_external_tools_fail_on_duplicate_tool_names(tmp_path: Path, monkeypatch
         _reload_core_tools()
 
 
-def test_builtin_profile_can_load_profile_local_tools(
+def test_profile_can_load_profile_local_tools(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Built-in profile-local tools should load from the packaged profiles root."""
-    monkeypatch.setattr(config_mod.config, "REACHY_MINI_CUSTOM_PROFILE", "default")
-    monkeypatch.setattr(config_mod.config, "PROFILES_DIRECTORY", config_mod.DEFAULT_PROFILES_DIRECTORY)
-    monkeypatch.setattr(config_mod.config, "TOOLS_DIRECTORY", None)
-    monkeypatch.setattr(config_mod.config, "AUTOLOAD_EXTERNAL_TOOLS", False)
+    """A profile-local tool .py shipped in the profile folder should load."""
+    _make_local_tool_profile(tmp_path, monkeypatch)
 
     core_tools_mod = _reload_core_tools()
 
-    assert "sweep_look" in core_tools_mod.ALL_TOOLS
+    assert "local_ping" in core_tools_mod.ALL_TOOLS
 
 
 def test_tool_registry_reloads_when_profile_changes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -151,15 +184,13 @@ def test_tool_registry_reloads_when_profile_changes(monkeypatch: pytest.MonkeyPa
 
 
 def test_forced_tool_registry_reload_does_not_duplicate_profile_local_tool(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Reloading a profile-local tool should ignore stale class objects from the previous load."""
-    monkeypatch.setattr(config_mod.config, "REACHY_MINI_CUSTOM_PROFILE", "default")
-    monkeypatch.setattr(config_mod.config, "PROFILES_DIRECTORY", config_mod.DEFAULT_PROFILES_DIRECTORY)
-    monkeypatch.setattr(config_mod.config, "TOOLS_DIRECTORY", None)
-    monkeypatch.setattr(config_mod.config, "AUTOLOAD_EXTERNAL_TOOLS", False)
+    _make_local_tool_profile(tmp_path, monkeypatch)
 
     core_tools_mod = _reload_core_tools()
     core_tools_mod.initialize_tools(force=True)
 
-    assert "sweep_look" in core_tools_mod.ALL_TOOLS
+    assert "local_ping" in core_tools_mod.ALL_TOOLS

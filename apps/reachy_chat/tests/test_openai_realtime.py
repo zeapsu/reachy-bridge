@@ -1,3 +1,4 @@
+import base64
 import random
 import asyncio
 import logging
@@ -6,6 +7,7 @@ from typing import Any, Callable
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 from fastrtc import AdditionalOutputs
 
@@ -14,20 +16,83 @@ import reachy_chat.base_realtime as base_rt_mod
 import reachy_chat.openai_realtime as rt_mod
 import reachy_chat.tools.core_tools as ct_mod
 import reachy_chat.tools.background_tool_manager as btm_mod
-from reachy_chat.config import OPENAI_BACKEND, config, get_default_voice_for_backend
+from reachy_chat.address_gate import AddressResult
+from reachy_chat.config import OPENAI_REALTIME_BACKEND, config, get_default_voice_for_backend
 from reachy_chat.openai_realtime import OpenaiRealtimeHandler
 from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.tools.tool_constants import ToolState
 from reachy_chat.tools.background_tool_manager import ToolCallRoutine, ToolNotification
 
 
-OPENAI_DEFAULT_VOICE = get_default_voice_for_backend(OPENAI_BACKEND)
+OPENAI_DEFAULT_VOICE = get_default_voice_for_backend(OPENAI_REALTIME_BACKEND)
 
 
 def _build_handler(loop: asyncio.AbstractEventLoop) -> OpenaiRealtimeHandler:
     asyncio.set_event_loop(loop)
     deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
     return OpenaiRealtimeHandler(deps)
+
+
+def _build_audio_receive_handler() -> tuple[OpenaiRealtimeHandler, AsyncMock]:
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    handler = OpenaiRealtimeHandler(deps)
+    append = AsyncMock()
+    handler.connection = SimpleNamespace(
+        input_audio_buffer=SimpleNamespace(append=append),
+    )
+    return handler, append
+
+
+@pytest.mark.asyncio
+async def test_receive_drops_mic_frames_while_assistant_speaks_and_gate_is_closed() -> None:
+    handler, append = _build_audio_receive_handler()
+    handler._assistant_is_speaking = True
+    handler.address_gate.fast_check = MagicMock(
+        return_value=AddressResult(False, 0.0, "no_address_cues")
+    )
+    frame = (handler.input_sample_rate, np.zeros(160, dtype=np.int16))
+
+    await handler.receive(frame)
+    await handler.receive(frame)
+
+    append.assert_not_awaited()
+    handler.address_gate.fast_check.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_receive_forwards_mic_frame_while_assistant_speaks_and_gate_is_open() -> None:
+    handler, append = _build_audio_receive_handler()
+    handler._assistant_is_speaking = True
+    handler.address_gate.fast_check = MagicMock(
+        return_value=AddressResult(True, 0.5, "front_facing")
+    )
+
+    await handler.receive((handler.input_sample_rate, np.zeros(160, dtype=np.int16)))
+
+    append.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_receive_forwards_mic_frame_while_assistant_is_idle() -> None:
+    handler, append = _build_audio_receive_handler()
+    handler._assistant_is_speaking = False
+    handler.address_gate.fast_check = MagicMock()
+
+    await handler.receive((handler.input_sample_rate, np.zeros(160, dtype=np.int16)))
+
+    append.assert_awaited_once()
+    handler.address_gate.fast_check.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_receive_forwards_mic_frame_when_address_gate_errors() -> None:
+    handler, append = _build_audio_receive_handler()
+    handler._assistant_is_speaking = True
+    handler.address_gate.fast_check = MagicMock(side_effect=RuntimeError("gate unavailable"))
+
+    await handler.receive((handler.input_sample_rate, np.zeros(160, dtype=np.int16)))
+
+    append.assert_awaited_once()
 
 
 async def _run_openai_handler_with_events(
@@ -115,6 +180,37 @@ async def _run_openai_handler_with_events(
 
     await handler._run_realtime_session()
     return handler
+
+
+@pytest.mark.asyncio
+async def test_output_audio_delta_marks_assistant_as_speaking(monkeypatch: Any) -> None:
+    audio_delta = base64.b64encode(b"\x00\x00").decode("ascii")
+
+    handler = await _run_openai_handler_with_events(
+        monkeypatch,
+        [SimpleNamespace(type="response.output_audio.delta", delta=audio_delta)],
+    )
+
+    assert handler._assistant_is_speaking is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("done_event", ["response.output_audio.done", "response.done"])
+async def test_output_audio_completion_marks_assistant_as_idle(
+    monkeypatch: Any,
+    done_event: str,
+) -> None:
+    audio_delta = base64.b64encode(b"\x00\x00").decode("ascii")
+
+    handler = await _run_openai_handler_with_events(
+        monkeypatch,
+        [
+            SimpleNamespace(type="response.output_audio.delta", delta=audio_delta),
+            SimpleNamespace(type=done_event),
+        ],
+    )
+
+    assert handler._assistant_is_speaking is False
 
 
 @pytest.mark.asyncio
@@ -421,6 +517,48 @@ async def test_user_speech_events_reset_idle_timer(monkeypatch: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_unaddressed_speech_does_not_clear_realtime_playback(monkeypatch: Any) -> None:
+    """A closed address gate should suppress realtime barge-in."""
+    clear_queue = MagicMock()
+
+    def configure_gate(handler: OpenaiRealtimeHandler) -> None:
+        handler._clear_queue = clear_queue
+        handler.address_gate.fast_check = MagicMock(
+            return_value=AddressResult(False, 0.0, "no_address_cues")
+        )
+
+    handler = await _run_openai_handler_with_events(
+        monkeypatch,
+        [SimpleNamespace(type="input_audio_buffer.speech_started")],
+        handler_setup=configure_gate,
+    )
+
+    handler.address_gate.fast_check.assert_called_once_with()
+    clear_queue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_addressed_speech_clears_realtime_playback(monkeypatch: Any) -> None:
+    """An open address gate should retain the existing barge-in behavior."""
+    clear_queue = MagicMock()
+
+    def configure_gate(handler: OpenaiRealtimeHandler) -> None:
+        handler._clear_queue = clear_queue
+        handler.address_gate.fast_check = MagicMock(
+            return_value=AddressResult(True, 0.5, "front_facing")
+        )
+
+    handler = await _run_openai_handler_with_events(
+        monkeypatch,
+        [SimpleNamespace(type="input_audio_buffer.speech_started")],
+        handler_setup=configure_gate,
+    )
+
+    handler.address_gate.fast_check.assert_called_once_with()
+    clear_queue.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 async def test_empty_user_transcript_exits_listening_without_chat_message(monkeypatch: Any) -> None:
     """Blank VAD commits should not leave listening motion frozen."""
     movement_manager = MagicMock()
@@ -481,6 +619,52 @@ async def test_apply_personality_preserves_manual_voice_override(monkeypatch: An
     restart.assert_awaited_once()
     session = update.await_args.kwargs["session"]
     assert session["audio"]["output"]["voice"] == "marin"
+
+
+@pytest.mark.asyncio
+async def test_change_voice_live_failure_preserves_previous_override_and_current_voice() -> None:
+    """A rejected live update must not make the requested voice current."""
+    handler = OpenaiRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler._voice_override = "marin"
+    update = AsyncMock(side_effect=RuntimeError("session rejected voice"))
+    handler.connection = SimpleNamespace(session=SimpleNamespace(update=update))
+
+    status = await handler.change_voice("cedar")
+
+    assert status == "Voice change failed. Will take effect on next connection."
+    assert handler._voice_override == "marin"
+    assert handler.get_current_voice() == "marin"
+    update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_change_voice_live_success_commits_requested_override() -> None:
+    """A successful live update commits the requested voice."""
+    handler = OpenaiRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    update = AsyncMock()
+    handler.connection = SimpleNamespace(session=SimpleNamespace(update=update))
+
+    status = await handler.change_voice("cedar")
+
+    assert status == "Voice changed to cedar."
+    assert handler._voice_override == "cedar"
+    assert handler.get_current_voice() == "cedar"
+    update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_change_voice_without_connection_commits_next_connection_override() -> None:
+    """A disconnected voice selection is retained for the next connection."""
+    handler = OpenaiRealtimeHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()),
+        startup_voice="marin",
+    )
+
+    status = await handler.change_voice("cedar")
+
+    assert status == "Voice changed. Will take effect on next connection."
+    assert handler._voice_override == "cedar"
+    assert handler.get_current_voice() == "cedar"
 
 
 def test_handler_uses_startup_voice_at_startup(monkeypatch: Any) -> None:

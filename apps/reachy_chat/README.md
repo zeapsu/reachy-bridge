@@ -1,61 +1,73 @@
----
-title: Reachy Chat
-emoji: 🤖
-colorFrom: purple
-colorTo: gray
-sdk: static
-pinned: false
-tags:
-  - reachy_mini
-  - reachy_mini_python_app
----
-
 # Reachy Chat
 
-Forked from the Reachy Mini conversation app.
+A voice conversation app for Reachy Mini with multiple backend options. The default backend is **OpenAI Realtime**, which provides low-latency bidirectional speech over WebSocket with smart "addressed-to-me" barge-in. Alternative backends include **Gemini Live**, **Hugging Face Realtime**, and a local turn-based pipeline via **OpenRouter Chat**.
 
-## OpenRouter setup
+## Setup
 
-The default voice backend uses a turn-based local speech pipeline:
+1. Copy `.env.example` to `.env` in the app root directory (next to this README).
+2. Choose your backend and set the required API key(s):
 
-1. The Reachy Mini SDK captures 16 kHz microphone samples.
-2. `faster-whisper` transcribes each utterance locally after trailing silence is detected.
-3. The OpenAI-compatible client sends the bounded conversation history to OpenRouter's chat-completions API.
-4. `pyttsx3` synthesizes the response locally.
-5. The SDK streams the generated audio to Reachy Mini's speaker while the existing speech wobble is active.
+| Backend | Required Keys | Optional |
+|---------|---------------|----------|
+| **OpenAI Realtime** (default) | `OPENAI_API_KEY` | `OPENAI_REALTIME_MODEL` |
+| Gemini Live | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | — |
+| OpenRouter Chat | `OPENROUTER_API_KEY` | `OPENROUTER_MODEL` (default: `minimax/minimax-m3`) |
+| Hugging Face | — | `HF_TOKEN` |
 
-OpenRouter handles text generation only; the app does not use an OpenAI Realtime websocket.
+3. Set `BACKEND_PROVIDER` in `.env` to one of: `openai_realtime`, `gemini`, `openai`, `huggingface`.
+   - If not set, the app defaults to **`openai_realtime`**.
+4. Alternatively, configure backend and API keys via the **Settings UI** at `http://localhost:7860` when the app is running.
 
-1. Copy `.env.example` to `.env`.
-2. Set `OPENROUTER_API_KEY` to your OpenRouter API key.
-3. Optionally set `OPENROUTER_MODEL` to another OpenRouter model ID. The default is `deepseek/deepseek-v4-flash`.
+## Features
 
-Required environment variables:
+- **OpenAI Realtime (default)**: Low-latency bidirectional voice conversation over WebSocket with native OpenAI voice (e.g., `cedar`). Includes smart "addressed-to-me" gate to suppress unaddressed barge-in.
+- **Gemini Live**: Real-time conversation with Google's Gemini 3.1 Flash, supporting multiple voices.
+- **Hugging Face Realtime**: Community-hosted realtime backend.
+- **OpenRouter Chat**: Turn-based local speech pipeline: mic → `faster-whisper` → OpenRouter text-generation → native TTS → speaker.
+  - On **macOS/Apple Silicon**, uses the native `say` command for TTS (pyttsx3's `save_to_file` is broken there). On other platforms, falls back to pyttsx3.
+  - Camera vision context is attached to OpenRouter requests.
+- **Personalities**: Unlocked personality selection with voice-optimized default prompt.
 
-```bash
-OPENROUTER_API_KEY=your_key_here
-OPENROUTER_MODEL=deepseek/deepseek-v4-flash
-```
+## Local Speech Requirements (OpenRouter / Turn-Based Path Only)
 
-## Local speech requirements
-
-The full voice loop requires a working Reachy Mini microphone and speaker. The Python environment also includes:
+The turn-based local pipeline requires:
 
 - `faster-whisper>=1.0.0` for local speech recognition
-- `pyttsx3>=2.90` for platform speech synthesis
+- `pyttsx3>=2.90` for local platform speech synthesis (non-macOS) or native `say` (macOS)
 
 On the first spoken turn, `faster-whisper` downloads the default `base.en` model to the Hugging Face cache (normally `~/.cache/huggingface/`). Later starts reuse that cache. The module import itself does not initialize either speech engine or download a model.
 
-The optional `WHISPER_MODEL`, `WHISPER_DEVICE`, and `WHISPER_COMPUTE_TYPE` environment variables select a different faster-whisper runtime. Defaults are `base.en`, `cpu`, and `int8`.
+Use environment variables to customize the faster-whisper runtime:
 
-Use the `src/reachy_chat/profiles/_reachy_chat_locked_profile` folder to customize your own app from this template:
-- Edit instructions `_reachy_chat_locked_profile/instructions.txt`
-- Edit available tools in `_reachy_chat_locked_profile/tools.txt`
-- You can create your own tools in `_reachy_chat_locked_profile` by subclassing the `Tool` class.
+```bash
+WHISPER_MODEL=base.en          # Model size (tiny, base, small, medium, large)
+WHISPER_DEVICE=cpu             # Device (cpu, cuda)
+WHISPER_COMPUTE_TYPE=int8      # Quantization (int8, int16, float32)
+```
 
-Do not forget to customize:
-- this `README.md` file
-- the `index.html` file (Hugging Face Spaces landing page)
-- the `src/reachy_chat/static/index.html` (the web app parameters page)
+## Configuration
 
-The original README from the conversation app is available in `README_OLD.md`.
+### Media Backend
+
+- **`REACHY_MINI_MEDIA_BACKEND`** (default: `local`): Selects the SDK media backend. On Reachy Mini Lite, use `local`.
+
+### Dotenv Loading
+
+- **`REACHY_MINI_SKIP_DOTENV=1`**: Disable `.env` file loading (use environment variables only).
+- The app loads `.env` from the app root directory (`apps/reachy_chat/.env`), independent of the current working directory.
+
+### Custom Profiles and Personalities
+
+Use the `profiles/_reachy_chat_locked_profile` folder to customize your own app from this template:
+
+- Edit instructions in `_reachy_chat_locked_profile/instructions.txt`
+- Define available tools in `_reachy_chat_locked_profile/tools.txt`
+- Create custom tools by subclassing the `Tool` class in `_reachy_chat_locked_profile/*.py`
+
+To finalize your custom app:
+- Update this `README.md` file
+- Update the web app settings page (`src/reachy_chat/static/index.html`)
+
+## Archived Documentation
+
+The original README from the Reachy Mini conversation app is available in `README_OLD.md`.
