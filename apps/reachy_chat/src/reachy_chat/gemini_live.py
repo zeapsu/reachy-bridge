@@ -320,12 +320,14 @@ class GeminiLiveHandler(ConversationHandler):
 
     async def change_voice(self, voice: str) -> str:
         """Change only the voice and restart the session."""
+        previous_voice_override = self._voice_override
         self._voice_override = voice
         if getattr(self, "client", None) is not None:
             try:
                 await self._restart_session()
                 return f"Voice changed to {voice}."
             except Exception as e:
+                self._voice_override = previous_voice_override
                 logger.warning("Failed to restart session for voice change: %s", e)
                 return "Voice change failed. Will take effect on next connection."
         return "Voice changed. Will take effect on next connection."

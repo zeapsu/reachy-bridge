@@ -429,6 +429,59 @@ async def test_apply_personality_preserves_manual_voice_override(monkeypatch) ->
     restart.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_change_voice_restart_failure_restores_previous_override_and_current_voice() -> None:
+    """A failed Gemini restart must leave the previous voice selected."""
+    handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.client = object()
+    handler._voice_override = "Orus"
+    restart = AsyncMock(side_effect=RuntimeError("Gemini rejected voice"))
+    handler._restart_session = restart
+
+    status = await handler.change_voice("Zephyr")
+
+    assert status == "Voice change failed. Will take effect on next connection."
+    assert handler._voice_override == "Orus"
+    assert handler.get_current_voice() == "Orus"
+    restart.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_change_voice_restart_sees_proposed_override_and_commits_it() -> None:
+    """Gemini restart config must see the proposed voice before it commits."""
+    handler = GeminiLiveHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.client = object()
+    handler._voice_override = "Orus"
+    observed_voice: list[str] = []
+
+    async def _restart() -> None:
+        observed_voice.append(handler.get_current_voice())
+
+    handler._restart_session = _restart
+
+    status = await handler.change_voice("Zephyr")
+
+    assert status == "Voice changed to Zephyr."
+    assert observed_voice == ["Zephyr"]
+    assert handler._voice_override == "Zephyr"
+    assert handler.get_current_voice() == "Zephyr"
+
+
+@pytest.mark.asyncio
+async def test_change_voice_without_client_commits_next_connection_override() -> None:
+    """Gemini keeps a selected voice while disconnected for the next session."""
+    handler = GeminiLiveHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()),
+        startup_voice="Orus",
+    )
+
+    status = await handler.change_voice("Zephyr")
+
+    assert status == "Voice changed. Will take effect on next connection."
+    assert handler._voice_override == "Zephyr"
+    assert handler.get_current_voice() == "Zephyr"
+
+
 def test_handler_uses_startup_voice_at_startup() -> None:
     """Gemini handler startup should restore a persisted startup voice."""
     handler = GeminiLiveHandler(

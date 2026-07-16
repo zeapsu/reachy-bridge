@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from reachy_chat.config import GEMINI_AVAILABLE_VOICES, config
 from reachy_chat.console import LocalStream
+from reachy_chat.openai_realtime import OpenaiRealtimeHandler
 from reachy_chat.startup_settings import (
     StartupSettings,
     load_startup_settings_into_runtime,
@@ -907,6 +908,56 @@ def test_mounted_production_voice_failure_returns_non_2xx(tmp_path: Path) -> Non
     assert response.status_code == 500
     assert "local voice missing" in response.json()["error"]
     assert not (tmp_path / "startup_settings.json").exists()
+
+
+def test_mounted_live_voice_rejection_preserves_current_and_persistence(tmp_path: Path) -> None:
+    """A real live-session rejection returns HTTP 500 without mutating state or disk."""
+    handler = OpenaiRealtimeHandler(
+        SimpleNamespace(
+            reachy_mini=MagicMock(),
+            movement_manager=MagicMock(),
+            camera_worker=MagicMock(),
+        ),
+        instance_path=str(tmp_path),
+        startup_voice="marin",
+    )
+    update = AsyncMock(side_effect=RuntimeError("session rejected voice"))
+    handler.connection = SimpleNamespace(session=SimpleNamespace(update=update))
+    app = FastAPI()
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        started.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=_run_loop, daemon=True)
+    thread.start()
+    started.wait(timeout=1.0)
+    try:
+        stream = LocalStream(
+            handler,
+            MagicMock(),
+            settings_app=app,
+            instance_path=str(tmp_path),
+            startup_voice="marin",
+        )
+        stream._asyncio_loop = loop
+        stream._init_settings_ui_if_needed()
+        response = TestClient(app).post("/voices/apply", json={"voice": "cedar"})
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1.0)
+        loop.close()
+
+    assert response.status_code == 500
+    assert "Voice change failed" in response.json()["error"]
+    assert handler._voice_override == "marin"
+    assert handler.get_current_voice() == "marin"
+    assert stream._voice_override == "marin"
+    assert not (tmp_path / "startup_settings.json").exists()
+    update.assert_awaited_once()
 
 @pytest.mark.asyncio
 async def test_local_stream_voice_failure_is_not_persisted_or_reported_success() -> None:
