@@ -28,6 +28,16 @@ class LogSubscription:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._closed = False
         self._initial_lines: list[str] = []
+        self._initial_status = "empty"
+        self._file_end: int | None = None
+
+    @property
+    def initial_status(self) -> str:
+        return self._initial_status
+
+    @property
+    def file_end(self) -> int | None:
+        return self._file_end
 
     def __aiter__(self) -> AsyncIterator[dict[str, Any]]:
         return self
@@ -133,12 +143,20 @@ class LogBroker:
             self._schedule(source, {"kind": "status", "status": "live"})
         self._schedule(source, {"kind": "line", "line": text})
 
+    @staticmethod
+    def _file_end_locked(path: Path | None) -> int | None:
+        if path is None:
+            return None
+        try:
+            return path.stat().st_size
+        except OSError:
+            return None
+
     async def subscribe(
         self,
         source: str,
         *,
         replay: list[str] | None = None,
-        initial_status: str | None = None,
         defer_initial: bool = False,
     ) -> LogSubscription:
         loop = asyncio.get_running_loop()
@@ -146,12 +164,16 @@ class LogBroker:
             if self._closed:
                 raise RuntimeError("log broker is closed")
             self._rings.setdefault(source, deque(maxlen=self.ring_size))
-            status = self._statuses.get(source, "empty") if initial_status is None else initial_status
+            status = self._statuses.get(source, "empty")
+            source_path = self._files.get(source)
+            file_end = self._file_end_locked(source_path)
             lines = self.replay(source) if replay is None else list(replay[-200:])
             queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=self.queue_size)
             subscription = LogSubscription(self, source, queue)
             subscription._loop = loop
             subscription._initial_lines = lines
+            subscription._initial_status = status
+            subscription._file_end = file_end
             self._subscribers[subscription] = queue
             self._pending[subscription] = deque()
             if not defer_initial:
@@ -292,19 +314,18 @@ class LogBroker:
         queue.put_nowait(event)
 
     @staticmethod
-    def tail_file(path: Path, limit: int = 200) -> list[str]:
-        """Read at most a bounded suffix and return its latest lines.
-
-        The 128 KiB cap keeps reconnects safe even when a child writes one
-        multi-megabyte unterminated line.  A suffix beginning mid-line is
-        discarded when a later newline provides a complete-line boundary.
-        """
+    def tail_file(path: Path, limit: int = 200, end: int | None = None) -> list[str]:
+        """Read a bounded suffix, optionally stopping at a registration cutoff."""
         if limit < 1:
             return []
         try:
             with path.open("rb") as handle:
                 handle.seek(0, 2)
-                end = handle.tell()
+                file_end = handle.tell()
+                if end is None:
+                    end = file_end
+                else:
+                    end = min(max(0, end), file_end)
                 start = max(0, end - LogBroker.TAIL_BYTES)
                 handle.seek(start)
                 data = handle.read(end - start)
@@ -335,6 +356,8 @@ class LogBroker:
 class ProcessLogPump:
     """Drain one merged child stdout/stderr pipe on a dedicated reader thread."""
 
+    MAX_PARTIAL_LINE_BYTES = 64 * 1024
+
     def __init__(self, process: Any, source: str, broker: LogBroker, log_path: Path) -> None:
         self.process = process
         self.source = source
@@ -346,6 +369,8 @@ class ProcessLogPump:
         self._stream_closed = False
         self._done = threading.Event()
         self._stop_requested = threading.Event()
+        self.max_pending_bytes = 0
+        self.max_published_line_bytes = 0
         self._thread: threading.Thread | None = None
         self._open_file()
         self.broker.set_file(source, log_path)
@@ -362,11 +387,12 @@ class ProcessLogPump:
         return self._file
 
     def _open_file(self) -> None:
-        try:
-            self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            self._file = self.log_path.open("w", encoding="utf-8", buffering=1)
-        except OSError:
-            self._file = None
+        with self.broker._lock:
+            try:
+                self.log_path.parent.mkdir(parents=True, exist_ok=True)
+                self._file = self.log_path.open("w", encoding="utf-8", buffering=1)
+            except OSError:
+                self._file = None
 
     @staticmethod
     def _stream_fd(stream: Any) -> int | None:
@@ -376,15 +402,48 @@ class ProcessLogPump:
             return None
         return fd if type(fd) is int and fd >= 0 else None
 
+    @classmethod
+    def _bounded_prefix(cls, text: str) -> tuple[str, str]:
+        encoded = text.encode("utf-8", "replace")
+        if len(encoded) <= cls.MAX_PARTIAL_LINE_BYTES:
+            return text, ""
+        prefix_bytes = encoded[: cls.MAX_PARTIAL_LINE_BYTES]
+        prefix = prefix_bytes.decode("utf-8", "ignore")
+        consumed = len(prefix.encode("utf-8"))
+        if consumed == 0:
+            prefix = text[0]
+            consumed = len(prefix.encode("utf-8"))
+        remainder = encoded[consumed:].decode("utf-8", "replace")
+        return prefix, remainder
+
+    def _flush_oversized_pending(self, pending: str) -> str:
+        while len(pending.encode("utf-8", "replace")) > self.MAX_PARTIAL_LINE_BYTES:
+            chunk, pending = self._bounded_prefix(pending)
+            self._write_line(chunk)
+        self.max_pending_bytes = max(
+            self.max_pending_bytes, len(pending.encode("utf-8", "replace"))
+        )
+        return pending
+
+    def _write_bounded_text(self, text: str) -> None:
+        pending = text.rstrip("\r\n")
+        while pending:
+            chunk, pending = self._bounded_prefix(pending)
+            self._write_line(chunk)
+
     def _write_line(self, text: str) -> None:
-        with self._file_lock:
-            if self._file is not None:
-                try:
-                    self._file.write(text + "\n")
-                    self._file.flush()
-                except (OSError, TypeError):
-                    pass
-        self.broker.publish(self.source, text)
+        self.max_published_line_bytes = max(
+            self.max_published_line_bytes, len(text.encode("utf-8", "replace"))
+        )
+        with self.broker._lock:
+            with self._file_lock:
+                if self._file is not None:
+                    try:
+                        self._file.write(text + "\n")
+                        self._file.flush()
+                    except (OSError, TypeError):
+                        pass
+            self.broker.publish(self.source, text)
 
     def _close_stream(self, stream: Any) -> None:
         with self._stream_close_lock:
@@ -405,7 +464,7 @@ class ProcessLogPump:
                 return
             if line == "" or not isinstance(line, str):
                 return
-            self._write_line(line.rstrip("\r\n"))
+            self._write_bounded_text(line)
 
     def _drain(self) -> None:
         stream = getattr(self.process, "stdout", None)
@@ -418,8 +477,8 @@ class ProcessLogPump:
                 return
 
             # TextIOWrapper.readline() can stay blocked forever when a descendant
-            # inherited the parent's pipe.  Read the descriptor directly in
-            # bounded, nonblocking chunks so stop_event, not EOF, controls exit.
+            # inherited the parent's pipe. Read the descriptor directly in bounded,
+            # nonblocking chunks so stop_event, not EOF, controls exit.
             try:
                 os.set_blocking(fd, False)
             except OSError:
@@ -442,11 +501,13 @@ class ProcessLogPump:
                 if not chunk:
                     break
                 pending += decoder.decode(chunk)
+                pending = self._flush_oversized_pending(pending)
                 while "\n" in pending:
                     line, pending = pending.split("\n", 1)
                     self._write_line(line.rstrip("\r"))
-
+                    pending = self._flush_oversized_pending(pending)
             pending += decoder.decode(b"", final=True)
+            pending = self._flush_oversized_pending(pending)
             if pending:
                 self._write_line(pending.rstrip("\r\n"))
         finally:
@@ -500,11 +561,12 @@ class ControllerLogHandler(logging.Handler):
         try:
             timestamp = time.strftime("%H:%M:%S", time.localtime(record.created))
             message = f"{timestamp} {record.levelname:<8} {record.name}: {record.getMessage()}"
-            with self._lock:
-                if self._file is not None:
-                    self._file.write(message + "\n")
-                    self._file.flush()
-            self.broker.publish("controller", message)
+            with self.broker._lock:
+                with self._lock:
+                    if self._file is not None:
+                        self._file.write(message + "\n")
+                        self._file.flush()
+                self.broker.publish("controller", message)
         except Exception:
             # Logging must never recursively report its own transport/file failure.
             return

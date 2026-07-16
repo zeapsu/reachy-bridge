@@ -125,7 +125,7 @@ async def test_stream_keeps_lines_published_during_persisted_tail(
     broker.set_file("reachy_chat", path)
     broker.reset("reachy_chat", status="empty")
 
-    def delayed_tail(_: Path, __: int) -> list[str]:
+    def delayed_tail(_: Path, __: int, ___: int | None = None) -> list[str]:
         broker.publish("reachy_chat", "during-tail")
         time.sleep(0.02)
         return ["persisted"]
@@ -279,3 +279,89 @@ async def test_controller_handler_is_owned_by_lifespan() -> None:
     assert app.state.controller_log_handler is None
     assert handler._file is None
     assert handler not in logging.getLogger().handlers
+
+
+@pytest.mark.asyncio
+async def test_process_pump_bounds_unterminated_output(tmp_path: Path) -> None:
+    broker = LogBroker()
+    broker.bind_source("huge")
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write('x' * (4 * 1024 * 1024)); sys.stdout.flush()",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    pump = ProcessLogPump(process, "huge", broker, tmp_path / "huge.log")
+    await asyncio.to_thread(process.wait)
+    await asyncio.to_thread(pump.stop, 1.0)
+    assert pump.thread is not None and not pump.thread.is_alive()
+    assert pump.max_pending_bytes <= ProcessLogPump.MAX_PARTIAL_LINE_BYTES
+    assert pump.max_published_line_bytes <= ProcessLogPump.MAX_PARTIAL_LINE_BYTES
+    assert all(
+        len(line.encode("utf-8")) <= ProcessLogPump.MAX_PARTIAL_LINE_BYTES
+        for line in (tmp_path / "huge.log").read_text().splitlines()
+    )
+    await broker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_live_publish_during_tail_is_not_replayed_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = create_app()
+    broker = app.state.log_broker
+    path = tmp_path / "reachy_chat.log"
+    path.write_text("persisted\n", encoding="utf-8")
+    broker.set_file("reachy_chat", path)
+    broker.reset("reachy_chat", status="empty")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_tail = broker.tail_file
+    loop = asyncio.get_running_loop()
+
+    def delayed_tail(path_arg: Path, limit: int, end: int | None = None) -> list[str]:
+        loop.call_soon_threadsafe(entered.set)
+        # The broker registration has already captured this file cutoff.
+        while not release.is_set():
+            time.sleep(0.001)
+        return original_tail(path_arg, limit, end=end)
+
+    monkeypatch.setattr(broker, "tail_file", delayed_tail)
+    task = asyncio.create_task(log_stream(_stream_request(app), "reachy_chat"))  # type: ignore[arg-type]
+    await entered.wait()
+    with broker._lock:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("during-tail\n")
+        broker.publish("reachy_chat", "during-tail")
+    release.set()
+    response = await task
+    stream = response.body_iterator
+    reset = await stream.__anext__()
+    assert json.loads(reset.split("data: ", 1)[1])["lines"] == ["persisted"]
+    status = await stream.__anext__()
+    assert status.startswith("event: source-status")
+    lines = await stream.__anext__()
+    assert json.loads(lines.split("data: ", 1)[1]) == {"lines": ["during-tail"]}
+    await stream.aclose()
+    await broker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_live_subscription_uses_ring_not_persisted_fallback(tmp_path: Path) -> None:
+    app = create_app()
+    broker = app.state.log_broker
+    path = tmp_path / "reachy_chat.log"
+    path.write_text("stale-file-line\n", encoding="utf-8")
+    broker.set_file("reachy_chat", path)
+    broker.reset("reachy_chat", status="empty")
+    broker.set_status("reachy_chat", "live")
+    response = await log_stream(_stream_request(app), "reachy_chat")  # type: ignore[arg-type]
+    reset = await response.body_iterator.__anext__()
+    assert json.loads(reset.split("data: ", 1)[1]) == {"status": "live", "lines": []}
+    await response.body_iterator.aclose()
+    await broker.aclose()

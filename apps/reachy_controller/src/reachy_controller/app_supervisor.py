@@ -616,6 +616,40 @@ class AppSupervisor:
             self.log_broker.set_status(name, "unavailable")
             logger.info(f"Reconciled orphaned app {name} (pid {pid})")
 
+    async def aget_all_status(self) -> list[dict[str, Any]]:
+        """Reconcile process discovery without mutating app state off-loop.
+
+        Process-table discovery is read-only and may be slow, so it runs in a
+        worker. The resulting snapshot is adopted only while holding the same
+        lifecycle lock used by start/stop.
+        """
+        found = await asyncio.to_thread(self._scan_for_live_apps)
+        async with self._lock:
+            for app in self._apps.values():
+                if app.status != "running" or app.pid is None:
+                    continue
+                match = found.get(app.name)
+                if match is not None and match[0] == app.pid:
+                    continue
+                logger.info(f"App {app.name} (pid {app.pid}) is dead; transition to stopped")
+                app.status = "stopped"
+                self.log_broker.set_status(app.name, "stopped")
+                app.external = False
+                app.pid = None
+
+            for name, (pid, create_time) in found.items():
+                app = self._apps[name]
+                if app.status != "stopped" and not (app.status == "running" and app.pid is None):
+                    continue
+                app.pid = pid
+                app.status = "running"
+                app.process = None
+                app.start_time = create_time
+                self.log_broker.set_status(name, "unavailable")
+                app.external = True
+                logger.info(f"Adopted external app {name} (pid {pid})")
+            return [app.to_dict() for app in self._apps.values()]
+
     def get_all_status(self) -> list[dict[str, Any]]:
         """Get status for all apps. Reconciles dead processes and adopts live external apps."""
         # Liveness check: if a process is marked running but is dead, transition it to stopped

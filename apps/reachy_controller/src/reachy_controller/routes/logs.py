@@ -41,7 +41,7 @@ def _status_for_source(request: Request, source: str) -> str:
 async def log_sources(request: Request) -> dict[str, list[dict[str, Any]]]:
     """Return dynamic source ids and honest capture/status metadata."""
     supervisor: AppSupervisor = request.app.state.app_supervisor
-    statuses = await asyncio.to_thread(supervisor.get_all_status)
+    statuses = await supervisor.aget_all_status()
     by_name = {item["name"]: item for item in statuses}
     sources: list[dict[str, Any]] = []
     for source in _source_ids(request):
@@ -126,20 +126,21 @@ async def log_stream(request: Request, source: str = Query(...)) -> StreamingRes
     if source not in _source_ids(request):
         raise HTTPException(status_code=404, detail="Unknown log source")
     broker: LogBroker = request.app.state.log_broker
-    initial_status = _status_for_source(request, source)
-    # Register before the persisted tail read.  The broker captures the ring
-    # snapshot/status under its lock and holds live events in bounded staging.
-    subscription = await broker.subscribe(
-        source,
-        initial_status=initial_status,
-        defer_initial=True,
-    )
+    # Registration captures status, ring replay, and the persisted-file cutoff
+    # under one broker lock. Never derive a live source's initial state from the
+    # asynchronously-read file.
+    subscription = await broker.subscribe(source, defer_initial=True)
+    captured_status = subscription.initial_status
     replay = subscription._initial_lines
-    if not replay:
-        path = broker.source_file(source)
-        if path is not None:
-            replay = await asyncio.to_thread(broker.tail_file, path, 200)
-    await broker.initialize(subscription, lines=replay, status=initial_status)
+    effective_status = captured_status
+    path = broker.source_file(source)
+    if not replay and captured_status == "empty" and path is not None:
+        replay = await asyncio.to_thread(
+            broker.tail_file, path, 200, subscription.file_end
+        )
+        if replay:
+            effective_status = "stopped"
+    await broker.initialize(subscription, lines=replay, status=effective_status)
     return StreamingResponse(
         _stream_events(broker, subscription),
         media_type="text/event-stream",

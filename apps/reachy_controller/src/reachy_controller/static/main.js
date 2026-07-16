@@ -111,7 +111,14 @@
     }
   }
 
+  function emptyLogMessage(status) {
+    if (status === "offline") return "daemon offline — no output";
+    if (status === "unavailable") return "daemon output isn't captured yet";
+    return "waiting for output";
+  }
+
   function setLogStatus(status) {
+    state.log.status = status;
     const stateText = status === "unavailable" ? "not captured" : status;
     $("log-state").textContent = stateText || "idle";
     const dotClass = status === "live" ? "ok" : status === "offline" ? "error" : status === "connecting" || status === "reconnecting" ? "loading" : "";
@@ -151,9 +158,15 @@
   }
 
   function replaceLogLines(lines) {
+    const nextLines = Array.isArray(lines) ? lines : [];
     $("log-out").replaceChildren();
     state.log.lines = 0;
-    appendLogLines(Array.isArray(lines) ? lines : []);
+    state.log.follow = true;
+    $("log-follow").hidden = true;
+    $("log-empty").textContent = emptyLogMessage(state.log.status);
+    $("log-empty").hidden = false;
+    updateLogCount();
+    appendLogLines(nextLines);
   }
 
   async function loadLogSources(signal, generation) {

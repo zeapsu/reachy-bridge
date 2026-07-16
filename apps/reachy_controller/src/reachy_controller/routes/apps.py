@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api", tags=["apps"])
 async def get_apps_status(request: Request) -> list[dict[str, Any]]:
     """Get status for all managed apps."""
     supervisor = request.app.state.app_supervisor
-    return supervisor.get_all_status()
+    return await supervisor.aget_all_status()
 
 
 @router.post("/apps/start/{name}")

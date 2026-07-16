@@ -6,6 +6,7 @@ import asyncio
 import subprocess
 import signal
 import sys
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1386,3 +1387,37 @@ def test_get_all_status_rejects_confusingly_named_module() -> None:
     assert dance_status["status"] == "stopped"
     assert supervisor._apps["reachy_dance"].status == "stopped"
     assert supervisor._apps["reachy_dance"].pid is None
+
+
+@pytest.mark.asyncio
+async def test_async_status_reconciliation_does_not_erase_loading_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor = AppSupervisor()
+    scanned = asyncio.Event()
+    release = asyncio.Event()
+    found = {"reachy_chat": (9001, 12.5)}
+    loop = asyncio.get_running_loop()
+
+    def delayed_scan() -> dict[str, tuple[int, float]]:
+        # This function executes in a worker; signal the event-loop task safely.
+        loop.call_soon_threadsafe(scanned.set)
+        while not release.is_set():
+            time.sleep(0.001)
+        return found
+
+    monkeypatch.setattr(supervisor, "_scan_for_live_apps", delayed_scan)
+    task = asyncio.create_task(supervisor.aget_all_status())
+    await scanned.wait()
+    async with supervisor._lock:
+        app = supervisor._apps["reachy_chat"]
+        process = object()
+        app.process = process  # type: ignore[assignment]
+        app.pid = 42
+        app.status = "loading"
+        app.external = False
+    release.set()
+    await task
+    assert app.process is process
+    assert app.pid == 42
+    assert app.status == "loading"
