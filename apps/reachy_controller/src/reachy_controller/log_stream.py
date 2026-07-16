@@ -22,6 +22,7 @@ class LogSubscription:
         self._broker = broker
         self.source = source
         self._queue = queue
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._closed = False
 
     def __aiter__(self) -> AsyncIterator[dict[str, Any]]:
@@ -45,6 +46,8 @@ class LogSubscription:
 class LogBroker:
     """Thread-safe bounded per-source rings and per-client async fan-out."""
 
+    TAIL_BYTES = 128 * 1024
+
     def __init__(self, *, ring_size: int = 500, queue_size: int = 256) -> None:
         if ring_size < 1 or queue_size < 1:
             raise ValueError("ring_size and queue_size must be positive")
@@ -54,6 +57,11 @@ class LogBroker:
         self._statuses: dict[str, str] = {}
         self._files: dict[str, Path] = {}
         self._subscribers: dict[LogSubscription, asyncio.Queue[Any]] = {}
+        # Pumps publish from arbitrary reader threads.  Stage a bounded amount
+        # per subscriber before touching the event loop, and schedule one drain
+        # callback per subscriber at a time.
+        self._pending: dict[LogSubscription, deque[dict[str, Any]]] = {}
+        self._scheduled: set[LogSubscription] = set()
         self._lock = threading.RLock()
         self._closed = False
 
@@ -103,6 +111,9 @@ class LogBroker:
             if status is not None:
                 self._statuses[source] = status
             current = self._statuses.get(source, current)
+        # _stage_event replaces all pending data/control events with this
+        # protected reset.  The drain also clears an already-full client queue
+        # before inserting it, so a later burst cannot evict the reset.
         self._schedule(source, {"kind": "reset", "status": current, "lines": []})
 
     def publish(self, source: str, line: str) -> None:
@@ -128,73 +139,133 @@ class LogBroker:
             lines = self.replay(source) if replay is None else list(replay[-200:])
             queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=self.queue_size)
             subscription = LogSubscription(self, source, queue)
+            subscription._loop = loop
             self._subscribers[subscription] = queue
+            self._pending[subscription] = deque()
             queue.put_nowait({"kind": "reset", "status": status, "lines": lines})
-            setattr(subscription, "_loop", loop)
             return subscription
 
     async def unsubscribe(self, subscription: LogSubscription) -> None:
         with self._lock:
-            self._subscribers.pop(subscription, None)
-            try:
-                subscription._queue.put_nowait(_CLOSED)
-            except asyncio.QueueFull:
-                try:
-                    subscription._queue.get_nowait()
-                    subscription._queue.put_nowait(_CLOSED)
-                except asyncio.QueueEmpty:
-                    pass
+            queue = self._subscribers.pop(subscription, None)
+            self._pending.pop(subscription, None)
+            self._scheduled.discard(subscription)
+            if queue is None:
+                return
+            self._clear_queue(queue)
+            queue.put_nowait(_CLOSED)
 
     def _schedule(self, source: str, event: dict[str, Any]) -> None:
+        callbacks: list[tuple[asyncio.AbstractEventLoop, LogSubscription]] = []
         with self._lock:
-            loops = {
-                loop
-                for subscription in self._subscribers
-                if subscription.source == source
-                for loop in (getattr(subscription, "_loop", None),)
-                if loop is not None and not loop.is_closed()
-            }
-        for loop in loops:
+            for subscription in tuple(self._subscribers):
+                if subscription.source != source:
+                    continue
+                pending = self._pending.setdefault(subscription, deque())
+                self._stage_event(pending, event)
+                loop = getattr(subscription, "_loop", None)
+                if loop is None or loop.is_closed() or subscription in self._scheduled:
+                    continue
+                self._scheduled.add(subscription)
+                callbacks.append((loop, subscription))
+        for loop, subscription in callbacks:
             try:
-                loop.call_soon_threadsafe(self._fanout, source, event)
+                loop.call_soon_threadsafe(self._drain, subscription)
             except RuntimeError:
-                continue
+                with self._lock:
+                    self._scheduled.discard(subscription)
 
-    def _fanout(self, source: str, event: dict[str, Any]) -> None:
+    def _drain(self, subscription: LogSubscription) -> None:
         with self._lock:
-            queues = tuple(
-                queue for subscription, queue in self._subscribers.items() if subscription.source == source
-            )
-        for queue in queues:
+            queue = self._subscribers.get(subscription)
+            pending = self._pending.get(subscription)
+            if queue is None or pending is None:
+                self._scheduled.discard(subscription)
+                return
+            while pending:
+                self._queue_event(queue, pending.popleft())
+            self._scheduled.discard(subscription)
+    def _stage_event(self, pending: deque[dict[str, Any]], event: dict[str, Any]) -> None:
+        if event.get("kind") == "reset":
+            pending.clear()
+            pending.append(event)
+            return
+        while len(pending) >= self.queue_size:
+            index = self._drop_index(pending, event.get("kind"))
+            if index is None:
+                return
+            del pending[index]
+        pending.append(event)
+
+    @staticmethod
+    def _drop_index(events: Any, incoming_kind: Any) -> int | None:
+        # Data never evicts reset/status controls.  A status update may replace
+        # an older status when no data remains, while a line is simply dropped.
+        preferred = ("line",) if incoming_kind == "line" else ("line", "status")
+        for kind in preferred:
+            for index, item in enumerate(events):
+                if item is not _CLOSED and item.get("kind") == kind:
+                    return index
+        return None
+
+    @staticmethod
+    def _clear_queue(queue: asyncio.Queue[Any]) -> None:
+        while True:
             try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:
-                try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-                try:
-                    queue.put_nowait(event)
-                except asyncio.QueueFull:
-                    pass
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+
+    @classmethod
+    def _queue_event(cls, queue: asyncio.Queue[Any], event: dict[str, Any]) -> None:
+        if event.get("kind") == "reset":
+            cls._clear_queue(queue)
+            queue.put_nowait(event)
+            return
+        try:
+            queue.put_nowait(event)
+            return
+        except asyncio.QueueFull:
+            pass
+        items: list[Any] = []
+        while True:
+            try:
+                items.append(queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        index = cls._drop_index(items, event.get("kind"))
+        if index is None:
+            for item in items:
+                queue.put_nowait(item)
+            return
+        del items[index]
+        for item in items:
+            queue.put_nowait(item)
+        queue.put_nowait(event)
 
     @staticmethod
     def tail_file(path: Path, limit: int = 200) -> list[str]:
-        """Read only a bounded tail without loading an entire log into memory."""
+        """Read at most a bounded suffix and return its latest lines.
+
+        The 128 KiB cap keeps reconnects safe even when a child writes one
+        multi-megabyte unterminated line.  A suffix beginning mid-line is
+        discarded when a later newline provides a complete-line boundary.
+        """
         if limit < 1:
             return []
         try:
             with path.open("rb") as handle:
                 handle.seek(0, 2)
-                position = handle.tell()
-                data = b""
-                while position > 0 and data.count(b"\n") <= limit:
-                    size = min(8192, position)
-                    position -= size
-                    handle.seek(position)
-                    data = handle.read(size) + data
+                end = handle.tell()
+                start = max(0, end - LogBroker.TAIL_BYTES)
+                handle.seek(start)
+                data = handle.read(end - start)
         except OSError:
             return []
+        if start > 0:
+            boundary = data.find(b"\n")
+            if 0 <= boundary < len(data) - 1:
+                data = data[boundary + 1 :]
         lines = data.splitlines()[-limit:]
         return [line.decode("utf-8", "replace") for line in lines]
 
@@ -205,17 +276,13 @@ class LogBroker:
             self._closed = True
             subscribers = tuple(self._subscribers)
             self._subscribers.clear()
-        for subscription in subscribers:
-            subscription._closed = True
-            try:
-                subscription._queue.put_nowait(_CLOSED)
-            except asyncio.QueueFull:
-                try:
-                    subscription._queue.get_nowait()
-                    subscription._queue.put_nowait(_CLOSED)
-                except asyncio.QueueEmpty:
-                    pass
-
+            self._pending.clear()
+            self._scheduled.clear()
+            for subscription in subscribers:
+                subscription._closed = True
+                queue = subscription._queue
+                self._clear_queue(queue)
+                queue.put_nowait(_CLOSED)
 
 class ProcessLogPump:
     """Drain one merged child stdout/stderr pipe on a dedicated reader thread."""

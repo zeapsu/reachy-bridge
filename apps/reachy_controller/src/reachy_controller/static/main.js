@@ -36,7 +36,7 @@
     live: { streams: [], timers: [], active: false, statsStream: null },
     cameraAvailabilityRequest: 0,
     sysView: "stats",
-    log: { source: LOG_DEFAULT_SOURCE, stream: null, lines: 0, follow: true, loading: false },
+    log: { source: LOG_DEFAULT_SOURCE, stream: null, lines: 0, follow: true, loading: false, openGeneration: 0, openAbort: null },
   };
 
   document.querySelectorAll(".glass").forEach((glass) => {
@@ -156,9 +156,10 @@
     appendLogLines(Array.isArray(lines) ? lines : []);
   }
 
-  async function loadLogSources() {
+  async function loadLogSources(signal, generation) {
     try {
-      const payload = await apiJson("/api/logs/sources");
+      const payload = await apiJson("/api/logs/sources", { signal });
+      if (signal?.aborted || generation !== state.log.openGeneration) return false;
       const sources = Array.isArray(payload?.sources) ? payload.sources : [];
       const select = $("log-source");
       const selected = state.log.source;
@@ -175,17 +176,22 @@
       }
       select.value = state.log.source;
       $("log-src-v").textContent = state.log.source;
+      return true;
     } catch (_) {
+      if (signal?.aborted || generation !== state.log.openGeneration) return false;
       $("log-source").replaceChildren();
       const option = document.createElement("option");
       option.value = LOG_DEFAULT_SOURCE;
       option.textContent = LOG_DEFAULT_SOURCE;
       $("log-source").appendChild(option);
       $("log-source").value = state.log.source;
+      return false;
     }
   }
-
   function closeLogStream() {
+    state.log.openGeneration += 1;
+    state.log.openAbort?.abort();
+    state.log.openAbort = null;
     if (state.log.stream) state.log.stream.close();
     state.log.stream = null;
     state.log.loading = false;
@@ -194,11 +200,24 @@
 
   async function openLogStream() {
     if (document.hidden || state.sysView !== "logs" || state.log.stream || state.log.loading) return;
+    const generation = state.log.openGeneration + 1;
+    const abort = new AbortController();
+    state.log.openGeneration = generation;
+    state.log.openAbort = abort;
     state.log.loading = true;
     setLogStatus("connecting");
-    await loadLogSources();
-    if (document.hidden || state.sysView !== "logs") {
-      state.log.loading = false;
+    await loadLogSources(abort.signal, generation);
+    if (
+      abort.signal.aborted
+      || generation !== state.log.openGeneration
+      || document.hidden
+      || state.sysView !== "logs"
+      || state.log.stream
+    ) {
+      if (generation === state.log.openGeneration) {
+        state.log.loading = false;
+        state.log.openAbort = null;
+      }
       return;
     }
     const source = encodeURIComponent(state.log.source);
@@ -216,10 +235,22 @@
       "source-status": (event) => setLogStatus((readEventPayload(event) || {}).status || "empty"),
       error: () => setLogStatus("reconnecting"),
     });
+    if (
+      abort.signal.aborted
+      || generation !== state.log.openGeneration
+      || document.hidden
+      || state.sysView !== "logs"
+      || state.log.stream
+    ) {
+      if (stream) stream.close();
+      return;
+    }
     state.log.loading = false;
+    state.log.openAbort = null;
     if (stream) state.log.stream = stream;
     else setLogStatus("reconnecting");
   }
+
 
   function setSysView(view) {
     if (view !== "stats" && view !== "logs") return;

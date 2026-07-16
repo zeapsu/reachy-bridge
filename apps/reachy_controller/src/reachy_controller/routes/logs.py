@@ -89,6 +89,7 @@ async def _stream_events(
 
             lines = [str(event.get("line", ""))]
             deadline = asyncio.get_running_loop().time() + _BATCH_SECONDS
+            control_event: dict[str, Any] | None = None
             while len(lines) < _BATCH_LINES:
                 timeout = deadline - asyncio.get_running_loop().time()
                 if timeout <= 0:
@@ -100,16 +101,18 @@ async def _stream_events(
                 except StopAsyncIteration:
                     break
                 if pending.get("kind") != "line":
-                    # Preserve control events before the next batch. They are
-                    # rare and can be emitted immediately without delaying lines.
-                    if pending.get("kind") == "status":
-                        yield f"event: source-status\ndata: {json.dumps({'status': pending.get('status', 'empty')})}\n\n"
-                    elif pending.get("kind") == "reset":
-                        payload = {"status": pending.get("status", "empty"), "lines": pending.get("lines", [])}
-                        yield f"event: log-reset\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    control_event = pending
                     break
                 lines.append(str(pending.get("line", "")))
+            # A control event terminates this batch, but only after all lines
+            # read before it have been emitted.
             yield f"event: log-lines\ndata: {json.dumps({'lines': lines}, ensure_ascii=False)}\n\n"
+            if control_event is not None:
+                if control_event.get("kind") == "status":
+                    yield f"event: source-status\ndata: {json.dumps({'status': control_event.get('status', 'empty')})}\n\n"
+                elif control_event.get("kind") == "reset":
+                    payload = {"status": control_event.get("status", "empty"), "lines": control_event.get("lines", [])}
+                    yield f"event: log-reset\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
             last_event = asyncio.get_running_loop().time()
     except asyncio.CancelledError:
         return

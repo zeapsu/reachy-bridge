@@ -74,26 +74,32 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     stats_broadcaster = StatsBroadcaster(daemon_proxy)
     expression_player = ExpressionPlayer(daemon_proxy)
     controller_log_path = app_supervisor._workspace_root / ".reachy-logs" / "controller.log"
-    controller_handler = ControllerLogHandler(broker, controller_log_path)
     root_logger = logging.getLogger()
     controller_loggers = (root_logger, logging.getLogger("uvicorn.error"), logging.getLogger("uvicorn.access"))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        await app.state.daemon_proxy.start()
-        app.state.app_supervisor.reconcile_orphans()
-        app.state.daemon_supervisor.reconcile_orphans()
-        app.state.log_broker.bind_source("controller", status="live")
-        for target_logger in controller_loggers:
-            target_logger.addHandler(controller_handler)
+        # File ownership starts with lifespan startup, not app construction.
+        # This keeps factory-created ASGI apps descriptor-free until they are
+        # actually run.
+        controller_handler = ControllerLogHandler(broker, controller_log_path)
+        app.state.controller_log_handler = controller_handler
         try:
-            yield
-        finally:
-            # Detach the handler first; then stop all reader pumps before
-            # closing their broker so no background thread survives teardown.
+            await app.state.daemon_proxy.start()
+            app.state.app_supervisor.reconcile_orphans()
+            app.state.daemon_supervisor.reconcile_orphans()
             for target_logger in controller_loggers:
-                target_logger.removeHandler(controller_handler)
+                target_logger.addHandler(controller_handler)
+            try:
+                yield
+            finally:
+                # Detach the handler first; then stop all reader pumps before
+                # closing their broker so no background thread survives teardown.
+                for target_logger in controller_loggers:
+                    target_logger.removeHandler(controller_handler)
+        finally:
             controller_handler.close()
+            app.state.controller_log_handler = None
             await app.state.expression_player.aclose()
             await app.state.state_broadcaster.aclose()
             await app.state.stats_broadcaster.aclose()
@@ -111,7 +117,7 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     app.state.daemon_supervisor = daemon_supervisor
     app.state.expression_player = expression_player
     app.state.log_broker = broker
-    app.state.controller_log_handler = controller_handler
+    app.state.controller_log_handler = None
     app.add_middleware(NoCacheMiddleware)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
