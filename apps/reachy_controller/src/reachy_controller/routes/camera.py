@@ -15,6 +15,7 @@ from reachy_controller.app_supervisor import AppSupervisor
 from reachy_controller.daemon_proxy import DaemonProxy
 
 router = APIRouter(prefix="/api", tags=["camera"])
+CAMERA_STREAM_STARTUP_TIMEOUT_S = 8.0
 
 
 class CameraLease:
@@ -69,20 +70,6 @@ class DashboardCameraLeaseManager:
             await close()
 
 
-async def _open_upstream(
-    proxy: DaemonProxy,
-) -> tuple[Any, Any]:
-    """Enter the daemon stream context and return (context, response)."""
-    context = proxy.stream("GET", "camera/stream.mjpg", headers={"accept": "multipart/x-mixed-replace"})
-    try:
-        response = await context.__aenter__()
-    except httpx.RequestError:
-        with contextlib.suppress(Exception):
-            await context.__aexit__(None, None, None)
-        raise
-    return context, response
-
-
 @router.get("/camera/availability")
 async def camera_availability(request: Request) -> dict[str, Any]:
     """Return whether the dashboard may take camera ownership."""
@@ -134,25 +121,9 @@ async def camera_stream(request: Request) -> Response:
 
     proxy: DaemonProxy = request.app.state.daemon_proxy
     leases: DashboardCameraLeaseManager = request.app.state.camera_leases
-    try:
-        upstream_context, upstream = await _open_upstream(proxy)
-    except httpx.HTTPError as exc:
-        return Response(
-            content=f'{{"detail":"Reachy daemon unavailable: {type(exc).__name__}"}}',
-            status_code=503,
-            media_type="application/json",
-        )
-    content_type = upstream.headers.get("content-type", "")
-    if upstream.status_code >= 400:
-        try:
-            content = await upstream.aread()
-        finally:
-            await upstream_context.__aexit__(None, None, None)
-        return Response(
-            content=content,
-            status_code=503 if upstream.status_code >= 500 else upstream.status_code,
-            headers={"content-type": content_type} if content_type else None,
-        )
+    upstream_context: Any | None = None
+    upstream: Any | None = None
+    lease: CameraLease | None = None
     close_state = False
 
     async def close_upstream() -> None:
@@ -160,35 +131,83 @@ async def camera_stream(request: Request) -> Response:
         if close_state:
             return
         close_state = True
-        await upstream_context.__aexit__(None, None, None)
+        if upstream_context is not None:
+            with contextlib.suppress(Exception):
+                await upstream_context.__aexit__(None, None, None)
 
-    lease = await leases.acquire(close_upstream)
-    holder = supervisor.camera_holder()
-    if holder is not None:
-        try:
-            await close_upstream()
-        finally:
+    async def release_resources() -> None:
+        nonlocal lease
+        await close_upstream()
+        if lease is not None:
             await lease.release()
-        raise HTTPException(
-            status_code=409,
-            detail=f"Camera is in use by {holder}; stop that app before opening the dashboard stream.",
-        )
-    iterator: AsyncIterator[bytes]
+            lease = None
+
     try:
-        iterator = upstream.aiter_raw()
-        first_chunk = await iterator.__anext__()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CAMERA_STREAM_STARTUP_TIMEOUT_S
+
+        def remaining_startup() -> float:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            return remaining
+
+        upstream_context = proxy.stream(
+            "GET",
+            "camera/stream.mjpg",
+            headers={"accept": "multipart/x-mixed-replace"},
+        )
+        upstream = await asyncio.wait_for(
+            upstream_context.__aenter__(), remaining_startup()
+        )
+        content_type = upstream.headers.get("content-type", "")
+        if upstream.status_code >= 400:
+            content = await asyncio.wait_for(upstream.aread(), remaining_startup())
+            await close_upstream()
+            return Response(
+                content=content,
+                status_code=503 if upstream.status_code >= 500 else upstream.status_code,
+                headers={"content-type": content_type} if content_type else None,
+            )
+
+        lease = await leases.acquire(close_upstream)
+        holder = supervisor.camera_holder()
+        if holder is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Camera is in use by {holder}; stop that app before opening the dashboard stream.",
+            )
+
+        iterator: AsyncIterator[bytes] = upstream.aiter_raw()
+        first_chunk = await asyncio.wait_for(
+            iterator.__anext__(), remaining_startup()
+        )
+        holder = supervisor.camera_holder()
+        if holder is not None or close_state:
+            raise HTTPException(
+                status_code=409 if holder is not None else 503,
+                detail=(
+                    f"Camera is in use by {holder}; stop that app before opening the dashboard stream."
+                    if holder is not None
+                    else "Camera upstream closed during startup"
+                ),
+            )
     except asyncio.CancelledError:
-        await close_upstream()
-        await lease.release()
+        await release_resources()
         raise
-    except (httpx.HTTPError, OSError, RuntimeError, StopAsyncIteration):
-        await close_upstream()
-        await lease.release()
+    except HTTPException:
+        await release_resources()
+        raise
+    except (httpx.HTTPError, OSError, RuntimeError, StopAsyncIteration, asyncio.TimeoutError):
+        await release_resources()
         return Response(
             content='{"detail":"Camera upstream failed while opening the stream"}',
             status_code=503,
             media_type="application/json",
         )
+
+    assert upstream is not None
+    assert lease is not None
 
     async def chunks() -> AsyncIterator[bytes]:
         try:
@@ -198,8 +217,7 @@ async def camera_stream(request: Request) -> Response:
         except asyncio.CancelledError:
             raise
         finally:
-            await close_upstream()
-            await lease.release()
+            await release_resources()
 
     return StreamingResponse(
         chunks(),

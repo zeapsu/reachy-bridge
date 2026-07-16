@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from reachy_controller.app_supervisor import AppSupervisor
 from reachy_controller.daemon_proxy import DaemonProxy
 from reachy_controller.main import create_app
+from reachy_controller.routes import camera as camera_routes
 from reachy_controller.routes.camera import DashboardCameraLeaseManager
 
 _MODULE_PATH = Path(__file__).parents[3] / "tools" / "reachy_mini_daemon_media.py"
@@ -117,7 +118,7 @@ async def test_new_subscriber_during_last_disconnect_starts_fresh_reader() -> No
 
 
 @pytest.mark.asyncio
-async def test_media_release_closes_reader_and_reacquire_rebuilds_it() -> None:
+async def test_media_loss_ends_active_subscriber_and_requires_fresh_reconnect() -> None:
     daemon = FakeDaemon()
     streamer = CameraMJPEGStreamer(
         camera_factory=FakeCamera,
@@ -130,16 +131,98 @@ async def test_media_release_closes_reader_and_reacquire_rebuilds_it() -> None:
     await asyncio.wait_for(subscriber.queue.get(), 1)
 
     daemon.ready = False
-    await asyncio.sleep(0.05)
-    assert FakeCamera.instances[0].closed
-    daemon.ready = True
-    for _ in range(100):
-        if len(FakeCamera.instances) >= 2:
+    while True:
+        sentinel = await asyncio.wait_for(subscriber.queue.get(), 1)
+        if sentinel is _media._FRAME_CLOSE:
             break
-        await asyncio.sleep(0.01)
-    assert len(FakeCamera.instances) >= 2
+    assert streamer.subscriber_count == 0
+
+    daemon.ready = True
+    fresh = await streamer.subscribe(daemon)
+    await asyncio.wait_for(fresh.queue.get(), 1)
+    assert fresh is not subscriber
+    assert len(FakeCamera.instances) == 2
+    await streamer.unsubscribe(fresh)
+
+
+@pytest.mark.asyncio
+async def test_stuck_previous_reader_fails_with_bounded_join_and_cleans_provisional_subscriber(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class StuckReader:
+        def is_alive(self) -> bool:
+            return True
+
+        def join(self, timeout: float | None = None) -> None:
+            return None
+
+    daemon = FakeDaemon()
+    streamer = CameraMJPEGStreamer(media_ready=lambda d: d.ready, startup_timeout=0.02)
+    reader = StuckReader()
+    streamer._reader_thread = reader  # type: ignore[assignment]
+    streamer._stop_event.set()
+    join_timeouts: list[float | None] = []
+
+    async def bounded_to_thread(func: object, *args: object) -> None:
+        join_timeouts.append(args[0] if args else None)
+        func(*args)  # type: ignore[operator]
+
+    monkeypatch.setattr(asyncio, "to_thread", bounded_to_thread)
+    with pytest.raises(CameraStreamUnavailable, match="previous camera reader did not stop"):
+        await streamer.subscribe(daemon)
+
+    assert streamer.subscriber_count == 0
+    assert join_timeouts == [0.02, 0.02]
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_cancellation_still_finishes_bounded_reader_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BlockingReader:
+        def __init__(self) -> None:
+            self.joined = False
+
+        def is_alive(self) -> bool:
+            return not self.joined
+
+        def join(self, timeout: float | None = None) -> None:
+            self.joined = True
+
+    daemon = FakeDaemon()
+    streamer = CameraMJPEGStreamer(
+        camera_factory=FakeCamera,
+        encoder=lambda frame: frame,
+        media_ready=lambda d: d.ready,
+        startup_timeout=0.02,
+    )
+    subscriber = await streamer.subscribe(daemon)
     await asyncio.wait_for(subscriber.queue.get(), 1)
-    await streamer.unsubscribe(subscriber)
+    reader = BlockingReader()
+    streamer._reader_thread = reader  # type: ignore[assignment]
+    streamer._stop_event.set()
+    join_started = asyncio.Event()
+    release_join = asyncio.Event()
+    calls = 0
+
+    async def cancellable_to_thread(func: object, *args: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            join_started.set()
+            await release_join.wait()
+        func(*args)  # type: ignore[operator]
+
+    monkeypatch.setattr(asyncio, "to_thread", cancellable_to_thread)
+    task = asyncio.create_task(streamer.unsubscribe(subscriber))
+    await join_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert streamer.subscriber_count == 0
+    assert calls == 2
+    assert reader.joined
 
 
 @pytest.mark.asyncio
@@ -246,7 +329,7 @@ async def test_startup_timeout_removes_subscriber_and_stops_reader() -> None:
         retry_interval=0.001,
     )
 
-    with pytest.raises(CameraStreamUnavailable, match="did not become ready"):
+    with pytest.raises(CameraStreamUnavailable, match="camera media became unavailable"):
         await streamer.subscribe(daemon)
 
     assert streamer.subscriber_count == 0
@@ -327,6 +410,56 @@ class FakeProxy:
 
     async def close(self) -> None:
         return None
+
+@pytest.mark.asyncio
+async def test_controller_startup_deadline_closes_stalled_upstream() -> None:
+    class StallingProxy(FakeProxy):
+        def stream(self, *args: object, **kwargs: object):
+            proxy = self
+
+            class Context:
+                async def __aenter__(self):
+                    proxy.entered += 1
+                    await asyncio.sleep(3600)
+
+                async def __aexit__(self, *exc: object) -> None:
+                    proxy.closed += 1
+
+            return Context()
+
+    proxy = StallingProxy(FakeUpstreamResponse())
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+    with patch.object(camera_routes, "CAMERA_STREAM_STARTUP_TIMEOUT_S", 0.01):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/camera/stream")
+
+    assert response.status_code == 503
+    assert proxy.entered == 1
+    assert proxy.closed == 1
+    assert app.state.camera_leases.active_count == 0
+
+
+@pytest.mark.asyncio
+async def test_controller_startup_deadline_closes_stalled_first_chunk() -> None:
+    class StallingResponse(FakeUpstreamResponse):
+        async def aiter_raw(self):
+            await asyncio.sleep(3600)
+            yield b"never"
+
+    proxy = FakeProxy(StallingResponse())
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+    with patch.object(camera_routes, "CAMERA_STREAM_STARTUP_TIMEOUT_S", 0.01):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/camera/stream")
+
+    assert response.status_code == 503
+    assert proxy.entered == 1
+    assert proxy.closed == 1
+    assert app.state.camera_leases.active_count == 0
 
 
 @pytest.mark.asyncio
@@ -432,6 +565,62 @@ async def test_camera_app_start_closes_all_leases_before_spawn() -> None:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
 
+
+@pytest.mark.asyncio
+async def test_camera_start_reservation_blocks_stream_during_paused_release() -> None:
+    proxy = FakeProxy(FakeUpstreamResponse())
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+    supervisor = app.state.app_supervisor
+    release_started = asyncio.Event()
+    resume_release = asyncio.Event()
+
+    async def paused_release() -> None:
+        release_started.set()
+        await resume_release.wait()
+
+    supervisor.set_camera_release_hook(paused_release)
+    process = MagicMock()
+    process.pid = 9876
+    with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=process):
+        start_task = asyncio.create_task(supervisor.start_app("reachy_chat"))
+        await release_started.wait()
+        assert supervisor.camera_holder() == "reachy_chat"
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/camera/stream")
+        assert response.status_code == 409
+        assert proxy.entered == 0
+        resume_release.set()
+        result = await start_task
+
+    assert result["status"] == "loading"
+    assert supervisor.camera_holder() == "reachy_chat"
+    tasks = [*supervisor._reaper_tasks.values(), *supervisor._readiness_tasks.values()]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_camera_start_reservation_clears_on_spawn_failure() -> None:
+    supervisor = AppSupervisor()
+    release_seen = asyncio.Event()
+
+    async def release() -> None:
+        assert supervisor.camera_holder() == "reachy_chat"
+        release_seen.set()
+
+    supervisor.set_camera_release_hook(release)
+    with patch(
+        "reachy_controller.app_supervisor.subprocess.Popen",
+        side_effect=OSError("spawn failed"),
+    ):
+        result = await supervisor.start_app("reachy_chat")
+
+    assert release_seen.is_set()
+    assert result["status"] == "error"
+    assert supervisor.camera_holder() is None
 
 @pytest.mark.asyncio
 async def test_controller_maps_upstream_failure_and_camera_holder_to_expected_states() -> None:

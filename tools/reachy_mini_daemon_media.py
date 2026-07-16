@@ -143,6 +143,10 @@ class CameraMJPEGStreamer:
             subscribers = list(self._subscribers.values())
         for subscriber in subscribers:
             def deliver(subscriber: _Subscriber = subscriber, chunk: bytes = chunk) -> None:
+                token = getattr(subscriber.queue, "_camera_subscriber_token", None)
+                with self._lock:
+                    if token is None or self._subscribers.get(token) is not subscriber:
+                        return
                 try:
                     while subscriber.queue.full():
                         subscriber.queue.get_nowait()
@@ -153,6 +157,27 @@ class CameraMJPEGStreamer:
 
             try:
                 subscriber.loop.call_soon_threadsafe(deliver)
+            except RuntimeError:
+                pass
+
+    @staticmethod
+    def _close_queue(subscriber: _Subscriber) -> None:
+        with contextlib.suppress(asyncio.QueueEmpty):
+            while True:
+                subscriber.queue.get_nowait()
+        with contextlib.suppress(asyncio.QueueFull):
+            subscriber.queue.put_nowait(_FRAME_CLOSE)
+
+    def _end_subscribers(self) -> None:
+        """Signal and remove all subscribers after media readiness is lost."""
+        with self._lock:
+            subscribers = list(self._subscribers.values())
+            self._subscribers.clear()
+            self._latest_jpeg = None
+            self._stop_event.set()
+        for subscriber in subscribers:
+            try:
+                subscriber.loop.call_soon_threadsafe(self._close_queue, subscriber)
             except RuntimeError:
                 pass
 
@@ -169,17 +194,26 @@ class CameraMJPEGStreamer:
     def _reader_loop(self, daemon: Any, startup_event: threading.Event) -> None:
         camera: Any | None = None
         startup_reported = False
+        media_lost = False
         try:
             while not self._stop_event.is_set():
                 with self._lock:
                     has_subscribers = bool(self._subscribers)
                 if not has_subscribers:
                     break
-                if not self._media_ready(daemon):
+                try:
+                    media_ready = bool(self._media_ready(daemon))
+                except Exception as exc:
+                    logger.warning("Camera media readiness check failed: %s", exc)
+                    media_ready = False
+                if not media_ready:
                     if camera is not None:
                         with contextlib.suppress(Exception):
                             camera.close()
                         camera = None
+                    if not media_lost:
+                        media_lost = True
+                        self._end_subscribers()
                     self._stop_event.wait(self._retry_interval)
                     continue
 
@@ -231,9 +265,27 @@ class CameraMJPEGStreamer:
                 self._startup_event = None
                 self._daemon = None
 
+    async def _join_reader_bounded(self, reader: threading.Thread | None) -> None:
+        if reader is None or reader is threading.current_thread():
+            return
+        try:
+            await asyncio.to_thread(reader.join, self._startup_timeout)
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if current_task is not None:
+                current_task.uncancel()
+            try:
+                await asyncio.to_thread(reader.join, self._startup_timeout)
+            finally:
+                raise
+
     async def subscribe(self, daemon: Any) -> _Subscriber:
         """Register a subscriber and start the reader if needed."""
-        if not self._media_ready(daemon):
+        try:
+            media_ready = bool(self._media_ready(daemon))
+        except Exception as exc:
+            raise CameraStreamUnavailable("camera media readiness check failed") from exc
+        if not media_ready:
             raise CameraStreamUnavailable("camera media is not ready")
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[bytes | object] = asyncio.Queue(maxsize=1)
@@ -259,17 +311,24 @@ class CameraMJPEGStreamer:
 
         try:
             if stopping_reader is not None:
-                await asyncio.to_thread(stopping_reader.join)
+                await asyncio.to_thread(stopping_reader.join, self._startup_timeout)
+                if stopping_reader.is_alive():
+                    raise CameraStreamUnavailable("previous camera reader did not stop")
                 with self._lock:
-                    if self._subscribers.get(token) is subscriber:
-                        reader = self._reader_thread
-                        if reader is None or not reader.is_alive():
-                            startup_event = self._start_reader_locked(daemon)
+                    if self._subscribers.get(token) is not subscriber:
+                        raise CameraStreamUnavailable("camera media became unavailable")
+                    reader = self._reader_thread
+                    if reader is not None and reader.is_alive():
+                        raise CameraStreamUnavailable("previous camera reader did not stop")
+                    startup_event = self._start_reader_locked(daemon)
 
             if startup_event is not None:
                 ready = await asyncio.to_thread(startup_event.wait, self._startup_timeout)
                 with self._lock:
                     startup_error = self._startup_error
+                    registered = self._subscribers.get(token) is subscriber
+                if not registered:
+                    raise CameraStreamUnavailable("camera media became unavailable")
                 if not ready:
                     raise CameraStreamUnavailable("camera reader did not become ready")
                 if startup_error is not None:
@@ -296,15 +355,13 @@ class CameraMJPEGStreamer:
         """Remove a subscriber and stop the reader when it was the last one."""
         with self._lock:
             token = getattr(subscriber.queue, "_camera_subscriber_token", None)
-            if token is None or self._subscribers.get(token) is not subscriber:
-                return
-            self._subscribers.pop(token, None)
+            if token is not None and self._subscribers.get(token) is subscriber:
+                self._subscribers.pop(token, None)
             should_stop = not self._subscribers
             reader = self._reader_thread if should_stop else None
             if should_stop:
                 self._stop_event.set()
-        if reader is not None and reader is not threading.current_thread():
-            await asyncio.to_thread(reader.join, self._startup_timeout)
+        await self._join_reader_bounded(reader)
 
     async def close_all(self) -> None:
         """Close every dashboard subscriber and stop the shared reader."""
@@ -314,19 +371,11 @@ class CameraMJPEGStreamer:
             reader = self._reader_thread
             self._stop_event.set()
         for subscriber in subscribers:
-            def close_queue(subscriber: _Subscriber = subscriber) -> None:
-                with contextlib.suppress(asyncio.QueueEmpty):
-                    while True:
-                        subscriber.queue.get_nowait()
-                with contextlib.suppress(asyncio.QueueFull):
-                    subscriber.queue.put_nowait(_FRAME_CLOSE)
-
             try:
-                subscriber.loop.call_soon_threadsafe(close_queue)
+                subscriber.loop.call_soon_threadsafe(self._close_queue, subscriber)
             except RuntimeError:
                 pass
-        if reader is not None and reader is not threading.current_thread():
-            await asyncio.to_thread(reader.join, self._startup_timeout)
+        await self._join_reader_bounded(reader)
 
     async def frames(self, daemon: Any) -> AsyncGenerator[bytes, None]:
         subscriber = await self.subscribe(daemon)
@@ -353,7 +402,7 @@ class CameraMJPEGStreamer:
         except asyncio.CancelledError:
             await stream.aclose()
             raise
-        except (CameraStreamUnavailable, ImportError, RuntimeError, asyncio.TimeoutError) as exc:
+        except (CameraStreamUnavailable, ImportError, RuntimeError, asyncio.TimeoutError, StopAsyncIteration) as exc:
             with contextlib.suppress(Exception):
                 await stream.aclose()
             raise HTTPException(status_code=503, detail=f"Camera unavailable: {exc}") from None

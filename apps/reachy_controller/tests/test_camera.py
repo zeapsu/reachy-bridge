@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import psutil
 import pytest
 
 from reachy_controller.app_supervisor import AppSupervisor
@@ -72,6 +73,29 @@ async def test_stopping_camera_app_restores_camera_availability() -> None:
     assert supervisor.camera_available() is True
     assert supervisor.camera_holder() is None
 
+
+def test_stopping_camera_app_remains_camera_holder_until_stopped() -> None:
+    supervisor = AppSupervisor()
+    supervisor._apps["reachy_chat"].status = "stopping"
+
+    assert supervisor.camera_holder() == "reachy_chat"
+    assert supervisor.camera_available() is False
+
+
+def test_stopping_camera_app_releases_holder_after_process_exit() -> None:
+    supervisor = AppSupervisor()
+    app = supervisor._apps["reachy_chat"]
+    app.status = "stopping"
+    app.pid = 4242
+
+    with patch(
+        "reachy_controller.app_supervisor.psutil.Process",
+        side_effect=psutil.NoSuchProcess(4242),
+    ):
+        supervisor.get_all_status()
+
+    assert app.status == "stopped"
+    assert supervisor.camera_holder() is None
 
 @pytest.mark.asyncio
 async def test_camera_release_hook_runs_before_spawning_camera_app() -> None:
