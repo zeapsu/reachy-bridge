@@ -223,3 +223,21 @@ async def test_static_files_include_cache_control_no_cache_header() -> None:
 
     assert response.status_code == 200
     assert response.headers.get("cache-control") == "no-cache"
+
+
+def test_apps_status_poll_has_non_overlapping_success_and_error_release() -> None:
+    script = (
+        main_module.STATIC_DIR / "main.js"
+    ).read_text(encoding="utf-8")
+    start = script.index("async function pollAppsStatus()")
+    end = script.index("\n  async function performAppAction", start)
+    poll = script[start:end]
+
+    assert "if (state.appsStatusInflight) return;" in poll
+    assert "state.appsStatusInflight = true;" in poll
+    assert "finally" in poll
+    assert "state.appsStatusInflight = false;" in poll
+    assert poll.index("if (state.appsStatusInflight) return;") < poll.index(
+        "await apiJson"
+    )
+    assert poll.index("state.appsStatusInflight = false;") > poll.index("finally")

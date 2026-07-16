@@ -28,6 +28,7 @@ from reachy_controller.routes.controls import router as controls_router
 from reachy_controller.routes.daemon import router as daemon_control_router
 from reachy_controller.routes.expressions import ExpressionPlayer
 from reachy_controller.routes.expressions import router as expressions_router
+from reachy_controller.shared_streams import StateBroadcaster, StatsBroadcaster
 from reachy_controller.routes.system_stats import router as system_stats_router
 from reachy_controller.routes.telemetry import (
     root_router as telemetry_root_router,
@@ -62,6 +63,8 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     )
     app_supervisor = AppSupervisor(daemon_proxy=daemon_proxy)
     daemon_supervisor = DaemonSupervisor(daemon_proxy=daemon_proxy)
+    state_broadcaster = StateBroadcaster(daemon_proxy)
+    stats_broadcaster = StatsBroadcaster(daemon_proxy)
     expression_player = ExpressionPlayer(daemon_proxy)
 
     @asynccontextmanager
@@ -73,11 +76,15 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
             yield
         finally:
             await app.state.expression_player.aclose()
+            await app.state.state_broadcaster.aclose()
+            await app.state.stats_broadcaster.aclose()
             app.state.app_supervisor.stop_all()
             await app.state.daemon_proxy.close()
 
     app = FastAPI(title="Reachy Controller", version="0.1.0", lifespan=lifespan)
     app.state.daemon_proxy = daemon_proxy
+    app.state.state_broadcaster = state_broadcaster
+    app.state.stats_broadcaster = stats_broadcaster
     app.state.app_supervisor = app_supervisor
     app.state.daemon_supervisor = daemon_supervisor
     app.state.expression_player = expression_player

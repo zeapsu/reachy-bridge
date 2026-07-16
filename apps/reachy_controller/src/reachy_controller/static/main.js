@@ -27,6 +27,7 @@
     robotControlMode: null,
     daemonStatusTimer: null,
     daemonStatusInflight: false,
+    appsStatusInflight: false,
     daemonStopping: false,
     sliderActive: null,
     simLoop: null,
@@ -428,6 +429,8 @@
   }
 
   async function pollAppsStatus() {
+    if (state.appsStatusInflight) return;
+    state.appsStatusInflight = true;
     try {
       loadingTick++;
       const statuses = await apiJson("/api/apps/status");
@@ -440,6 +443,8 @@
     } catch (error) {
       $("apps-message").textContent = error.message || "App status unavailable";
       $("apps-message").className = "panel-hint error";
+    } finally {
+      state.appsStatusInflight = false;
     }
   }
 
