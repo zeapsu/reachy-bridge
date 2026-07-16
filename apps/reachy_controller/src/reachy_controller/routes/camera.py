@@ -163,13 +163,20 @@ async def camera_stream(request: Request) -> Response:
         await upstream_context.__aexit__(None, None, None)
 
     lease = await leases.acquire(close_upstream)
-    iterator: AsyncIterator[bytes] | None = None
+    holder = supervisor.camera_holder()
+    if holder is not None:
+        try:
+            await close_upstream()
+        finally:
+            await lease.release()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Camera is in use by {holder}; stop that app before opening the dashboard stream.",
+        )
+    iterator: AsyncIterator[bytes]
     try:
-        if getattr(upstream, "is_stream_consumed", False):
-            first_chunk = upstream.content
-        else:
-            iterator = upstream.aiter_raw()
-            first_chunk = await iterator.__anext__()
+        iterator = upstream.aiter_raw()
+        first_chunk = await iterator.__anext__()
     except asyncio.CancelledError:
         await close_upstream()
         await lease.release()
@@ -186,9 +193,8 @@ async def camera_stream(request: Request) -> Response:
     async def chunks() -> AsyncIterator[bytes]:
         try:
             yield first_chunk
-            if iterator is not None:
-                async for chunk in iterator:
-                    yield chunk
+            async for chunk in iterator:
+                yield chunk
         except asyncio.CancelledError:
             raise
         finally:

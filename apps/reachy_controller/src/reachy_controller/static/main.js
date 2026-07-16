@@ -318,11 +318,11 @@
     placeholder.classList.toggle("error", error);
   }
 
-  function disconnectCameraStream(message = "") {
+  function disconnectCameraStream(message = "", error = false) {
     const image = $("camera-stream");
     image.removeAttribute("src");
     image.hidden = true;
-    if (message) setCameraPlaceholder(message, message.includes("unavailable") || message.includes("failed"));
+    if (message) setCameraPlaceholder(message, error);
   }
 
   function connectCameraStream() {
@@ -341,16 +341,17 @@
       connectCameraStream();
       return;
     }
-    disconnectCameraStream(
-      availability && availability.reason === "in_use"
+    const reason = availability && availability.reason;
+    const message =
+      reason === "in_use"
         ? `Camera in use by ${availability.holder || "another app"}`
-        : availability && availability.reason === "daemon_down"
+        : reason === "daemon_down"
           ? "Daemon offline"
-          : availability && availability.reason === "media_unavailable"
+          : reason === "media_unavailable"
             ? "Camera media offline"
-            : "Camera unavailable",
-    );
-    $("vp-meta").textContent = "live camera · unavailable";
+            : "Camera unavailable";
+    disconnectCameraStream(message);
+    $("vp-meta").textContent = reason === "in_use" ? "live camera · in use" : "live camera · unavailable";
   }
 
   function setMode(mode) {

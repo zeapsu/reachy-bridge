@@ -238,14 +238,30 @@ class CameraMJPEGStreamer:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[bytes | object] = asyncio.Queue(maxsize=1)
         startup_event: threading.Event | None = None
+        stopping_reader: threading.Thread | None = None
         with self._lock:
             self._next_subscriber += 1
             subscriber = _Subscriber(queue=queue, loop=loop)
             token = self._next_subscriber
             self._subscribers[token] = subscriber
             subscriber.queue._camera_subscriber_token = token  # type: ignore[attr-defined]
-            if self._reader_thread is None or not self._reader_thread.is_alive():
+            reader = self._reader_thread
+            if reader is None or not reader.is_alive():
                 startup_event = self._start_reader_locked(daemon)
+            elif self._stop_event.is_set():
+                # A new client can arrive while the last unsubscribe is still
+                # joining the old reader.  Wait for that reader to finish
+                # before creating a fresh one; otherwise it would exit with
+                # the shared stop event already set and the client would 503.
+                stopping_reader = reader
+
+        if stopping_reader is not None:
+            await asyncio.to_thread(stopping_reader.join)
+            with self._lock:
+                if self._subscribers.get(token) is subscriber:
+                    reader = self._reader_thread
+                    if reader is None or not reader.is_alive():
+                        startup_event = self._start_reader_locked(daemon)
 
         if startup_event is not None:
             ready = await asyncio.to_thread(startup_event.wait, self._startup_timeout)

@@ -84,6 +84,7 @@ class DaemonProxy:
             params=params,
             content=content,
             headers=headers,
+            timeout=httpx.Timeout(self.timeout, read=None),
         ) as response:
             yield response
 
