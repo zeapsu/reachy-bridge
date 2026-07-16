@@ -85,42 +85,116 @@ class DaemonSupervisor:
             return {"status": "refused", "error": "Daemon is not locally manageable"}
 
         async with self._lock:
-            if self._daemon.status == "stopping":
-                return {
-                    "status": "refused",
-                    "error": "An existing daemon log pump is still shutting down",
-                }
-
+            process = self._daemon.process
+            pid = self._daemon.pid
             pump = self._daemon.log_pump
-            if self._daemon.pid is not None:
+            parent_exited = False
+
+            if process is not None:
                 try:
-                    proc = psutil.Process(self._daemon.pid)
+                    parent_exited = process.poll() is not None
+                except Exception:
+                    # A process handle that cannot be polled is still treated
+                    # as live; refusing replacement is safer than overlap.
+                    logger.warning("Unable to poll managed daemon (pid %s)", pid)
+                if not parent_exited:
+                    if self._daemon.status == "stopping":
+                        return {
+                            "status": "refused",
+                            "error": "An existing daemon log pump is still shutting down",
+                        }
+                    live_pid = pid if pid is not None else getattr(process, "pid", None)
+                    return {
+                        "status": "running",
+                        "pid": live_pid,
+                        "start_time": self._daemon.start_time,
+                    }
+            elif pid is not None:
+                try:
+                    proc = psutil.Process(pid)
                     if proc.is_running():
+                        if self._daemon.status == "stopping":
+                            return {
+                                "status": "refused",
+                                "error": "An existing daemon log pump is still shutting down",
+                            }
                         return {
                             "status": "running",
-                            "pid": self._daemon.pid,
+                            "pid": pid,
                             "start_time": self._daemon.start_time,
                         }
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
 
-                # A stale PID is safe to discard only when its old pump has
-                # already released the log file and reader ownership.
+            if parent_exited:
+                # A managed child can die without stop() being called. Drain
+                # its already-written pipe bytes before releasing ownership.
+                if (
+                    self._daemon.process is not process
+                    or self._daemon.pid != pid
+                    or self._daemon.log_pump is not pump
+                ):
+                    return {
+                        "status": "refused",
+                        "error": "Daemon ownership changed while reaping",
+                    }
+                if pump is not None:
+                    try:
+                        await asyncio.to_thread(
+                            self._close_log_pump,
+                            pump,
+                            parent_exited=True,
+                        )
+                    except Exception as e:
+                        self._daemon.status = "stopping"
+                        self._daemon.error = str(e)
+                        logger.error(f"Error closing daemon log pump: {e}")
+                        return {
+                            "error": f"An existing daemon log pump is still shutting down: {e}",
+                            "status": "refused",
+                        }
+                    if (
+                        self._daemon.process is not process
+                        or self._daemon.pid != pid
+                        or self._daemon.log_pump is not pump
+                    ):
+                        return {
+                            "status": "refused",
+                            "error": "Daemon ownership changed while reaping",
+                        }
+                    self._daemon.log_pump = None
+                if self._daemon.process is not process or self._daemon.pid != pid:
+                    return {
+                        "status": "refused",
+                        "error": "Daemon ownership changed while reaping",
+                    }
+                self.log_broker.set_status("daemon", "stopped")
+                self._daemon.status = "stopped"
+                self._daemon.error = None
+                self._daemon.process = None
+                self._daemon.pid = None
+                self._daemon.external = False
+            elif pid is not None:
+                # A stale adopted PID has no pipe ownership to reap.
                 if pump is not None:
                     return {
                         "status": "refused",
                         "error": "An existing daemon log pump is still shutting down",
+                    }
+                if self._daemon.pid != pid:
+                    return {
+                        "status": "refused",
+                        "error": "Daemon ownership changed while reaping",
                     }
                 self._daemon.pid = None
                 self._daemon.process = None
-            elif self._daemon.process is not None or pump is not None:
-                if pump is not None:
-                    return {
-                        "status": "refused",
-                        "error": "An existing daemon log pump is still shutting down",
-                    }
-                self._daemon.process = None
-
+            elif process is not None or pump is not None:
+                # A pump without a conclusively exited managed parent remains
+                # owned and must never be overlapped by a replacement.
+                return {
+                    "status": "refused",
+                    "error": "An existing daemon log pump is still shutting down",
+                }
             # Launch daemon with an immediate merged-pipe pump; DEVNULL would
             # lose diagnostics and leave no honest source status for the panel.
             process: subprocess.Popen[str] | None = None

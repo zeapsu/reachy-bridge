@@ -535,3 +535,53 @@ def test_start_command_default() -> None:
     """Test default daemon start command."""
     supervisor = DaemonSupervisor()
     assert supervisor._cmd == ["uv", "run", "python", "tools/reachy_mini_daemon_jetson.py"]
+
+
+@pytest.mark.asyncio
+async def test_crashed_managed_daemon_reaps_pump_before_restart(tmp_path: Path) -> None:
+    """A crashed managed daemon drains its tail before a replacement starts."""
+    command = (
+        f"{sys.executable} -c "
+        '"import sys; print(\'crashed-tail\', flush=True); raise SystemExit(17)"'
+    )
+    with patch.dict(
+        "os.environ",
+        {"REACHY_MANAGE_DAEMON": "1", "REACHY_DAEMON_CMD": command},
+    ):
+        broker = LogBroker()
+        supervisor = DaemonSupervisor(log_broker=broker)
+        supervisor._log_path = tmp_path / "daemon.log"
+        broker.set_file("daemon", supervisor._log_path)
+        try:
+            first = await supervisor.start()
+            assert first["status"] == "starting"
+            old_process = supervisor._daemon.process
+            old_pump = supervisor._daemon.log_pump
+            assert old_process is not None
+            assert old_pump is not None
+
+            await asyncio.to_thread(old_process.wait, 2.0)
+            for _ in range(100):
+                if old_pump.done:
+                    break
+                await asyncio.sleep(0.01)
+            assert old_pump.done
+
+            # Model the last reachability poll after the child crashed.
+            supervisor._daemon.status = "running"
+            status = supervisor.status(running=False)
+            assert status["status"] == "stopped"
+            assert supervisor._daemon.pid is None
+            assert supervisor._daemon.process is old_process
+            assert supervisor._daemon.log_pump is old_pump
+            assert broker.ring("daemon") == ["crashed-tail"]
+            assert supervisor._log_path.read_text().splitlines() == ["crashed-tail"]
+
+            second = await supervisor.start()
+            assert second["status"] == "starting"
+            assert supervisor._daemon.process is not old_process
+            assert supervisor._daemon.log_pump is not old_pump
+            assert old_pump.thread is not None and not old_pump.thread.is_alive()
+        finally:
+            await supervisor.aclose()
+            await broker.aclose()

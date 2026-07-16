@@ -245,7 +245,14 @@
         setLogStatus(status);
       },
       "log-lines": (event) => appendLogLines((readEventPayload(event) || {}).lines),
-      "source-status": (event) => setLogStatus((readEventPayload(event) || {}).status || "empty"),
+      "source-status": (event) => {
+        const status = (readEventPayload(event) || {}).status || "empty";
+        setLogStatus(status);
+        if ($("log-out").childElementCount === 0) {
+          $("log-empty").textContent = emptyLogMessage(status);
+          $("log-empty").hidden = false;
+        }
+      },
       error: () => setLogStatus("reconnecting"),
     });
     if (
