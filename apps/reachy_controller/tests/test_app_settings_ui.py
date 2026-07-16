@@ -28,7 +28,16 @@ const state = {
     retryCount: 0,
     saving: false,
   },
+  appActive: false,
+  appBusy: false,
+  daemonOnline: true,
+  exprBusy: false,
+  mode: "schematic",
 };
+const APP_NAMES = ["reachy_chat", "reachy_dance", "reachy_lookat", "reachy_simon"];
+const LOADING_FRAGMENTS = ["Booting…"];
+let loadingTick = 0;
+let lastAppsSig = null;
 class FakeElement {
   constructor(id) {
     this.id = id;
@@ -52,15 +61,30 @@ class FakeGear {
   }
   setAttribute(name, value) { this.attrs[name] = value; }
 }
+class FakeSpan {
+  constructor(app) {
+    this.dataset = { app };
+    this.textContent = "";
+  }
+}
 class FakeApps extends FakeElement {
   constructor() {
     super("apps");
     this.gears = [];
+    this.uptimeSpans = [];
     this.rebuilds = 0;
   }
-  set innerHTML(_) { this.rebuilds += 1; }
+  // Mimic the DOM: an innerHTML write replaces every child node, so fresh
+  // gear/span fakes are parsed out of the markup (old references detach).
+  set innerHTML(html) {
+    this.rebuilds += 1;
+    this.gears = [...String(html).matchAll(/data-app="([^"]+)" data-action="settings"/g)].map((m) => new FakeGear(m[1]));
+    this.uptimeSpans = [...String(html).matchAll(/class="app-uptime" data-app="([^"]+)"/g)].map((m) => new FakeSpan(m[1]));
+  }
   get innerHTML() { return ""; }
-  querySelectorAll() { return this.gears; }
+  querySelectorAll(selector) {
+    return String(selector).includes("app-uptime") ? this.uptimeSpans : this.gears;
+  }
 }
 const appsEl = new FakeApps();
 const gearChat = new FakeGear("reachy_chat");
@@ -72,6 +96,9 @@ const els = Object.fromEntries([
   "app-settings-state",
   "app-settings-hint",
   "app-settings-fields",
+  "robot-dot",
+  "robot-value",
+  "expr-hint",
 ].map((id) => [id, new FakeElement(id)]));
 els["apps"] = appsEl;
 els["app-settings"].hidden = true;
@@ -115,6 +142,7 @@ async function apiJson(path, options = {}) {
   return JSON.parse(JSON.stringify(schemaFixture));
 }
 __SECTION__
+__RENDER_APPS__
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const statuses = () => Array.from(appState.values());
 const results = {};
@@ -315,18 +343,50 @@ results.bounded = {
 };
 closeAppSettings();
 
+// 15. Ticking uptime must not rebuild #apps: running cards render a stable
+// .app-uptime span whose text is patched in place, so the innerHTML write
+// count stays flat across ticks and a focused gear element survives.
+failGets = 0;
+appState.set("reachy_chat", { name: "reachy_chat", status: "running", pid: 5001, start_time: Date.now() / 1000 - 65, has_settings: true });
+renderApps();
+const rebuildsAfterFirst = appsEl.rebuilds;
+const gearRef = appsEl.gears.find((gear) => gear.dataset.app === "reachy_chat");
+const uptimeSpan = appsEl.uptimeSpans[0];
+const uptimeText1 = uptimeSpan.textContent;
+// Next 1 Hz poll, one minute of uptime later: markup is byte-identical.
+appState.set("reachy_chat", { name: "reachy_chat", status: "running", pid: 5001, start_time: Date.now() / 1000 - 125, has_settings: true });
+renderApps();
+results.uptimeTick = {
+  initialRebuild: rebuildsAfterFirst >= 1,
+  oneSpan: appsEl.uptimeSpans.length === 1,
+  firstText: /^ · 1m 0\ds$/.test(uptimeText1),
+  noRebuildOnTick: appsEl.rebuilds === rebuildsAfterFirst,
+  gearSurvives: gearRef !== undefined && appsEl.gears.includes(gearRef),
+  spanPatched: /^ · 2m 0\ds$/.test(uptimeSpan.textContent),
+};
+
 console.log(JSON.stringify(results));
 '''
 
 
-def _extract_settings_section() -> str:
+def _extract_section(start_marker: str, end_marker: str) -> str:
     script = (_STATIC_DIR / "main.js").read_text(encoding="utf-8")
-    start = script.index(_SECTION_START)
-    end = script.index(_SECTION_END, start)
-    section = script[start:end]
-    return section.replace(
+    start = script.index(start_marker)
+    end = script.index(end_marker, start)
+    return script[start:end]
+
+
+def _extract_settings_section() -> str:
+    return _extract_section(_SECTION_START, _SECTION_END).replace(
         "const SETTINGS_RETRY_DELAY_MS = 1500;",
         "const SETTINGS_RETRY_DELAY_MS = 20;",
+    )
+
+
+def _extract_render_apps() -> str:
+    return _extract_section(
+        "  function renderApps(statuses",
+        "  async function pollAppsStatus",
     )
 
 
@@ -334,7 +394,9 @@ def _run_harness() -> dict[str, object]:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node executable not available")
-    script = _HARNESS.replace("__SECTION__", _extract_settings_section())
+    script = _HARNESS.replace("__SECTION__", _extract_settings_section()).replace(
+        "__RENDER_APPS__", _extract_render_apps()
+    )
     proc = subprocess.run(
         [node, "--input-type=module", "-"],
         input=script,
@@ -394,6 +456,14 @@ def test_app_settings_focus_preserved() -> None:
     }
     assert results["closed"]["gearUnpatched"] is True
     assert results["closed"]["stillNoRebuild"] is True
+    assert results["uptimeTick"] == {
+        "initialRebuild": True,
+        "oneSpan": True,
+        "firstText": True,
+        "noRebuildOnTick": True,
+        "gearSurvives": True,
+        "spanPatched": True,
+    }
 
 
 def test_app_settings_save_flows() -> None:

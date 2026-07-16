@@ -828,7 +828,9 @@
       const isStopping = app.status === "stopping";
       const isError = app.status === "error";
       const statusClass = isRunning ? "running" : isLoading ? "loading" : isStopping ? "stopping" : isError ? "error" : "";
-      const uptime = isRunning && app.start_time ? ` · ${formatUptime(Date.now() / 1000 - Number(app.start_time))}` : "";
+      // Stable placeholder — updateAppUptimes patches its text at 1 Hz so the
+      // ticking seconds never enter the signed markup (see that function).
+      const uptime = isRunning && app.start_time ? `<span class="app-uptime" data-app="${name}"></span>` : "";
       const pid = isRunning && app.pid ? ` · pid ${app.pid}` : "";
       const external = isRunning && app.external ? ` · external` : "";
       const error = app.error ? `<br><span class="err">${escapeHtml(app.error)}</span>` : "";
@@ -870,15 +872,20 @@
     // pollAppsStatus re-renders at 1 Hz even when nothing changed; skip the
     // innerHTML rebuild (parse + reflow) + status writes when the output is
     // identical. The rendered markup IS the signature, so it is correct by
-    // construction: a running app's ticking uptime changes it (rebuild, as before),
-    // while an idle list is stable → zero rebuilds (#43).
+    // construction — and because ticking uptime lives in a patched span rather
+    // than the markup, a quietly running app is signature-stable too: zero
+    // rebuilds, and a focused gear (or caret) survives every tick (#43).
     const sig = `${html} ${robotDotClass} ${robotValue}`;
-    if (sig === lastAppsSig) return;
+    if (sig === lastAppsSig) {
+      updateAppUptimes(statuses);
+      return;
+    }
     lastAppsSig = sig;
 
     $("apps").innerHTML = html;
     // Gear markup is state-neutral; reapply the open/aria patch the rebuild wiped.
     patchSettingsGears();
+    updateAppUptimes(statuses);
     $("robot-dot").className = robotDotClass;
     $("robot-value").textContent = robotValue;
   }
@@ -989,6 +996,22 @@
       const open = button.dataset.app === state.settings.app;
       button.classList.toggle("open", open);
       button.setAttribute("aria-expanded", String(open));
+    });
+  }
+
+  // Ticking uptime is deliberately NOT part of the card markup renderApps
+  // signs and rebuilds — one second of uptime would change the signature every
+  // tick, and the innerHTML rebuild destroys a focused gear (or any caret in
+  // the cards). Running cards render a stable, empty `.app-uptime` span; this
+  // patches only its text at 1 Hz, before the signature early-return and after
+  // any genuine rebuild.
+  function updateAppUptimes(statuses) {
+    $("apps").querySelectorAll(".app-uptime").forEach((span) => {
+      const app = statuses.find((item) => item.name === span.dataset.app);
+      const text = app && app.status === "running" && app.start_time
+        ? ` · ${formatUptime(Date.now() / 1000 - Number(app.start_time))}`
+        : "";
+      if (span.textContent !== text) span.textContent = text;
     });
   }
 
