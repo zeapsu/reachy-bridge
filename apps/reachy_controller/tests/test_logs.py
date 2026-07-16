@@ -9,6 +9,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -16,6 +17,8 @@ import httpx
 import pytest
 
 from reachy_controller.log_stream import ControllerLogHandler, LogBroker, ProcessLogPump
+import reachy_controller.log_stream as log_stream_module
+
 from reachy_controller.main import create_app
 from reachy_controller.routes.logs import _stream_events, log_stream
 
@@ -53,11 +56,62 @@ async def test_process_pump_merges_and_flushes_burst(tmp_path: Path) -> None:
     )
     pump = ProcessLogPump(process, "burst", broker, tmp_path / "burst.log")
     await asyncio.to_thread(process.wait)
-    await asyncio.to_thread(pump.stop)
+    await asyncio.to_thread(pump.stop, 5.0, True)
     assert (tmp_path / "burst.log").read_text().splitlines() == ["stdout", "stderr"]
     assert broker.ring("burst") == ["stdout", "stderr"]
     assert pump.thread is not None and not pump.thread.is_alive()
     await broker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_process_pump_drains_unread_exit_tail_before_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exited child’s unread merged pipe tail is retained before pump close."""
+    broker = LogBroker()
+    broker.bind_source("exit-tail")
+    select_entered = threading.Event()
+    release_select = threading.Event()
+    original_select = log_stream_module.select.select
+
+    def paused_select(*args: object) -> tuple[list[int], list[int], list[int]]:
+        select_entered.set()
+        release_select.wait(timeout=1.0)
+        return original_select(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(log_stream_module.select, "select", paused_select)
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('stdout-tail', flush=True); print('stderr-tail', file=sys.stderr, flush=True)",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    pump = ProcessLogPump(process, "exit-tail", broker, tmp_path / "exit-tail.log")
+    try:
+        assert await asyncio.to_thread(select_entered.wait, 1.0)
+        await asyncio.to_thread(process.wait)
+        stop_task = asyncio.create_task(asyncio.to_thread(pump.stop, 1.0, True))
+        await asyncio.sleep(0.01)
+        assert not stop_task.done()
+        release_select.set()
+        await stop_task
+        lines = (tmp_path / "exit-tail.log").read_text().splitlines()
+        assert lines == ["stdout-tail", "stderr-tail"]
+        assert broker.ring("exit-tail") == lines
+        assert pump.thread is not None and not pump.thread.is_alive()
+    finally:
+        release_select.set()
+        if pump.thread is not None:
+            pump.thread.join(timeout=1.0)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        await broker.aclose()
 
 
 @pytest.mark.asyncio
@@ -85,7 +139,7 @@ async def test_process_pump_stop_does_not_wait_for_inherited_pipe(tmp_path: Path
     try:
         await asyncio.to_thread(process.wait)
         started = time.monotonic()
-        await asyncio.to_thread(pump.stop, 0.5)
+        await asyncio.to_thread(pump.stop, 0.5, True)
         elapsed = time.monotonic() - started
         assert elapsed < 1.0
         assert pump.thread is not None and not pump.thread.is_alive()
@@ -298,7 +352,7 @@ async def test_process_pump_bounds_unterminated_output(tmp_path: Path) -> None:
     )
     pump = ProcessLogPump(process, "huge", broker, tmp_path / "huge.log")
     await asyncio.to_thread(process.wait)
-    await asyncio.to_thread(pump.stop, 1.0)
+    await asyncio.to_thread(pump.stop, 1.0, True)
     assert pump.thread is not None and not pump.thread.is_alive()
     assert pump.max_pending_bytes <= ProcessLogPump.MAX_PARTIAL_LINE_BYTES
     assert pump.max_published_line_bytes <= ProcessLogPump.MAX_PARTIAL_LINE_BYTES

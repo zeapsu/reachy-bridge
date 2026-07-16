@@ -6,12 +6,14 @@ import asyncio
 import subprocess
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import psutil
 import pytest
+
 
 from reachy_controller.app_supervisor import (
     _APP_READINESS_POLL_S,
@@ -1395,9 +1397,15 @@ async def test_async_status_reconciliation_does_not_erase_loading_process(
 ) -> None:
     supervisor = AppSupervisor()
     scanned = asyncio.Event()
-    release = asyncio.Event()
+    release = threading.Event()
     found = {"reachy_chat": (9001, 12.5)}
     loop = asyncio.get_running_loop()
+    app = supervisor._apps["reachy_chat"]
+    process = object()
+    app.process = process  # type: ignore[assignment]
+    app.pid = 42
+    app.status = "loading"
+    app.external = False
 
     def delayed_scan() -> dict[str, tuple[int, float]]:
         # This function executes in a worker; signal the event-loop task safely.
@@ -1409,15 +1417,91 @@ async def test_async_status_reconciliation_does_not_erase_loading_process(
     monkeypatch.setattr(supervisor, "_scan_for_live_apps", delayed_scan)
     task = asyncio.create_task(supervisor.aget_all_status())
     await scanned.wait()
-    async with supervisor._lock:
-        app = supervisor._apps["reachy_chat"]
-        process = object()
-        app.process = process  # type: ignore[assignment]
-        app.pid = 42
-        app.status = "loading"
-        app.external = False
     release.set()
     await task
     assert app.process is process
     assert app.pid == 42
     assert app.status == "loading"
+
+
+@pytest.mark.asyncio
+async def test_async_status_scan_serializes_concurrent_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    supervisor = AppSupervisor()
+    supervisor._workspace_root = tmp_path
+    scanned = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    process = MagicMock(pid=4242, stdout=None)
+
+    async def noop_reap(_: str) -> None:
+        return
+
+    async def noop_readiness(_: str) -> None:
+        return
+
+    def delayed_scan() -> dict[str, tuple[int, float]]:
+        loop.call_soon_threadsafe(scanned.set)
+        release.wait(timeout=2.0)
+        return {}
+
+    monkeypatch.setattr(supervisor, "_scan_for_live_apps", delayed_scan)
+    monkeypatch.setattr(supervisor, "_reap_app", noop_reap)
+    monkeypatch.setattr(supervisor, "_monitor_readiness", noop_readiness)
+    with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=process):
+        scan_task = asyncio.create_task(supervisor.aget_all_status())
+        await scanned.wait()
+        start_task = asyncio.create_task(supervisor.start_app("reachy_chat"))
+        await asyncio.sleep(0.01)
+        assert not start_task.done()
+        release.set()
+        await scan_task
+        result = await start_task
+
+    app = supervisor._apps["reachy_chat"]
+    assert result == {"name": "reachy_chat", "status": "loading", "pid": 4242}
+    assert app.process is process
+    assert app.pid == 4242
+    assert app.status == "loading"
+    assert not app.external
+    with patch("reachy_controller.app_supervisor._signal_process_tree"):
+        await supervisor.stop_app("reachy_chat")
+
+
+@pytest.mark.asyncio
+async def test_async_status_scan_serializes_concurrent_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor = AppSupervisor()
+    app = supervisor._apps["reachy_chat"]
+    process = MagicMock(pid=4343)
+    app.process = process
+    app.pid = process.pid
+    app.status = "running"
+    app.external = False
+    scanned = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def delayed_scan() -> dict[str, tuple[int, float]]:
+        loop.call_soon_threadsafe(scanned.set)
+        release.wait(timeout=2.0)
+        return {"reachy_chat": (process.pid, 12.5)}
+
+    monkeypatch.setattr(supervisor, "_scan_for_live_apps", delayed_scan)
+    with patch("reachy_controller.app_supervisor._signal_process_tree"):
+        scan_task = asyncio.create_task(supervisor.aget_all_status())
+        await scanned.wait()
+        stop_task = asyncio.create_task(supervisor.stop_app("reachy_chat"))
+        await asyncio.sleep(0.01)
+        assert not stop_task.done()
+        release.set()
+        await scan_task
+        result = await stop_task
+
+    assert result == {"name": "reachy_chat", "status": "stopped"}
+    assert app.process is None
+    assert app.pid is None
+    assert app.status == "stopped"
+    assert not app.external

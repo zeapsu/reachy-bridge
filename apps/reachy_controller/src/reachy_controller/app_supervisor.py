@@ -171,11 +171,11 @@ class AppSupervisor:
         """
         return len(cmdline) >= 3 and cmdline[1] == "-m" and cmdline[2] == f"{module}.main"
 
-    def _close_log_handle(self, app: LocalApp) -> None:
+    def _close_log_handle(self, app: LocalApp, parent_exited: bool = False) -> None:
         """Stop and clear an app's pump (safe to call from a worker thread)."""
         pump = app.log_pump
         if pump is not None:
-            pump.stop()
+            pump.stop(parent_exited=parent_exited)
             app.log_pump = None
             # ProcessLogPump owns this file; avoid closing the same descriptor
             # through the legacy alias a second time.
@@ -368,12 +368,14 @@ class AppSupervisor:
                 except asyncio.CancelledError:
                     pass
 
+            parent_exited = False
             try:
                 # Handle subprocess.Popen handle (started by this supervisor)
                 if app.process is not None:
                     # The app receives SIGINT directly; signal the whole tree too so any
                     # child subprocesses participate in graceful shutdown (#26).
                     await self._escalate_stop(app.process.pid, app.process.wait, subprocess.TimeoutExpired)
+                    parent_exited = True
                     logger.info(f"Stopped app {name} (via subprocess handle)")
                 elif app.pid is not None:
                     # Handle adopted orphaned process (reconcile_orphans set pid, process=None)
@@ -400,7 +402,7 @@ class AppSupervisor:
             app.process = None
             app.external = False
 
-            await asyncio.to_thread(self._close_log_handle, app)
+            await asyncio.to_thread(self._close_log_handle, app, parent_exited)
             self.log_broker.set_status(name, "stopped")
 
             # Clean up ready file
@@ -419,19 +421,22 @@ class AppSupervisor:
         """Stop all launched apps synchronously (call via ``asyncio.to_thread``)."""
         for app in self._apps.values():
             if app.process is not None and app.status in ("loading", "running", "stopping", "error"):
+                parent_exited = False
                 try:
                     app.process.terminate()
                     app.process.wait(timeout=2.0)
+                    parent_exited = True
                 except Exception:
                     try:
                         app.process.kill()
                         app.process.wait(timeout=1.0)
+                        parent_exited = True
                     except Exception:
                         pass
                 finally:
                     app.status = "stopped"
                     app.process = None
-                    self._close_log_handle(app)
+                    self._close_log_handle(app, parent_exited)
                     self.log_broker.set_status(app.name, "stopped")
                     if app.ready_file is not None:
                         try:
@@ -530,8 +535,10 @@ class AppSupervisor:
                 self._reaper_tasks.pop(name, None)
             return
 
+        parent_exited = False
         try:
             exit_code = await asyncio.to_thread(process.wait)
+            parent_exited = True
             async with self._lock:
                 # A stop/restart may have replaced this process while its wait
                 # completed.  Never mutate the replacement's state.
@@ -569,7 +576,7 @@ class AppSupervisor:
                     except asyncio.CancelledError:
                         pass
 
-                await asyncio.to_thread(self._close_log_handle, app)
+                await asyncio.to_thread(self._close_log_handle, app, parent_exited)
                 app.process = None
                 app.pid = None
                 app.external = False
@@ -620,11 +627,11 @@ class AppSupervisor:
         """Reconcile process discovery without mutating app state off-loop.
 
         Process-table discovery is read-only and may be slow, so it runs in a
-        worker. The resulting snapshot is adopted only while holding the same
-        lifecycle lock used by start/stop.
+        worker while holding the lifecycle lock. The resulting snapshot is
+        reconciled under that same lock, serializing it with start/stop.
         """
-        found = await asyncio.to_thread(self._scan_for_live_apps)
         async with self._lock:
+            found = await asyncio.to_thread(self._scan_for_live_apps)
             for app in self._apps.values():
                 if app.status != "running" or app.pid is None:
                     continue

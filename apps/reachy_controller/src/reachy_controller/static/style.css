@@ -1407,6 +1407,8 @@ input[type=range]::-moz-range-thumb {
   width: 12px;
   height: 12px;
   border-radius: 50%;
+  background: var(--amber);          /* reflects the active theme's accent */
+  box-shadow: 0 0 8px 0 var(--amber);
 }
 
 .theme-pop {

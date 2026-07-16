@@ -357,6 +357,8 @@ class ProcessLogPump:
     """Drain one merged child stdout/stderr pipe on a dedicated reader thread."""
 
     MAX_PARTIAL_LINE_BYTES = 64 * 1024
+    EXIT_DRAIN_MAX_S = 0.25
+    EXIT_DRAIN_QUIESCENCE_S = 0.05
 
     def __init__(self, process: Any, source: str, broker: LogBroker, log_path: Path) -> None:
         self.process = process
@@ -369,6 +371,8 @@ class ProcessLogPump:
         self._stream_closed = False
         self._done = threading.Event()
         self._stop_requested = threading.Event()
+        self._drain_after_exit = threading.Event()
+        self._exit_drain_deadline = 0.0
         self.max_pending_bytes = 0
         self.max_published_line_bytes = 0
         self._thread: threading.Thread | None = None
@@ -485,13 +489,28 @@ class ProcessLogPump:
                 pass
             decoder = codecs.getincrementaldecoder("utf-8")("replace")
             pending = ""
+            quiet_since: float | None = None
             while not self._stop_requested.is_set():
+                draining_exit = self._drain_after_exit.is_set()
+                if draining_exit:
+                    remaining = self._exit_drain_deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    select_timeout = min(0.05, remaining)
+                else:
+                    select_timeout = 0.05
                 try:
-                    readable, _, _ = select.select((fd,), (), (), 0.05)
+                    readable, _, _ = select.select((fd,), (), (), select_timeout)
                 except (OSError, ValueError):
                     break
                 if not readable:
+                    if draining_exit:
+                        if quiet_since is None:
+                            quiet_since = time.monotonic()
+                        if time.monotonic() - quiet_since >= self.EXIT_DRAIN_QUIESCENCE_S:
+                            break
                     continue
+                quiet_since = None
                 try:
                     chunk = os.read(fd, 64 * 1024)
                 except BlockingIOError:
@@ -525,12 +544,22 @@ class ProcessLogPump:
             if not self._stop_requested.is_set():
                 self.broker.set_status(self.source, "stopped")
 
-    def stop(self, timeout: float = 5.0) -> None:
-        """Stop and join the reader within a bounded timeout."""
-        self._stop_requested.set()
+    def stop(self, timeout: float = 5.0, parent_exited: bool = False) -> None:
+        """Stop the reader, draining an exited parent’s ready pipe bytes first."""
         thread = self._thread
+        if parent_exited:
+            budget = min(max(0.0, timeout), self.EXIT_DRAIN_MAX_S)
+            self._exit_drain_deadline = time.monotonic() + budget
+            self._drain_after_exit.set()
+        else:
+            budget = max(0.0, timeout)
+            self._stop_requested.set()
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=max(0.0, timeout))
+            thread.join(timeout=budget)
+        if parent_exited and thread is not None and thread.is_alive():
+            # The descriptor loop is nonblocking; do not let an unexpected
+            # reader stall turn an exited child into an unbounded shutdown.
+            self._stop_requested.set()
         if thread is None or not thread.is_alive():
             self.broker.set_status(self.source, "stopped")
 

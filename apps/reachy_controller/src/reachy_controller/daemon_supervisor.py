@@ -157,6 +157,7 @@ class DaemonSupervisor:
         if self._daemon.status == "stopped" and self._daemon.pid is None:
             return {"status": "stopped"}
 
+        parent_exited = False
         try:
             # Handle subprocess.Popen handle (started by this supervisor)
             if self._daemon.process is not None:
@@ -164,15 +165,18 @@ class DaemonSupervisor:
                 self._daemon.process.send_signal(signal.SIGINT)
                 try:
                     await asyncio.to_thread(self._daemon.process.wait, 3.0)
+                    parent_exited = True
                 except subprocess.TimeoutExpired:
                     # Escalate to SIGTERM
                     self._daemon.process.terminate()
                     try:
                         await asyncio.to_thread(self._daemon.process.wait, 2.0)
+                        parent_exited = True
                     except subprocess.TimeoutExpired:
                         # Final escalation: SIGKILL
                         self._daemon.process.kill()
                         await asyncio.to_thread(self._daemon.process.wait, 1.0)
+                        parent_exited = True
                 logger.info("Stopped daemon (via subprocess handle)")
             elif self._daemon.pid is not None:
                 # Handle adopted orphaned process
@@ -201,7 +205,7 @@ class DaemonSupervisor:
         except Exception as e:
             logger.error(f"Error stopping daemon: {e}")
         if self._daemon.log_pump is not None:
-            await asyncio.to_thread(self._daemon.log_pump.stop)
+            await asyncio.to_thread(self._daemon.log_pump.stop, parent_exited)
             self._daemon.log_pump = None
         self.log_broker.set_status("daemon", "stopped")
 
