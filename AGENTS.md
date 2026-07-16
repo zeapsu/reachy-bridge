@@ -55,6 +55,8 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
 - `reachy_simon` — Simon-style memory game (antennas as buttons).
 - `reachy_lookat` — OpenCV face-tracking head control loop.
 - `reachy_chat` — voice: mic → faster-whisper (local) → OpenRouter → macOS `say` (local) → speaker.
+  Its served Settings UI has a backend-aware voice selector; successful choices persist per app instance
+  and live realtime changes are only reported after the replacement session connects.
 - `reachy_controller` — FastAPI + **vanilla-JS, no build step** "Liquid Glass" web control console
   (binds `127.0.0.1:7861`). Talks to the daemon over HTTP/WS and **never** instantiates `ReachyMini()`.
   Don't add a framework/bundler. Visual QA is done on a browser-capable machine (see Dev workflow).
@@ -72,6 +74,11 @@ reference app (`reachy_mini_conversation_app/`) are gitignored.
   (controls, expressions, audio, app **Start**, jetson stats)
   disables while the daemon is offline — the stats stream samples host telemetry only while the
   daemon is on — while controller-fed chrome (apps list, **Stop**, power button) stays live.
+  The hero can show the daemon-owned live camera; the audio panel renders real shared RMS +
+  low/mid/high microphone bands; and the system panel swaps between Jetson stats and bounded live
+  controller/daemon/app logs. Camera/audio reuse the daemon's existing media pipelines — the
+  controller never opens a second capture device. Child process logs are drained continuously into
+  bounded rings; never replace that with an unread blocking `PIPE`.
   A **daemon power button** in the viewport inset (`#vp-power`) starts/stops the **daemon process**
   (`DaemonSupervisor` + `/api/daemon/{status,start,stop}`) so you never have to SSH in to start it —
   it manages a *process*, still never the robot. Gated by `REACHY_MANAGE_DAEMON=1` (**on-device only**;
