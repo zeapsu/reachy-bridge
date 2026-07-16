@@ -215,10 +215,10 @@ class DaemonSupervisor:
         pid = self._daemon.pid
         pump = self._daemon.log_pump
         if process is None and pid is None and pump is None:
-            if self._daemon.status != "stopped" or self._daemon.error is not None:
-                self.log_broker.set_status("daemon", "stopped")
-                self._daemon.status = "stopped"
-                self._daemon.error = None
+            self.log_broker.set_status("daemon", "stopped")
+            self._daemon.status = "stopped"
+            self._daemon.error = None
+            self._daemon.external = False
             return {"status": "stopped"}
 
         self._daemon.status = "stopping"

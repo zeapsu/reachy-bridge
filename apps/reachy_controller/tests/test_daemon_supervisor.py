@@ -346,6 +346,26 @@ async def test_stop_via_adopted_stopped_pid() -> None:
     assert supervisor._daemon.external is False
     mock_psutil_proc.send_signal.assert_called_once_with(signal.SIGINT)
 
+@pytest.mark.asyncio
+async def test_empty_stop_releases_stale_adopted_ownership() -> None:
+    with patch.dict("os.environ", {"REACHY_MANAGE_DAEMON": "1"}):
+        supervisor = DaemonSupervisor()
+        supervisor._daemon.pid = 12345
+        supervisor._daemon.status = "running"
+        supervisor._daemon.external = True
+        supervisor.log_broker.set_status("daemon", "unavailable")
+
+        status = supervisor.status(False)
+        assert status["status"] == "stopped"
+        assert supervisor._daemon.pid is None
+
+        result = await supervisor.stop()
+
+        assert result["status"] == "stopped"
+        assert supervisor._daemon.external is False
+        assert supervisor.log_broker.source_status("daemon") == "stopped"
+
+
 
 @pytest.mark.asyncio
 async def test_stop_escalation_sigint_to_sigterm_to_sigkill() -> None:
