@@ -63,7 +63,7 @@ const document = { createElement: () => makeEl("bar") };
 __SECTION__
 
 const results = {};
-const BASE = { sample_rate_hz: 16000, source: "daemon mic tap", timestamp: "t" };
+const BASE = { sample_rate_hz: 16000, source: "daemon mic tap", timestamp: "2026-07-16T08:00:00+00:00" };
 const LOW = { ...BASE, rms: 0.9, rms_db: -8.2, low: 0.94, mid: 0, high: 0 };
 const MID = { ...BASE, rms: 0.9, rms_db: -8.2, low: 0, mid: 0.94, high: 0 };
 const HIGH = { ...BASE, rms: 0.9, rms_db: -8.2, low: 0, mid: 0, high: 0.94 };
@@ -71,7 +71,7 @@ const SILENCE = { ...BASE, rms: 0, rms_db: -60, low: 0, mid: 0, high: 0 };
 const feed = (payload, count) => {
   for (let i = 0; i < count; i += 1) {
     const levels = audioLevelsFromPayload(payload);
-    if (levels) renderEqualizer(levels);
+    if (levels) renderAudioLevel(levels);
   }
 };
 const groupMeans = () => {
@@ -114,11 +114,13 @@ results.high = { means: groupMeans() };
 // Loud vs quiet: a weaker mid tone renders a lower hump and narrower ribbon.
 feed({ ...MID, rms: 0.3, mid: 0.3 }, 24);
 results.midSoft = { means: groupMeans(), rmsWidth: parseFloat(els["eq-rms"].style.width) };
-
-// dBFS clamping of the peak readout.
-feed({ ...MID, rms_db: 3.5 }, 1);
+// dBFS clamping of the peak readout remains defensive for already validated
+// levels delivered by a trusted caller.
+renderEqualizer({ rms: 0.9, low: 0, mid: 0.94, high: 0, db: 3.5, rateHz: 16000, source: "daemon mic tap" });
 results.dbHigh = els["eq-peak"].textContent;
-feed({ ...MID, rms_db: -75 }, 80);
+for (let i = 0; i < 80; i += 1) {
+  renderEqualizer({ rms: 0.9, low: 0, mid: 0.94, high: 0, db: -75, rateHz: 16000, source: "daemon mic tap" });
+}
 results.dbLow = els["eq-peak"].textContent;
 
 // Quiet hysteresis: settle to the floor, then zero DOM writes per tick.
@@ -150,18 +152,30 @@ results.reconnect = {
   peak: els["eq-peak"].textContent,
 };
 
-// Malformed payload safety.
+// Malformed and incomplete payload safety.
 results.malformed = [
   audioLevelsFromPayload(null),
   audioLevelsFromPayload("garbage"),
   audioLevelsFromPayload(42),
   audioLevelsFromPayload({}),
-  audioLevelsFromPayload({ rms: "abc", low: "x" }),
+  audioLevelsFromPayload({ ...LOW, rms: "0.9" }),
   audioLevelsFromPayload({ speech_detected: true }),
 ].map((value) => value === null);
-results.clamped = audioLevelsFromPayload({
-  rms: 7, low: -3, mid: 0.5, high: 99, rms_db: "-12.5", sample_rate_hz: 48000, source: "daemon mic tap",
-});
+results.invalidContract = [
+  { ...LOW, rms: true },
+  { ...LOW, rms_db: "-8.2" },
+  { ...LOW, low: NaN },
+  { ...LOW, mid: null },
+  { ...LOW, high: "0" },
+  { ...LOW, sample_rate_hz: true },
+  { ...LOW, source: " " },
+  { ...LOW, timestamp: null },
+  { ...LOW, rms: 1.1 },
+].map((payload) => audioLevelsFromPayload(payload) === null);
+results.complete = audioLevelsFromPayload(LOW) !== null;
+results.outOfRange = audioLevelsFromPayload({
+  ...LOW, rms: 7, low: -3, mid: 0.5, high: 99, rms_db: -12.5, sample_rate_hz: 48000,
+}) === null;
 feed(SILENCE, 60);
 const beforeGarbage = snapshotWrites();
 [null, "garbage", {}, { rms: "abc" }].forEach((payload) => {
@@ -169,18 +183,20 @@ const beforeGarbage = snapshotWrites();
   if (levels) renderEqualizer(levels);
 });
 results.malformedWriteDelta = writesDelta(beforeGarbage);
-
-// Ballistics: one rising then one falling event on the low-band center bar.
+// Ballistics: 100 ms samples, one rising sample then five release samples.
+renderAudioUnavailable("no audio signal");
 feed(SILENCE, 60);
 feed(LOW, 1);
 const centerIdx = 5;
 const afterRise = eqState[centerIdx];
-feed({ ...SILENCE, rms: 0.05 }, 1); // above the wake threshold, zero bands
-const afterFall = eqState[centerIdx];
+feed({ ...SILENCE, rms: 0.05 }, 5); // five 100 ms samples = 500 ms
+const afterRelease = eqState[centerIdx];
 results.ballistics = {
   floor: EQ_FLOOR,
   afterRise,
-  afterFall,
+  afterRelease,
+  attackSamples: 1,
+  releaseSamples: 5,
   target: EQ_FLOOR + EQ_SPAN * Math.min(1, 0.94 * eqWeights[centerIdx][0]),
 };
 
@@ -190,6 +206,10 @@ const h1 = bars[centerIdx].style.height;
 feed(LOW, 1);
 const h2 = bars[centerIdx].style.height;
 results.snap = { h1, h2 };
+
+renderAudioUnavailable("no audio signal");
+const cadencePayload = audioLevelsFromPayload(MID);
+results.cadence = Array.from({ length: 10 }, () => renderAudioLevel(cadencePayload));
 
 console.log(JSON.stringify(results));
 """
@@ -279,43 +299,43 @@ def test_reconnect_wakes_meter_and_restores_db_readout(viz: dict) -> None:
     assert viz["reconnect"]["peak"].endswith(" dBFS")
 
 
-def test_malformed_payloads_are_rejected_and_values_clamped(viz: dict) -> None:
+def test_malformed_payloads_are_rejected_without_fabricated_bands(viz: dict) -> None:
     assert viz["malformed"] == [True] * 6
-    clamped = viz["clamped"]
-    assert clamped["rms"] == 1 and clamped["low"] == 0
-    assert clamped["mid"] == 0.5 and clamped["high"] == 1
-    assert clamped["db"] == -12.5
-    assert clamped["rateHz"] == 48000
+    assert viz["invalidContract"] == [True] * 9
+    assert viz["complete"] is True
+    assert viz["outOfRange"] is True
     assert viz["malformedWriteDelta"] == 0
 
 
-def test_attack_is_faster_than_release(viz: dict) -> None:
+def test_ballistics_match_100ms_transport_samples(viz: dict) -> None:
     ballistics = viz["ballistics"]
+    assert ballistics["attackSamples"] == 1
+    assert ballistics["releaseSamples"] == 5
     rise = (ballistics["afterRise"] - ballistics["floor"]) / (
         ballistics["target"] - ballistics["floor"]
     )
-    fall = (ballistics["afterRise"] - ballistics["afterFall"]) / (
+    remaining = (ballistics["afterRelease"] - ballistics["floor"]) / (
         ballistics["afterRise"] - ballistics["floor"]
     )
-    assert 0.5 < rise < 0.6  # attack gain
-    assert 0.15 < fall < 0.25  # release gain
-    assert rise > 2 * fall
+    # One 100 ms sample uses ~0.75 attack; five samples cover the documented
+    # ~500 ms release and leave about (1 - .35)^5 of the level.
+    assert rise == pytest.approx(0.75, abs=0.03)
+    assert remaining == pytest.approx((1 - 0.35) ** 5, abs=0.04)
 
-
+def test_animated_mode_renders_each_audio_event(viz: dict) -> None:
+    assert viz["cadence"] == [True] * 10
 def test_animated_mode_interpolates_between_events(viz: dict) -> None:
     assert viz["snap"]["h1"] != viz["snap"]["h2"]
 
 
-def test_reduced_motion_snaps_to_truthful_values_without_interpolation(
+def test_reduced_motion_throttles_to_two_hz_and_snaps_to_truth(
     viz_reduced: dict,
 ) -> None:
     ballistics = viz_reduced["ballistics"]
-    # One event lands exactly on the target — no eased interpolation.
     assert ballistics["afterRise"] == pytest.approx(ballistics["target"])
-    assert ballistics["afterFall"] == pytest.approx(ballistics["floor"])
-    # Repeating the same payload produces the identical frame.
+    assert ballistics["afterRelease"] == pytest.approx(ballistics["floor"])
     assert viz_reduced["snap"]["h1"] == viz_reduced["snap"]["h2"]
-    # All state/copy contracts hold in reduced motion too.
+    assert viz_reduced["cadence"] == [True, False, False, False, False, True, False, False, False, False]
     assert viz_reduced["quiet"]["repeatDelta"] == 0
     assert viz_reduced["low"]["peak"] == "-8.2 dBFS"
     low = viz_reduced["low"]["means"]
@@ -342,3 +362,9 @@ def test_static_audio_visualizer_wiring() -> None:
     segment = script[start : script.index("});", start)]
     assert "audioLevelsFromPayload" in segment
     assert "speech_detected" not in segment
+    assert 'setAudioStatus("listening")' in segment
+    assert 'setAudioStatus("unavailable")' in segment
+    assert 'setAudioStatus("reconnecting")' in segment
+    daemon_start = script.index("function setDaemonOnline")
+    daemon_end = script.index("function setControlsEnabled", daemon_start)
+    assert "mic-state" not in script[daemon_start:daemon_end]

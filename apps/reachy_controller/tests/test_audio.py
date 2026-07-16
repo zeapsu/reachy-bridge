@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 
 import pytest
 
@@ -24,6 +25,33 @@ def parse_sse_data(event: str) -> dict:
     data_line = next(line for line in event.splitlines() if line.startswith("data: "))
     return json.loads(data_line.removeprefix("data: "))
 
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("rms", True),
+        ("rms", math.nan),
+        ("low", "0.2"),
+        ("mid", None),
+        ("high", math.inf),
+        ("rms_db", "-14.5"),
+        ("rms_db", 1.0),
+        ("sample_rate_hz", False),
+        ("sample_rate_hz", 0),
+        ("source", " "),
+        ("timestamp", None),
+    ],
+)
+def test_audio_levels_validator_rejects_incomplete_or_nonfinite_contract(
+    field: str, value: object
+) -> None:
+    payload = dict(LEVELS, **{field: value})
+    assert AudioLevelsBroadcaster._valid_levels(payload) is False
+
+
+def test_audio_levels_validator_accepts_complete_daemon_contract() -> None:
+    assert AudioLevelsBroadcaster._valid_levels(LEVELS) is True
 
 class AudioProxy:
     def __init__(self, levels: list[dict | None]) -> None:
@@ -58,6 +86,22 @@ async def test_audio_stream_reports_real_levels_payload() -> None:
     assert event.startswith("event: audio-level\n")
     assert parse_sse_data(event) == LEVELS
     assert proxy.full_state_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_invalid_audio_response_emits_unavailable_before_recovery() -> None:
+    from reachy_controller.routes.audio import _audio_level_stream_generator
+
+    proxy = AudioProxy([dict(LEVELS, low=True), LEVELS])
+    broadcaster = AudioLevelsBroadcaster(proxy, interval=0.01, reconnect_delay=0.01)
+    stream = _audio_level_stream_generator(broadcaster)
+
+    unavailable = await anext(stream)
+    recovered = await anext(stream)
+    await stream.aclose()
+
+    assert unavailable == "event: daemon-unavailable\ndata: {}\n\n"
+    assert parse_sse_data(recovered) == LEVELS
 
 
 @pytest.mark.asyncio

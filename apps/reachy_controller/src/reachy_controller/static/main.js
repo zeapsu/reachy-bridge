@@ -18,6 +18,7 @@
     // from page load and stays offline — the change-guard would otherwise suppress
     // those writes since false === false (#43).
     daemonOnline: null,
+    audioStatus: "waiting",
     controlsLoaded: false,
     controlBusy: false,
     appBusy: false,
@@ -326,6 +327,19 @@
     $("log-follow").hidden = true;
   });
 
+  function setAudioStatus(status) {
+    if (state.audioStatus === status) return;
+    state.audioStatus = status;
+    const dotClass = status === "listening"
+      ? "dot ok"
+      : status === "reconnecting"
+        ? "dot loading"
+        : status === "unavailable"
+          ? "dot error"
+          : "dot";
+    $("mic-dot").className = dotClass;
+    $("mic-state").textContent = status;
+  }
   function setDaemonOnline(online) {
     const changed = state.daemonOnline !== online;
     state.daemonOnline = online;
@@ -343,8 +357,6 @@
       $("vp-rec").className = `rec ${online ? "ok" : ""}`;
       $("rig").classList.toggle("offline", !online);
       $("rig-note").hidden = online;
-      $("mic-dot").className = `dot ${online ? "ok" : "error"}`;
-      $("mic-state").textContent = online ? "listening" : "unavailable";
       $("stats-dot").className = `dot ${online ? "ok" : "error"}`;
     }
     if (!online && state.mode === "camera") {
@@ -1064,18 +1076,18 @@
   const NBARS = 36;
   const EQ_FLOOR = 4; // settled bar height (%)
   const EQ_SPAN = 88; // full-scale travel above the floor (%)
-  // Meter ballistics at the stream's 20 Hz cadence: fast attack (~90% in
-  // 150 ms), slower release (~90% in 500 ms) — the classic analyzer feel.
-  const EQ_ATTACK = 0.55;
-  const EQ_RELEASE = 0.2;
-  const EQ_RMS_ATTACK = 0.5;
-  const EQ_RMS_RELEASE = 0.15;
-  // Quiet hysteresis: enter below 0.02 sustained for 12 events (~0.6 s at
-  // 20 Hz), wake at 0.04 — then settle to the floor and stop DOM writes.
+  // The daemon polls at 10 Hz. These per-sample gains reach roughly 75% of a
+  // new level in 150 ms and decay roughly 90% toward the floor in 500 ms.
+  const EQ_ATTACK = 0.75;
+  const EQ_RELEASE = 0.35;
+  const EQ_RMS_ATTACK = 0.75;
+  const EQ_RMS_RELEASE = 0.35;
+  // Quiet hysteresis: enter below 0.02 sustained for 12 events (~1.2 s at
+  // 10 Hz), wake at 0.04 — then settle to the floor and stop DOM writes.
   const EQ_QUIET_ENTER = 0.02;
   const EQ_QUIET_EXIT = 0.04;
   const EQ_QUIET_TICKS = 12;
-  const EQ_PEAK_DECAY_DB = 1.2; // peak-hold falls ~24 dB/s at 20 Hz
+  const EQ_PEAK_DECAY_DB = 2.4; // preserve ~24 dB/s peak decay at 10 Hz
   const eqEl = $("eq");
   const eqRmsEl = $("eq-rms");
   const bars = Array.from({ length: NBARS }, () => {
@@ -1100,25 +1112,45 @@
   let eqRmsLast = null;
   let eqQuietTicks = 0;
   let eqPeakDb = null;
+  let eqReducedAudioEvents = 0;
 
-  // Validate one SSE payload into clamped levels; anything malformed → null
-  // (the caller drops it — the meter never moves on garbage).
+  const finiteAudioNumber = (value) =>
+    typeof value === "number" && Number.isFinite(value);
+
+  // Validate one complete SSE payload. The daemon owns normalization, so a
+  // partial or out-of-contract response is unavailable, never a zero-filled
+  // spectrum that could look like a real quiet signal.
   function audioLevelsFromPayload(payload) {
-    if (!payload || typeof payload !== "object") return null;
-    const rms = finite(payload.rms);
-    const low = finite(payload.low);
-    const mid = finite(payload.mid);
-    const high = finite(payload.high);
-    if (rms == null && low == null && mid == null && high == null) return null;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    const fields = ["rms", "rms_db", "low", "mid", "high", "sample_rate_hz"];
+    if (!fields.every((field) => finiteAudioNumber(payload[field]))) return null;
+    if (!["rms", "low", "mid", "high"].every((field) => payload[field] >= 0 && payload[field] <= 1)) return null;
+    if (payload.rms_db < -60 || payload.rms_db > 0 || payload.sample_rate_hz <= 0) return null;
+    if (typeof payload.source !== "string" || !payload.source.trim()) return null;
+    if (typeof payload.timestamp !== "string" || !payload.timestamp.trim()) return null;
     return {
-      rms: clamp(rms ?? 0, 0, 1),
-      low: clamp(low ?? 0, 0, 1),
-      mid: clamp(mid ?? 0, 0, 1),
-      high: clamp(high ?? 0, 0, 1),
-      db: finite(payload.rms_db),
-      rateHz: finite(payload.sample_rate_hz),
-      source: typeof payload.source === "string" && payload.source ? payload.source : null,
+      rms: payload.rms,
+      low: payload.low,
+      mid: payload.mid,
+      high: payload.high,
+      db: payload.rms_db,
+      rateHz: payload.sample_rate_hz,
+      source: payload.source,
+      timestamp: payload.timestamp,
     };
+  }
+
+  function renderAudioLevel(levels) {
+    const shouldRender = !reduceMotion || eqReducedAudioEvents % 5 === 0;
+    eqReducedAudioEvents += 1;
+    if (!shouldRender) return false;
+    renderEqualizer(levels);
+    return true;
+  }
+
+  function renderAudioUnavailable(label) {
+    eqReducedAudioEvents = 0;
+    renderEqualizer(null, label);
   }
 
   function formatSampleRate(rateHz) {
@@ -1140,7 +1172,7 @@
 
   // Pin every bar and the ribbon to the quiet floor in ONE pass, then stop:
   // offline/quiet states must not keep 36 heights animating forever. Once
-  // settled, a tick does zero per-bar work — the 20 Hz stream otherwise
+  // settled, a tick does zero per-bar work — the 10 Hz stream otherwise
   // rewrites bar heights inside a backdrop-filtered panel that iOS
   // re-rasterizes on every write, the focused-tab battery drain (#36).
   function settleEqToFloor() {
@@ -1827,11 +1859,27 @@
     const audio = bindEventSource("/api/audio/levels-stream", {
       "audio-level": (event) => {
         const levels = audioLevelsFromPayload(readEventPayload(event));
-        if (levels) renderEqualizer(levels);
+        if (levels) {
+          setAudioStatus("listening");
+          renderAudioLevel(levels);
+        } else {
+          setAudioStatus("unavailable");
+          renderAudioUnavailable("no audio signal");
+        }
       },
-      "daemon-unavailable": () => renderEqualizer(null, "no audio signal"),
-      error: () => renderEqualizer(null, "audio stream reconnecting"),
+      "daemon-unavailable": () => {
+        setAudioStatus("unavailable");
+        renderAudioUnavailable("no audio signal");
+      },
+      error: () => {
+        setAudioStatus("reconnecting");
+        renderAudioUnavailable("audio stream reconnecting");
+      },
     });
+    if (!audio) {
+      setAudioStatus("reconnecting");
+      renderAudioUnavailable("audio stream reconnecting");
+    }
     state.live.streams.push(telemetry, audio);
     openStatsStream();
     if (state.sysView === "logs") void openLogStream();

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Callable
-from typing import Any
 
 from reachy_controller.jetson_stats import collect_jetson_stats
 
@@ -206,9 +206,36 @@ class AudioLevelsBroadcaster(_LazyBroadcaster):
         await super().aclose()
 
 
+    @staticmethod
+    def _finite_number(value: Any) -> bool:
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+        )
+
     @classmethod
     def _valid_levels(cls, value: Any) -> bool:
-        return isinstance(value, dict) and cls.REQUIRED_FIELDS.issubset(value)
+        if not isinstance(value, dict) or not cls.REQUIRED_FIELDS.issubset(value):
+            return False
+
+        for field in ("rms", "low", "mid", "high"):
+            level = value[field]
+            if not cls._finite_number(level) or not 0 <= level <= 1:
+                return False
+        rms_db = value["rms_db"]
+        if not cls._finite_number(rms_db) or not -60 <= rms_db <= 0:
+            return False
+        sample_rate_hz = value["sample_rate_hz"]
+        if not cls._finite_number(sample_rate_hz) or sample_rate_hz <= 0:
+            return False
+        source = value["source"]
+        if not isinstance(source, str) or not source.strip():
+            return False
+        # The daemon contract uses an RFC 3339 UTC string. Keep the validator
+        # strict about presence/content without reparsing a transport field.
+        timestamp = value["timestamp"]
+        return isinstance(timestamp, str) and bool(timestamp.strip())
 
     async def _run(self) -> None:
         while self._subscribers:
