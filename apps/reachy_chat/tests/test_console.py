@@ -1109,6 +1109,83 @@ def test_mounted_gemini_voice_timeout_hanging_close_preserves_previous_and_does_
         thread.join(timeout=1.0)
         loop.close()
 
+@pytest.mark.asyncio
+async def test_local_stream_hanging_old_shutdown_retries_after_failed_voice_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed replacement must clear stale ownership so the supervisor can retry once."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "MODEL_NAME", "gemini-3.1-flash-live-preview")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setattr(gemini_mod, "GEMINI_RESTART_TIMEOUT_SECONDS", 0.01)
+    handler = GeminiLiveHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()),
+        instance_path=str(tmp_path),
+        startup_voice="Orus",
+    )
+    stream = LocalStream(handler, MagicMock(), instance_path=str(tmp_path), startup_voice="Orus")
+    stream._backend_retry_delay = 0.01
+    initial_connected = asyncio.Event()
+    replacement_connected = asyncio.Event()
+    first_shutdown_started = asyncio.Event()
+    shutdown_calls = 0
+    startup_calls = 0
+
+    async def _fake_start_up() -> None:
+        nonlocal startup_calls
+        startup_calls += 1
+        handler._stop_event.clear()
+        handler.session = object()
+        callback = handler._startup_connection_callback
+        assert callback is not None
+        callback()
+        if startup_calls == 1:
+            initial_connected.set()
+        else:
+            replacement_connected.set()
+        await asyncio.Event().wait()
+
+    async def _hanging_shutdown() -> None:
+        nonlocal shutdown_calls
+        shutdown_calls += 1
+        if shutdown_calls == 1:
+            first_shutdown_started.set()
+            await asyncio.Event().wait()
+
+    async def _restored_shutdown() -> None:
+        nonlocal shutdown_calls
+        shutdown_calls += 1
+
+    handler.start_up = _fake_start_up
+    handler.shutdown = _hanging_shutdown
+    startup_task = asyncio.create_task(stream._run_handler_startup_loop())
+    try:
+        await asyncio.wait_for(initial_connected.wait(), timeout=1.0)
+
+        with pytest.raises(RuntimeError, match="Voice change failed"):
+            await stream.change_voice("Zephyr")
+
+        assert first_shutdown_started.is_set()
+        assert handler.get_current_voice() == "Orus"
+        assert stream._voice_override == "Orus"
+        assert not (tmp_path / "startup_settings.json").exists()
+        assert stream._startup_generation is None
+        assert stream._startup_retry_pending is True
+
+        handler.shutdown = _restored_shutdown
+        await asyncio.wait_for(replacement_connected.wait(), timeout=1.0)
+        await asyncio.sleep(0.05)
+
+        assert startup_calls == 2
+        assert stream._startup_generation is not None
+        assert stream._startup_generation.generation == 2
+        assert stream._startup_retry_pending is False
+        assert not startup_task.done()
+    finally:
+        stream._stop_event.set()
+        await asyncio.wait_for(startup_task, timeout=1.0)
+
 
 @pytest.mark.asyncio
 async def test_local_stream_gemini_replacement_owns_generations_and_ignores_stale_connect(

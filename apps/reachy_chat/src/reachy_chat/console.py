@@ -405,7 +405,14 @@ class LocalStream:
             if not generation.replaced.done():
                 generation.replaced.set_result(None)
             try:
-                await self._stop_startup_generation(generation, timeout=timeout)
+                try:
+                    await self._stop_startup_generation(generation, timeout=timeout)
+                except BaseException:
+                    if self._startup_generation is generation:
+                        self._startup_generation = None
+                        self._startup_retry_pending = True
+                    raise
+
                 replacement = self._create_startup_generation()
                 await asyncio.sleep(0)
                 self._infer_generation_connected(replacement)
@@ -416,14 +423,15 @@ class LocalStream:
                     )
                 except BaseException:
                     self._startup_retry_pending = True
-                    await self._stop_startup_generation(replacement, timeout=timeout)
-                    if self._startup_generation is replacement:
-                        self._startup_generation = None
+                    try:
+                        await self._stop_startup_generation(replacement, timeout=timeout)
+                    finally:
+                        if self._startup_generation is replacement:
+                            self._startup_generation = None
                     raise
             finally:
                 self._startup_transition_active = False
                 self._startup_transition_done.set()
-
     async def _shutdown_active_handler(self) -> None:
         """Stop the active handler and its LocalStream-owned startup child."""
         generation = self._startup_generation
