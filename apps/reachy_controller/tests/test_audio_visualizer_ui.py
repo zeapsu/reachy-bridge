@@ -64,10 +64,14 @@ __SECTION__
 
 const results = {};
 const BASE = { sample_rate_hz: 16000, source: "daemon mic tap", timestamp: "2026-07-16T08:00:00+00:00" };
-const LOW = { ...BASE, rms: 0.9, rms_db: -8.2, low: 0.94, mid: 0, high: 0 };
-const MID = { ...BASE, rms: 0.9, rms_db: -8.2, low: 0, mid: 0.94, high: 0 };
-const HIGH = { ...BASE, rms: 0.9, rms_db: -8.2, low: 0, mid: 0, high: 0.94 };
-const SILENCE = { ...BASE, rms: 0, rms_db: -60, low: 0, mid: 0, high: 0 };
+const LOW_SPECTRUM = [0.94, 0.82, 0.4, 0.2, 0.1, 0.05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const MID_SPECTRUM = [0, 0, 0, 0, 0, 0, 0.05, 0.1, 0.2, 0.4, 0.82, 0.94, 0, 0, 0, 0, 0, 0];
+const HIGH_SPECTRUM = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.05, 0.1, 0.2, 0.4, 0.82, 0.94];
+const SILENCE_SPECTRUM = Array(18).fill(0);
+const LOW = { ...BASE, rms: 0.9, rms_db: -8.2, low: 0.94, mid: 0, high: 0, spectrum: LOW_SPECTRUM };
+const MID = { ...BASE, rms: 0.9, rms_db: -8.2, low: 0, mid: 0.94, high: 0, spectrum: MID_SPECTRUM };
+const HIGH = { ...BASE, rms: 0.9, rms_db: -8.2, low: 0, mid: 0, high: 0.94, spectrum: HIGH_SPECTRUM };
+const SILENCE = { ...BASE, rms: 0, rms_db: -60, low: 0, mid: 0, high: 0, spectrum: SILENCE_SPECTRUM };
 const feed = (payload, count) => {
   for (let i = 0; i < count; i += 1) {
     const levels = audioLevelsFromPayload(payload);
@@ -77,7 +81,7 @@ const feed = (payload, count) => {
 const groupMeans = () => {
   const heights = bars.map((bar) => parseFloat(bar.style.height));
   const mean = (from, to) => heights.slice(from, to).reduce((sum, v) => sum + v, 0) / (to - from);
-  return [mean(0, 12), mean(12, 24), mean(24, 36)];
+  return [mean(0, 6), mean(6, 12), mean(12, 18)];
 };
 const snapshotWrites = () => ({ ...writes });
 const writesDelta = (before) =>
@@ -110,16 +114,28 @@ feed(MID, 24);
 results.mid = { means: groupMeans() };
 feed(HIGH, 24);
 results.high = { means: groupMeans() };
+renderEqualizer(null, "no audio signal");
+const DIRECT_SPECTRUM = Array(18).fill(0);
+DIRECT_SPECTRUM[4] = 0.9;
+feed({ ...BASE, rms: 0.9, rms_db: -8.2, low: 0.9, mid: 0, high: 0, spectrum: DIRECT_SPECTRUM }, 24);
+results.direct = {
+  peakIndex: eqState.indexOf(Math.max(...eqState)),
+  nonPeakMax: Math.max(...eqState.filter((_, index) => index !== 4)),
+};
 
-// Loud vs quiet: a weaker mid tone renders a lower hump and narrower ribbon.
-feed({ ...MID, rms: 0.3, mid: 0.3 }, 24);
+feed({
+  ...MID,
+  rms: 0.3,
+  mid: 0.3,
+  spectrum: MID_SPECTRUM.map((value) => value * (0.3 / 0.94)),
+}, 24);
 results.midSoft = { means: groupMeans(), rmsWidth: parseFloat(els["eq-rms"].style.width) };
 // dBFS clamping of the peak readout remains defensive for already validated
 // levels delivered by a trusted caller.
-renderEqualizer({ rms: 0.9, low: 0, mid: 0.94, high: 0, db: 3.5, rateHz: 16000, source: "daemon mic tap" });
+renderEqualizer({ ...MID, db: 3.5, rateHz: 16000 });
 results.dbHigh = els["eq-peak"].textContent;
 for (let i = 0; i < 80; i += 1) {
-  renderEqualizer({ rms: 0.9, low: 0, mid: 0.94, high: 0, db: -75, rateHz: 16000, source: "daemon mic tap" });
+  renderEqualizer({ ...MID, db: -75, rateHz: 16000 });
 }
 results.dbLow = els["eq-peak"].textContent;
 
@@ -170,6 +186,8 @@ results.invalidContract = [
   { ...LOW, sample_rate_hz: true },
   { ...LOW, source: " " },
   { ...LOW, timestamp: null },
+  { ...LOW, spectrum: Array(17).fill(0) },
+  { ...LOW, spectrum: [...Array(17).fill(0), NaN] },
   { ...LOW, rms: 1.1 },
 ].map((payload) => audioLevelsFromPayload(payload) === null);
 results.complete = audioLevelsFromPayload(LOW) !== null;
@@ -197,7 +215,7 @@ results.ballistics = {
   afterRelease,
   attackSamples: 1,
   releaseSamples: 5,
-  target: EQ_FLOOR + EQ_SPAN * Math.min(1, 0.94 * eqWeights[centerIdx][0]),
+  target: EQ_FLOOR + EQ_SPAN * LOW_SPECTRUM[centerIdx],
 };
 
 // Determinism under repetition: two identical events.
@@ -277,6 +295,10 @@ def test_low_mid_high_payloads_move_matching_band_groups(viz: dict) -> None:
         assert means[group] > 30
 
 
+def test_each_measured_bin_drives_only_its_bar(viz: dict) -> None:
+    assert viz["direct"]["peakIndex"] == 4
+    assert viz["direct"]["nonPeakMax"] == 4
+
 def test_loudness_scales_level_and_ribbon(viz: dict) -> None:
     assert viz["midSoft"]["means"][1] < viz["mid"]["means"][1]
     assert viz["midSoft"]["rmsWidth"] < viz["low"]["rmsWidth"]
@@ -319,10 +341,9 @@ def test_reconnect_wakes_meter_and_restores_db_readout(viz: dict) -> None:
     assert means[1] > 20
     assert viz["reconnect"]["peak"].endswith(" dBFS")
 
-
 def test_malformed_payloads_are_rejected_without_fabricated_bands(viz: dict) -> None:
     assert viz["malformed"] == [True] * 6
-    assert viz["invalidContract"] == [True] * 9
+    assert viz["invalidContract"] == [True] * 11
     assert viz["complete"] is True
     assert viz["outOfRange"] is True
     assert viz["malformedWriteDelta"] == 0

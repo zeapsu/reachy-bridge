@@ -788,7 +788,10 @@ def test_local_stream_mounts_voice_routes_before_async_loop_is_ready(
     assert sum(getattr(route, "path", None) == "/voices/current" for route in app.routes) == 1
     client = TestClient(app)
 
-    assert client.get("/").status_code == 200
+    root = client.get("/")
+    assert root.status_code == 200
+    assert 'id="voice-select"' in root.text
+    assert 'id="voice-apply"' in root.text
     assert client.get("/voices").json() == ["System Default", "local-os-voice"]
     assert client.get("/voices/current").json() == {"voice": "System Default"}
 

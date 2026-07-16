@@ -21,18 +21,53 @@ def tone(frequency: float, amplitude: float = 0.5) -> np.ndarray:
 
 
 @pytest.mark.parametrize(
-    ("frequency", "dominant"),
-    [(120.0, "low"), (1_000.0, "mid"), (5_000.0, "high")],
+    ("frequency", "dominant", "expected_bin"),
+    [(120.0, "low", 1), (1_000.0, "mid", 8), (5_000.0, "high", 15)],
 )
-def test_synthetic_tones_dominate_expected_band(frequency: float, dominant: str) -> None:
+def test_synthetic_tones_dominate_expected_band(
+    frequency: float, dominant: str, expected_bin: int
+) -> None:
     tap = AudioSpectrumTap(compute_interval=0)
 
     levels = tap.process_samples(tone(frequency), sample_rate_hz=SAMPLE_RATE, now=0.0)
 
     assert levels is not None
+    spectrum = levels["spectrum"]
+    assert isinstance(spectrum, list)
+    assert len(spectrum) == 18
+    assert all(math.isfinite(value) and 0 <= value <= 1 for value in spectrum)
+    assert np.argmax(spectrum) == expected_bin
+    assert spectrum[expected_bin] > max(
+        value for index, value in enumerate(spectrum) if index != expected_bin
+    ) * 2
     assert levels[dominant] > 0.2
     assert levels[dominant] > max(levels[name] for name in ("low", "mid", "high") if name != dominant) * 2
 
+
+def test_short_audio_callbacks_fill_rolling_window_before_fft() -> None:
+    sample_count = 13 * 160
+    times = np.arange(sample_count, dtype=np.float32) / SAMPLE_RATE
+    samples = (0.5 * np.sin(2 * math.pi * 1_000 * times)).astype(np.float32)
+    tap = AudioSpectrumTap(compute_interval=0.05)
+
+    results = [
+        tap.process_samples(
+            samples[offset : offset + 160],
+            sample_rate_hz=SAMPLE_RATE,
+            now=offset / SAMPLE_RATE,
+        )
+        for offset in range(0, sample_count, 160)
+    ]
+
+    assert results[:-1] == [None] * (len(results) - 1)
+    levels = results[-1]
+    assert levels is not None
+    assert len(levels["spectrum"]) == 18
+    assert np.argmax(levels["spectrum"]) == 8
+    assert tap.compute_count == tap.fft_count == 1
+    assert tap.process_samples(samples[:160], sample_rate_hz=SAMPLE_RATE, now=0.13) is None
+    assert tap.process_samples(samples[160:320], sample_rate_hz=SAMPLE_RATE, now=0.18) is not None
+    assert tap.compute_count == tap.fft_count == 2
 
 def test_amplitude_tracks_rms_monotonically_and_silence_clamps() -> None:
     tap = AudioSpectrumTap(compute_interval=0)
@@ -52,6 +87,11 @@ def test_empty_and_nonfinite_input_is_safe() -> None:
     tap = AudioSpectrumTap(compute_interval=0)
 
     assert tap.process_samples(np.array([], dtype=np.float32), sample_rate_hz=SAMPLE_RATE, now=0.0) is None
+    assert tap.process_samples(
+        np.zeros(AudioSpectrumTap.ANALYSIS_WINDOW_SIZE - 3, dtype=np.float32),
+        sample_rate_hz=SAMPLE_RATE,
+        now=0.0,
+    ) is None
     levels = tap.process_samples(
         np.array([np.nan, np.inf, -np.inf], dtype=np.float32),
         sample_rate_hz=SAMPLE_RATE,
@@ -60,6 +100,7 @@ def test_empty_and_nonfinite_input_is_safe() -> None:
 
     assert levels is not None
     assert levels["rms"] == 0
+    assert levels["spectrum"] == [0.0] * 18
     assert levels["low"] == levels["mid"] == levels["high"] == 0
 
 
@@ -196,7 +237,7 @@ def test_gstreamer_patch_preserves_webrtc_and_adds_one_analysis_branch(monkeypat
     assert analysis_queue.downstream == [pipeline.get_by_name("audio_spectrum_convert")]
     assert analysis_sink is not None
     assert analysis_sink.callbacks["new-sample"]
-    assert isinstance(server._reachy_audio_spectrum_tap, AudioSpectrumTap)
+    assert isinstance(server._reachy_audio_spectrum_tap, media.AudioSpectrumTap)
     audio_sources = [
         element
         for element in pipeline.elements.values()

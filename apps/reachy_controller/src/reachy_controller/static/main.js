@@ -35,6 +35,14 @@
     sliderActive: null,
     simLoop: null,
     live: { streams: [], timers: [], active: false, statsStream: null },
+    camera: {
+      streamGeneration: 0,
+      firstFrameTimer: null,
+      retryTimer: null,
+      availabilityInflight: false,
+      loadHandler: null,
+      errorHandler: null,
+    },
     cameraAvailabilityRequest: 0,
     sysView: "stats",
     log: { source: LOG_DEFAULT_SOURCE, stream: null, lines: 0, follow: true, loading: false, openGeneration: 0, openAbort: null },
@@ -538,6 +546,10 @@
     $("doaTick").setAttribute("cy", ty.toFixed(1));
   }
 
+  const CAMERA_FIRST_FRAME_TIMEOUT_MS = 9000;
+  const CAMERA_FIRST_FRAME_CHECK_MS = 100;
+  const CAMERA_RETRY_DELAY_MS = 750;
+
   function cameraShouldConnect() {
     return state.mode === "camera" && state.daemonOnline === true && !document.hidden;
   }
@@ -549,20 +561,132 @@
     placeholder.classList.toggle("error", error);
   }
 
+  function clearCameraFirstFrameTimer() {
+    if (state.camera.firstFrameTimer !== null) {
+      clearTimeout(state.camera.firstFrameTimer);
+      state.camera.firstFrameTimer = null;
+    }
+  }
+
+  function clearCameraRetryTimer() {
+    if (state.camera.retryTimer !== null) {
+      clearTimeout(state.camera.retryTimer);
+      state.camera.retryTimer = null;
+    }
+  }
+
+  function clearCameraTimers() {
+    clearCameraFirstFrameTimer();
+    clearCameraRetryTimer();
+  }
+
+  function clearCameraStreamHandlers() {
+    const image = $("camera-stream");
+    if (state.camera.loadHandler) image.removeEventListener("load", state.camera.loadHandler);
+    if (state.camera.errorHandler) image.removeEventListener("error", state.camera.errorHandler);
+    state.camera.loadHandler = null;
+    state.camera.errorHandler = null;
+  }
+
   function disconnectCameraStream(message = "", error = false) {
+    clearCameraTimers();
+    clearCameraStreamHandlers();
+    state.camera.streamGeneration += 1;
+    state.cameraAvailabilityRequest += 1;
+    state.camera.availabilityInflight = false;
     const image = $("camera-stream");
     image.removeAttribute("src");
     image.hidden = true;
     if (message) setCameraPlaceholder(message, error);
   }
 
+  function scheduleCameraRetry() {
+    clearCameraRetryTimer();
+    if (!cameraShouldConnect()) return;
+    const generation = state.camera.streamGeneration;
+    state.camera.retryTimer = setTimeout(() => {
+      state.camera.retryTimer = null;
+      if (generation !== state.camera.streamGeneration || !cameraShouldConnect()) return;
+      void refreshCameraAvailability();
+    }, CAMERA_RETRY_DELAY_MS);
+  }
+
+  function markCameraLive(generation) {
+    if (
+      generation !== state.camera.streamGeneration
+      || !cameraShouldConnect()
+    ) {
+      return false;
+    }
+    const image = $("camera-stream");
+    if (
+      !image.getAttribute("src")
+      || !(image.naturalWidth > 0 && image.naturalHeight > 0)
+    ) {
+      return false;
+    }
+    clearCameraFirstFrameTimer();
+    image.hidden = false;
+    $("camera-placeholder").hidden = true;
+    $("camera-placeholder").classList.remove("error");
+    $("vp-meta").textContent = "live camera · live";
+    return true;
+  }
+
+  function handleCameraStreamFailure(generation, message) {
+    if (generation !== state.camera.streamGeneration) return;
+    if (!cameraShouldConnect()) {
+      disconnectCameraStream();
+      return;
+    }
+    disconnectCameraStream(message, true);
+    $("vp-meta").textContent = "live camera · error";
+    scheduleCameraRetry();
+  }
+
+  function watchCameraFirstFrame(generation) {
+    clearCameraFirstFrameTimer();
+    const image = $("camera-stream");
+    const deadline = Date.now() + CAMERA_FIRST_FRAME_TIMEOUT_MS;
+    const check = () => {
+      state.camera.firstFrameTimer = null;
+      if (generation !== state.camera.streamGeneration) return;
+      if (!cameraShouldConnect()) {
+        disconnectCameraStream();
+        return;
+      }
+      if (markCameraLive(generation)) return;
+      if (Date.now() >= deadline) {
+        handleCameraStreamFailure(generation, "Live camera timed out");
+        return;
+      }
+      state.camera.firstFrameTimer = setTimeout(check, CAMERA_FIRST_FRAME_CHECK_MS);
+    };
+    state.camera.firstFrameTimer = setTimeout(check, CAMERA_FIRST_FRAME_CHECK_MS);
+  }
+
   function connectCameraStream() {
     if (!cameraShouldConnect()) return;
     const image = $("camera-stream");
     if (image.getAttribute("src")) return;
+    clearCameraTimers();
+    clearCameraStreamHandlers();
+    const generation = state.camera.streamGeneration + 1;
+    state.camera.streamGeneration = generation;
     setCameraPlaceholder("Connecting to live camera");
     image.hidden = true;
+    const onLoad = () => {
+      markCameraLive(generation);
+    };
+    const onError = () => {
+      handleCameraStreamFailure(generation, "Live camera unavailable");
+    };
+    state.camera.loadHandler = onLoad;
+    state.camera.errorHandler = onError;
+    image.addEventListener("load", onLoad);
+    image.addEventListener("error", onError);
     image.src = `/api/camera/stream?ts=${Date.now()}`;
+    watchCameraFirstFrame(generation);
   }
 
   function applyCameraAvailability(availability) {
@@ -583,6 +707,7 @@
             : "Camera unavailable";
     disconnectCameraStream(message);
     $("vp-meta").textContent = reason === "in_use" ? "live camera · in use" : "live camera · unavailable";
+    if (reason !== "in_use") scheduleCameraRetry();
   }
 
   function setMode(mode) {
@@ -623,8 +748,9 @@
   }
 
   async function refreshCameraAvailability() {
-    if (state.mode !== "camera" || document.hidden) return;
+    if (!cameraShouldConnect() || state.camera.availabilityInflight) return;
     const requestId = ++state.cameraAvailabilityRequest;
+    state.camera.availabilityInflight = true;
     if (state.daemonOnline !== true) {
       disconnectCameraStream("Daemon offline");
       return;
@@ -632,29 +758,25 @@
     setCameraPlaceholder("Checking live camera");
     try {
       const availability = await apiJson("/api/camera/availability");
-      if (requestId !== state.cameraAvailabilityRequest || state.mode !== "camera") return;
+      if (
+        requestId !== state.cameraAvailabilityRequest
+        || !cameraShouldConnect()
+      ) return;
       applyCameraAvailability(availability);
     } catch (error) {
-      if (requestId !== state.cameraAvailabilityRequest || state.mode !== "camera") return;
+      if (
+        requestId !== state.cameraAvailabilityRequest
+        || !cameraShouldConnect()
+      ) return;
       disconnectCameraStream(error.message || "Camera status unavailable", true);
       $("vp-meta").textContent = "live camera · error";
+      scheduleCameraRetry();
+    } finally {
+      if (requestId === state.cameraAvailabilityRequest) {
+        state.camera.availabilityInflight = false;
+      }
     }
   }
-
-  $("camera-stream").addEventListener("load", () => {
-    if (!cameraShouldConnect()) {
-      disconnectCameraStream();
-      return;
-    }
-    $("camera-stream").hidden = false;
-    $("camera-placeholder").hidden = true;
-    $("camera-placeholder").classList.remove("error");
-    $("vp-meta").textContent = "live camera · live";
-  });
-  $("camera-stream").addEventListener("error", () => {
-    disconnectCameraStream("Live camera unavailable", true);
-    $("vp-meta").textContent = "live camera · error";
-  });
 
   function renderApps(statuses = Array.from(appState.values())) {
     const active = statuses.find((app) => app.status === "running" || app.status === "loading" || app.status === "stopping") || null;
@@ -670,7 +792,13 @@
     if (state.mode === "camera" && cameraOwner) {
       disconnectCameraStream(`Camera in use by ${cameraOwner.name}`);
       $("vp-meta").textContent = "live camera · in use";
-    } else if (state.mode === "camera" && cameraShouldConnect() && !$("camera-stream").getAttribute("src")) {
+    } else if (
+      state.mode === "camera"
+      && cameraShouldConnect()
+      && !$("camera-stream").getAttribute("src")
+      && !state.camera.retryTimer
+      && !state.camera.availabilityInflight
+    ) {
       void refreshCameraAvailability();
     }
     if (appActive !== state.appActive) {
@@ -1073,7 +1201,7 @@
   }
 
   // ── Audio spectrum visualizer ─────────────────────────────────────────
-  const NBARS = 36;
+  const NBARS = 18;
   const EQ_FLOOR = 4; // settled bar height (%)
   const EQ_SPAN = 88; // full-scale travel above the floor (%)
   // The daemon polls at 10 Hz. These per-sample gains reach roughly 75% of a
@@ -1096,11 +1224,8 @@
     eqEl.appendChild(bar);
     return bar;
   });
-  // Three overlapping band kernels centred on the low/mid/high thirds. Bar i
-  // renders clamp(w·[low, mid, high]) — three soft humps with smooth valleys
-  // instead of the old decorative sine bell.
-  const eqWeights = Array.from({ length: NBARS }, (_, index) =>
-    [5.5, 17.5, 29.5].map((center) => Math.max(0, 1 - Math.abs(index - center) / 12) ** 1.4));
+  // Bars map directly to the daemon's ascending measured bins: six low, six
+  // mid, and six high. No interpolation can invent a three-hump profile.
   const eqState = new Array(NBARS).fill(0);
   const eqLast = new Array(NBARS).fill(null);
   let eqSettled = false;
@@ -1128,6 +1253,12 @@
     const fields = ["rms", "rms_db", "low", "mid", "high", "sample_rate_hz"];
     if (!fields.every((field) => finiteAudioNumber(payload[field]))) return null;
     if (!["rms", "low", "mid", "high"].every((field) => payload[field] >= 0 && payload[field] <= 1)) return null;
+    const spectrum = payload.spectrum;
+    if (
+      !Array.isArray(spectrum) ||
+      spectrum.length !== NBARS ||
+      !spectrum.every((value) => finiteAudioNumber(value) && value >= 0 && value <= 1)
+    ) return null;
     if (payload.rms_db < -60 || payload.rms_db > 0 || payload.sample_rate_hz <= 0) return null;
     if (typeof payload.source !== "string" || !payload.source.trim()) return null;
     if (typeof payload.timestamp !== "string" || !payload.timestamp.trim()) return null;
@@ -1136,6 +1267,7 @@
       low: payload.low,
       mid: payload.mid,
       high: payload.high,
+      spectrum,
       db: payload.rms_db,
       rateHz: payload.sample_rate_hz,
       source: payload.source,
@@ -1190,10 +1322,9 @@
     eqSettled = false;
     let maxDelta = 0;
     eqState.forEach((value, index) => {
-      const weights = eqWeights[index];
-      const env = eqQuiet
-        ? 0
-        : clamp(weights[0] * levels.low + weights[1] * levels.mid + weights[2] * levels.high, 0, 1);
+      // Each measured FFT bin drives exactly one bar. The first, second, and
+      // third six-bin groups remain the low/mid/high regions.
+      const env = eqQuiet ? 0 : clamp(levels.spectrum[index], 0, 1);
       const target = EQ_FLOOR + EQ_SPAN * env;
       if (reduceMotion) {
         // Reduced motion has no interpolated visual step, but the model still

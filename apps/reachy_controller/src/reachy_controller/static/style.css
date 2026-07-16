@@ -513,6 +513,10 @@ input:focus-visible {
   line-height: 1.5;
   background: radial-gradient(circle at 50% 55%, rgba(255, 255, 255, 0.05), transparent 40%);
 }
+.empty-state[hidden] {
+  display: none;
+}
+
 
 .sim-label {
   align-content: end;

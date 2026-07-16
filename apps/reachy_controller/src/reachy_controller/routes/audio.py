@@ -21,6 +21,7 @@ _AUDIO_PAYLOAD_FIELDS = (
     "low",
     "mid",
     "high",
+    "spectrum",
     "sample_rate_hz",
     "source",
     "timestamp",
