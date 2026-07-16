@@ -1108,9 +1108,12 @@
   let eqPeakLast = null;
   let eqSourceLast = null;
   let eqRateLast = null;
+  let eqSourceState = null;
+  let eqRateState = null;
   let eqRmsState = 0;
   let eqRmsLast = null;
   let eqQuietTicks = 0;
+  let eqQuiet = false;
   let eqPeakDb = null;
   let eqReducedAudioEvents = 0;
 
@@ -1140,19 +1143,6 @@
     };
   }
 
-  function renderAudioLevel(levels) {
-    const shouldRender = !reduceMotion || eqReducedAudioEvents % 5 === 0;
-    eqReducedAudioEvents += 1;
-    if (!shouldRender) return false;
-    renderEqualizer(levels);
-    return true;
-  }
-
-  function renderAudioUnavailable(label) {
-    eqReducedAudioEvents = 0;
-    renderEqualizer(null, label);
-  }
-
   function formatSampleRate(rateHz) {
     const khz = rateHz / 1000;
     return `${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`;
@@ -1170,107 +1160,139 @@
     $("eq-peak").textContent = text;
   }
 
-  // Pin every bar and the ribbon to the quiet floor in ONE pass, then stop:
-  // offline/quiet states must not keep 36 heights animating forever. Once
-  // settled, a tick does zero per-bar work — the 10 Hz stream otherwise
-  // rewrites bar heights inside a backdrop-filtered panel that iOS
-  // re-rasterizes on every write, the focused-tab battery drain (#36).
-  function settleEqToFloor() {
-    const floor = `${EQ_FLOOR.toFixed(1)}%`;
-    bars.forEach((bar, index) => {
-      eqState[index] = EQ_FLOOR;
-      if (eqLast[index] !== floor) {
-        eqLast[index] = floor;
-        bar.style.height = floor;
-      }
-    });
-    eqRmsState = 0;
-    if (eqRmsLast !== "0.0%") {
-      eqRmsLast = "0.0%";
-      eqRmsEl.style.width = "0.0%";
-    }
-    setEqIdle(true);
-    eqSettled = true;
-  }
+  // Update only the in-memory meter model. This function is intentionally free
+  // of DOM writes: every valid 10 Hz sample must advance hysteresis, envelope,
+  // and peak time even when reduced motion skips its paint.
+  function advanceEqModel(levels) {
+    eqSourceState = levels.source;
+    eqRateState = levels.rateHz;
 
-  function renderEqualizer(levels, label = null) {
-    if (!levels) {
-      // Offline/reconnecting: update the status copy, settle to the floor
-      // exactly once, and reset the meter memory for a fresh reconnect.
-      eqQuietTicks = 0;
-      eqPeakDb = null;
-      setEqPeakText(label || "no audio signal");
-      if (!eqSettled) settleEqToFloor();
-      return;
-    }
-
-    // Footer facts come straight from the payload — change-guarded.
-    if (levels.source && levels.source !== eqSourceLast) {
-      eqSourceLast = levels.source;
-      $("eq-input").textContent = levels.source;
-    }
-    if (levels.rateHz && levels.rateHz > 0 && levels.rateHz !== eqRateLast) {
-      eqRateLast = levels.rateHz;
-      $("eq-rate").textContent = formatSampleRate(levels.rateHz);
-    }
-
-    // Decaying peak-hold readout as clamped dBFS (e.g. "-18.4 dBFS").
     if (levels.db != null) {
       eqPeakDb = eqPeakDb == null ? levels.db : Math.max(levels.db, eqPeakDb - EQ_PEAK_DECAY_DB);
-      setEqPeakText(`${clamp(eqPeakDb, -60, 0).toFixed(1)} dBFS`);
     }
 
     if (levels.rms >= EQ_QUIET_EXIT) eqQuietTicks = 0;
     else if (levels.rms < EQ_QUIET_ENTER) eqQuietTicks += 1;
-    const quiet = eqQuietTicks >= EQ_QUIET_TICKS;
-    // Settled at the floor → zero per-bar DOM work per quiet tick (#36).
-    if (quiet && eqSettled) return;
-    if (quiet && reduceMotion) {
-      settleEqToFloor();
+    eqQuiet = eqQuietTicks >= EQ_QUIET_TICKS;
+
+    // Reduced motion deliberately snaps the model, but not its clock: the
+    // floor transition happens on the 12th input tick, not the 12th paint.
+    if (eqQuiet && reduceMotion) {
+      eqState.fill(EQ_FLOOR);
+      eqRmsState = 0;
+      eqSettled = true;
       return;
     }
+    // A quiet model that has already reached its floor needs no envelope work,
+    // but peak decay above still advances on every input sample.
+    if (eqQuiet && eqSettled) return;
 
     eqSettled = false;
-    setEqIdle(quiet);
-
     let maxDelta = 0;
-    bars.forEach((bar, index) => {
+    eqState.forEach((value, index) => {
       const weights = eqWeights[index];
-      const env = quiet
+      const env = eqQuiet
         ? 0
         : clamp(weights[0] * levels.low + weights[1] * levels.mid + weights[2] * levels.high, 0, 1);
       const target = EQ_FLOOR + EQ_SPAN * env;
       if (reduceMotion) {
-        // No interpolated motion — write the truthful current value.
+        // Reduced motion has no interpolated visual step, but the model still
+        // receives every sample and the next scheduled paint sees this value.
         eqState[index] = target;
       } else {
-        const gain = target > eqState[index] ? EQ_ATTACK : EQ_RELEASE;
-        eqState[index] += (target - eqState[index]) * gain;
+        const gain = target > value ? EQ_ATTACK : EQ_RELEASE;
+        eqState[index] += (target - value) * gain;
       }
       maxDelta = Math.max(maxDelta, Math.abs(eqState[index] - target));
+    });
+
+    const rmsTarget = eqQuiet ? 0 : levels.rms * 100;
+    if (reduceMotion) {
+      eqRmsState = rmsTarget;
+    } else {
+      const rmsGain = rmsTarget > eqRmsState ? EQ_RMS_ATTACK : EQ_RMS_RELEASE;
+      eqRmsState += (rmsTarget - eqRmsState) * rmsGain;
+    }
+
+    // Normal mode eases into quiet, while reduced motion pins the model above.
+    if (eqQuiet && maxDelta < 0.5 && eqRmsState < 0.5) {
+      eqState.fill(EQ_FLOOR);
+      eqRmsState = 0;
+      eqSettled = true;
+    }
+  }
+
+  // Commit the latest model snapshot. All calls are guarded so a quiet stream
+  // remains completely still after it has settled.
+  function commitEqModel() {
+    setEqIdle(eqQuiet);
+    bars.forEach((bar, index) => {
       const next = `${eqState[index].toFixed(1)}%`;
       if (next !== eqLast[index]) {
         eqLast[index] = next;
         bar.style.height = next;
       }
     });
-
-    // Overall loudness ribbon — RMS drives the panel's intensity floor.
-    const rmsTarget = quiet ? 0 : levels.rms * 100;
-    if (reduceMotion) {
-      eqRmsState = rmsTarget;
-    } else {
-      const gain = rmsTarget > eqRmsState ? EQ_RMS_ATTACK : EQ_RMS_RELEASE;
-      eqRmsState += (rmsTarget - eqRmsState) * gain;
-    }
     const rmsNext = `${(Math.round(eqRmsState * 2) / 2).toFixed(1)}%`;
     if (rmsNext !== eqRmsLast) {
       eqRmsLast = rmsNext;
       eqRmsEl.style.width = rmsNext;
     }
+  }
 
-    // Quiet release finished → pin to the floor and go silent.
-    if (quiet && maxDelta < 0.5 && eqRmsState < 0.5) settleEqToFloor();
+  function commitEqualizer(levels, label = null) {
+    if (levels) {
+      if (eqSourceState && eqSourceState !== eqSourceLast) {
+        eqSourceLast = eqSourceState;
+        $("eq-input").textContent = eqSourceState;
+      }
+      if (eqRateState && eqRateState > 0 && eqRateState !== eqRateLast) {
+        eqRateLast = eqRateState;
+        $("eq-rate").textContent = formatSampleRate(eqRateState);
+      }
+      if (eqPeakDb != null) {
+        setEqPeakText(`${clamp(eqPeakDb, -60, 0).toFixed(1)} dBFS`);
+      }
+    } else {
+      setEqPeakText(label || "no audio signal");
+    }
+    commitEqModel();
+  }
+
+  function resetEqModel() {
+    eqQuietTicks = 0;
+    eqQuiet = true;
+    eqPeakDb = null;
+    eqSourceState = null;
+    eqRateState = null;
+    eqState.fill(EQ_FLOOR);
+    eqRmsState = 0;
+    eqSettled = true;
+  }
+
+  function renderAudioLevel(levels) {
+    const shouldRender = !reduceMotion || eqReducedAudioEvents % 5 === 0;
+    eqReducedAudioEvents += 1;
+    advanceEqModel(levels);
+    if (!shouldRender) return false;
+    commitEqualizer(levels);
+    return true;
+  }
+
+  function renderAudioUnavailable(label) {
+    eqReducedAudioEvents = 0;
+    resetEqModel();
+    commitEqualizer(null, label);
+  }
+
+  function renderEqualizer(levels, label = null) {
+    if (!levels) {
+      resetEqModel();
+      commitEqualizer(null, label);
+      return;
+    }
+    advanceEqModel(levels);
+    commitEqualizer(levels);
   }
 
   function syncSlider(id, value) {

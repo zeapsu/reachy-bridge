@@ -210,6 +210,27 @@ results.snap = { h1, h2 };
 renderAudioUnavailable("no audio signal");
 const cadencePayload = audioLevelsFromPayload(MID);
 results.cadence = Array.from({ length: 10 }, () => renderAudioLevel(cadencePayload));
+// Reduced-motion timing: 10 Hz samples advance state on every input, while
+// only sample 1 and each fifth sample are allowed to commit DOM writes.
+renderAudioUnavailable("no audio signal");
+const timing = [];
+for (let tick = 1; tick <= 16; tick += 1) {
+  const before = snapshotWrites();
+  const payload = tick === 1 ? MID : SILENCE;
+  const painted = renderAudioLevel(audioLevelsFromPayload(payload));
+  timing.push({
+    tick,
+    painted,
+    writes: writesDelta(before),
+    quietTicks: eqQuietTicks,
+    quiet: eqQuiet,
+    peakDb: eqPeakDb,
+    center: eqState[17],
+    domPeak: els["eq-peak"].textContent,
+    domRms: els["eq-rms"].style.width,
+  });
+}
+results.reducedTiming = timing;
 
 console.log(JSON.stringify(results));
 """
@@ -341,6 +362,26 @@ def test_reduced_motion_throttles_to_two_hz_and_snaps_to_truth(
     low = viz_reduced["low"]["means"]
     assert low[0] > 2 * low[1]
 
+
+
+def test_reduced_motion_advances_state_at_10hz_but_paints_at_two_hz(
+    viz_reduced: dict,
+) -> None:
+    timing = viz_reduced["reducedTiming"]
+    assert [entry["painted"] for entry in timing] == [
+        True, False, False, False, False, True, False, False, False, False,
+        True, False, False, False, False, True,
+    ]
+    # Every skipped input is a zero-write DOM turn, not a skipped model turn.
+    assert all(entry["writes"] == 0 for entry in timing if not entry["painted"])
+    assert [entry["quietTicks"] for entry in timing] == list(range(16))
+    assert timing[12]["quiet"] is True  # 12 silence ticks = 1.2 s at 10 Hz
+    assert timing[12]["peakDb"] == pytest.approx(-37.0, abs=1e-9)
+    assert timing[12]["domPeak"] == "-32.2 dBFS"  # last paint was tick 11
+    assert timing[15]["domPeak"] == "-44.2 dBFS"  # current state at tick 16 paint
+    assert timing[15]["domRms"] == "0.0%"
+    assert timing[15]["center"] == 4
+    assert sum(entry["writes"] > 0 for entry in timing) == 4
 
 def test_static_audio_visualizer_wiring() -> None:
     static_dir = main_module.STATIC_DIR
