@@ -945,7 +945,8 @@
 
   // ── App settings (generic, schema-driven) ─────────────────────────────
   // Any app whose /api/apps/status entry carries has_settings:true gets a gear
-  // in its card; one shared instrument below Apps renders whatever field schema
+  // in its card; the Apps panel swaps its card view for one shared settings
+  // view IN PLACE (same glass container) and renders whatever field schema
   // GET /api/apps/{name}/settings returns. Nothing here is app-specific.
   //
   // The settings service lives inside the app process (port 7860 for
@@ -1163,13 +1164,19 @@
     $("app-settings-app").textContent = name;
     renderSettingsFields();
     setSettingsHint("");
+    // Swap the panel in place: same glass container, settings view instead of
+    // the app cards. Hiding #apps-view drops keyboard focus from the clicked
+    // gear, so move it to the Back control explicitly.
+    $("apps-view").hidden = true;
     $("app-settings").hidden = false;
     syncAppSettings(Array.from(appState.values()));
-    patchSettingsGears(); // in place — a rebuild would destroy the focused gear
+    patchSettingsGears(); // in place — a rebuild would destroy the gear element
+    $("app-settings-back").focus();
   }
 
   function closeAppSettings() {
     const settings = state.settings;
+    const returnTo = settings.app;
     settingsClearRetry();
     settings.app = null;
     settings.schema = null;
@@ -1177,9 +1184,15 @@
     settings.retryCount = 0;
     settings.phase = "idle";
     $("app-settings").hidden = true;
+    $("apps-view").hidden = false;
     renderSettingsFields();
     setSettingsHint("");
     patchSettingsGears();
+    // Land focus back on the gear that owned the panel — looked up fresh, the
+    // 1 Hz poll may have rebuilt the cards while the view was swapped out.
+    const gear = Array.from($("apps").querySelectorAll('button[data-action="settings"]'))
+      .find((button) => button.dataset.app === returnTo);
+    if (gear) gear.focus();
   }
 
   // Persist one field. Returns true on success so the DOM glue knows to wipe
@@ -2043,7 +2056,7 @@
     void performAppAction(button.dataset.app, button.dataset.action);
   });
 
-  $("app-settings-close").addEventListener("click", () => closeAppSettings());
+  $("app-settings-back").addEventListener("click", () => closeAppSettings());
 
   const submitSettingsField = (fieldEl) => {
     const input = fieldEl.querySelector("input, select");

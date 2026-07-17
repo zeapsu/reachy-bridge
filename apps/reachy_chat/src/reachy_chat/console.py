@@ -529,13 +529,22 @@ class LocalStream:
         await self._shutdown_active_handler()
 
     async def _sleep_or_restart_requested(self, delay: float) -> None:
-        """Sleep for a retry interval, waking early if a restart is requested."""
-        if self._restart_requested.is_set():
+        """Sleep for a retry interval, waking early for restart or shutdown."""
+        if self._restart_requested.is_set() or self._stop_event.is_set():
             return
+        restart_wait = asyncio.create_task(self._restart_requested.wait())
+        stop_wait = asyncio.create_task(self._stop_event.wait())
         try:
-            await asyncio.wait_for(self._restart_requested.wait(), timeout=delay)
-        except asyncio.TimeoutError:
-            pass
+            await asyncio.wait(
+                {restart_wait, stop_wait},
+                timeout=delay,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for waiter in (restart_wait, stop_wait):
+                if not waiter.done():
+                    waiter.cancel()
+            await asyncio.gather(restart_wait, stop_wait, return_exceptions=True)
 
     @staticmethod
     def _format_backend_error(error: BaseException | str) -> str:
@@ -871,6 +880,7 @@ class LocalStream:
             write_startup_settings(self._instance_path, profile=existing.profile, voice=voice)
         except Exception as e:
             logger.warning("Failed to persist startup voice: %s", e)
+            raise VoiceChangeError(f"failed to persist startup voice: {e}") from e
 
     def _init_settings_ui_if_needed(self) -> None:
         """Attach the internal settings API consumed by Reachy Controller."""

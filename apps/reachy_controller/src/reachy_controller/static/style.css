@@ -944,8 +944,9 @@ input:disabled,
 
 .wide { width: 100%; }
 
-/* App settings — one shared, schema-driven instrument below Apps. Cards get a
-   gear (has_settings) that toggles it; fields render from the app's schema. */
+/* App settings — the Apps panel swaps its card view for one shared,
+   schema-driven settings view in place (same glass container). Cards get a
+   gear (has_settings) that opens it; the Back control restores the cards. */
 .app-actions {
   display: flex;
   align-items: center;
@@ -980,9 +981,10 @@ input:disabled,
   white-space: nowrap;
 }
 
-.btn.settings-close {
+.btn.settings-back {
   font-size: 11px;
   padding: 5px 10px;
+  white-space: nowrap;
 }
 
 .settings-field .field-row {

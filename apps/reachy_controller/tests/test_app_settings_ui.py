@@ -38,6 +38,7 @@ const APP_NAMES = ["reachy_chat", "reachy_dance", "reachy_lookat", "reachy_simon
 const LOADING_FRAGMENTS = ["Booting…"];
 let loadingTick = 0;
 let lastAppsSig = null;
+let focusedId = null; // stands in for document.activeElement
 class FakeElement {
   constructor(id) {
     this.id = id;
@@ -46,6 +47,7 @@ class FakeElement {
     this.className = "";
     this.innerHTML = "";
   }
+  focus() { focusedId = this.id; }
 }
 class FakeGear {
   constructor(app) {
@@ -60,6 +62,7 @@ class FakeGear {
     };
   }
   setAttribute(name, value) { this.attrs[name] = value; }
+  focus() { focusedId = `gear:${this.dataset.app}`; }
 }
 class FakeSpan {
   constructor(app) {
@@ -92,10 +95,12 @@ appsEl.gears = [gearChat];
 const els = Object.fromEntries([
   "app-settings",
   "app-settings-app",
+  "app-settings-back",
   "app-settings-dot",
   "app-settings-state",
   "app-settings-hint",
   "app-settings-fields",
+  "apps-view",
   "robot-dot",
   "robot-value",
   "expr-hint",
@@ -161,6 +166,11 @@ results.gear = {
 appState.set("reachy_chat", { name: "reachy_chat", status: "stopped", has_settings: true });
 const focusedBefore = gearChat; // stands in for document.activeElement
 openAppSettings("reachy_chat");
+const swapOpen = {
+  appsViewHidden: els["apps-view"].hidden === true,
+  settingsShown: els["app-settings"].hidden === false,
+  focusOnBack: focusedId === "app-settings-back",
+};
 results.stopped = {
   visible: els["app-settings"].hidden === false,
   state: els["app-settings-state"].textContent,
@@ -310,6 +320,12 @@ results.closed = {
   gearUnpatched: !gearChat.classes.has("open") && gearChat.attrs["aria-expanded"] === "false",
   stillNoRebuild: appsEl.rebuilds === 0,
 };
+results.swap = {
+  ...swapOpen,
+  appsViewRestored: els["apps-view"].hidden === false,
+  settingsHidden: els["app-settings"].hidden === true,
+  focusOnGear: focusedId === "gear:reachy_chat",
+};
 
 // 13. Stop cancels pending retries and falls back to the honest state.
 openAppSettings("reachy_chat");
@@ -363,6 +379,18 @@ results.uptimeTick = {
   noRebuildOnTick: appsEl.rebuilds === rebuildsAfterFirst,
   gearSurvives: gearRef !== undefined && appsEl.gears.includes(gearRef),
   spanPatched: /^ · 2m 0\ds$/.test(uptimeSpan.textContent),
+};
+
+// 16. Gear toggle: opening the same app's settings again closes the panel,
+// restores the cards view in the same container, and refocuses the gear.
+openAppSettings("reachy_chat");
+const toggleOpened = els["apps-view"].hidden === true && els["app-settings"].hidden === false;
+openAppSettings("reachy_chat");
+results.toggle = {
+  opened: toggleOpened,
+  closed: els["app-settings"].hidden === true,
+  appsRestored: els["apps-view"].hidden === false,
+  focusOnGear: focusedId === "gear:reachy_chat",
 };
 
 console.log(JSON.stringify(results));
@@ -527,3 +555,57 @@ def test_app_settings_cancellation_and_bounds() -> None:
     assert results["bounded"]["stopsForGood"] is True
     assert results["bounded"]["state"] == "unavailable"
     assert results["bounded"]["errorHint"] is True
+
+
+def test_app_settings_view_swap() -> None:
+    results = _run_harness()
+    assert results["swap"] == {
+        "appsViewHidden": True,
+        "settingsShown": True,
+        "focusOnBack": True,
+        "appsViewRestored": True,
+        "settingsHidden": True,
+        "focusOnGear": True,
+    }
+    assert results["toggle"] == {
+        "opened": True,
+        "closed": True,
+        "appsRestored": True,
+        "focusOnGear": True,
+    }
+
+
+def test_settings_view_lives_inside_apps_panel() -> None:
+    html = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    # Exactly one settings container, and it is a swappable view inside the
+    # Apps panel — not a standalone glass section below it.
+    assert html.count('id="app-settings"') == 1
+    assert html.count('id="apps-panel"') == 1
+    assert '<section class="glass pad instrument" id="app-settings"' not in html
+    start = html.index('id="apps-panel"')
+    panel = html[start : html.index("</section>", start)]
+    for marker in (
+        'id="apps-view"',
+        '<div class="apps" id="apps"',
+        'id="apps-message"',
+        '<div id="app-settings" hidden>',
+        'id="app-settings-back"',
+        'id="app-settings-fields"',
+        'id="app-settings-hint"',
+    ):
+        assert marker in panel, marker
+    # The obsolete close control is gone, not hidden.
+    assert "app-settings-close" not in html
+
+
+def test_settings_mobile_dom_safe() -> None:
+    css = (_STATIC_DIR / "style.css").read_text(encoding="utf-8")
+    # Mobile: field rows wrap inside the swapped-in view instead of overflowing
+    # the panel, and the wrap rule lives in a media query.
+    wrap = css.index(".settings-field .field-row { flex-wrap: wrap; }")
+    assert "@media" in css[:wrap]
+    # Standalone-section styling was removed with the old close button.
+    assert "settings-close" not in css
+    js = (_STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    assert "app-settings-close" not in js
+    assert 'app-settings-back")' in js

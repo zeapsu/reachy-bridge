@@ -920,7 +920,7 @@ def test_mounted_production_voice_failure_returns_non_2xx(tmp_path: Path) -> Non
 
 
 def test_mounted_live_voice_rejection_preserves_current_and_persistence(tmp_path: Path) -> None:
-    """A real live-session rejection returns HTTP 500 without mutating state or disk."""
+    """A failed live-session replacement returns HTTP 500 without mutating state or disk."""
     handler = OpenaiRealtimeHandler(
         SimpleNamespace(
             reachy_mini=MagicMock(),
@@ -930,8 +930,9 @@ def test_mounted_live_voice_rejection_preserves_current_and_persistence(tmp_path
         instance_path=str(tmp_path),
         startup_voice="marin",
     )
-    update = AsyncMock(side_effect=RuntimeError("session rejected voice"))
-    handler.connection = SimpleNamespace(session=SimpleNamespace(update=update))
+    restart = AsyncMock(side_effect=RuntimeError("session replacement failed"))
+    handler.connection = object()
+    handler._restart_session = restart
     app = FastAPI()
     loop = asyncio.new_event_loop()
     started = threading.Event()
@@ -966,7 +967,82 @@ def test_mounted_live_voice_rejection_preserves_current_and_persistence(tmp_path
     assert handler.get_current_voice() == "marin"
     assert stream._voice_override == "marin"
     assert not (tmp_path / "startup_settings.json").exists()
-    update.assert_awaited_once()
+    restart.assert_awaited_once()
+
+
+def test_mounted_openai_voice_success_rebuilds_connected_session_and_persists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live OpenAI voice change replaces the active generation before persisting success."""
+    monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai_realtime")
+    monkeypatch.setattr(config, "MODEL_NAME", "gpt-realtime-2")
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "openai-test-key")
+    handler = OpenaiRealtimeHandler(
+        ToolDependencies(
+            reachy_mini=MagicMock(),
+            movement_manager=MagicMock(),
+            camera_worker=MagicMock(),
+        ),
+        instance_path=str(tmp_path),
+        startup_voice="marin",
+    )
+    startup_calls = 0
+    initial_ready = threading.Event()
+
+    async def _start_up_and_connect() -> None:
+        nonlocal startup_calls
+        startup_calls += 1
+        handler.connection = object()
+        callback = handler._startup_connection_callback
+        assert callback is not None
+        callback()
+        if startup_calls == 1:
+            initial_ready.set()
+        await asyncio.Event().wait()
+
+    handler.start_up = _start_up_and_connect
+    handler.shutdown = AsyncMock()
+    app = FastAPI()
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        started.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=_run_loop, daemon=True)
+    thread.start()
+    started.wait(timeout=1.0)
+    stream = LocalStream(
+        handler,
+        MagicMock(),
+        settings_app=app,
+        instance_path=str(tmp_path),
+        startup_voice="marin",
+    )
+    stream._asyncio_loop = loop
+    stream._init_settings_ui_if_needed()
+    startup_future = asyncio.run_coroutine_threadsafe(stream._run_handler_startup_loop(), loop)
+    try:
+        assert initial_ready.wait(timeout=1.0)
+        response = TestClient(app).post("/voices/apply", json={"voice": "cedar"})
+        assert response.status_code == 200
+        assert response.json() == {"ok": True, "status": "Voice changed to cedar."}
+        assert startup_calls == 2
+    finally:
+        loop.call_soon_threadsafe(stream._stop_event.set)
+        try:
+            startup_future.result(timeout=1.0)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=1.0)
+            loop.close()
+
+    assert handler.get_current_voice() == "cedar"
+    assert stream._voice_override == "cedar"
+    assert load_startup_settings_into_runtime(tmp_path).voice == "cedar"
 
 
 def test_mounted_gemini_voice_success_requires_connected_replacement_and_persists(
@@ -1033,14 +1109,13 @@ def test_mounted_gemini_voice_success_requires_connected_replacement_and_persist
         assert stream._startup_generation is not None
         assert stream._startup_generation.generation == 2
     finally:
-        stream._stop_event.set()
+        loop.call_soon_threadsafe(stream._stop_event.set)
         try:
             startup_future.result(timeout=1.0)
-        except Exception:
-            startup_future.cancel()
-        loop.call_soon_threadsafe(loop.stop)
-        thread.join(timeout=1.0)
-        loop.close()
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=1.0)
+            loop.close()
 
     assert handler.get_current_voice() == "Zephyr"
     assert stream._voice_override == "Zephyr"
@@ -1106,14 +1181,13 @@ def test_mounted_gemini_voice_timeout_hanging_close_preserves_previous_and_does_
         assert not (tmp_path / "startup_settings.json").exists()
     finally:
         handler.shutdown = AsyncMock()
-        stream._stop_event.set()
+        loop.call_soon_threadsafe(stream._stop_event.set)
         try:
             startup_future.result(timeout=1.0)
-        except Exception:
-            startup_future.cancel()
-        loop.call_soon_threadsafe(loop.stop)
-        thread.join(timeout=1.0)
-        loop.close()
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=1.0)
+            loop.close()
 
 
 @pytest.mark.asyncio
@@ -1318,6 +1392,28 @@ async def test_local_stream_voice_failure_is_not_persisted_or_reported_success()
         await stream.change_voice("local-os-voice")
 
     assert stream._voice_override is None
+
+
+@pytest.mark.asyncio
+async def test_local_stream_voice_persistence_failure_is_reported_not_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A disk failure must not cross the LocalStream success boundary silently."""
+    handler = MagicMock()
+    handler.change_voice = AsyncMock(return_value="Voice changed to local-os-voice.")
+    handler.get_current_voice = MagicMock(return_value="local-os-voice")
+    stream = LocalStream(handler, MagicMock(), instance_path=str(tmp_path))
+    monkeypatch.setattr(
+        "reachy_chat.console.write_startup_settings",
+        MagicMock(side_effect=OSError("settings directory is read-only")),
+    )
+
+    with pytest.raises(RuntimeError, match="failed to persist startup voice"):
+        await stream.change_voice("local-os-voice")
+
+    assert stream._voice_override == "local-os-voice"
+    assert not (tmp_path / "startup_settings.json").exists()
 
 
 @pytest.mark.asyncio

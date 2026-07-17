@@ -184,6 +184,13 @@ def test_static_ui_wires_liquid_glass_to_live_controller_endpoints() -> None:
     assert "class=\"glass" in index
     assert "id=\"vp-switch\"" in index
     assert "id=\"camera-stream\"" in index
+    camera_layer = index.split('<div class="vp-layer" data-mode="camera">', 1)[1].split(
+        "</div>", 1
+    )[0]
+    assert '<canvas id="cam"' not in camera_layer
+    assert camera_layer.index('id="camera-stream"') < camera_layer.index(
+        'id="camera-placeholder"'
+    )
     assert ".glass::before" in styles
     assert ".vp-switch" in styles
     assert "/telemetry/state-stream" in script

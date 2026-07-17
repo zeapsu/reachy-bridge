@@ -6,7 +6,7 @@ import random
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Final, Tuple, ClassVar, Optional
+from typing import Any, Final, Tuple, Callable, ClassVar, Optional, Awaitable
 from datetime import datetime
 
 import numpy as np
@@ -26,14 +26,14 @@ from websockets.exceptions import ConnectionClosedError
 from openai.resources.realtime.realtime import AsyncRealtimeConnection
 
 from reachy_chat.tools import core_tools
-from reachy_chat.address_gate import AddressGate
 from reachy_chat.config import (
-    config,
     HF_BACKEND,
+    config,
     get_default_voice_for_backend,
     get_available_voices_for_backend,
 )
 from reachy_chat.idle_policy import start_idle_tool_call
+from reachy_chat.address_gate import AddressGate
 from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.conversation_handler import ConversationHandler
 from reachy_chat.tools.background_tool_manager import (
@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 MIC_GATE_CHECK_INTERVAL_SECONDS: Final = 0.2
 
 _RESPONSE_DONE_TIMEOUT: Final[float] = 30.0
+REALTIME_RESTART_TIMEOUT_SECONDS: Final[float] = 5.0
 _RESPONSE_REJECTION_RETRY_DELAY: Final[float] = 0.5
 
 
@@ -87,6 +88,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
     BACKEND_PROVIDER: ClassVar[str]
     SAMPLE_RATE: ClassVar[int]
     REFRESH_CLIENT_ON_RECONNECT: ClassVar[bool]
+    VOICE_CHANGE_VIA_SESSION_UPDATE: ClassVar[bool] = False
     AUDIO_INPUT_COST_PER_1M: ClassVar[float]
     AUDIO_OUTPUT_COST_PER_1M: ClassVar[float]
     TEXT_INPUT_COST_PER_1M: ClassVar[float]
@@ -141,6 +143,8 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         self.instance_path = instance_path
         self._voice_override: str | None = self._normalize_startup_voice(startup_voice)
         self._realtime_connect_query: dict[str, str] = {}
+        self._startup_owner: Callable[[float | None], Awaitable[None]] | None = None
+        self._startup_connection_callback: Callable[[], None] | None = None
 
         # Debouncing for partial transcripts
         self.partial_transcript_task: asyncio.Task[None] | None = None
@@ -177,10 +181,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
             return True
 
         now = time.monotonic()
-        if (
-            self._last_gate_decision is not None
-            and now - self._last_gate_check_time < MIC_GATE_CHECK_INTERVAL_SECONDS
-        ):
+        if self._last_gate_decision is not None and now - self._last_gate_check_time < MIC_GATE_CHECK_INTERVAL_SECONDS:
             return self._last_gate_decision
 
         try:
@@ -302,31 +303,49 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
             startup_voice=self._voice_override,
         )
 
+    def set_startup_owner(
+        self,
+        owner: Callable[[float | None], Awaitable[None]] | None,
+    ) -> None:
+        """Install LocalStream's owner for replacing a live session safely."""
+        self._startup_owner = owner
+
+    def set_startup_connection_callback(self, callback: Callable[[], None] | None) -> None:
+        """Install a callback captured by the current startup generation."""
+        self._startup_connection_callback = callback
+
     async def change_voice(self, voice: str) -> str:
-        """Change only the voice, updating the active session when possible."""
+        """Apply a voice safely using the active provider's supported lifecycle."""
         default_voice = get_default_voice_for_backend(self.BACKEND_PROVIDER)
         resolved_voice = (
             self._resolve_backend_voice(voice, source="requested voice", fallback=default_voice) or default_voice
         )
-        if self.connection is not None:
-            try:
-                await self.connection.session.update(
+        previous_voice_override = self._voice_override
+        self._voice_override = resolved_voice
+        connection = self.connection
+        if connection is None:
+            return "Voice changed. Will take effect on next connection."
+
+        try:
+            if self.VOICE_CHANGE_VIA_SESSION_UPDATE:
+                await connection.session.update(
                     session=RealtimeSessionCreateRequestParam(
                         type="realtime",
                         audio=RealtimeAudioConfigParam(
-                            output=RealtimeAudioConfigOutputParam(
-                                voice=resolved_voice,
-                            ),
+                            output=RealtimeAudioConfigOutputParam(voice=resolved_voice),
                         ),
                     ),
                 )
-            except Exception as e:
-                logger.warning("Failed to update live session for voice change: %s", e)
-                return "Voice change failed. Will take effect on next connection."
-            self._voice_override = resolved_voice
-            return f"Voice changed to {resolved_voice}."
-        self._voice_override = resolved_voice
-        return "Voice changed. Will take effect on next connection."
+            else:
+                await self._restart_session()
+        except asyncio.CancelledError:
+            self._voice_override = previous_voice_override
+            raise
+        except Exception as error:
+            self._voice_override = previous_voice_override
+            logger.warning("Failed to apply live voice change: %s", error)
+            return f"Voice change failed: {error}"
+        return f"Voice changed to {resolved_voice}."
 
     def get_current_voice(self) -> str:
         """Return the voice currently selected for this handler."""
@@ -445,7 +464,6 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
         """Start the handler with minimal retries on unexpected websocket closure."""
         await self._prepare_startup_credentials()
         self.client = await self._build_realtime_client()
-
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
@@ -475,39 +493,11 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                     pass
 
     async def _restart_session(self) -> None:
-        """Force-close the current session and start a fresh one in background.
-
-        Does not block the caller while the new session is establishing.
-        """
-        try:
-            if self.connection is not None:
-                try:
-                    await self.connection.close()
-                except Exception:
-                    pass
-                finally:
-                    self.connection = None
-
-            # Ensure we have a client (start_up must have run once)
-            if getattr(self, "client", None) is None:
-                logger.warning("Cannot restart: realtime client not initialized yet.")
-                return
-
-            # Fire-and-forget new session and wait briefly for connection
-            try:
-                self._connected_event.clear()
-            except Exception:
-                pass
-            if self.REFRESH_CLIENT_ON_RECONNECT:
-                self.client = await self._build_realtime_client()
-            asyncio.create_task(self._run_realtime_session(), name="realtime-session-restart")
-            try:
-                await asyncio.wait_for(self._connected_event.wait(), timeout=5.0)
-                logger.info("Realtime session restarted and connected.")
-            except asyncio.TimeoutError:
-                logger.warning("Realtime session restart timed out; continuing in background.")
-        except Exception as e:
-            logger.warning("_restart_session failed: %s", e)
+        """Request a replacement from LocalStream's startup lifecycle owner."""
+        owner = self._startup_owner
+        if owner is None:
+            raise RuntimeError("realtime startup lifecycle is not owned by LocalStream")
+        await owner(REALTIME_RESTART_TIMEOUT_SECONDS)
 
     async def _safe_response_create(self, **kwargs: Any) -> None:
         """Enqueue a response.create() kwargs for the sender worker _response_sender_loop().
@@ -714,7 +704,10 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
             self.connection = None
             self._response_done_event.set()
 
-    async def _run_realtime_session(self) -> None:
+    async def _run_realtime_session(
+        self,
+        startup_connection_callback: Callable[[], None] | None = None,
+    ) -> None:
         """Establish and manage a single realtime session."""
         tool_specs = self._get_active_tool_specs()
         logger.info(
@@ -753,6 +746,9 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                 self._connected_event.set()
             except Exception:
                 pass
+            callback = startup_connection_callback or self._startup_connection_callback
+            if callback is not None:
+                callback()
 
             response_sender_task: asyncio.Task[None] | None = None
             try:
