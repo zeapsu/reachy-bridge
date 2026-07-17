@@ -593,6 +593,25 @@ async def test_midtask_followup_uses_calibrated_speech_threshold() -> None:
 
 
 @pytest.mark.asyncio
+async def test_robot_playback_and_echo_tail_are_never_retranscribed() -> None:
+    handler = build_handler()
+    handler._output_playback_until = float("inf")
+    handler._speech_active = True
+    handler._speech_chunks.append(np.ones(1_600, dtype=np.float32))
+    handler._cancel_speech_active = True
+    handler._cancel_speech_chunks.append(np.ones(1_600, dtype=np.float32))
+
+    await handler.receive((16_000, np.ones(1_600, dtype=np.float32)))
+
+    assert handler._processing_task is None
+    assert handler._speech_active is False
+    assert handler._speech_chunks == []
+    assert handler._cancel_speech_active is False
+    assert handler._cancel_speech_chunks == []
+    await handler.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_vad_keeps_preroll_and_waits_for_natural_pause() -> None:
     handler = build_handler()
     captured: list[np.ndarray[Any, Any]] = []

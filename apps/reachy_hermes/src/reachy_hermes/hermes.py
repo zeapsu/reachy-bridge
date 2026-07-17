@@ -48,6 +48,7 @@ FAILURE_REPLY = "I couldn't complete that request because Hermes failed."
 WHISPER_INITIAL_PROMPT = "Reachy Mini. Hermes."
 INTER_CHUNK_SILENCE_SECONDS = 0.08
 MIN_SPEECH_CHUNK_CHARS = 24
+OUTPUT_ECHO_GUARD_SECONDS = 0.5
 NATIVE_SESSION_POLL_SECONDS = 0.75
 NATIVE_SESSION_QUIET_SECONDS = 1.5
 
@@ -260,6 +261,12 @@ class HermesHandler(OpenRouterChatHandler):
     async def receive(self, frame: Any) -> None:
         """Detect speech with adaptive hysteresis and accept cancellation."""
         if self._stop_event.is_set():
+            return
+        if self._output_is_playing():
+            self._reset_input_buffer()
+            self._clear_pre_roll()
+            self._reset_cancel_input()
+            self._set_listening(False)
             return
         if self._processing_turn:
             self._receive_cancel_frame(frame)
@@ -539,7 +546,7 @@ class HermesHandler(OpenRouterChatHandler):
         self._pre_roll_samples = 0
 
     def _receive_cancel_frame(self, frame: Any) -> None:
-        if time.monotonic() < self._output_playback_until:
+        if self._output_is_playing():
             if self._cancel_speech_active:
                 self._reset_cancel_input()
                 self._set_listening(False)
@@ -550,7 +557,10 @@ class HermesHandler(OpenRouterChatHandler):
             return
         energy = float(np.sqrt(np.mean(np.square(audio, dtype=np.float32))))
         threshold = (
-            self._speech_off_threshold
+            max(
+                self._speech_off_threshold,
+                self._speech_on_threshold * 0.9,
+            )
             if self._cancel_speech_active
             else self._speech_on_threshold
         )
@@ -624,6 +634,12 @@ class HermesHandler(OpenRouterChatHandler):
         )
         self._mark_activity("user_followup_queued")
         logger.info("Hermes follow-up %s: %r", "queued" if queued else "pending", transcript)
+
+    def _output_is_playing(self) -> bool:
+        return (
+            time.monotonic()
+            < self._output_playback_until + OUTPUT_ECHO_GUARD_SECONDS
+        )
 
     def _note_output_playback(self, sample_rate: int, sample_count: int) -> None:
         duration = sample_count / sample_rate
