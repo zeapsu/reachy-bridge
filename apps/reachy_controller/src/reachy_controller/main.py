@@ -88,7 +88,6 @@ def create_app(
     app_settings = AppSettingsRegistry({"reachy_chat": ReachyChatSettingsProvider(settings_proxy)})
     camera_leases = DashboardCameraLeaseManager()
     app_supervisor = AppSupervisor(daemon_proxy=daemon_proxy, log_broker=broker)
-    app_supervisor.set_camera_release_hook(camera_leases.close_all)
     daemon_supervisor = DaemonSupervisor(daemon_proxy=daemon_proxy, log_broker=broker)
     state_broadcaster = StateBroadcaster(daemon_proxy)
     audio_levels_broadcaster = AudioLevelsBroadcaster(daemon_proxy)
@@ -126,6 +125,7 @@ def create_app(
         finally:
             controller_handler.close()
             app.state.controller_log_handler = None
+            await app.state.camera_leases.close_all()
             await app.state.expression_player.aclose()
             await app.state.state_broadcaster.aclose()
             await app.state.audio_levels_broadcaster.aclose()

@@ -708,16 +708,14 @@
     }
     const reason = availability && availability.reason;
     const message =
-      reason === "in_use"
-        ? `Camera in use by ${availability.holder || "another app"}`
-        : reason === "daemon_down"
-          ? "Daemon offline"
-          : reason === "media_unavailable"
-            ? "Camera media offline"
-            : "Camera unavailable";
+      reason === "daemon_down"
+        ? "Daemon offline"
+        : reason === "media_unavailable"
+          ? "Camera media offline"
+          : "Camera unavailable";
     disconnectCameraStream(message);
-    $("vp-meta").textContent = reason === "in_use" ? "live camera · in use" : "live camera · unavailable";
-    if (reason !== "in_use") scheduleCameraRetry();
+    $("vp-meta").textContent = "live camera · unavailable";
+    scheduleCameraRetry();
   }
 
   function setMode(mode) {
@@ -794,15 +792,7 @@
     // reconciles chip disabled-ness at ~10 Hz off this flag; the hint is only
     // touched on the flip.
     const appActive = Boolean(active);
-    const cameraOwner = statuses.find((app) => {
-      if (!["running", "loading", "stopping"].includes(app.status)) return false;
-      if (app.uses_camera === true) return true;
-      return app.uses_camera === undefined && ["reachy_chat", "reachy_lookat"].includes(app.name);
-    });
-    if (state.mode === "camera" && cameraOwner) {
-      disconnectCameraStream(`Camera in use by ${cameraOwner.name}`);
-      $("vp-meta").textContent = "live camera · in use";
-    } else if (
+    if (
       state.mode === "camera"
       && cameraShouldConnect()
       && !$("camera-stream").getAttribute("src")

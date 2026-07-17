@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
@@ -28,7 +28,9 @@ _STOP_SIGINT_GRACE_S = 8.0  # generous: the app's graceful shutdown (return-home
 # clean stop — it only gives a slow app room before we escalate.
 _STOP_SIGTERM_GRACE_S = 3.0
 _APP_READINESS_POLL_S = 0.5  # Polling interval for readiness monitor
-_APP_READINESS_TIMEOUT_S = 60.0  # Ceiling timeout for app startup before promoting loading → running
+_APP_READINESS_TIMEOUT_S = (
+    60.0  # Ceiling timeout for app startup before promoting loading → running
+)
 
 
 def _signal_process_tree(pid: int, sig: int) -> None:
@@ -108,7 +110,9 @@ class AppSupervisor:
         "reachy_simon": {"module": "reachy_simon", "uses_camera": False},
     }
 
-    def __init__(self, daemon_proxy: Any | None = None, log_broker: LogBroker | None = None) -> None:
+    def __init__(
+        self, daemon_proxy: Any | None = None, log_broker: LogBroker | None = None
+    ) -> None:
         """Initialize supervisor with empty app state.
 
         Args:
@@ -128,8 +132,6 @@ class AppSupervisor:
         }
         self._reaper_tasks: dict[str, asyncio.Task[None]] = {}
         self._readiness_tasks: dict[str, asyncio.Task[None]] = {}
-        self._camera_release_hook: Callable[[], Awaitable[None]] | None = None
-        self._camera_start_reservations: set[str] = set()
         self._workspace_root = _get_workspace_root()
         for name in self.APPS:
             self.log_broker.bind_source(
@@ -138,26 +140,6 @@ class AppSupervisor:
                 file_path=self._workspace_root / ".reachy-logs" / f"{name}.log",
             )
 
-    def set_camera_release_hook(
-        self, callback: Callable[[], Awaitable[None]] | None
-    ) -> None:
-        """Register a callback that releases dashboard-owned camera resources."""
-        self._camera_release_hook = callback
-
-    def camera_available(self) -> bool:
-        """Return whether no running app currently owns the camera."""
-        return self.camera_holder() is None
-
-    def camera_holder(self) -> str | None:
-        """Return the camera app or startup reservation currently owning the camera."""
-        for name in self._camera_start_reservations:
-            if self.APPS.get(name, {}).get("uses_camera", False):
-                return name
-        for app in self._apps.values():
-            if app.status in ("running", "loading", "stopping") and app.uses_camera:
-                return app.name
-        return None
-
     def any_app_active(self) -> bool:
         """True when any managed app is running or loading (robot actuating)."""
         return any(a.status in ("running", "loading") for a in self._apps.values())
@@ -165,10 +147,8 @@ class AppSupervisor:
     def _has_retained_log_ownership(self) -> bool:
         """Return whether any app still owns a pump or is finishing shutdown."""
         return any(
-            app.log_pump is not None or app.status == "stopping"
-            for app in self._apps.values()
+            app.log_pump is not None or app.status == "stopping" for app in self._apps.values()
         )
-
 
     @staticmethod
     def _cmdline_matches_module(cmdline: list[str], module: str) -> bool:
@@ -200,7 +180,9 @@ class AppSupervisor:
                 pass
             app.log_handle = None
 
-    async def _escalate_stop(self, pid: int, wait_fn: Callable, timeout_exc: type[BaseException]) -> None:
+    async def _escalate_stop(
+        self, pid: int, wait_fn: Callable, timeout_exc: type[BaseException]
+    ) -> None:
         """Signal SIGINT, then escalate to SIGTERM then SIGKILL across the process tree,
         waiting (via a worker thread) for ``wait_fn(timeout)`` between escalations.
 
@@ -219,15 +201,6 @@ class AppSupervisor:
                 _signal_process_tree(pid, signal.SIGKILL)
                 await asyncio.to_thread(wait_fn, 1.0)
 
-    async def _release_dashboard_camera(self) -> None:
-        """Ask the dashboard camera reader to yield ownership if registered."""
-        if self._camera_release_hook is None:
-            return
-        try:
-            await self._camera_release_hook()
-        except Exception as e:
-            logger.error(f"Dashboard camera release hook failed: {e}")
-
     async def start_app(self, name: str) -> dict[str, Any]:
         """Start an app. Returns status dict or error dict."""
         if name not in self.APPS:
@@ -235,7 +208,6 @@ class AppSupervisor:
 
         async with self._lock:
             app = self._apps[name]
-
 
             # Check for external live app (scan-based)
             found = self._scan_for_live_apps()
@@ -281,17 +253,6 @@ class AppSupervisor:
                         "status": "refused",
                     }
 
-            camera_reserved = False
-            if app.uses_camera:
-                # Reserve ownership before awaiting dashboard release.  The
-                # synchronous camera_holder() path sees this immediately.
-                self._camera_start_reservations.add(name)
-                camera_reserved = True
-                try:
-                    await self._release_dashboard_camera()
-                except BaseException:
-                    self._camera_start_reservations.discard(name)
-                    raise
             # Launch the app module directly with the shared interpreter. Keep
             # cwd=app_dir because apps load resources relative to their own directory.
             app_dir = self._workspace_root / "apps" / name
@@ -326,10 +287,6 @@ class AppSupervisor:
                 app.log_handle = app.log_pump.file_handle
                 app.pid = app.process.pid
                 app.status = "loading"
-                # The loading state now owns the camera; clear the provisional
-                # reservation in the same event-loop turn with no visible gap.
-                if camera_reserved:
-                    self._camera_start_reservations.discard(name)
                 app.error = None
                 app.start_time = time.time()
                 logger.info(f"Started app {name} (pid {app.pid}) in loading state")
@@ -348,12 +305,8 @@ class AppSupervisor:
                     "pid": app.pid,
                 }
             except asyncio.CancelledError:
-                if camera_reserved:
-                    self._camera_start_reservations.discard(name)
                 raise
             except Exception as e:
-                if camera_reserved:
-                    self._camera_start_reservations.discard(name)
                 app.status = "error"
                 app.error = str(e)
                 logger.error(f"Failed to start app {name}: {e}")
@@ -396,7 +349,9 @@ class AppSupervisor:
                 if app.process is not None:
                     # The app receives SIGINT directly; signal the whole tree too so any
                     # child subprocesses participate in graceful shutdown (#26).
-                    await self._escalate_stop(app.process.pid, app.process.wait, subprocess.TimeoutExpired)
+                    await self._escalate_stop(
+                        app.process.pid, app.process.wait, subprocess.TimeoutExpired
+                    )
                     parent_exited = True
                     logger.info(f"Stopped app {name} (via subprocess handle)")
                 elif app.pid is not None:
@@ -442,16 +397,17 @@ class AppSupervisor:
                     logger.debug(f"Failed to clean up ready file for {name}: {e}")
                 app.ready_file = None
 
-            if app.uses_camera:
-                logger.info(f"Camera available after stopping app {name}")
             return {"name": name, "status": "stopped"}
 
     def stop_all(self) -> None:
         """Stop all launched apps synchronously (call via ``asyncio.to_thread``)."""
         for app in self._apps.values():
-            if (
-                app.process is not None or app.log_pump is not None
-            ) and app.status in ("loading", "running", "stopping", "error"):
+            if (app.process is not None or app.log_pump is not None) and app.status in (
+                "loading",
+                "running",
+                "stopping",
+                "error",
+            ):
                 parent_exited = False
                 if app.process is not None:
                     try:
@@ -634,9 +590,7 @@ class AppSupervisor:
                 app.status = "error"
                 app.error = f"Exited with code {exit_code}"
             self.log_broker.set_status(name, "stopped")
-            logger.info(
-                f"App {name} exited (code {exit_code}, status {app.status})"
-            )
+            logger.info(f"App {name} exited (code {exit_code}, status {app.status})")
 
     def _scan_for_live_apps(self) -> dict[str, tuple[int, float]]:
         """Scan process table for live apps matching known patterns.

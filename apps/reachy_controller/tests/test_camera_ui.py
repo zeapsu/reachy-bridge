@@ -14,7 +14,7 @@ _STATIC_DIR = Path(__file__).parents[1] / "src" / "reachy_controller" / "static"
 _SECTION_START = "  const CAMERA_FIRST_FRAME_TIMEOUT_MS"
 _SECTION_END = "  function setMode"
 
-_HARNESS = r'''
+_HARNESS = r"""
 "use strict";
 const state = {
   mode: "camera",
@@ -133,7 +133,122 @@ results.disconnectCancelsRetry = {
 };
 
 console.log(JSON.stringify(results));
-'''
+"""
+
+
+_RENDER_APPS_HARNESS = r"""
+"use strict";
+const state = {
+  mode: "camera",
+  daemonOnline: true,
+  appActive: false,
+  exprBusy: false,
+  appBusy: false,
+  camera: {
+    retryTimer: null,
+    availabilityInflight: false,
+  },
+};
+const APP_NAMES = ["future_vision"];
+const LOADING_FRAGMENTS = ["Booting…"];
+let loadingTick = 0;
+let lastAppsSig = null;
+const document = { hidden: false };
+class FakeElement {
+  constructor(id) {
+    this.id = id;
+    this.hidden = false;
+    this.textContent = "";
+    this.className = "";
+    this._src = "";
+  }
+  getAttribute(name) {
+    return name === "src" ? this._src : null;
+  }
+  removeAttribute(name) {
+    if (name === "src") this._src = "";
+  }
+  set src(value) {
+    this._src = value;
+  }
+  get src() {
+    return this._src;
+  }
+  set innerHTML(_) {}
+}
+const els = Object.fromEntries([
+  "camera-stream",
+  "expr-hint",
+  "apps",
+  "robot-dot",
+  "robot-value",
+].map((id) => [id, new FakeElement(id)]));
+const $ = (id) => els[id];
+const cameraShouldConnect = () => (
+  state.mode === "camera" && state.daemonOnline === true && !document.hidden
+);
+let disconnects = 0;
+let availabilityChecks = 0;
+function disconnectCameraStream() {
+  disconnects += 1;
+  $("camera-stream").removeAttribute("src");
+}
+async function refreshCameraAvailability() {
+  availabilityChecks += 1;
+}
+const escapeHtml = (value) => String(value ?? "");
+const appSettingsGearMarkup = () => "";
+const syncAppSettings = () => {};
+const patchSettingsGears = () => {};
+const updateAppUptimes = () => {};
+const appState = new Map();
+__RENDER_APPS__
+const image = els["camera-stream"];
+const results = {};
+
+image.src = "/api/camera/stream?ts=1";
+renderApps([{ name: "future_vision", status: "running", uses_camera: true }]);
+results.runningVisionAppKeepsActiveStream = {
+  disconnects: disconnects === 0,
+  sourceKept: image.getAttribute("src") === "/api/camera/stream?ts=1",
+  noAvailabilityCheck: availabilityChecks === 0,
+};
+
+image.removeAttribute("src");
+disconnects = 0;
+availabilityChecks = 0;
+renderApps([{ name: "future_vision", status: "running", uses_camera: true }]);
+await Promise.resolve();
+results.runningVisionAppStartsAbsentStream = {
+  disconnects: disconnects === 0,
+  availabilityCheckStarted: availabilityChecks === 1,
+};
+
+console.log(JSON.stringify(results));
+"""
+
+
+def _extract_render_apps() -> str:
+    script = (_STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    start = script.index("  function renderApps(statuses")
+    end = script.index("  function formatUptime", start)
+    return script[start:end]
+
+
+def _run_render_apps_harness() -> dict[str, object]:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node executable not available")
+    script = _RENDER_APPS_HARNESS.replace("__RENDER_APPS__", _extract_render_apps())
+    proc = subprocess.run(
+        [node, "--input-type=module", "-"],
+        input=script,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
 
 
 def _extract_camera_section() -> str:
@@ -187,3 +302,21 @@ def test_camera_first_frame_and_retry_lifecycle() -> None:
         "noAdditionalCheck": True,
         "noSource": True,
     }
+
+
+def test_render_apps_does_not_arbitrate_dashboard_camera_stream() -> None:
+    results = _run_render_apps_harness()
+    assert results["runningVisionAppKeepsActiveStream"] == {
+        "disconnects": True,
+        "sourceKept": True,
+        "noAvailabilityCheck": True,
+    }
+    assert results["runningVisionAppStartsAbsentStream"] == {
+        "disconnects": True,
+        "availabilityCheckStarted": True,
+    }
+
+    script = (_STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    assert "cameraOwner" not in script
+    assert 'reason === "in_use"' not in script
+    assert '["reachy_chat", "reachy_lookat"]' not in script
