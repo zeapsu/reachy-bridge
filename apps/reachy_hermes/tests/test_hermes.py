@@ -687,6 +687,22 @@ async def test_processing_feedback_precedes_stt_and_uses_idle_choreography() -> 
     await handler.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_processing_earcon_pauses_while_followup_speech_is_active() -> None:
+    handler = build_handler()
+    queue_burst = AsyncMock()
+    handler._queue_processing_burst = queue_burst  # type: ignore[method-assign]
+
+    handler._cancel_speech_active = True
+    await handler._queue_progress_tick()
+    queue_burst.assert_not_awaited()
+
+    handler._cancel_speech_active = False
+    await handler._queue_progress_tick()
+    queue_burst.assert_awaited_once_with()
+    await handler.shutdown()
+
+
 def test_working_updates_rotate_without_immediate_repeats() -> None:
     handler = build_handler()
     count = len(handler.WORKING_UPDATE_MESSAGES)

@@ -559,6 +559,12 @@ class HermesHandler(OpenRouterChatHandler):
             if not self._cancel_speech_active:
                 self._cancel_speech_active = True
                 self._set_listening(True)
+                logger.info(
+                    "Hermes follow-up speech started at RMS %.4f (on %.4f, off %.4f)",
+                    energy,
+                    self._speech_on_threshold,
+                    self._speech_off_threshold,
+                )
             self._cancel_speech_chunks.append(audio)
             self._cancel_speech_samples += audio.size
             self._cancel_silence_samples = 0
@@ -572,6 +578,11 @@ class HermesHandler(OpenRouterChatHandler):
             silence < self.SILENCE_DURATION_S and duration < self.MAX_UTTERANCE_DURATION_S
         ):
             return
+        logger.info(
+            "Hermes follow-up utterance finalized after %.2fs with %.2fs trailing silence",
+            duration,
+            silence,
+        )
         utterance = self._join_cancel_audio()
         self._reset_cancel_input()
         self._set_listening(False)
@@ -742,6 +753,8 @@ class HermesHandler(OpenRouterChatHandler):
 
     async def _queue_progress_tick(self) -> None:
         """Repeat one subtle processing burst while Hermes is working."""
+        if self._cancel_speech_active:
+            return
         await self._queue_processing_burst()
 
     async def _queue_processing_burst(self) -> None:
@@ -838,6 +851,8 @@ class HermesHandler(OpenRouterChatHandler):
                 if not self._gateway_turn_active:
                     return
                 elapsed += PROCESSING_BURST_INTERVAL_SECONDS
+                if self._cancel_speech_active:
+                    continue
                 await self._queue_progress_tick()
                 if elapsed >= next_spoken_update:
                     await self._speak_working_update()
