@@ -157,6 +157,12 @@ def test_speech_text_is_split_into_bounded_sentence_chunks() -> None:
     assert all(len(chunk) <= 70 for chunk in chunks)
     assert " ".join(chunks) == text
 
+def test_speech_chunks_merge_a_tiny_trailing_fragment() -> None:
+    text = "one two three four five six seven eight nine tiny"
+    chunks = split_for_speech(text, maximum=20)
+    assert len(chunks[-1]) >= 24
+    assert " ".join(chunks) == text
+
 
 @pytest.mark.asyncio
 async def test_gateway_rejects_raw_tool_output_as_final_speech(tmp_path: Path) -> None:
@@ -445,7 +451,7 @@ async def test_vad_calibrates_above_steady_ambient_noise() -> None:
 
 
 @pytest.mark.asyncio
-async def test_processing_feedback_precedes_stt_and_moves_only_antennas() -> None:
+async def test_processing_feedback_precedes_stt_and_uses_idle_choreography() -> None:
     handler = build_handler()
 
     async def transcribe(audio: np.ndarray[Any, Any]) -> str:
@@ -461,9 +467,13 @@ async def test_processing_feedback_precedes_stt_and_moves_only_antennas() -> Non
             reason="test",
         )
     )
-    handler._request_completion = AsyncMock(return_value="final answer")  # type: ignore[method-assign]
+    reply = (
+        "First, this complete sentence should play without clipping any words. "
+        "Second, a short pause should separate independently synthesized phrases."
+    )
+    handler._request_completion = AsyncMock(return_value=reply)  # type: ignore[method-assign]
     handler._synthesize = AsyncMock(  # type: ignore[method-assign]
-        return_value=(16_000, np.empty(0, dtype=np.int16))
+        return_value=(16_000, np.ones(160, dtype=np.int16))
     )
 
     await handler._process_turn(np.ones(1_600, dtype=np.float32))
@@ -482,17 +492,20 @@ async def test_processing_feedback_precedes_stt_and_moves_only_antennas() -> Non
     dominant_bin = int(np.argmax(np.abs(np.fft.rfft(chime[:3_200]))))
     dominant_frequency = dominant_bin * sample_rate / 3_200
     assert 125.0 <= dominant_frequency <= 140.0
-    handler.deps.movement_manager.wiggle_antennas.assert_called_once_with()
-    assert [
-        call.args[0]
-        for call in handler.deps.movement_manager.set_processing.call_args_list
-    ] == [True, False]
+    handler.deps.movement_manager.wiggle_antennas.assert_not_called()
+    handler.deps.movement_manager.set_processing.assert_not_called()
     handler.deps.reachy_mini.disable_wobbling.assert_called_once_with()
     handler.deps.reachy_mini.enable_wobbling.assert_called_once_with()
     assert handler._working_status_task is None
-    handler.deps.movement_manager.wiggle_antennas.reset_mock()
-    await handler._queue_progress_tick()
-    handler.deps.movement_manager.wiggle_antennas.assert_not_called()
+    queued = []
+    while not handler.output_queue.empty():
+        queued.append(handler.output_queue.get_nowait())
+    assert any(
+        isinstance(item, tuple)
+        and item[1].size == 1_280
+        and np.all(item[1] == 0)
+        for item in queued
+    )
     await handler.shutdown()
 
 

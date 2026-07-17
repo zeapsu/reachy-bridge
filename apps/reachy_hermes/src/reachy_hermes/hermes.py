@@ -40,6 +40,8 @@ CANCEL_REPLY = "Okay, I stopped."
 MISSING_BINARY_REPLY = "I can't start Hermes because its executable is missing."
 FAILURE_REPLY = "I couldn't complete that request because Hermes failed."
 WHISPER_INITIAL_PROMPT = "Reachy Mini. Hermes."
+INTER_CHUNK_SILENCE_SECONDS = 0.08
+MIN_SPEECH_CHUNK_CHARS = 24
 
 _CANCEL_PATTERN = re.compile(r"\b(?:stop|cancel|never\s+mind)\b", re.IGNORECASE)
 ProcessFactory: TypeAlias = Callable[..., Awaitable[Any]]
@@ -62,28 +64,33 @@ def to_spoken_text(text: str) -> str:
     return re.sub(r"\s+", " ", spoken).strip()
 
 def split_for_speech(text: str, maximum: int = 70) -> list[str]:
-    """Split plain text at sentence boundaries for low-latency synthesis."""
+    """Split speech at sentence/word boundaries without tiny tail fragments."""
     chunks: list[str] = []
-    current = ""
     for sentence in re.split(r"(?<=[.!?])\s+", text.strip()):
-        words = sentence.split()
-        while words:
-            candidate = f"{current} {' '.join(words)}".strip()
-            if len(candidate) <= maximum:
-                current = candidate
-                break
-            room = maximum - len(current) - (1 if current else 0)
-            taken: list[str] = []
-            while words and (not taken or len(" ".join(taken + [words[0]])) <= room):
-                taken.append(words.pop(0))
-            if current:
-                chunks.append(current)
-                current = ""
-                words = taken + words
+        parts: list[str] = []
+        words: list[str] = []
+        for word in sentence.split():
+            candidate = " ".join((*words, word))
+            if words and len(candidate) > maximum:
+                parts.append(" ".join(words))
+                words = [word]
             else:
-                chunks.append(" ".join(taken))
-    if current:
-        chunks.append(current)
+                words.append(word)
+        if words:
+            parts.append(" ".join(words))
+        if len(parts) > 1 and len(parts[-1]) < MIN_SPEECH_CHUNK_CHARS:
+            tail = parts.pop()
+            parts[-1] = f"{parts[-1]} {tail}"
+
+        for part in parts:
+            if chunks and len(chunks[-1]) + len(part) + 1 <= maximum:
+                chunks[-1] = f"{chunks[-1]} {part}"
+            else:
+                chunks.append(part)
+
+    if len(chunks) > 1 and len(chunks[-1]) < MIN_SPEECH_CHUNK_CHARS:
+        tail = chunks.pop()
+        chunks[-1] = f"{chunks[-1]} {tail}"
     return chunks
 
 
@@ -221,7 +228,7 @@ class HermesHandler(OpenRouterChatHandler):
         )
 
     async def receive(self, frame: Any) -> None:
-        """Detect speech with a short pre-roll and accept cancellation while working."""
+        """Detect speech with adaptive hysteresis and accept cancellation."""
         if self._stop_event.is_set():
             return
         if self._processing_turn:
@@ -259,14 +266,23 @@ class HermesHandler(OpenRouterChatHandler):
         else:
             self._silence_samples += audio.size
 
-        utterance_duration = sum(chunk.size for chunk in self._speech_chunks) / self.SAMPLE_RATE
+        utterance_duration = (
+            sum(chunk.size for chunk in self._speech_chunks) / self.SAMPLE_RATE
+        )
         trailing_silence = self._silence_samples / self.SAMPLE_RATE
-        should_finalize = trailing_silence >= self.SILENCE_DURATION_S or utterance_duration >= self.MAX_UTTERANCE_DURATION_S
+        should_finalize = (
+            trailing_silence >= self.SILENCE_DURATION_S
+            or utterance_duration >= self.MAX_UTTERANCE_DURATION_S
+        )
         if not should_finalize:
             return
 
         speech_duration = self._speech_samples / self.SAMPLE_RATE
-        utterance = np.concatenate(self._speech_chunks) if self._speech_chunks else np.empty(0, dtype=np.float32)
+        utterance = (
+            np.concatenate(self._speech_chunks)
+            if self._speech_chunks
+            else np.empty(0, dtype=np.float32)
+        )
         logger.info(
             "Hermes utterance finalized after %.2fs with %.2fs speech and %.2fs trailing silence",
             utterance_duration,
@@ -281,7 +297,10 @@ class HermesHandler(OpenRouterChatHandler):
         if speech_duration < self.MIN_SPEECH_DURATION_S:
             return
         self._processing_turn = True
-        self._processing_task = asyncio.create_task(self._process_turn(utterance), name="hermes-voice-turn")
+        self._processing_task = asyncio.create_task(
+            self._process_turn(utterance),
+            name="hermes-voice-turn",
+        )
 
     async def _process_turn(self, audio: NDArray[np.float32]) -> None:
         """Acknowledge immediately, then run STT, Hermes, and chunked speech."""
@@ -337,7 +356,8 @@ class HermesHandler(OpenRouterChatHandler):
 
             playback_started: float | None = None
             playback_seconds = 0.0
-            for speech_text in split_for_speech(reply):
+            speech_parts = split_for_speech(reply)
+            for index, speech_text in enumerate(speech_parts):
                 try:
                     sample_rate, speech = await self._synthesize(speech_text)
                 except Exception as exc:
@@ -357,6 +377,14 @@ class HermesHandler(OpenRouterChatHandler):
                         )
                     )
                 playback_seconds += speech.size / sample_rate
+                if index + 1 < len(speech_parts):
+                    silence = np.zeros(
+                        int(sample_rate * INTER_CHUNK_SILENCE_SECONDS),
+                        dtype=np.int16,
+                    )
+                    self._note_output_playback(sample_rate, silence.size)
+                    await self.output_queue.put((sample_rate, silence))
+                    playback_seconds += silence.size / sample_rate
 
             if playback_started is not None:
                 elapsed = time.monotonic() - playback_started
@@ -546,7 +574,6 @@ class HermesHandler(OpenRouterChatHandler):
     async def _queue_processing_chime(self) -> None:
         """Start the repeating three-pulse processing earcon."""
         await self._queue_processing_burst()
-        self._queue_ear_wiggle()
         self._mark_activity("hermes_processing_chime")
 
     async def _queue_progress_tick(self) -> None:
@@ -588,11 +615,6 @@ class HermesHandler(OpenRouterChatHandler):
             )
         )
 
-    def _queue_ear_wiggle(self) -> None:
-        try:
-            self.deps.movement_manager.wiggle_antennas()
-        except Exception:
-            logger.debug("Unable to queue Hermes ear wiggle", exc_info=True)
 
     def _set_processing(self, processing: bool) -> None:
         if self._processing_motion_active == processing:
@@ -605,10 +627,6 @@ class HermesHandler(OpenRouterChatHandler):
                 robot.disable_wobbling()
             except Exception:
                 logger.debug("Unable to pause Hermes head wobbling", exc_info=True)
-        try:
-            self.deps.movement_manager.set_processing(processing)
-        except Exception:
-            logger.debug("Unable to update Hermes processing motion", exc_info=True)
         if not processing:
             try:
                 robot.enable_wobbling()
