@@ -107,6 +107,7 @@ let favoriteResponse = { favorites: ["reachy_lookat", "reachy_chat"] };
 let getCalls = 0;
 let putCalls = [];
 let failPut = false;
+let failGet = false;
 let releaseGet;
 let getGate = new Promise((resolve) => { releaseGet = resolve; });
 async function apiJson(path, options = {}) {
@@ -118,6 +119,7 @@ async function apiJson(path, options = {}) {
   if (path === "/api/apps/favorites") {
     getCalls += 1;
     await getGate;
+    if (failGet) throw new Error("favorites GET failed");
     return JSON.parse(JSON.stringify(favoriteResponse));
   }
   throw new Error(`unexpected ${path}`);
@@ -153,6 +155,29 @@ results.errorException = {
   visible: els.apps.innerHTML.includes("reachy_hermes"),
   marker: els.apps.innerHTML.includes("error · not favorite"),
   error: els.apps.innerHTML.includes("missing executable"),
+};
+const errorDuringActive = statuses.map((item) => {
+  if (item.name === "reachy_simon") return { ...item, status: "running" };
+  if (item.name === "reachy_hermes") return { ...item, status: "error", error: "boom", start_time: 1 };
+  return item;
+});
+renderApps(errorDuringActive);
+results.errorDuringActive = {
+  simonVisible: els.apps.innerHTML.includes('data-app="reachy_simon"'),
+  hermesVisible: els.apps.innerHTML.includes('data-app="reachy_hermes"'),
+  hermesError: els.apps.innerHTML.includes("boom"),
+};
+const twoFailures = statuses.map((item) => {
+  if (item.name === "reachy_simon") return { ...item, status: "error", error: "simon boom", start_time: 1 };
+  if (item.name === "reachy_hermes") return { ...item, status: "error", error: "hermes boom", start_time: 2 };
+  return item;
+});
+renderApps(twoFailures);
+results.multipleFailuresVisible = {
+  simonVisible: els.apps.innerHTML.includes('data-app="reachy_simon"'),
+  hermesVisible: els.apps.innerHTML.includes('data-app="reachy_hermes"'),
+  simonError: els.apps.innerHTML.includes("simon boom"),
+  hermesError: els.apps.innerHTML.includes("hermes boom"),
 };
 renderLibrary(statuses);
 results.libraryCards = {
@@ -208,6 +233,30 @@ results.swap = {
 };
 results.savingPreserved = state.library.saving;
 state.library.saving = false;
+
+// --- GET failure must not mark favorites loaded, and must stay retryable ---
+state.library.loaded = false;
+state.library.loading = false;
+state.library.favorites = [...DEFAULT_FAVORITES];
+failGet = true;
+await loadFavorites();
+results.failedLoad = {
+  loaded: state.library.loaded,
+  loading: state.library.loading,
+  hint: els["app-library-hint"].textContent,
+};
+const putsBeforeGuard = putCalls.length;
+await toggleFavorite("reachy_hermes");
+results.toggleBeforeLoad = {
+  noPut: putCalls.length === putsBeforeGuard,
+  stillNotLoaded: !state.library.loaded,
+};
+failGet = false;
+await toggleFavorite("reachy_hermes");
+results.toggleRetriesLoad = {
+  loaded: state.library.loaded,
+  putHappened: putCalls.length > putsBeforeGuard,
+};
 console.log(JSON.stringify(results));
 '''
 
@@ -224,6 +273,12 @@ def test_favorite_panel_and_active_exception() -> None:
     }
     assert results["errorException"] == {
         "visible": True, "marker": True, "error": True,
+    }
+    assert results["errorDuringActive"] == {
+        "simonVisible": True, "hermesVisible": True, "hermesError": True,
+    }
+    assert results["multipleFailuresVisible"] == {
+        "simonVisible": True, "hermesVisible": True, "simonError": True, "hermesError": True,
     }
 
 
@@ -257,6 +312,16 @@ def test_favorite_limit_put_rollback_and_view_swap() -> None:
         "appsShown": True, "libraryHidden": True, "focusRestored": True,
     }
     assert results["savingPreserved"] is True
+
+
+def test_favorites_fetch_failure_guards_stale_put() -> None:
+    results = _run_harness()
+    assert results["failedLoad"] == {
+        "loaded": False, "loading": False, "hint": "favorites GET failed",
+    }
+    assert results["toggleBeforeLoad"] == {"noPut": True, "stillNotLoaded": True}
+    assert results["toggleRetriesLoad"] == {"loaded": True, "putHappened": True}
+
 
 def test_library_markup_and_endpoint_contract() -> None:
     index = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")

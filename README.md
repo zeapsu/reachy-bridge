@@ -51,10 +51,10 @@ Dashboard + API: <http://localhost:8000/> · API docs: <http://localhost:8000/do
 | `reachy_simon` | Memory game; motion cues + auto-mode | sim ✅ | antenna/head **input** |
 | `reachy_lookat` | OpenCV face tracking → head steering | sim ✅ | **camera** |
 | `reachy_chat` | Configurable realtime or local-turn voice conversation | structure ✅ | **mic/speaker** + provider configuration |
-| `reachy_hermes` | mic → faster-whisper → local Hermes CLI → pyttsx3 → speaker | unit ✅ | **mic/speaker** + local Hermes installation |
+| `reachy_hermes` | mic → faster-whisper → local Hermes CLI → KittenTTS (sherpa-onnx, int8) → speaker | unit ✅ | **mic/speaker** + local Hermes installation |
 
 `reachy_chat` provider configuration lives in `apps/reachy_chat/.env` and its controller settings.
 `reachy_hermes` requires `~/.local/bin/hermes` on the robot host.
-First run downloads the faster-whisper `base.en` model (~200 MB).
+First run downloads the faster-whisper `base.en` model (~200 MB) and the KittenTTS int8 model.
 
 See the [full guide](docs/USER_GUIDE.html) for details, hardware migration, and troubleshooting.

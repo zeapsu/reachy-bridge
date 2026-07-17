@@ -156,6 +156,22 @@ def test_cancel_phrase_matching_is_conservative_and_case_insensitive() -> None:
     assert is_cancel_phrase("please cancel that")
     assert not is_cancel_phrase("what is the weather")
 
+
+@pytest.mark.parametrize(
+    "transcript",
+    ["stop", "please stop", "cancel that", "never mind", "okay stop"],
+)
+def test_cancel_phrase_matches_bare_stop_commands(transcript: str) -> None:
+    assert is_cancel_phrase(transcript)
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    ["don't stop, also check tomorrow", "and cancel my 3pm meeting"],
+)
+def test_cancel_phrase_ignores_keyword_inside_a_longer_sentence(transcript: str) -> None:
+    assert not is_cancel_phrase(transcript)
+
 def test_markdown_is_defensively_normalized_for_speech() -> None:
     response = "## Update\n* **First:** done [source](https://example.com)\n* `Second` #2 [1]"
     assert to_spoken_text(response) == "Update First: done source Second 2"
@@ -226,6 +242,61 @@ async def test_gateway_queues_followup_without_replacing_current_answer(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_gateway_queues_two_followups_and_returns_final_answer(tmp_path: Path) -> None:
+    binary = tmp_path / "hermes"
+    binary.touch()
+    client = HermesGatewayClient(hermes_binary=binary)
+    websocket = FakeWebSocket(
+        [
+            event("message.complete", {"text": "first answer", "status": "complete"}),
+            event("message.complete", {"text": "second answer", "status": "complete"}),
+            event("message.complete", {"text": "final answer", "status": "complete"}),
+        ]
+    )
+    client._active_websocket = websocket
+    client._session_id = "session-1"
+
+    assert await client.queue_prompt("first follow-up") is True
+    assert await client.queue_prompt("second follow-up") is True
+    assert client._followups_queued == 2
+
+    assert await client._collect_response(websocket, [], None) == "final answer"
+    assert client._followups_queued == 0
+
+
+@pytest.mark.asyncio
+async def test_close_with_stored_session_skips_external_interrupt_dial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = tmp_path / "hermes"
+    binary.touch()
+    connect_calls: list[str] = []
+
+    def connect_factory(url: str) -> Any:
+        connect_calls.append(url)
+        raise AssertionError("close() must not dial a new external connection")
+
+    client = HermesGatewayClient(
+        hermes_binary=binary,
+        connect_factory=connect_factory,
+        runtime_dir=tmp_path / "runtime",
+    )
+    client._process = FakeProcess()
+    client._stored_session_id = "stored-1"
+    # No active websocket/session id: simulates close() running after ask() already exited.
+
+    def signal_process(proc: Any, signum: int) -> None:
+        proc.returncode = 143
+        proc.done.set()
+
+    monkeypatch.setattr(client, "_signal_process_group", signal_process)
+
+    await client.close()
+
+    assert connect_calls == []
+
+
+@pytest.mark.asyncio
 async def test_gateway_interrupts_session_owned_by_native_desktop(tmp_path: Path) -> None:
     binary = tmp_path / "hermes"
     binary.touch()
@@ -273,6 +344,32 @@ async def test_spoken_followup_uses_live_hermes_queue() -> None:
 
 
 @pytest.mark.asyncio
+async def test_late_followup_with_no_active_turn_starts_a_new_gateway_turn() -> None:
+    gateway = FakeGateway(answer="late follow-up answer")
+    handler = build_handler(gateway)
+    handler._synthesize = AsyncMock(  # type: ignore[method-assign]
+        return_value=(16_000, np.zeros(160, dtype=np.int16))
+    )
+    handler._transcribe = MagicMock(  # type: ignore[method-assign]
+        return_value=asyncio.sleep(0, result="what about tomorrow")
+    )
+    assert handler._processing_turn is False  # no active turn to flush into
+
+    await handler._check_cancel_utterance(np.ones(100, dtype=np.float32))
+
+    assert handler._processing_task is not None
+    await handler._processing_task
+
+    assert gateway.prompts == ["what about tomorrow"]
+    assert handler.conversation_history[-1] == {
+        "role": "assistant",
+        "content": "late follow-up answer",
+    }
+    assert handler._processing_turn is False
+    await handler.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_native_desktop_turn_is_relayed_through_reachy_speech(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -314,6 +411,57 @@ async def test_native_desktop_turn_is_relayed_through_reachy_speech(
 
 
 @pytest.mark.asyncio
+async def test_relay_skips_local_voice_answer_and_speaks_genuine_native_answer_despite_malformed_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import reachy_hermes.hermes as hermes_module
+
+    gateway = FakeGateway()
+    malformed = {"id": "abc", "role": "assistant", "content": "ignored"}
+    typed = {"id": 1, "role": "user", "content": "typed from my Mac"}
+    echoed_local_answer = {"id": 2, "role": "assistant", "content": "voice turn raw answer"}
+    native_answer = {"id": 3, "role": "assistant", "content": "Reply from the shared session."}
+    gateway.message_batches = [
+        [],
+        [malformed],
+        [malformed, typed],
+        [malformed, typed, echoed_local_answer],
+        [malformed, typed, echoed_local_answer, native_answer],
+    ]
+    handler = build_handler(gateway)
+    handler._local_session_answers.append("voice turn raw answer")
+    handler._synthesize = AsyncMock(  # type: ignore[method-assign]
+        return_value=(16_000, np.zeros(160, dtype=np.int16))
+    )
+    monkeypatch.setattr(hermes_module, "NATIVE_SESSION_POLL_SECONDS", 0.001)
+    monkeypatch.setattr(hermes_module, "NATIVE_SESSION_QUIET_SECONDS", 0.0)
+
+    relay = asyncio.create_task(handler._relay_native_session())
+    for _ in range(200):
+        if any(
+            message.get("content") == "Reply from the shared session."
+            for message in handler.conversation_history
+        ):
+            break
+        await asyncio.sleep(0.001)
+    handler._stop_event.set()
+    await asyncio.wait_for(relay, timeout=1)
+
+    # The malformed id ("abc") didn't kill the relay loop, and the locally-spoken voice
+    # answer echoing back through the shared session was never re-spoken.
+    assert not any(
+        message.get("content") == "voice turn raw answer"
+        for message in handler.conversation_history
+    )
+    assert handler.conversation_history[-1] == {
+        "role": "assistant",
+        "content": "Reply from the shared session.",
+    }
+    assert len(handler._local_session_answers) == 0
+    await handler.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_spoken_stop_interrupts_external_text_turn() -> None:
     gateway = FakeGateway()
     handler = build_handler(gateway)
@@ -332,6 +480,31 @@ async def test_spoken_stop_interrupts_external_text_turn() -> None:
         "role": "assistant",
         "content": "Okay, I stopped.",
     }
+    await handler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_gateway_call_clears_stale_local_prompt() -> None:
+    gateway = FakeGateway()
+
+    async def failing_ask(*args: Any, **kwargs: Any) -> str:
+        raise HermesInvocationError("connection refused")
+
+    gateway.ask = failing_ask  # type: ignore[method-assign]
+    handler = build_handler(gateway)
+    handler.address_gate.semantic_check = MagicMock(
+        return_value=SimpleNamespace(is_open=True, confidence=1.0, reason="test")
+    )
+    handler._transcribe = MagicMock(  # type: ignore[method-assign]
+        return_value=asyncio.sleep(0, result="hello there")
+    )
+    handler._synthesize = AsyncMock(  # type: ignore[method-assign]
+        return_value=(16_000, np.zeros(160, dtype=np.int16))
+    )
+
+    await handler._process_turn(np.ones(1_600, dtype=np.float32))
+
+    assert list(handler._local_session_prompts) == []
     await handler.shutdown()
 
 @pytest.mark.asyncio

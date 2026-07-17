@@ -22,6 +22,7 @@ HERMES_BINARY = Path("~/.local/bin/hermes").expanduser()
 HERMES_TOOLSETS = "all"
 HERMES_GATEWAY_PORT = 9120
 HERMES_GATEWAY_STARTUP_SECONDS = 60.0
+HERMES_READY_TIMEOUT_SECONDS = 15.0
 HERMES_OUTPUT_LIMIT_BYTES = 32 * 1024
 HERMES_TERM_GRACE_SECONDS = 3.0
 HERMES_SESSION_TITLE = "reachy-hermes"
@@ -100,7 +101,7 @@ class HermesGatewayClient:
         self._rpc_id = 0
         self._send_lock = asyncio.Lock()
         self._cancel_requested = False
-        self._followup_queued = False
+        self._followups_queued = 0
         self._stored_session_id: str | None = None
         self._turns_in_session = 0
 
@@ -231,7 +232,7 @@ class HermesGatewayClient:
         """Submit one turn and wait until completion or explicit cancellation."""
         await self.start()
         self._cancel_requested = False
-        self._followup_queued = False
+        self._followups_queued = 0
         buffered_events: list[dict[str, Any]] = []
         try:
             async with self._connect_factory(self.websocket_url) as websocket:
@@ -279,19 +280,32 @@ class HermesGatewayClient:
     async def interrupt(self) -> None:
         """Interrupt the active or externally attached shared Hermes session."""
         self._cancel_requested = True
+        if await self._interrupt_active_websocket():
+            return
+        await self._interrupt_external_session()
+
+    async def _interrupt_active_websocket(self) -> bool:
+        """Send an in-band interrupt over the live websocket, if one is open here.
+
+        Returns True when there was an active session to interrupt this way, even if
+        the send itself failed, so callers know not to fall back to an external dial.
+        """
         websocket = self._active_websocket
         session_id = self._session_id
-        if websocket is not None and session_id is not None:
-            try:
-                await self._send_request(
-                    websocket,
-                    "session.interrupt",
-                    {"session_id": session_id},
-                )
-            except Exception:
-                logger.debug("Unable to send Hermes session interrupt", exc_info=True)
-            return
+        if websocket is None or session_id is None:
+            return False
+        try:
+            await self._send_request(
+                websocket,
+                "session.interrupt",
+                {"session_id": session_id},
+            )
+        except Exception:
+            logger.debug("Unable to send Hermes session interrupt", exc_info=True)
+        return True
 
+    async def _interrupt_external_session(self) -> None:
+        """Dial a fresh connection to interrupt a session with no live websocket here."""
         if self._stored_session_id is None or self._process is None:
             return
         buffered_events: list[dict[str, Any]] = []
@@ -347,12 +361,13 @@ class HermesGatewayClient:
         except Exception:
             logger.debug("Unable to queue Hermes follow-up", exc_info=True)
             return False
-        self._followup_queued = True
+        self._followups_queued += 1
         return True
 
     async def close(self) -> None:
         """Interrupt work and terminate the isolated server process group."""
-        await self.interrupt()
+        self._cancel_requested = True
+        await self._interrupt_active_websocket()
         websocket = self._active_websocket
         if websocket is not None:
             try:
@@ -377,10 +392,19 @@ class HermesGatewayClient:
             logger.debug("Unable to remove Hermes connection file", exc_info=True)
 
     async def _wait_until_ready(self, websocket: Any) -> None:
-        while True:
-            message = await self._receive_json(websocket)
-            if message.get("method") == "event" and (message.get("params") or {}).get("type") == "gateway.ready":
-                return
+        try:
+            async with asyncio.timeout(HERMES_READY_TIMEOUT_SECONDS):
+                while True:
+                    message = await self._receive_json(websocket)
+                    if (
+                        message.get("method") == "event"
+                        and (message.get("params") or {}).get("type") == "gateway.ready"
+                    ):
+                        return
+        except TimeoutError as exc:
+            raise HermesInvocationError(
+                f"Hermes gateway did not signal readiness within {HERMES_READY_TIMEOUT_SECONDS:.0f} seconds"
+            ) from exc
 
     async def _resume_or_create(
         self,
@@ -529,8 +553,8 @@ class HermesGatewayClient:
                     raise HermesInvocationError("Hermes output exceeded the 32 KiB limit")
                 if answer.startswith(("{", "[")):
                     raise HermesInvocationError("Hermes returned raw tool output instead of a spoken answer")
-                if self._followup_queued:
-                    self._followup_queued = False
+                if self._followups_queued > 0:
+                    self._followups_queued -= 1
                     continue
                 return answer
             elif event_type == "error":

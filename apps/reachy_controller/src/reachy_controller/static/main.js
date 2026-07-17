@@ -821,14 +821,12 @@
       }
     }
     const favorites = Array.isArray(state.library?.favorites) ? state.library.favorites : APP_NAMES;
-    // keep the newest failed launch visible without allowing stale failures to crowd the panel.
-    const latestFailure = active
-      ? null
-      : statuses
-        .filter((app) => app.status === "error" && !favorites.includes(app.name))
-        .sort((left, right) => Number(right.start_time || 0) - Number(left.start_time || 0))[0];
-    const transientApp = active || latestFailure;
-    const visibleNames = APP_NAMES.filter((name) => favorites.includes(name) || transientApp?.name === name);
+    // Errored non-favorite apps stay visible regardless of what else is active,
+    // and every errored app shows (not just the newest) so nothing gets hidden.
+    const failedNames = new Set(
+      statuses.filter((app) => app.status === "error" && !favorites.includes(app.name)).map((app) => app.name),
+    );
+    const visibleNames = APP_NAMES.filter((name) => favorites.includes(name) || active?.name === name || failedNames.has(name));
     const html = visibleNames.map((name) => appCardMarkup(appForName(statuses, name), active, false)).join("");
     const robotDotClass = `dot ${active ? "live" : "ok"}`;
     const robotValue = active ? active.name : "free";
@@ -986,8 +984,8 @@
       if (library.open) renderLibrary(Array.from(appState.values()));
       setLibraryHint("");
     } catch (error) {
-      // Keep the documented defaults visible if the preference endpoint is down.
-      library.loaded = true;
+      // Leave `loaded` false so a later attempt (opening the library, clicking a
+      // star) retries instead of silently PUTting defaults over real favorites.
       setLibraryHint(error.message || "Favorites unavailable; showing defaults.", "error");
     } finally {
       library.loading = false;
@@ -1003,6 +1001,15 @@
   async function toggleFavorite(name) {
     const library = state.library;
     if (library.saving || !APP_NAMES.includes(name)) return;
+    if (!library.loaded) {
+      // The initial load never succeeded — retry rather than PUT a defaults-derived
+      // list that would overwrite whatever favorites are actually persisted.
+      await loadFavorites();
+      if (!library.loaded) {
+        setLibraryHint("Favorites unavailable; try again.", "error");
+        return;
+      }
+    }
     const previous = [...library.favorites];
     const next = previous.includes(name)
       ? previous.filter((item) => item !== name)
@@ -1050,6 +1057,7 @@
     $("app-settings").hidden = true;
     $("app-library").hidden = false;
     $("app-library-open").setAttribute("aria-expanded", "true");
+    if (!library.loaded) void loadFavorites(); // retry a failed initial fetch
     renderLibrary(Array.from(appState.values()));
     $("app-library-back").focus();
   }

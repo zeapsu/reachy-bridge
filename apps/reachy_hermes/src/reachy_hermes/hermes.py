@@ -52,14 +52,18 @@ OUTPUT_ECHO_GUARD_SECONDS = 0.5
 NATIVE_SESSION_POLL_SECONDS = 0.75
 NATIVE_SESSION_QUIET_SECONDS = 1.5
 
-_CANCEL_PATTERN = re.compile(r"\b(?:stop|cancel|never\s+mind)\b", re.IGNORECASE)
+_CANCEL_FILLER_WORDS = frozenset({"please", "hermes", "now", "that", "it", "okay", "ok"})
+_CANCEL_BARE_PHRASES = frozenset({"stop", "cancel", "never mind"})
 ProcessFactory: TypeAlias = Callable[..., Awaitable[Any]]
 
 
 def is_cancel_phrase(transcript: str) -> bool:
-    """Return whether speech contains one of the supported stop phrases."""
+    """Return whether speech IS a bare stop/cancel command, not just one mentioned in passing."""
     normalized = re.sub(r"[^a-z]+", " ", transcript.casefold()).strip()
-    return _CANCEL_PATTERN.search(normalized) is not None
+    if not normalized:
+        return False
+    words = [word for word in normalized.split() if word not in _CANCEL_FILLER_WORDS]
+    return " ".join(words) in _CANCEL_BARE_PHRASES
 
 def to_spoken_text(text: str) -> str:
     """Convert defensive leftovers from Markdown into speech-safe plain text."""
@@ -145,10 +149,12 @@ class HermesHandler(OpenRouterChatHandler):
         self._last_working_update_message: str | None = None
         self._pending_followups: deque[str] = deque()
         self._local_session_prompts: deque[str] = deque()
+        self._local_session_answers: deque[str] = deque()
         self._session_relay_task: asyncio.Task[None] | None = None
         self._gateway_turn_active = False
         self._native_text_turn_active = False
         self._cancel_detection_task: asyncio.Task[None] | None = None
+        self._queued_cancel_audio: NDArray[np.float32] | None = None
         self._cancel_speech_active = False
         self._cancel_speech_chunks: list[NDArray[np.float32]] = []
         self._cancel_speech_samples = 0
@@ -384,6 +390,7 @@ class HermesHandler(OpenRouterChatHandler):
             except Exception as exc:
                 logger.exception("Hermes completion failed: %s", exc)
                 reply = self.FALLBACK_REPLY
+                self._discard_local_prompt(transcript)
 
             await self._end_processing_feedback()
             await self._speak_response(reply)
@@ -395,6 +402,54 @@ class HermesHandler(OpenRouterChatHandler):
             self._processing_turn = False
             self._reset_input_buffer()
             self._clear_pre_roll()
+            self._maybe_schedule_pending_followup_turn()
+
+    def _discard_local_prompt(self, transcript: str) -> None:
+        """Drop a locally-submitted prompt that never got committed to the Hermes session."""
+        try:
+            self._local_session_prompts.remove(transcript)
+        except ValueError:
+            pass  # The relay may have already popped it, or it was never appended.
+
+    def _maybe_schedule_pending_followup_turn(self) -> None:
+        """Start a standalone gateway turn for follow-ups no active turn will flush.
+
+        queue_prompt() can fail because the gateway turn it was meant to ride along with
+        already ended. That follow-up is echoed to the transcript immediately but otherwise
+        would only get answered if the user happens to speak again. Fire a fresh turn for it
+        as soon as nothing else is in flight -- either right away, or when the turn that was
+        still wrapping up finishes (see the _process_turn finally above).
+        """
+        if self._processing_turn or not self._pending_followups:
+            return
+        self._processing_turn = True
+        self._processing_task = asyncio.create_task(
+            self._run_pending_followup_turn(), name="hermes-followup-turn"
+        )
+
+    async def _run_pending_followup_turn(self) -> None:
+        """Answer follow-up(s) that arrived after their original turn had already ended."""
+        started = time.monotonic()
+        await self._begin_processing_feedback()
+        try:
+            prompt = self._pending_followups.popleft()
+            try:
+                reply = await self._request_completion(prompt=prompt)
+            except Exception as exc:
+                logger.exception("Hermes follow-up completion failed: %s", exc)
+                reply = self.FALLBACK_REPLY
+                self._discard_local_prompt(prompt)
+            await self._end_processing_feedback()
+            await self._speak_response(reply)
+            logger.info(
+                "Hermes follow-up turn completed in %.2fs", time.monotonic() - started
+            )
+        finally:
+            await self._end_processing_feedback()
+            self._processing_turn = False
+            self._reset_input_buffer()
+            self._clear_pre_roll()
+            self._maybe_schedule_pending_followup_turn()
 
     async def _speak_response(self, reply: str) -> None:
         """Publish and play one assistant response through Reachy's shared audio."""
@@ -463,7 +518,11 @@ class HermesHandler(OpenRouterChatHandler):
                 continue
 
             for message in messages:
-                message_id = int(message.get("id") or 0)
+                try:
+                    message_id = int(message.get("id") or 0)
+                except (TypeError, ValueError):
+                    logger.debug("Skipping Hermes native message with malformed id: %r", message.get("id"))
+                    continue
                 if message_id <= cursor:
                     continue
                 cursor = message_id
@@ -497,11 +556,17 @@ class HermesHandler(OpenRouterChatHandler):
                             AdditionalOutputs({"role": "user", "content": content})
                         )
                         self._mark_activity("native_text_turn_started")
-                elif role == "assistant" and content and current_turn_is_external:
-                    spoken = to_spoken_text(content)
-                    if spoken:
-                        pending_answer = spoken
-                        pending_since = time.monotonic()
+                elif role == "assistant" and content:
+                    if self._local_session_answers and content == self._local_session_answers[0]:
+                        # This is the voice turn's own answer echoing back through the shared
+                        # session, not a concurrent native turn's answer. Leave the external-turn
+                        # bookkeeping untouched.
+                        self._local_session_answers.popleft()
+                    elif current_turn_is_external:
+                        spoken = to_spoken_text(content)
+                        if spoken:
+                            pending_answer = spoken
+                            pending_since = time.monotonic()
 
             if current_turn_is_external and not self._native_text_turn_active:
                 current_turn_is_external = False
@@ -600,6 +665,12 @@ class HermesHandler(OpenRouterChatHandler):
             self._cancel_detection_task = asyncio.create_task(
                 self._check_cancel_utterance(utterance), name="hermes-cancel-detection"
             )
+        else:
+            # Whisper is still busy with a prior follow-up utterance. Hold this one instead of
+            # dropping it; the running detection loop picks it up when it finishes.
+            if self._queued_cancel_audio is not None:
+                logger.info("Hermes follow-up utterance replaced an already-queued pending utterance")
+            self._queued_cancel_audio = utterance
 
     def _join_cancel_audio(self) -> NDArray[np.float32]:
         if not self._cancel_speech_chunks:
@@ -613,17 +684,28 @@ class HermesHandler(OpenRouterChatHandler):
         self._cancel_silence_samples = 0
 
     async def _check_cancel_utterance(self, audio: NDArray[np.float32]) -> None:
+        """Drain follow-up utterances one at a time, including any queued while busy."""
+        while True:
+            cancelled = await self._process_cancel_utterance(audio)
+            if cancelled or self._queued_cancel_audio is None:
+                self._queued_cancel_audio = None
+                return
+            audio = self._queued_cancel_audio
+            self._queued_cancel_audio = None
+
+    async def _process_cancel_utterance(self, audio: NDArray[np.float32]) -> bool:
+        """Transcribe and route one follow-up utterance; return True if it cancelled the turn."""
         try:
             transcript = (await self._transcribe(audio)).strip()
         except Exception as exc:
             logger.debug("Hermes cancellation transcription failed: %s", exc)
-            return
+            return False
         if is_cancel_phrase(transcript):
             logger.info("Hermes request cancelled by voice phrase: %r", transcript)
             await self.cancel_current()
-            return
+            return True
         if not transcript:
-            return
+            return False
         queued = await self.gateway.queue_prompt(transcript)
         if not queued:
             self._pending_followups.append(transcript)
@@ -634,6 +716,9 @@ class HermesHandler(OpenRouterChatHandler):
         )
         self._mark_activity("user_followup_queued")
         logger.info("Hermes follow-up %s: %r", "queued" if queued else "pending", transcript)
+        if not queued:
+            self._maybe_schedule_pending_followup_turn()
+        return False
 
     def _output_is_playing(self) -> bool:
         return (
@@ -710,9 +795,13 @@ class HermesHandler(OpenRouterChatHandler):
                 return CANCEL_REPLY
             except HermesMissingBinary as exc:
                 logger.error("Hermes executable missing: %s", exc)
+                if prompt is not None:
+                    self._discard_local_prompt(prompt)
                 return MISSING_BINARY_REPLY
             except HermesError as exc:
                 logger.error("Hermes request failed: %s", exc)
+                if prompt is not None:
+                    self._discard_local_prompt(prompt)
                 return FAILURE_REPLY
         finally:
             self._reset_cancel_input()
@@ -744,17 +833,32 @@ class HermesHandler(OpenRouterChatHandler):
             if content and message["role"] in {"user", "assistant"}:
                 history.append({"role": cast(str, message["role"]), "content": content})
 
+        flushed: list[str] = []
         if self._pending_followups:
-            additions = "\n".join(self._pending_followups)
+            flushed = list(self._pending_followups)
+            additions = "\n".join(flushed)
             self._pending_followups.clear()
             prompt = f"{prompt.strip()}\n\nThe user added: {additions}"
 
         started = time.monotonic()
-        answer = await self.gateway.ask(
-            prompt.strip(),
-            history=history,
-            status_callback=self._on_gateway_status,
-        )
+        try:
+            answer = await self.gateway.ask(
+                prompt.strip(),
+                history=history,
+                status_callback=self._on_gateway_status,
+            )
+        except HermesCancelled:
+            raise  # The turn was submitted before the interrupt; its messages committed.
+        except HermesError:
+            # The flushed follow-ups never committed to the session; drop their relay
+            # bookkeeping alongside the base prompt (discarded by _request_completion).
+            for followup in flushed:
+                self._discard_local_prompt(followup)
+            raise
+        # Remember the raw committed answer so the native-session relay can recognize it as
+        # this voice turn's own reply (see _local_session_answers) instead of mis-attributing it
+        # to a concurrent native turn.
+        self._local_session_answers.append(answer)
         logger.info("Hermes agent turn completed in %.2fs", time.monotonic() - started)
         return answer
 
