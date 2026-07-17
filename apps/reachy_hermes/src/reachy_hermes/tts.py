@@ -26,7 +26,7 @@ MODEL_SHA256 = "6fa5be852612ce761094ba74ee6123b4fc4acfefa79bf64dc63acae4a83af2fd
 MODEL_FILES = ("model.int8.onnx", "voices.bin", "tokens.txt", "espeak-ng-data")
 VOICE_NAMES = ("Bella", "Jasper", "Luna", "Bruno", "Rosie", "Hugo", "Kiki", "Leo")
 DEFAULT_SPEAKER_ID = 0
-DEFAULT_SPEED = 1.05
+DEFAULT_SPEED = 0.95
 
 
 class NeuralTTS:

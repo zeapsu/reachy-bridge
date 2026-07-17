@@ -277,6 +277,9 @@ class MovementManager:
         self._set_target_err_suppressed = 0
         self._cached_secondary_offsets: tuple[float, ...] = ()  # force miss on first call
         self._cached_secondary_pose: FullBodyPose = (np.eye(4, dtype=np.float32), (0.0, 0.0), 0.0)
+        self._antenna_wiggle_start: float | None = None
+        self._antenna_wiggle_duration = 0.0
+        self._antenna_wiggle_amplitude = 0.0
 
         # Cross-thread signalling
         self._command_queue: "Queue[Tuple[str, Any]]" = Queue()
@@ -312,6 +315,21 @@ class MovementManager:
         Thread-safe: executed by the worker thread via the command queue.
         """
         self._command_queue.put(("clear_queue", None))
+
+    def wiggle_antennas(
+        self,
+        *,
+        duration: float = 1.4,
+        amplitude: float = float(np.deg2rad(4.0)),
+    ) -> None:
+        """Queue a smooth additive ear wiggle without moving the head or body."""
+        if duration <= 0.0:
+            raise ValueError("Antenna wiggle duration must be positive")
+        if amplitude < 0.0:
+            raise ValueError("Antenna wiggle amplitude must be non-negative")
+        self._command_queue.put(
+            ("wiggle_antennas", (float(duration), float(amplitude)))
+        )
 
     def set_moving_state(self, duration: float) -> None:
         """Mark the robot as actively moving for the provided duration.
@@ -396,6 +414,7 @@ class MovementManager:
             self.state.current_move = None
             self.state.move_start_time = None
             self._breathing_active = False
+            self._antenna_wiggle_start = None
             logger.info("Cleared move queue and stopped current move")
         elif command == "set_moving_state":
             try:
@@ -403,6 +422,12 @@ class MovementManager:
             except (TypeError, ValueError):
                 logger.warning("Invalid moving state duration: %s", payload)
                 return
+            self.state.update_activity()
+        elif command == "wiggle_antennas":
+            duration, amplitude = payload
+            self._antenna_wiggle_start = current_time
+            self._antenna_wiggle_duration = duration
+            self._antenna_wiggle_amplitude = amplitude
             self.state.update_activity()
         elif command == "mark_activity":
             self.state.update_activity()
@@ -526,32 +551,52 @@ class MovementManager:
 
         return primary_full_body_pose
 
-    def _get_secondary_pose(self) -> FullBodyPose:
-        """Get the secondary full body pose from face tracking offsets."""
+    def _get_secondary_pose(self, current_time: float) -> FullBodyPose:
+        """Get additive face-tracking and antenna-wiggle offsets."""
         current_offsets = self.state.face_tracking_offsets
 
-        # Skip expensive create_head_pose if offsets unchanged since last tick
         if current_offsets == self._cached_secondary_offsets:
-            return self._cached_secondary_pose
+            secondary_head_pose = self._cached_secondary_pose[0]
+        else:
+            secondary_head_pose = create_head_pose(
+                x=current_offsets[0],
+                y=current_offsets[1],
+                z=current_offsets[2],
+                roll=current_offsets[3],
+                pitch=current_offsets[4],
+                yaw=current_offsets[5],
+                degrees=False,
+                mm=False,
+            )
+            self._cached_secondary_offsets = current_offsets
+            self._cached_secondary_pose = (
+                secondary_head_pose,
+                (0.0, 0.0),
+                0.0,
+            )
 
-        secondary_head_pose = create_head_pose(
-            x=current_offsets[0],
-            y=current_offsets[1],
-            z=current_offsets[2],
-            roll=current_offsets[3],
-            pitch=current_offsets[4],
-            yaw=current_offsets[5],
-            degrees=False,
-            mm=False,
+        antenna_offset = 0.0
+        start = self._antenna_wiggle_start
+        if start is not None:
+            elapsed = max(0.0, current_time - start)
+            if elapsed >= self._antenna_wiggle_duration:
+                self._antenna_wiggle_start = None
+            else:
+                phase = np.pi * elapsed / self._antenna_wiggle_duration
+                antenna_offset = self._antenna_wiggle_amplitude * float(
+                    np.sin(phase) ** 2
+                )
+
+        return (
+            secondary_head_pose,
+            (antenna_offset, -antenna_offset),
+            0.0,
         )
-        self._cached_secondary_offsets = current_offsets
-        self._cached_secondary_pose = (secondary_head_pose, (0.0, 0.0), 0.0)
-        return self._cached_secondary_pose
 
     def _compose_full_body_pose(self, current_time: float) -> FullBodyPose:
         """Compose primary and secondary poses into a single command pose."""
         primary = self._get_primary_pose(current_time)
-        secondary = self._get_secondary_pose()
+        secondary = self._get_secondary_pose(current_time)
         return combine_full_body(primary, secondary)
 
     def _update_primary_motion(self, current_time: float) -> None:

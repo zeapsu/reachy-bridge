@@ -13,7 +13,6 @@ from typing import Any, TypeAlias, cast
 
 import numpy as np
 from fastrtc import AdditionalOutputs
-from reachy_mini.motion.move import Move
 from numpy.typing import NDArray
 from reachy_chat.openrouter_chat import OpenRouterChatHandler
 
@@ -62,7 +61,7 @@ def to_spoken_text(text: str) -> str:
     spoken = spoken.translate(str.maketrans({"*": "", "#": "", "`": "", "_": " ", "~": ""}))
     return re.sub(r"\s+", " ", spoken).strip()
 
-def split_for_speech(text: str, maximum: int = 90) -> list[str]:
+def split_for_speech(text: str, maximum: int = 70) -> list[str]:
     """Split plain text at sentence boundaries for low-latency synthesis."""
     chunks: list[str] = []
     current = ""
@@ -88,33 +87,6 @@ def split_for_speech(text: str, maximum: int = 90) -> list[str]:
     return chunks
 
 
-class EarWiggleMove(Move):  # type: ignore[misc]
-    """Short antenna-only acknowledgement routed through MovementManager."""
-
-    def __init__(
-        self,
-        head: NDArray[np.float32],
-        antennas: tuple[float, float],
-        body_yaw: float,
-    ) -> None:
-        self.head = head.copy()
-        self.antennas = antennas
-        self.body_yaw = body_yaw
-
-    @property
-    def duration(self) -> float:
-        return 1.4
-
-    def evaluate(
-        self, t: float
-    ) -> tuple[NDArray[np.float32], NDArray[np.float64], float]:
-        clamped = min(max(t, 0.0), self.duration)
-        offset = np.deg2rad(4.0) * np.sin(np.pi * clamped / self.duration) ** 2
-        antennas = np.array(
-            [self.antennas[0] + offset, self.antennas[1] - offset],
-            dtype=np.float64,
-        )
-        return self.head, antennas, self.body_yaw
 
 
 class HermesHandler(OpenRouterChatHandler):
@@ -535,13 +507,13 @@ class HermesHandler(OpenRouterChatHandler):
             )
         ).astype(np.float32)
 
-        frequency = 330.0
+        frequency = 165.0
         wave = (
             np.sin(2.0 * np.pi * frequency * times)
             + 0.2 * np.sin(4.0 * np.pi * frequency * times)
         ) / 1.2
         for index in range(3):
-            amplitude = 0.09 * (0.78**index)
+            amplitude = 0.06 * (0.78**index)
             offset = index * onset_samples
             burst[offset : offset + pulse_samples] = amplitude * envelope * wave
 
@@ -555,14 +527,7 @@ class HermesHandler(OpenRouterChatHandler):
 
     def _queue_ear_wiggle(self) -> None:
         try:
-            robot = self.deps.reachy_mini
-            head = np.asarray(robot.get_current_head_pose(), dtype=np.float32)
-            head_joints, antenna_joints = robot.get_current_joint_positions()
-            body_yaw = float(head_joints[0])
-            antennas = (float(antenna_joints[0]), float(antenna_joints[1]))
-            self.deps.movement_manager.queue_move(
-                EarWiggleMove(head, antennas, body_yaw)
-            )
+            self.deps.movement_manager.wiggle_antennas()
         except Exception:
             logger.debug("Unable to queue Hermes ear wiggle", exc_info=True)
 

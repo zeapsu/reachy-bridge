@@ -22,7 +22,6 @@ from reachy_hermes.gateway import (
     HermesInvocationError,
 )
 from reachy_hermes.hermes import (
-    EarWiggleMove,
     HermesHandler,
     is_cancel_phrase,
     split_for_speech,
@@ -155,7 +154,7 @@ def test_speech_text_is_split_into_bounded_sentence_chunks() -> None:
     )
     chunks = split_for_speech(text)
     assert len(chunks) == 3
-    assert all(len(chunk) <= 90 for chunk in chunks)
+    assert all(len(chunk) <= 70 for chunk in chunks)
     assert " ".join(chunks) == text
 
 
@@ -456,15 +455,12 @@ async def test_completion_emits_three_pulse_earcon_and_smooth_ear_wiggle() -> No
     assert peaks == sorted(peaks, reverse=True)
     dominant_bin = int(np.argmax(np.abs(np.fft.rfft(chime[:2_560]))))
     dominant_frequency = dominant_bin * sample_rate / 2_560
-    assert 320.0 <= dominant_frequency <= 340.0
-    move = handler.deps.movement_manager.queue_move.call_args.args[0]
-    assert isinstance(move, EarWiggleMove)
-    assert np.allclose(move.evaluate(0.0)[1], [-0.17, 0.17])
-    assert np.allclose(move.evaluate(move.duration)[1], [-0.17, 0.17])
+    assert 155.0 <= dominant_frequency <= 175.0
+    handler.deps.movement_manager.wiggle_antennas.assert_called_once_with()
     assert handler._working_status_task is None
-    handler.deps.movement_manager.queue_move.reset_mock()
+    handler.deps.movement_manager.wiggle_antennas.reset_mock()
     await handler._queue_progress_tick()
-    handler.deps.movement_manager.queue_move.assert_not_called()
+    handler.deps.movement_manager.wiggle_antennas.assert_not_called()
     await handler.shutdown()
 
 
@@ -513,7 +509,7 @@ def test_neural_tts_converts_float_audio_to_int16(monkeypatch: pytest.MonkeyPatc
     sample_rate, samples = tts.synthesize("hello")
     assert sample_rate == 24_000
     assert samples.tolist() == [-32767, -16384, 0, 16384, 32767]
-    engine.generate.assert_called_once_with("hello", sid=3, speed=1.05)
+    engine.generate.assert_called_once_with("hello", sid=3, speed=0.95)
 
 
 def test_stop_during_whisper_prewarm_skips_readiness_and_stream_launch(
