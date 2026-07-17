@@ -33,6 +33,7 @@ def test_app_status_exposes_camera_capability_without_ownership() -> None:
     assert statuses["reachy_lookat"]["uses_camera"] is True
     assert statuses["reachy_dance"]["uses_camera"] is False
     assert statuses["reachy_simon"]["uses_camera"] is False
+    assert statuses["reachy_hermes"]["uses_camera"] is False
 
 
 @pytest.mark.asyncio

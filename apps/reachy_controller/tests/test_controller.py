@@ -199,6 +199,7 @@ def test_static_ui_wires_liquid_glass_to_live_controller_endpoints() -> None:
     assert "/api/camera/availability" in script
     assert "/api/apps/start/" in script
     assert "/api/apps/stop/" in script
+    assert "/api/apps/favorites" in script
     assert "/api/volume/set" in script
     assert "/api/volume/microphone/set" in script
     assert "/api/motors/set_mode/" in script

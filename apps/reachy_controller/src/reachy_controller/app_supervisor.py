@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -14,7 +15,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, TextIO, TypeGuard
 
 import psutil
 
@@ -76,6 +77,8 @@ class LocalApp:
     name: str
     module: str
     uses_camera: bool = True
+    display: str = ""
+    blurb: str = ""
     process: subprocess.Popen[str] | None = None
     pid: int | None = None
     status: str = "stopped"  # "stopped", "loading", "running", "stopping", "error"
@@ -92,6 +95,8 @@ class LocalApp:
             "name": self.name,
             "module": self.module,
             "uses_camera": self.uses_camera,
+            "display": self.display,
+            "blurb": self.blurb,
             "pid": self.pid,
             "status": self.status,
             "error": self.error,
@@ -103,11 +108,38 @@ class LocalApp:
 class AppSupervisor:
     """Supervise local Python apps launched with the shared interpreter."""
 
+    DEFAULT_FAVORITES = ["reachy_chat", "reachy_dance", "reachy_lookat"]
     APPS: dict[str, dict[str, Any]] = {
-        "reachy_chat": {"module": "reachy_chat", "uses_camera": True},
-        "reachy_dance": {"module": "reachy_dance", "uses_camera": False},
-        "reachy_lookat": {"module": "reachy_lookat", "uses_camera": True},
-        "reachy_simon": {"module": "reachy_simon", "uses_camera": False},
+        "reachy_chat": {
+            "module": "reachy_chat",
+            "uses_camera": True,
+            "display": "Reachy Chat",
+            "blurb": "A voice conversation app for Reachy Mini.",
+        },
+        "reachy_dance": {
+            "module": "reachy_dance",
+            "uses_camera": False,
+            "display": "Reachy Dance",
+            "blurb": "Beat-synced head and antenna choreography.",
+        },
+        "reachy_lookat": {
+            "module": "reachy_lookat",
+            "uses_camera": True,
+            "display": "Reachy Lookat",
+            "blurb": "OpenCV face-tracking head control.",
+        },
+        "reachy_simon": {
+            "module": "reachy_simon",
+            "uses_camera": False,
+            "display": "Reachy Simon",
+            "blurb": "A Simon-style memory game with Reachy.",
+        },
+        "reachy_hermes": {
+            "module": "reachy_hermes",
+            "uses_camera": False,
+            "display": "Hermes",
+            "blurb": "Voice-driven read-only agent for longer tasks.",
+        },
     }
 
     def __init__(
@@ -127,6 +159,8 @@ class AppSupervisor:
                 name=name,
                 module=config["module"],
                 uses_camera=config.get("uses_camera", True),
+                display=config["display"],
+                blurb=config["blurb"],
             )
             for name, config in self.APPS.items()
         }
@@ -139,6 +173,65 @@ class AppSupervisor:
                 status="empty",
                 file_path=self._workspace_root / ".reachy-logs" / f"{name}.log",
             )
+
+    def _favorites_path(self) -> Path:
+        """Return the robot-local favorites file beneath the controller app root."""
+        root = self._workspace_root
+        if root.name == "reachy_controller" and root.parent.name == "apps":
+            controller_root = root
+        else:
+            candidate = root / "apps" / "reachy_controller"
+            controller_root = candidate if candidate.is_dir() else root
+        return controller_root / ".favorites.json"
+
+    @classmethod
+    def _valid_favorites(cls, value: object) -> TypeGuard[list[str]]:
+        """Validate and narrow decoded favorites before copying them."""
+        return (
+            isinstance(value, list)
+            and len(value) <= 3
+            and all(isinstance(name, str) and name in cls.APPS for name in value)
+            and len(value) == len(set(value))
+        )
+
+    def get_favorites(self) -> list[str]:
+        """Load favorites, falling back safely when storage is missing or invalid."""
+        try:
+            with self._favorites_path().open(encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError, TypeError):
+            return self.DEFAULT_FAVORITES.copy()
+        favorites = payload.get("favorites") if isinstance(payload, dict) else None
+        if not self._valid_favorites(favorites):
+            return self.DEFAULT_FAVORITES.copy()
+        return list(favorites)
+
+    def set_favorites(self, favorites: list[str]) -> list[str]:
+        """Persist favorites atomically and return the saved list."""
+        if not self._valid_favorites(favorites):
+            raise ValueError("favorites must contain at most three distinct known app names")
+        path = self._favorites_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f"{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
+                json.dump({"favorites": favorites}, handle, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        return list(favorites)
 
     def any_app_active(self) -> bool:
         """True when any managed app is running or loading (robot actuating)."""

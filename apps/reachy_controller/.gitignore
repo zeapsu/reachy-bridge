@@ -1,4 +1,5 @@
 .env
+.favorites.json
 .pytest_cache/
 .ruff_cache/
 .venv/

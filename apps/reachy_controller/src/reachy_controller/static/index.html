@@ -201,9 +201,20 @@
       <div class="col">
         <section class="glass pad instrument" id="apps-panel">
           <div id="apps-view">
-            <div class="head"><h2>apps</h2><div class="rule"></div></div>
+            <div class="head apps-head"><h2>apps</h2><div class="rule"></div><button class="btn library-open" id="app-library-open" type="button" aria-expanded="false" aria-controls="app-library" title="Open app library">library</button></div>
             <div class="apps" id="apps" aria-live="polite"></div>
             <p class="panel-hint" id="apps-message" role="status"></p>
+          </div>
+          <div id="app-library" hidden>
+            <div class="head">
+              <button class="btn settings-back" id="app-library-back" type="button" aria-label="Back to favorite apps">‹ favorites</button>
+              <h2>library</h2>
+              <span class="settings-app" id="app-library-count"></span>
+              <div class="rule"></div>
+              <span class="pill"><span class="dot" id="app-library-dot"></span><span id="app-library-state">ready</span></span>
+            </div>
+            <div class="library" id="app-library-list" aria-live="polite"></div>
+            <p class="panel-hint" id="app-library-hint" role="status"></p>
           </div>
           <div id="app-settings" hidden>
             <div class="head">
@@ -217,7 +228,9 @@
             <p class="panel-hint" id="app-settings-hint" role="status"></p>
           </div>
         </section>
+      </div>
 
+      <div class="col">
         <section class="glass pad instrument">
           <div class="head"><h2>expressions</h2><div class="rule"></div><button class="btn stop expr-cancel" id="expr-cancel" hidden>cancel</button></div>
           <div class="expr-group">
