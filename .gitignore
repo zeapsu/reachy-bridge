@@ -38,7 +38,8 @@ Thumbs.db
 /reachy_mini_conversation_app/
 
 # --- Agent scratch / local QA artifacts (not committed) ---
-/.claude/
+/.claude/*
+!/.claude/workflows/
 /.superpowers/
 /.playwright-mcp/
 /.reachy-logs/

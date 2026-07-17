@@ -93,6 +93,17 @@ on the Jetson with `REACHY_MANAGE_DAEMON=1`, its power button manages the on-dev
 - Never apply `filter: url(#…)` to `.vp-stage`; refraction belongs on the panel backdrop with a
   fallback for browsers that do not support it.
 
+## Testing
+- Run one app's suite from the repository root: `uv run pytest apps/<app>` (shared uv workspace
+  rules above apply — never activate the venv).
+- Run everything: `uv run pytest apps/`.
+- Post-merge / pre-deploy health check: the repo-local Claude Code workflow
+  `.claude/workflows/app-sweep.js` runs every app's suite in parallel (one cheap agent per app)
+  and reports `X/N apps green` plus per-failure causes. Invoke with "run the app-sweep workflow".
+- Known environment-dependent failure on Mac only:
+  `apps/reachy_controller/tests/test_logs.py::test_process_pump_merges_and_flushes_burst`
+  (child-process stdout/stderr ordering). Pre-existing; not a regression signal.
+
 ## Repository workflow
 - Before substantive work, inspect recent git history and open GitHub issues.
 - Use GitHub milestones for work spanning multiple issues. Put scope, non-scope, and dependency order
