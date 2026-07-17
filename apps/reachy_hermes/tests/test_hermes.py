@@ -420,47 +420,75 @@ async def test_vad_keeps_preroll_and_finalizes_after_shorter_silence() -> None:
     handler._process_turn = capture  # type: ignore[method-assign]
     silence = np.zeros(1_600, dtype=np.float32)
     speech = np.full(1_600, 0.03, dtype=np.float32)
-    for frame in [silence, silence, speech, speech, speech, *([silence] * 6)]:
+    for frame in [*([silence] * 5), speech, speech, speech, *([silence] * 6)]:
         await handler.receive((16_000, frame))
     assert handler._processing_task is not None
     await handler._processing_task
     assert len(captured) == 1
     assert np.all(captured[0][:3_200] == 0)
-    assert captured[0].size == 17_600
+    assert captured[0].size == 20_800
+    await handler.shutdown()
+
+@pytest.mark.asyncio
+async def test_vad_calibrates_above_steady_ambient_noise() -> None:
+    handler = build_handler()
+    ambient = np.full(1_600, 0.03, dtype=np.float32)
+
+    for _ in range(15):
+        await handler.receive((16_000, ambient))
+
+    assert handler._processing_task is None
+    assert not handler._speech_active
+    assert handler._speech_on_threshold >= 0.045
     await handler.shutdown()
 
 
+
 @pytest.mark.asyncio
-async def test_completion_emits_three_pulse_earcon_and_smooth_ear_wiggle() -> None:
-    gateway = FakeGateway("final answer")
-    handler = build_handler(gateway)
-    handler.deps.reachy_mini.get_current_head_pose.return_value = np.eye(4)
-    handler.deps.reachy_mini.get_current_joint_positions.return_value = (
-        np.array([0.1]),
-        np.array([-0.17, 0.17]),
+async def test_processing_feedback_precedes_stt_and_moves_only_antennas() -> None:
+    handler = build_handler()
+
+    async def transcribe(audio: np.ndarray[Any, Any]) -> str:
+        assert audio.size
+        assert not handler.output_queue.empty()
+        return "question"
+
+    handler._transcribe = transcribe  # type: ignore[method-assign]
+    handler.address_gate.semantic_check = MagicMock(
+        return_value=SimpleNamespace(
+            is_open=True,
+            confidence=1.0,
+            reason="test",
+        )
     )
-    handler._record_message("user", "question")
-    reply = await handler._request_completion()
-    assert reply == "final answer"
+    handler._request_completion = AsyncMock(return_value="final answer")  # type: ignore[method-assign]
+    handler._synthesize = AsyncMock(  # type: ignore[method-assign]
+        return_value=(16_000, np.empty(0, dtype=np.int16))
+    )
+
+    await handler._process_turn(np.ones(1_600, dtype=np.float32))
+
     sample_rate, chime = await handler.output_queue.get()
     assert sample_rate == 16_000
     assert chime.dtype == np.int16
-    assert chime.size == 10_560
+    assert chime.size == 13_200
     peaks = [
-        np.max(np.abs(chime[index * 4_000 : index * 4_000 + 2_560]))
+        np.max(np.abs(chime[index * 5_000 : index * 5_000 + 3_200]))
         for index in range(3)
     ]
-    assert np.all(chime[2_560:4_000] == 0)
-    assert np.all(chime[6_560:8_000] == 0)
     assert peaks == sorted(peaks, reverse=True)
-    dominant_bin = int(np.argmax(np.abs(np.fft.rfft(chime[:2_560]))))
-    dominant_frequency = dominant_bin * sample_rate / 2_560
+    assert np.all(chime[3_200:5_000] == 0)
+    assert np.all(chime[8_200:10_000] == 0)
+    dominant_bin = int(np.argmax(np.abs(np.fft.rfft(chime[:3_200]))))
+    dominant_frequency = dominant_bin * sample_rate / 3_200
     assert 125.0 <= dominant_frequency <= 140.0
     handler.deps.movement_manager.wiggle_antennas.assert_called_once_with()
     assert [
         call.args[0]
         for call in handler.deps.movement_manager.set_processing.call_args_list
     ] == [True, False]
+    handler.deps.reachy_mini.disable_wobbling.assert_called_once_with()
+    handler.deps.reachy_mini.enable_wobbling.assert_called_once_with()
     assert handler._working_status_task is None
     handler.deps.movement_manager.wiggle_antennas.reset_mock()
     await handler._queue_progress_tick()
@@ -492,14 +520,13 @@ async def test_working_updates_repeat_bursts_and_speak_periodically(
         updates.append(handler.WORKING_UPDATE_MESSAGE)
         if len(updates) == 2:
             handler._gateway_turn_active = False
-
     monkeypatch.setattr(hermes_module.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(handler, "_queue_progress_tick", fake_tick)
     monkeypatch.setattr(handler, "_speak_working_update", fake_update)
     await handler._working_status_updates()
     assert updates == [handler.WORKING_UPDATE_MESSAGE, handler.WORKING_UPDATE_MESSAGE]
-    assert delays == [1.16] * 49
-    assert ticks == [True] * 49
+    assert delays == [1.45] * 39
+    assert ticks == [True] * 39
     await handler.shutdown()
 
 

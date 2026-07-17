@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 WORKING_UPDATE_INITIAL_DELAY_SECONDS = 24.0
 WORKING_UPDATE_INTERVAL_SECONDS = 32.0
-PROCESSING_BURST_INTERVAL_SECONDS = 1.16
+PROCESSING_BURST_INTERVAL_SECONDS = 1.45
 WORKING_UPDATE_MESSAGE = "I'm still working on that."
 GATEWAY_HISTORY_MESSAGES = 6
 CANCEL_REPLY = "Okay, I stopped."
@@ -92,10 +92,12 @@ def split_for_speech(text: str, maximum: int = 70) -> list[str]:
 class HermesHandler(OpenRouterChatHandler):
     """Reachy-owned STT/TTS with a persistent, isolated Hermes event loop."""
 
-    SPEECH_ENERGY_THRESHOLD = 0.015
+    SPEECH_ENERGY_THRESHOLD = 0.035
+    NOISE_CALIBRATION_SECONDS = 0.5
+    SPEECH_ATTACK_SECONDS = 0.1
     SILENCE_DURATION_S = 0.6
     MIN_SPEECH_DURATION_S = 0.2
-    PRE_ROLL_SECONDS = 0.35
+    PRE_ROLL_SECONDS = 0.45
     WORKING_UPDATE_INITIAL_DELAY_SECONDS = WORKING_UPDATE_INITIAL_DELAY_SECONDS
     WORKING_UPDATE_INTERVAL_SECONDS = WORKING_UPDATE_INTERVAL_SECONDS
     WORKING_UPDATE_MESSAGE = WORKING_UPDATE_MESSAGE
@@ -132,6 +134,12 @@ class HermesHandler(OpenRouterChatHandler):
         self._pre_roll_chunks: deque[NDArray[np.float32]] = deque()
         self._pre_roll_samples = 0
         self._output_playback_until = 0.0
+        self._processing_motion_active = False
+        self._noise_energies: deque[float] = deque(maxlen=80)
+        self._noise_calibration_samples = 0
+        self._speech_attack_samples = 0
+        self._speech_on_threshold = self.SPEECH_ENERGY_THRESHOLD
+        self._speech_off_threshold = self.SPEECH_ENERGY_THRESHOLD * 0.65
 
     def copy(self) -> "HermesHandler":
         """Create a fresh handler while preserving the configured binary."""
@@ -169,6 +177,49 @@ class HermesHandler(OpenRouterChatHandler):
         await self.gateway.close()
         await super().shutdown()
 
+    def _classify_speech(self, energy: float, sample_count: int) -> bool:
+        """Apply adaptive RMS hysteresis with a short startup calibration."""
+        if self._speech_active:
+            return energy >= self._speech_off_threshold
+
+        calibration_target = int(
+            self.NOISE_CALIBRATION_SECONDS * self.SAMPLE_RATE
+        )
+        calibrating = self._noise_calibration_samples < calibration_target
+        if calibrating or energy < self._speech_on_threshold:
+            self._noise_energies.append(energy)
+            if calibrating:
+                self._noise_calibration_samples += sample_count
+            noise_values = np.asarray(self._noise_energies, dtype=np.float32)
+            noise = float(np.median(noise_values))
+            mad = float(np.median(np.abs(noise_values - noise)))
+            sigma = 1.4826 * mad
+            on_threshold = max(
+                noise + max(0.008, 4.0 * sigma),
+                noise * 1.6,
+            )
+            self._speech_on_threshold = min(
+                0.08, max(0.02, on_threshold)
+            )
+            off_threshold = max(
+                noise + max(0.004, 2.0 * sigma),
+                self._speech_on_threshold * 0.65,
+            )
+            self._speech_off_threshold = min(
+                off_threshold, self._speech_on_threshold * 0.9
+            )
+
+        if calibrating:
+            self._speech_attack_samples = 0
+            return False
+        if energy >= self._speech_on_threshold:
+            self._speech_attack_samples += sample_count
+        else:
+            self._speech_attack_samples = 0
+        return self._speech_attack_samples >= int(
+            self.SPEECH_ATTACK_SECONDS * self.SAMPLE_RATE
+        )
+
     async def receive(self, frame: Any) -> None:
         """Detect speech with a short pre-roll and accept cancellation while working."""
         if self._stop_event.is_set():
@@ -182,16 +233,22 @@ class HermesHandler(OpenRouterChatHandler):
         if audio.size == 0:
             return
         energy = float(np.sqrt(np.mean(np.square(audio, dtype=np.float32))))
-        is_speech = energy >= self.SPEECH_ENERGY_THRESHOLD
+        is_speech = self._classify_speech(energy, audio.size)
 
         if not self._speech_active:
             if not is_speech:
                 self._remember_pre_roll(audio)
                 return
             self._speech_active = True
+            self._speech_attack_samples = 0
             self._set_listening(True)
             self._mark_activity("user_speech_started")
-            logger.info("Hermes speech started at RMS %.4f", energy)
+            logger.info(
+                "Hermes speech started at RMS %.4f (on %.4f, off %.4f)",
+                energy,
+                self._speech_on_threshold,
+                self._speech_off_threshold,
+            )
             self._speech_chunks.extend(self._pre_roll_chunks)
             self._clear_pre_roll()
 
@@ -217,6 +274,7 @@ class HermesHandler(OpenRouterChatHandler):
             trailing_silence,
         )
         self._reset_input_buffer()
+        self._speech_attack_samples = 0
         self._clear_pre_roll()
         self._set_listening(False)
         self._mark_activity("user_speech_stopped")
@@ -226,9 +284,10 @@ class HermesHandler(OpenRouterChatHandler):
         self._processing_task = asyncio.create_task(self._process_turn(utterance), name="hermes-voice-turn")
 
     async def _process_turn(self, audio: NDArray[np.float32]) -> None:
-        """Run STT and Hermes, then synthesize sentence chunks ahead of playback."""
+        """Acknowledge immediately, then run STT, Hermes, and chunked speech."""
         started = time.monotonic()
         self._processing_turn = True
+        await self._begin_processing_feedback()
         try:
             try:
                 transcript = (await self._transcribe(audio)).strip()
@@ -269,6 +328,7 @@ class HermesHandler(OpenRouterChatHandler):
                 logger.exception("Hermes completion failed: %s", exc)
                 reply = self.FALLBACK_REPLY
 
+            await self._end_processing_feedback()
             self._record_message("assistant", reply)
             await self.output_queue.put(
                 AdditionalOutputs({"role": "assistant", "content": reply})
@@ -281,7 +341,9 @@ class HermesHandler(OpenRouterChatHandler):
                 try:
                     sample_rate, speech = await self._synthesize(speech_text)
                 except Exception as exc:
-                    logger.exception("Hermes text-to-speech synthesis failed: %s", exc)
+                    logger.exception(
+                        "Hermes text-to-speech synthesis failed: %s", exc
+                    )
                     break
                 if playback_started is None:
                     playback_started = time.monotonic()
@@ -299,8 +361,11 @@ class HermesHandler(OpenRouterChatHandler):
             if playback_started is not None:
                 elapsed = time.monotonic() - playback_started
                 await asyncio.sleep(max(0.0, playback_seconds - elapsed))
-            logger.info("Hermes voice turn completed in %.2fs", time.monotonic() - started)
+            logger.info(
+                "Hermes voice turn completed in %.2fs", time.monotonic() - started
+            )
         finally:
+            await self._end_processing_feedback()
             self._processing_turn = False
             self._reset_input_buffer()
             self._clear_pre_roll()
@@ -421,11 +486,7 @@ class HermesHandler(OpenRouterChatHandler):
         del image_jpeg
         self._reset_cancel_input()
         self._set_listening(False)
-        self._set_processing(True)
-        self._gateway_turn_active = True
         try:
-            await self._queue_processing_chime()
-            self._start_working_status_updates()
             try:
                 answer = await self.invoke_hermes()
                 spoken = to_spoken_text(answer)
@@ -443,11 +504,8 @@ class HermesHandler(OpenRouterChatHandler):
                 logger.error("Hermes request failed: %s", exc)
                 return FAILURE_REPLY
         finally:
-            self._gateway_turn_active = False
-            await self._stop_working_status_updates()
             self._reset_cancel_input()
             self._set_listening(False)
-            self._set_processing(False)
 
     async def invoke_hermes(self, prompt: str | None = None) -> str:
         """Send the current turn with bounded plain-text context."""
@@ -496,13 +554,13 @@ class HermesHandler(OpenRouterChatHandler):
         await self._queue_processing_burst()
 
     async def _queue_processing_burst(self) -> None:
-        pulse_samples = int(self.SAMPLE_RATE * 0.16)
-        onset_samples = int(self.SAMPLE_RATE * 0.25)
+        pulse_samples = int(self.SAMPLE_RATE * 0.20)
+        onset_samples = int(self.SAMPLE_RATE * 0.3125)
         burst = np.zeros(2 * onset_samples + pulse_samples, dtype=np.float32)
         times = np.arange(pulse_samples, dtype=np.float32) / self.SAMPLE_RATE
 
-        attack_samples = int(self.SAMPLE_RATE * 0.01)
-        sustain_samples = int(self.SAMPLE_RATE * 0.08)
+        attack_samples = int(self.SAMPLE_RATE * 0.0125)
+        sustain_samples = int(self.SAMPLE_RATE * 0.10)
         release_samples = pulse_samples - attack_samples - sustain_samples
         envelope = np.concatenate(
             (
@@ -537,10 +595,40 @@ class HermesHandler(OpenRouterChatHandler):
             logger.debug("Unable to queue Hermes ear wiggle", exc_info=True)
 
     def _set_processing(self, processing: bool) -> None:
+        if self._processing_motion_active == processing:
+            return
+        self._processing_motion_active = processing
+
+        robot = self.deps.reachy_mini
+        if processing:
+            try:
+                robot.disable_wobbling()
+            except Exception:
+                logger.debug("Unable to pause Hermes head wobbling", exc_info=True)
         try:
             self.deps.movement_manager.set_processing(processing)
         except Exception:
             logger.debug("Unable to update Hermes processing motion", exc_info=True)
+        if not processing:
+            try:
+                robot.enable_wobbling()
+            except Exception:
+                logger.debug("Unable to resume Hermes head wobbling", exc_info=True)
+
+    async def _begin_processing_feedback(self) -> None:
+        self._set_processing(True)
+        self._gateway_turn_active = True
+        try:
+            await self._queue_processing_chime()
+            self._start_working_status_updates()
+        except BaseException:
+            await self._end_processing_feedback()
+            raise
+
+    async def _end_processing_feedback(self) -> None:
+        self._gateway_turn_active = False
+        await self._stop_working_status_updates()
+        self._set_processing(False)
 
     def _start_working_status_updates(self) -> None:
         task = self._working_status_task
