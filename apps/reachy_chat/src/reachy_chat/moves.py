@@ -313,6 +313,7 @@ class MovementManager:
         """
         self._command_queue.put(("clear_queue", None))
 
+
     def set_moving_state(self, duration: float) -> None:
         """Mark the robot as actively moving for the provided duration.
 

@@ -343,13 +343,14 @@ async def test_get_all_status() -> None:
     supervisor = AppSupervisor()
     status = supervisor.get_all_status()
 
-    assert len(status) == 4
+    assert len(status) == 5
     assert all(s["status"] == "stopped" for s in status)
     assert set(s["name"] for s in status) == {
         "reachy_chat",
         "reachy_dance",
         "reachy_lookat",
         "reachy_simon",
+        "reachy_hermes",
     }
 
 

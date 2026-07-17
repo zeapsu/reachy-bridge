@@ -4,7 +4,8 @@
   const $ = (id) => document.getElementById(id);
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const TAU = Math.PI * 2;
-  const APP_NAMES = ["reachy_chat", "reachy_dance", "reachy_lookat", "reachy_simon"];
+  const APP_NAMES = ["reachy_chat", "reachy_dance", "reachy_lookat", "reachy_simon", "reachy_hermes"];
+  const DEFAULT_FAVORITES = ["reachy_chat", "reachy_dance", "reachy_lookat"];
   const appState = new Map(APP_NAMES.map((name) => [name, { name, status: "stopped" }]));
   const LOG_CAP = 500;
   const LOG_DEFAULT_SOURCE = "controller";
@@ -44,8 +45,8 @@
       errorHandler: null,
     },
     cameraAvailabilityRequest: 0,
-    sysView: "stats",
     log: { source: LOG_DEFAULT_SOURCE, stream: null, lines: 0, follow: true, loading: false, openGeneration: 0, openAbort: null },
+    sysView: "stats",
     settings: {
       app: null,        // app whose settings panel is open (null = closed)
       schema: null,     // last loaded {app,title,fields:[…]} for that app
@@ -55,6 +56,14 @@
       retryTimer: null,
       retryCount: 0,
       saving: false,
+    },
+    library: {
+      open: false,
+      favorites: [...DEFAULT_FAVORITES],
+      loaded: false,
+      loading: false,
+      saving: false,
+      lastSig: null,
     },
   };
 
@@ -811,73 +820,258 @@
         }
       }
     }
-    const html = APP_NAMES.map((name) => {
-      const app = statuses.find((item) => item.name === name) || { name, status: "stopped" };
-      const isRunning = app.status === "running";
-      const isLoading = app.status === "loading";
-      const isStopping = app.status === "stopping";
-      const isError = app.status === "error";
-      const statusClass = isRunning ? "running" : isLoading ? "loading" : isStopping ? "stopping" : isError ? "error" : "";
-      // Stable placeholder — updateAppUptimes patches its text at 1 Hz so the
-      // ticking seconds never enter the signed markup (see that function).
-      const uptime = isRunning && app.start_time ? `<span class="app-uptime" data-app="${name}"></span>` : "";
-      const pid = isRunning && app.pid ? ` · pid ${app.pid}` : "";
-      const external = isRunning && app.external ? ` · external` : "";
-      const error = app.error ? `<br><span class="err">${escapeHtml(app.error)}</span>` : "";
-      let button;
-      if (isRunning) {
-        button = `<button class="btn stop" data-app="${name}" data-action="stop" ${state.appBusy ? "disabled" : ""}>Stop</button>`;
-      } else if (isLoading) {
-        button = `<button class="btn pending" disabled>Loading</button>`;
-      } else if (isStopping) {
-        button = `<button class="btn pending" disabled>Stopping</button>`;
-      } else {
-        // Offline daemon disables Start (the backend refuses anyway — the app's
-        // ReachyMini() can't connect); Stop stays available for a still-running app.
-        // daemonOnline is part of the rendered markup, so the 1 Hz poll's signature
-        // guard re-renders on the flip without extra wiring.
-        const offline = !state.daemonOnline;
-        button = `<button class="btn start" data-app="${name}" data-action="start" ${(active || state.appBusy || offline || state.exprBusy) ? "disabled" : ""}${offline ? ' title="Apps start when the daemon is online."' : state.exprBusy ? ' title="Apps start when the robot finishes its expression."' : ""}>Start</button>`;
-      }
-      const frag = LOADING_FRAGMENTS[loadingTick % LOADING_FRAGMENTS.length];
-      const spinnerMarkup = isLoading ? `<span class="spinner-glyph" aria-hidden="true"></span><span class="loading-frag">${escapeHtml(frag)}</span>` : "";
-      const stoppingMarkup = isStopping ? `<span class="spinner-glyph" aria-hidden="true"></span><span class="stopping-label">Stopping…</span>` : "";
-      const stateContent = isRunning ? `<span class="up">running</span>${external}${pid}${uptime}` : isLoading ? spinnerMarkup : isStopping ? stoppingMarkup : escapeHtml(app.status || "stopped");
-      return `<div class="app-card ${statusClass}">
-        <span class="dot ${isRunning ? "live" : isLoading ? "loading" : isStopping ? "stopping" : isError ? "error" : ""}"></span>
-        <div><div class="app-name">${escapeHtml(name)}</div>
-        <div class="app-state">${stateContent}${error}</div></div>
-        <div class="app-actions">${button}${appSettingsGearMarkup(app)}</div>
-      </div>`;
-    }).join("");
-
+    const favorites = Array.isArray(state.library?.favorites) ? state.library.favorites : APP_NAMES;
+    // Errored non-favorite apps stay visible regardless of what else is active,
+    // and every errored app shows (not just the newest) so nothing gets hidden.
+    const failedNames = new Set(
+      statuses.filter((app) => app.status === "error" && !favorites.includes(app.name)).map((app) => app.name),
+    );
+    const visibleNames = APP_NAMES.filter((name) => favorites.includes(name) || active?.name === name || failedNames.has(name));
+    const html = visibleNames.map((name) => appCardMarkup(appForName(statuses, name), active, false)).join("");
     const robotDotClass = `dot ${active ? "live" : "ok"}`;
     const robotValue = active ? active.name : "free";
 
-    // Reconcile the settings panel on the same cadence as the cards. Runs
-    // before the signature guard: panel state can change (retry countdown,
-    // pid-keyed reload) even when the card markup is byte-identical.
+    // Reconcile the settings panel on the same cadence as the cards.
     syncAppSettings(statuses);
 
-    // pollAppsStatus re-renders at 1 Hz even when nothing changed; skip the
-    // innerHTML rebuild (parse + reflow) + status writes when the output is
-    // identical. The rendered markup IS the signature, so it is correct by
-    // construction — and because ticking uptime lives in a patched span rather
-    // than the markup, a quietly running app is signature-stable too: zero
-    // rebuilds, and a focused gear (or caret) survives every tick (#43).
+    // The library is secondary, but active status changes still need to reach it
+    // while it is open so its stop/loading affordances stay honest.
+    if (state.library?.open) renderLibrary(statuses);
+
+    // Keep ticking uptime outside the signed markup so a focused gear survives.
     const sig = `${html} ${robotDotClass} ${robotValue}`;
     if (sig === lastAppsSig) {
       updateAppUptimes(statuses);
       return;
     }
     lastAppsSig = sig;
-
     $("apps").innerHTML = html;
-    // Gear markup is state-neutral; reapply the open/aria patch the rebuild wiped.
     patchSettingsGears();
     updateAppUptimes(statuses);
     $("robot-dot").className = robotDotClass;
     $("robot-value").textContent = robotValue;
+  }
+  function normalizeFavorites(values) {
+    if (!Array.isArray(values)) return [];
+    const seen = new Set();
+    return values.filter((name) => {
+      if (!APP_NAMES.includes(name) || seen.has(name) || seen.size >= 3) return false;
+      seen.add(name);
+      return true;
+    });
+  }
+
+  function appForName(statuses, name) {
+    return statuses.find((item) => item.name === name) || { name, status: "stopped" };
+  }
+
+  function appCardStatusMarkup(app) {
+    const name = String(app.name);
+    const isRunning = app.status === "running";
+    const isLoading = app.status === "loading";
+    const isStopping = app.status === "stopping";
+    const isError = app.status === "error";
+    // Stable uptime markup keeps the 1 Hz poll from stealing focus from cards.
+    const uptime = isRunning && app.start_time ? `<span class="app-uptime" data-app="${escapeHtml(name)}"></span>` : "";
+    const pid = isRunning && app.pid ? ` · pid ${escapeHtml(app.pid)}` : "";
+    const external = isRunning && app.external ? " · external" : "";
+    const error = app.error ? `<br><span class="err">${escapeHtml(app.error)}</span>` : "";
+    const frag = LOADING_FRAGMENTS[loadingTick % LOADING_FRAGMENTS.length];
+    const spinner = isLoading ? `<span class="spinner-glyph" aria-hidden="true"></span><span class="loading-frag">${escapeHtml(frag)}</span>` : "";
+    const stopping = isStopping ? `<span class="spinner-glyph" aria-hidden="true"></span><span class="stopping-label">Stopping…</span>` : "";
+    const text = isRunning
+      ? `<span class="up">running</span>${external}${pid}${uptime}`
+      : isLoading ? spinner : isStopping ? stopping : escapeHtml(app.status || "stopped");
+    return {
+      isRunning,
+      isLoading,
+      isStopping,
+      isError,
+      statusClass: isRunning ? "running" : isLoading ? "loading" : isStopping ? "stopping" : isError ? "error" : "",
+      dotClass: isRunning ? "live" : isLoading ? "loading" : isStopping ? "stopping" : isError ? "error" : "",
+      text: `${text}${error}`,
+    };
+  }
+
+  function appActionMarkup(app, active) {
+    const status = appCardStatusMarkup(app);
+    const name = escapeHtml(app.name);
+    if (status.isRunning) {
+      return `<button class="btn stop" data-app="${name}" data-action="stop" ${state.appBusy ? "disabled" : ""}>Stop</button>`;
+    }
+    if (status.isLoading) return '<button class="btn pending" disabled>Loading</button>';
+    if (status.isStopping) return '<button class="btn pending" disabled>Stopping</button>';
+    const offline = !state.daemonOnline;
+    const blocked = active || state.appBusy || offline || state.exprBusy;
+    const title = offline
+      ? ' title="Apps start when the daemon is online."'
+      : state.exprBusy ? ' title="Apps start when the robot finishes its expression."' : "";
+    return `<button class="btn start" data-app="${name}" data-action="start" ${blocked ? "disabled" : ""}${title}>Start</button>`;
+  }
+
+  function appCardMarkup(app, active, libraryCard = false) {
+    const status = appCardStatusMarkup(app);
+    const name = String(app.name);
+    const display = app.display || name;
+    const blurb = app.blurb || "";
+    const transient = !state.library?.favorites?.includes(name) && (status.isRunning || status.isLoading || status.isStopping || status.isError);
+    const favorite = state.library?.favorites?.includes(name);
+    const star = libraryCard
+      ? `<button class="btn star${favorite ? " selected" : ""}" data-app="${escapeHtml(name)}" data-action="favorite" aria-pressed="${favorite}" ${state.library?.saving ? "disabled" : ""} title="${favorite ? "Remove from favorites" : "Add to favorites"}" aria-label="${favorite ? "Remove" : "Add"} ${escapeHtml(display)} ${favorite ? "from" : "to"} favorites">`
+        + '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m12 3.6 2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8L12 3.6Z"></path></svg></button>'
+      : "";
+    const transientLabel = transient
+      ? `<span class="app-transient">${status.isError ? "error" : "active"} · not favorite</span>`
+      : "";
+    const metadata = libraryCard
+      ? `<div class="app-blurb">${escapeHtml(blurb || "No description available.")}</div>`
+      : (blurb ? `<div class="app-blurb">${escapeHtml(blurb)}</div>` : "");
+    return `<div class="app-card ${status.statusClass}${transient ? " transient" : ""}" data-app="${escapeHtml(name)}">
+      <span class="dot ${status.dotClass}"></span>
+      <div class="app-copy">
+        <div class="app-name">${escapeHtml(display)} <span class="app-key">${escapeHtml(name)}</span></div>
+        ${metadata}
+        <div class="app-state">${status.text}${transientLabel}</div>
+      </div>
+      <div class="app-actions">${appActionMarkup(app, active)}${appSettingsGearMarkup(app)}${star}</div>
+    </div>`;
+  }
+
+  function setLibraryHint(text, kind = "") {
+    const hint = $("app-library-hint");
+    if (!hint) return;
+    hint.textContent = text;
+    hint.className = `panel-hint${kind ? ` ${kind}` : ""}`;
+  }
+
+  function setLibraryState(text, kind = "") {
+    const stateEl = $("app-library-state");
+    const dot = $("app-library-dot");
+    if (!stateEl || !dot) return;
+    stateEl.textContent = text;
+    dot.className = `dot ${kind}`;
+  }
+
+  function renderLibrary(statuses = Array.from(appState.values())) {
+    const list = $("app-library-list");
+    if (!list) return;
+    const active = statuses.find((app) => app.status === "running" || app.status === "loading" || app.status === "stopping") || null;
+    const html = APP_NAMES.map((name) => appCardMarkup(appForName(statuses, name), active, true)).join("");
+    const sig = `${html}|${state.library.saving}`;
+    if (sig !== state.library.lastSig) {
+      state.library.lastSig = sig;
+      list.innerHTML = html;
+    }
+    const count = $("app-library-count");
+    if (count) count.textContent = `${state.library.favorites.length}/3 favorites`;
+    setLibraryState(state.library.saving ? "saving" : "ready", state.library.saving ? "loading" : "ok");
+    updateAppUptimes(statuses);
+  }
+
+  async function loadFavorites() {
+    const library = state.library;
+    if (library.loaded || library.loading) return;
+    library.loading = true;
+    try {
+      const payload = await apiJson("/api/apps/favorites");
+      if (!payload || typeof payload !== "object" || !Array.isArray(payload.favorites)) {
+        throw new Error("Favorites response was invalid");
+      }
+      library.favorites = normalizeFavorites(payload.favorites);
+      library.loaded = true;
+      library.lastSig = null;
+      renderApps(Array.from(appState.values()));
+      if (library.open) renderLibrary(Array.from(appState.values()));
+      setLibraryHint("");
+    } catch (error) {
+      // Leave `loaded` false so a later attempt (opening the library, clicking a
+      // star) retries instead of silently PUTting defaults over real favorites.
+      setLibraryHint(error.message || "Favorites unavailable; showing defaults.", "error");
+    } finally {
+      library.loading = false;
+    }
+  }
+
+  function restoreFavoriteFocus(name) {
+    // restore the initiating control after the async list rebuild.
+    if (!state.library.open) return;
+    $("app-library-list").querySelector(`[data-action="favorite"][data-app="${CSS.escape(name)}"]`)?.focus();
+  }
+
+  async function toggleFavorite(name) {
+    const library = state.library;
+    if (library.saving || !APP_NAMES.includes(name)) return;
+    if (!library.loaded) {
+      // The initial load never succeeded — retry rather than PUT a defaults-derived
+      // list that would overwrite whatever favorites are actually persisted.
+      await loadFavorites();
+      if (!library.loaded) {
+        setLibraryHint("Favorites unavailable; try again.", "error");
+        return;
+      }
+    }
+    const previous = [...library.favorites];
+    const next = previous.includes(name)
+      ? previous.filter((item) => item !== name)
+      : [...previous, name];
+    if (next.length > 3) {
+      setLibraryHint("Choose up to 3 favorite apps.", "error");
+      return;
+    }
+    library.favorites = normalizeFavorites(next);
+    library.saving = true;
+    library.lastSig = null;
+    renderApps(Array.from(appState.values()));
+    renderLibrary(Array.from(appState.values()));
+    try {
+      await apiJson("/api/apps/favorites", {
+        method: "PUT",
+        body: JSON.stringify({ favorites: library.favorites }),
+      });
+      library.saving = false;
+      library.lastSig = null;
+      renderApps(Array.from(appState.values()));
+      if (library.open) renderLibrary(Array.from(appState.values()));
+      restoreFavoriteFocus(name);
+      setLibraryHint("");
+    } catch (error) {
+      library.favorites = previous;
+      library.saving = false;
+      library.lastSig = null;
+      renderApps(Array.from(appState.values()));
+      if (library.open) renderLibrary(Array.from(appState.values()));
+      restoreFavoriteFocus(name);
+      setLibraryHint(error.message || "Could not save favorites.", "error");
+    }
+  }
+
+  function openAppLibrary() {
+    const library = state.library;
+    if (library.open) {
+      closeAppLibrary();
+      return;
+    }
+    library.open = true;
+    library.lastSig = null;
+    $("apps-view").hidden = true;
+    $("app-settings").hidden = true;
+    $("app-library").hidden = false;
+    $("app-library-open").setAttribute("aria-expanded", "true");
+    if (!library.loaded) void loadFavorites(); // retry a failed initial fetch
+    renderLibrary(Array.from(appState.values()));
+    $("app-library-back").focus();
+  }
+
+  function closeAppLibrary() {
+    const library = state.library;
+    library.open = false;
+    library.lastSig = null;
+    $("app-library").hidden = true;
+    $("app-settings").hidden = true;
+    $("apps-view").hidden = false;
+    $("app-library-open").setAttribute("aria-expanded", "false");
+    renderApps(Array.from(appState.values()));
+    $("app-library-open").focus();
   }
 
   function formatUptime(seconds) {
@@ -997,12 +1191,14 @@
   // patches only its text at 1 Hz, before the signature early-return and after
   // any genuine rebuild.
   function updateAppUptimes(statuses) {
-    $("apps").querySelectorAll(".app-uptime").forEach((span) => {
-      const app = statuses.find((item) => item.name === span.dataset.app);
-      const text = app && app.status === "running" && app.start_time
-        ? ` · ${formatUptime(Date.now() / 1000 - Number(app.start_time))}`
-        : "";
-      if (span.textContent !== text) span.textContent = text;
+    [$("apps"), $("app-library-list")].filter(Boolean).forEach((root) => {
+      root.querySelectorAll(".app-uptime").forEach((span) => {
+        const app = statuses.find((item) => item.name === span.dataset.app);
+        const text = app && app.status === "running" && app.start_time
+          ? ` · ${formatUptime(Date.now() / 1000 - Number(app.start_time))}`
+          : "";
+        if (span.textContent !== text) span.textContent = text;
+      });
     });
   }
 
@@ -1147,6 +1343,7 @@
     }
     settingsClearRetry();
     settings.app = name;
+    settings.returnView = state.library?.open ? "library" : "apps";
     settings.schema = null;
     settings.loadKey = null;
     settings.retryCount = 0;
@@ -1155,34 +1352,45 @@
     renderSettingsFields();
     setSettingsHint("");
     // Swap the panel in place: same glass container, settings view instead of
-    // the app cards. Hiding #apps-view drops keyboard focus from the clicked
-    // gear, so move it to the Back control explicitly.
+    // cards/library. Hiding the source view drops focus, so move it explicitly.
     $("apps-view").hidden = true;
+    if (settings.returnView === "library") $("app-library").hidden = true;
     $("app-settings").hidden = false;
     syncAppSettings(Array.from(appState.values()));
-    patchSettingsGears(); // in place — a rebuild would destroy the gear element
+    patchSettingsGears();
     $("app-settings-back").focus();
   }
 
   function closeAppSettings() {
     const settings = state.settings;
     const returnTo = settings.app;
+    const returnView = settings.returnView || "apps";
     settingsClearRetry();
     settings.app = null;
+    settings.returnView = null;
     settings.schema = null;
     settings.loadKey = null;
     settings.retryCount = 0;
     settings.phase = "idle";
     $("app-settings").hidden = true;
-    $("apps-view").hidden = false;
+    if (returnView === "library") {
+      state.library.open = true;
+      $("app-library").hidden = false;
+      renderLibrary(Array.from(appState.values()));
+      $("app-library-list").querySelectorAll('button[data-action="settings"]').forEach((button) => {
+        if (button.dataset.app === returnTo) button.focus();
+      });
+    } else {
+      $("apps-view").hidden = false;
+      // Land focus back on the gear that owned the panel — looked up fresh,
+      // because the 1 Hz poll may have rebuilt the cards while it was hidden.
+      const gear = Array.from($("apps").querySelectorAll('button[data-action="settings"]'))
+        .find((button) => button.dataset.app === returnTo);
+      if (gear) gear.focus();
+    }
     renderSettingsFields();
     setSettingsHint("");
     patchSettingsGears();
-    // Land focus back on the gear that owned the panel — looked up fresh, the
-    // 1 Hz poll may have rebuilt the cards while the view was swapped out.
-    const gear = Array.from($("apps").querySelectorAll('button[data-action="settings"]'))
-      .find((button) => button.dataset.app === returnTo);
-    if (gear) gear.focus();
   }
 
   // Persist one field. Returns true on success so the DOM glue knows to wipe
@@ -2045,6 +2253,26 @@
     if (state.appBusy) return;
     void performAppAction(button.dataset.app, button.dataset.action);
   });
+  $("app-library-open").addEventListener("click", () => openAppLibrary());
+  $("app-library-back").addEventListener("click", () => closeAppLibrary());
+
+  $("app-library-list").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button || button.disabled) return;
+    const action = button.dataset.action;
+    if (action === "favorite") {
+      void toggleFavorite(button.dataset.app);
+      return;
+    }
+    if (action === "settings") {
+      openAppSettings(button.dataset.app);
+      return;
+    }
+    if (state.appBusy) return;
+    // Library start/stop uses the same action function and arbitration gates
+    // as the favorite-only panel; it never writes to an endpoint directly.
+    void performAppAction(button.dataset.app, action);
+  });
 
   $("app-settings-back").addEventListener("click", () => closeAppSettings());
 
@@ -2337,6 +2565,7 @@
 
     void pollDaemonStatus();
     void pollAppsStatus();
+    void loadFavorites();
     state.live.timers.push(
       setInterval(() => void pollDaemonStatus(), 1000),
       setInterval(() => void pollAppsStatus(), 1000),
