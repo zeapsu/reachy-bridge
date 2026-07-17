@@ -509,6 +509,18 @@ async def test_processing_feedback_precedes_stt_and_uses_idle_choreography() -> 
     await handler.shutdown()
 
 
+def test_working_updates_rotate_without_immediate_repeats() -> None:
+    handler = build_handler()
+    count = len(handler.WORKING_UPDATE_MESSAGES)
+    messages = [
+        handler._next_working_update_message()
+        for _ in range(count * 2)
+    ]
+    assert set(messages[:count]) == set(handler.WORKING_UPDATE_MESSAGES)
+    assert set(messages[count:]) == set(handler.WORKING_UPDATE_MESSAGES)
+    assert all(left != right for left, right in zip(messages, messages[1:]))
+
+
 @pytest.mark.asyncio
 async def test_working_updates_repeat_bursts_and_speak_periodically(
     monkeypatch: pytest.MonkeyPatch,
@@ -519,7 +531,7 @@ async def test_working_updates_repeat_bursts_and_speak_periodically(
     handler._gateway_turn_active = True
     delays: list[float] = []
     ticks: list[bool] = []
-    updates: list[str] = []
+    updates: list[bool] = []
     real_sleep = asyncio.sleep
 
     async def fake_sleep(delay: float) -> None:
@@ -530,14 +542,14 @@ async def test_working_updates_repeat_bursts_and_speak_periodically(
         ticks.append(True)
 
     async def fake_update() -> None:
-        updates.append(handler.WORKING_UPDATE_MESSAGE)
+        updates.append(True)
         if len(updates) == 2:
             handler._gateway_turn_active = False
     monkeypatch.setattr(hermes_module.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(handler, "_queue_progress_tick", fake_tick)
     monkeypatch.setattr(handler, "_speak_working_update", fake_update)
     await handler._working_status_updates()
-    assert updates == [handler.WORKING_UPDATE_MESSAGE, handler.WORKING_UPDATE_MESSAGE]
+    assert updates == [True, True]
     assert delays == [1.45] * 39
     assert ticks == [True] * 39
     await handler.shutdown()

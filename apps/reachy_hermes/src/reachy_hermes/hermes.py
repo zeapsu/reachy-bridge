@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 import time
 from collections import deque
@@ -34,7 +35,13 @@ logger = logging.getLogger(__name__)
 WORKING_UPDATE_INITIAL_DELAY_SECONDS = 24.0
 WORKING_UPDATE_INTERVAL_SECONDS = 32.0
 PROCESSING_BURST_INTERVAL_SECONDS = 1.45
-WORKING_UPDATE_MESSAGE = "I'm still working on that."
+WORKING_UPDATE_MESSAGES = (
+    "I'm still working on that.",
+    "I'm checking a few more details.",
+    "I'm putting the pieces together.",
+    "I need another moment to finish.",
+    "I'm making progress on your request.",
+)
 GATEWAY_HISTORY_MESSAGES = 6
 CANCEL_REPLY = "Okay, I stopped."
 MISSING_BINARY_REPLY = "I can't start Hermes because its executable is missing."
@@ -107,7 +114,7 @@ class HermesHandler(OpenRouterChatHandler):
     PRE_ROLL_SECONDS = 0.45
     WORKING_UPDATE_INITIAL_DELAY_SECONDS = WORKING_UPDATE_INITIAL_DELAY_SECONDS
     WORKING_UPDATE_INTERVAL_SECONDS = WORKING_UPDATE_INTERVAL_SECONDS
-    WORKING_UPDATE_MESSAGE = WORKING_UPDATE_MESSAGE
+    WORKING_UPDATE_MESSAGES = WORKING_UPDATE_MESSAGES
     SYSTEM_PROMPT = SAFETY_PROMPT
     FALLBACK_REPLY = FAILURE_REPLY
 
@@ -132,6 +139,8 @@ class HermesHandler(OpenRouterChatHandler):
         )
         self.neural_tts = neural_tts or NeuralTTS()
         self._working_status_task: asyncio.Task[None] | None = None
+        self._working_update_queue: deque[str] = deque()
+        self._last_working_update_message: str | None = None
         self._gateway_turn_active = False
         self._cancel_detection_task: asyncio.Task[None] | None = None
         self._cancel_speech_active = False
@@ -683,8 +692,23 @@ class HermesHandler(OpenRouterChatHandler):
         except Exception:
             logger.exception("Hermes working-status speech failed")
 
+    def _next_working_update_message(self) -> str:
+        if not self._working_update_queue:
+            messages = list(self.WORKING_UPDATE_MESSAGES)
+            random.shuffle(messages)
+            if (
+                self._last_working_update_message is not None
+                and len(messages) > 1
+                and messages[0] == self._last_working_update_message
+            ):
+                messages[0], messages[-1] = messages[-1], messages[0]
+            self._working_update_queue.extend(messages)
+        message = self._working_update_queue.popleft()
+        self._last_working_update_message = message
+        return message
+
     async def _speak_working_update(self) -> None:
-        message = self.WORKING_UPDATE_MESSAGE
+        message = self._next_working_update_message()
         await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": message}))
         try:
             sample_rate, speech = await self._synthesize(message)
@@ -703,7 +727,7 @@ __all__ = [
     "HERMES_TOOLSETS",
     "WORKING_UPDATE_INITIAL_DELAY_SECONDS",
     "WORKING_UPDATE_INTERVAL_SECONDS",
-    "WORKING_UPDATE_MESSAGE",
+    "WORKING_UPDATE_MESSAGES",
     "HermesCancelled",
     "HermesError",
     "HermesHandler",
