@@ -39,7 +39,7 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
         help="Use local vision model instead of the selected realtime backend vision",
     )
     parser.add_argument(
-        "--ui", default=False, action="store_true", help="Serve the modern web UI at http://localhost:7860"
+        "--ui", default=False, action="store_true", help="Serve the loopback settings API for Reachy Controller"
     )
     parser.add_argument("--debug", default=False, action="store_true", help="Enable debug logging")
     parser.add_argument(

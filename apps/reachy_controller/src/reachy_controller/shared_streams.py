@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Callable
+from typing import Any
 
 from reachy_controller.jetson_stats import collect_jetson_stats
 
@@ -175,11 +176,13 @@ class AudioLevelsBroadcaster(_LazyBroadcaster):
             "low",
             "mid",
             "high",
+            "spectrum",
             "sample_rate_hz",
             "source",
             "timestamp",
         }
     )
+    SPECTRUM_LENGTH = 18
 
     def __init__(
         self,
@@ -223,6 +226,14 @@ class AudioLevelsBroadcaster(_LazyBroadcaster):
             level = value[field]
             if not cls._finite_number(level) or not 0 <= level <= 1:
                 return False
+        spectrum = value["spectrum"]
+        if not isinstance(spectrum, list) or len(spectrum) != cls.SPECTRUM_LENGTH:
+            return False
+        if any(
+            not cls._finite_number(level) or not 0 <= level <= 1
+            for level in spectrum
+        ):
+            return False
         rms_db = value["rms_db"]
         if not cls._finite_number(rms_db) or not -60 <= rms_db <= 0:
             return False

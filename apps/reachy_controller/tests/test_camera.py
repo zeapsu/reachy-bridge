@@ -3,7 +3,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-import psutil
 import pytest
 
 from reachy_controller.app_supervisor import AppSupervisor
@@ -25,116 +24,32 @@ class CameraProxy:
         return None
 
 
-@pytest.mark.asyncio
-async def test_camera_available_with_no_apps_running() -> None:
+def test_app_status_exposes_camera_capability_without_ownership() -> None:
     supervisor = AppSupervisor()
 
-    assert supervisor.camera_available() is True
-    assert supervisor.camera_holder() is None
+    statuses = {item["name"]: item for item in supervisor.get_all_status()}
+
+    assert statuses["reachy_chat"]["uses_camera"] is True
+    assert statuses["reachy_lookat"]["uses_camera"] is True
+    assert statuses["reachy_dance"]["uses_camera"] is False
+    assert statuses["reachy_simon"]["uses_camera"] is False
 
 
 @pytest.mark.asyncio
-async def test_non_camera_app_keeps_camera_available() -> None:
+async def test_vision_app_starts_with_camera_capability_metadata() -> None:
     supervisor = AppSupervisor()
     mock_process = MagicMock()
     mock_process.pid = 12345
 
     with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
-        await supervisor.start_app("reachy_dance")
+        result = await supervisor.start_app("reachy_chat")
 
-    assert supervisor.camera_available() is True
-    assert supervisor.camera_holder() is None
-
-
-@pytest.mark.asyncio
-async def test_camera_app_holds_camera() -> None:
-    supervisor = AppSupervisor()
-    mock_process = MagicMock()
-    mock_process.pid = 12345
-
-    with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
-        await supervisor.start_app("reachy_chat")
-
-    assert supervisor.camera_available() is False
-    assert supervisor.camera_holder() == "reachy_chat"
+    assert result["status"] == "loading"
+    assert supervisor._apps["reachy_chat"].uses_camera is True
 
 
 @pytest.mark.asyncio
-async def test_stopping_camera_app_restores_camera_availability() -> None:
-    supervisor = AppSupervisor()
-    mock_process = MagicMock()
-    mock_process.pid = 12345
-
-    with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
-        await supervisor.start_app("reachy_chat")
-        result = await supervisor.stop_app("reachy_chat")
-
-    assert result["status"] == "stopped"
-    assert supervisor.camera_available() is True
-    assert supervisor.camera_holder() is None
-
-
-def test_stopping_camera_app_remains_camera_holder_until_stopped() -> None:
-    supervisor = AppSupervisor()
-    supervisor._apps["reachy_chat"].status = "stopping"
-
-    assert supervisor.camera_holder() == "reachy_chat"
-    assert supervisor.camera_available() is False
-
-
-def test_stopping_camera_app_releases_holder_after_process_exit() -> None:
-    supervisor = AppSupervisor()
-    app = supervisor._apps["reachy_chat"]
-    app.status = "stopping"
-    app.pid = 4242
-
-    with patch(
-        "reachy_controller.app_supervisor.psutil.Process",
-        side_effect=psutil.NoSuchProcess(4242),
-    ):
-        supervisor.get_all_status()
-
-    assert app.status == "stopped"
-    assert supervisor.camera_holder() is None
-
-@pytest.mark.asyncio
-async def test_camera_release_hook_runs_before_spawning_camera_app() -> None:
-    supervisor = AppSupervisor()
-    calls: list[str] = []
-
-    async def release_camera() -> None:
-        calls.append("release")
-
-    def spawn(*_: object, **__: object) -> MagicMock:
-        calls.append("spawn")
-        mock_process = MagicMock()
-        mock_process.pid = 12345
-        return mock_process
-
-    supervisor.set_camera_release_hook(release_camera)
-
-    with patch("reachy_controller.app_supervisor.subprocess.Popen", side_effect=spawn):
-        await supervisor.start_app("reachy_chat")
-
-    assert calls == ["release", "spawn"]
-
-
-@pytest.mark.asyncio
-async def test_camera_release_hook_does_not_run_for_non_camera_app() -> None:
-    supervisor = AppSupervisor()
-    release_camera = AsyncMock()
-    mock_process = MagicMock()
-    mock_process.pid = 12345
-    supervisor.set_camera_release_hook(release_camera)
-
-    with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
-        await supervisor.start_app("reachy_dance")
-
-    release_camera.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_camera_availability_route_reports_running_camera_app() -> None:
+async def test_camera_availability_stays_available_with_running_vision_app() -> None:
     proxy = CameraProxy(daemon_status={"ready": True}, media_status={"owner": "daemon"})
     app = create_app(proxy=proxy)  # type: ignore[arg-type]
     mock_process = MagicMock()
@@ -151,12 +66,12 @@ async def test_camera_availability_route_reports_running_camera_app() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "available": False,
-        "reason": "in_use",
-        "holder": "reachy_chat",
+        "available": True,
+        "reason": "available",
+        "holder": None,
     }
+    proxy.get_media_status.assert_awaited_once()
     proxy.get_daemon_status.assert_not_awaited()
-    proxy.get_media_status.assert_not_awaited()
 
 
 @pytest.mark.asyncio

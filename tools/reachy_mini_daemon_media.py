@@ -28,22 +28,39 @@ logger = logging.getLogger(__name__)
 
 MJPEG_CONTENT_TYPE = "multipart/x-mixed-replace; boundary=frame"
 _FRAME_CLOSE = object()
+_SPECTRUM_BINS_PER_BAND = 6
+_SPECTRUM_BAND_RANGES_HZ = ((80.0, 300.0), (300.0, 2_000.0), (2_000.0, 7_500.0))
+_SPECTRUM_BIN_RANGES_HZ = tuple(
+    (
+        low
+        if index == 0
+        else low + ((high - low) / (_SPECTRUM_BINS_PER_BAND - 1)) * (index - 0.5),
+        high
+        if index == _SPECTRUM_BINS_PER_BAND - 1
+        else low + ((high - low) / (_SPECTRUM_BINS_PER_BAND - 1)) * (index + 0.5),
+    )
+    for low, high in _SPECTRUM_BAND_RANGES_HZ
+    for index in range(_SPECTRUM_BINS_PER_BAND)
+)
 
 
 class AudioSpectrumTap:
     """Compute a bounded, latest-only spectrum from the daemon mic pipeline.
-
     GStreamer invokes :meth:`process_samples` from its streaming thread.  The
-    method does not touch asyncio and keeps only one reusable analysis buffer.
-    Levels are mapped from ``-60 dBFS`` (zero) to ``-6 dBFS`` (one), then
-    clamped to ``0..1``.  ``rms_db`` remains the clamped dBFS value for a
-    useful peak readout.
+    method does not touch asyncio and keeps a reusable 2048-sample rolling
+    buffer plus reusable FFT work arrays.  The returned spectrum contains six
+    measured FFT regions in each of the low, mid, and high ranges; no
+    interpolation or synthetic profile is applied.
     """
 
+    ANALYSIS_WINDOW_SIZE = 2_048
     DB_FLOOR = -60.0
     DB_CEILING = -6.0
     SOURCE = "daemon mic tap"
-    BAND_RANGES_HZ = ((80.0, 300.0), (300.0, 2_000.0), (2_000.0, 7_500.0))
+    BAND_RANGES_HZ = _SPECTRUM_BAND_RANGES_HZ
+    BINS_PER_BAND = _SPECTRUM_BINS_PER_BAND
+    SPECTRUM_BIN_RANGES_HZ = _SPECTRUM_BIN_RANGES_HZ
+    SPECTRUM_BIN_COUNT = len(SPECTRUM_BIN_RANGES_HZ)
 
     def __init__(
         self,
@@ -63,8 +80,17 @@ class AudioSpectrumTap:
         self._window: np.ndarray | None = None
         self._windowed: np.ndarray | None = None
         self._magnitude: np.ndarray | None = None
-        self._window_rms = 1.0
-        self._frequency_masks: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        self._power: np.ndarray | None = None
+        self._window_sum = 1.0
+        self._magnitude_scale = 2.0
+        self._spectrum_bin_slices: tuple[tuple[int, int], ...] | None = None
+        self._rolling_samples = np.empty(self.ANALYSIS_WINDOW_SIZE, dtype=np.float32)
+        self._contiguous_samples = np.empty_like(self._rolling_samples)
+        self._rolling_write_index = 0
+        self._rolling_count = 0
+        self._rolling_sample_rate_hz: int | None = None
+        self._rms_squared = np.empty_like(self._contiguous_samples, dtype=np.float64)
+        self._finite_mask: np.ndarray | None = None
         self.compute_count = 0
         self.fft_count = 0
         self.frequency_cache_builds = 0
@@ -109,17 +135,69 @@ class AudioSpectrumTap:
             return
         window = np.hanning(sample_count).astype(np.float32)
         frequencies = np.fft.rfftfreq(sample_count, d=1.0 / sample_rate_hz)
-        masks = tuple(
-            (frequencies >= low) & (frequencies < high)
-            for low, high in self.BAND_RANGES_HZ
+        bin_slices = tuple(
+            (
+                int(np.searchsorted(frequencies, low, side="left")),
+                int(np.searchsorted(frequencies, high, side="left")),
+            )
+            for low, high in self.SPECTRUM_BIN_RANGES_HZ
         )
         self._cache_key = key
         self._window = window
         self._windowed = np.empty_like(window)
         self._magnitude = np.empty(frequencies.shape, dtype=np.float32)
-        self._window_rms = max(float(np.sqrt(np.mean(window.astype(np.float64) ** 2))), 1e-12)
-        self._frequency_masks = masks  # type: ignore[assignment]
+        self._power = np.empty_like(self._magnitude)
+        self._window_sum = max(float(np.sum(window, dtype=np.float64)), 1e-12)
+        # For positive, non-DC/non-Nyquist FFT bins, 2 / sum(window)
+        # recovers a sinusoid's peak amplitude.  Converting summed squared
+        # amplitudes by sqrt(1/2) therefore yields its RMS amplitude.
+        self._magnitude_scale = 2.0 / self._window_sum
+        self._spectrum_bin_slices = bin_slices
         self.frequency_cache_builds += 1
+
+    def _ingest_samples(self, array: np.ndarray, sample_rate_hz: int) -> bool:
+        """Append one mapped audio chunk and expose a contiguous full window."""
+        if self._rolling_sample_rate_hz != sample_rate_hz:
+            self._rolling_sample_rate_hz = sample_rate_hz
+            self._rolling_write_index = 0
+            self._rolling_count = 0
+
+        window_size = self.ANALYSIS_WINDOW_SIZE
+        sample_count = len(array)
+        if sample_count >= window_size:
+            np.copyto(self._rolling_samples, array[-window_size:])
+            self._rolling_write_index = 0
+            self._rolling_count = window_size
+        else:
+            write_index = self._rolling_write_index
+            first_count = min(sample_count, window_size - write_index)
+            np.copyto(
+                self._rolling_samples[write_index : write_index + first_count],
+                array[:first_count],
+            )
+            remaining = sample_count - first_count
+            if remaining:
+                np.copyto(self._rolling_samples[:remaining], array[first_count:])
+            self._rolling_write_index = (write_index + sample_count) % window_size
+            self._rolling_count = min(window_size, self._rolling_count + sample_count)
+
+        return self._rolling_count >= window_size
+
+    def _copy_rolling_window(self) -> None:
+        """Copy the current ring into chronological contiguous order."""
+        write_index = self._rolling_write_index
+        if write_index:
+            first_count = self.ANALYSIS_WINDOW_SIZE - write_index
+            np.copyto(
+                self._contiguous_samples[:first_count],
+                self._rolling_samples[write_index:],
+            )
+            np.copyto(
+                self._contiguous_samples[first_count:],
+                self._rolling_samples[:write_index],
+            )
+        else:
+            np.copyto(self._contiguous_samples, self._rolling_samples)
 
     def process_samples(
         self,
@@ -128,11 +206,13 @@ class AudioSpectrumTap:
         sample_rate_hz: int = 16_000,
         now: float | None = None,
     ) -> dict[str, Any] | None:
-        """Rate-cap and compute one mono float32 buffer.
+        """Ingest one mono float32 chunk and rate-cap rolling-window FFT work.
 
         ``samples`` should be a contiguous float32 view from a mapped Gst
         buffer.  Other array-like inputs are accepted for unit tests and are
-        converted only when necessary.
+        converted only when necessary.  Chunks are always ingested before the
+        20 Hz compute gate so short callbacks cannot starve the analysis
+        window.
         """
         array = np.asarray(samples)
         if array.size == 0:
@@ -141,9 +221,13 @@ class AudioSpectrumTap:
             array = array.reshape(-1)
         if array.dtype != np.float32:
             array = array.astype(np.float32, copy=False)
-        if not np.isfinite(array).all():
+        if self._finite_mask is None or len(self._finite_mask) != len(array):
+            self._finite_mask = np.empty(array.shape, dtype=np.bool_)
+        if not np.isfinite(array, out=self._finite_mask).all():
             array = np.nan_to_num(array, copy=True, nan=0.0, posinf=0.0, neginf=0.0)
         sample_rate = max(1, int(sample_rate_hz))
+        if not self._ingest_samples(array, sample_rate):
+            return None
         compute_time = self._clock() if now is None else now
 
         with self._lock:
@@ -151,31 +235,50 @@ class AudioSpectrumTap:
             if previous is not None and compute_time - previous < self.compute_interval:
                 return None
             self._last_compute_monotonic = compute_time
+        self._copy_rolling_window()
 
-        self._ensure_frequency_cache(len(array), sample_rate)
+        self._ensure_frequency_cache(self.ANALYSIS_WINDOW_SIZE, sample_rate)
         assert self._window is not None
         assert self._windowed is not None
         assert self._magnitude is not None
-        assert self._frequency_masks is not None
+        assert self._power is not None
+        np.square(self._contiguous_samples, out=self._rms_squared)
+        rms = math.sqrt(float(np.mean(self._rms_squared)))
 
-        rms = float(np.sqrt(np.mean(np.square(array, dtype=np.float64))))
         rms_db = self._clamped_dbfs(rms)
-        np.multiply(array, self._window, out=self._windowed)
-        spectrum = np.fft.rfft(self._windowed)
-        np.abs(spectrum, out=self._magnitude)
-        self._magnitude /= len(array)
-        bands: list[float] = []
-        for mask in self._frequency_masks:
-            band_power = float(np.sum(np.square(self._magnitude[mask], dtype=np.float64)) * 2.0)
-            band_rms = math.sqrt(band_power) / self._window_rms
-            bands.append(self._db_to_level(self._clamped_dbfs(band_rms)))
+        np.multiply(self._contiguous_samples, self._window, out=self._windowed)
+        fft_values = np.fft.rfft(self._windowed)
+        np.abs(fft_values, out=self._magnitude)
+        self._magnitude *= self._magnitude_scale
+        np.square(self._magnitude, out=self._power)
+
+        spectrum_levels = [0.0] * self.SPECTRUM_BIN_COUNT
+        low_power = 0.0
+        mid_power = 0.0
+        high_power = 0.0
+        for index, (start, end) in enumerate(self._spectrum_bin_slices):
+            power = (
+                float(np.sum(self._power[start:end], dtype=np.float64))
+                if end > start
+                else 0.0
+            )
+            spectrum_levels[index] = self._db_to_level(
+                self._clamped_dbfs(math.sqrt(power * 0.5))
+            )
+            if index < self.BINS_PER_BAND:
+                low_power += power
+            elif index < self.BINS_PER_BAND * 2:
+                mid_power += power
+            else:
+                high_power += power
 
         snapshot = {
             "rms": self._db_to_level(rms_db),
             "rms_db": rms_db,
-            "low": bands[0],
-            "mid": bands[1],
-            "high": bands[2],
+            "low": self._db_to_level(self._clamped_dbfs(math.sqrt(low_power * 0.5))),
+            "mid": self._db_to_level(self._clamped_dbfs(math.sqrt(mid_power * 0.5))),
+            "high": self._db_to_level(self._clamped_dbfs(math.sqrt(high_power * 0.5))),
+            "spectrum": spectrum_levels,
             "sample_rate_hz": sample_rate,
             "source": self.SOURCE,
             "timestamp": datetime.now(UTC).isoformat(),

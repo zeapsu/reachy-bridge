@@ -35,9 +35,27 @@
     sliderActive: null,
     simLoop: null,
     live: { streams: [], timers: [], active: false, statsStream: null },
+    camera: {
+      streamGeneration: 0,
+      firstFrameTimer: null,
+      retryTimer: null,
+      availabilityInflight: false,
+      loadHandler: null,
+      errorHandler: null,
+    },
     cameraAvailabilityRequest: 0,
     sysView: "stats",
     log: { source: LOG_DEFAULT_SOURCE, stream: null, lines: 0, follow: true, loading: false, openGeneration: 0, openAbort: null },
+    settings: {
+      app: null,        // app whose settings panel is open (null = closed)
+      schema: null,     // last loaded {app,title,fields:[…]} for that app
+      loadKey: null,    // "name#pid" incarnation the current load/retry belongs to
+      phase: "idle",    // idle | stopped | waiting | ready | unavailable
+      inflight: false,
+      retryTimer: null,
+      retryCount: 0,
+      saving: false,
+    },
   };
 
   document.querySelectorAll(".glass").forEach((glass) => {
@@ -538,6 +556,10 @@
     $("doaTick").setAttribute("cy", ty.toFixed(1));
   }
 
+  const CAMERA_FIRST_FRAME_TIMEOUT_MS = 9000;
+  const CAMERA_FIRST_FRAME_CHECK_MS = 100;
+  const CAMERA_RETRY_DELAY_MS = 750;
+
   function cameraShouldConnect() {
     return state.mode === "camera" && state.daemonOnline === true && !document.hidden;
   }
@@ -549,20 +571,132 @@
     placeholder.classList.toggle("error", error);
   }
 
+  function clearCameraFirstFrameTimer() {
+    if (state.camera.firstFrameTimer !== null) {
+      clearTimeout(state.camera.firstFrameTimer);
+      state.camera.firstFrameTimer = null;
+    }
+  }
+
+  function clearCameraRetryTimer() {
+    if (state.camera.retryTimer !== null) {
+      clearTimeout(state.camera.retryTimer);
+      state.camera.retryTimer = null;
+    }
+  }
+
+  function clearCameraTimers() {
+    clearCameraFirstFrameTimer();
+    clearCameraRetryTimer();
+  }
+
+  function clearCameraStreamHandlers() {
+    const image = $("camera-stream");
+    if (state.camera.loadHandler) image.removeEventListener("load", state.camera.loadHandler);
+    if (state.camera.errorHandler) image.removeEventListener("error", state.camera.errorHandler);
+    state.camera.loadHandler = null;
+    state.camera.errorHandler = null;
+  }
+
   function disconnectCameraStream(message = "", error = false) {
+    clearCameraTimers();
+    clearCameraStreamHandlers();
+    state.camera.streamGeneration += 1;
+    state.cameraAvailabilityRequest += 1;
+    state.camera.availabilityInflight = false;
     const image = $("camera-stream");
     image.removeAttribute("src");
     image.hidden = true;
     if (message) setCameraPlaceholder(message, error);
   }
 
+  function scheduleCameraRetry() {
+    clearCameraRetryTimer();
+    if (!cameraShouldConnect()) return;
+    const generation = state.camera.streamGeneration;
+    state.camera.retryTimer = setTimeout(() => {
+      state.camera.retryTimer = null;
+      if (generation !== state.camera.streamGeneration || !cameraShouldConnect()) return;
+      void refreshCameraAvailability();
+    }, CAMERA_RETRY_DELAY_MS);
+  }
+
+  function markCameraLive(generation) {
+    if (
+      generation !== state.camera.streamGeneration
+      || !cameraShouldConnect()
+    ) {
+      return false;
+    }
+    const image = $("camera-stream");
+    if (
+      !image.getAttribute("src")
+      || !(image.naturalWidth > 0 && image.naturalHeight > 0)
+    ) {
+      return false;
+    }
+    clearCameraFirstFrameTimer();
+    image.hidden = false;
+    $("camera-placeholder").hidden = true;
+    $("camera-placeholder").classList.remove("error");
+    $("vp-meta").textContent = "live camera · live";
+    return true;
+  }
+
+  function handleCameraStreamFailure(generation, message) {
+    if (generation !== state.camera.streamGeneration) return;
+    if (!cameraShouldConnect()) {
+      disconnectCameraStream();
+      return;
+    }
+    disconnectCameraStream(message, true);
+    $("vp-meta").textContent = "live camera · error";
+    scheduleCameraRetry();
+  }
+
+  function watchCameraFirstFrame(generation) {
+    clearCameraFirstFrameTimer();
+    const image = $("camera-stream");
+    const deadline = Date.now() + CAMERA_FIRST_FRAME_TIMEOUT_MS;
+    const check = () => {
+      state.camera.firstFrameTimer = null;
+      if (generation !== state.camera.streamGeneration) return;
+      if (!cameraShouldConnect()) {
+        disconnectCameraStream();
+        return;
+      }
+      if (markCameraLive(generation)) return;
+      if (Date.now() >= deadline) {
+        handleCameraStreamFailure(generation, "Live camera timed out");
+        return;
+      }
+      state.camera.firstFrameTimer = setTimeout(check, CAMERA_FIRST_FRAME_CHECK_MS);
+    };
+    state.camera.firstFrameTimer = setTimeout(check, CAMERA_FIRST_FRAME_CHECK_MS);
+  }
+
   function connectCameraStream() {
     if (!cameraShouldConnect()) return;
     const image = $("camera-stream");
     if (image.getAttribute("src")) return;
+    clearCameraTimers();
+    clearCameraStreamHandlers();
+    const generation = state.camera.streamGeneration + 1;
+    state.camera.streamGeneration = generation;
     setCameraPlaceholder("Connecting to live camera");
     image.hidden = true;
+    const onLoad = () => {
+      markCameraLive(generation);
+    };
+    const onError = () => {
+      handleCameraStreamFailure(generation, "Live camera unavailable");
+    };
+    state.camera.loadHandler = onLoad;
+    state.camera.errorHandler = onError;
+    image.addEventListener("load", onLoad);
+    image.addEventListener("error", onError);
     image.src = `/api/camera/stream?ts=${Date.now()}`;
+    watchCameraFirstFrame(generation);
   }
 
   function applyCameraAvailability(availability) {
@@ -574,15 +708,14 @@
     }
     const reason = availability && availability.reason;
     const message =
-      reason === "in_use"
-        ? `Camera in use by ${availability.holder || "another app"}`
-        : reason === "daemon_down"
-          ? "Daemon offline"
-          : reason === "media_unavailable"
-            ? "Camera media offline"
-            : "Camera unavailable";
+      reason === "daemon_down"
+        ? "Daemon offline"
+        : reason === "media_unavailable"
+          ? "Camera media offline"
+          : "Camera unavailable";
     disconnectCameraStream(message);
-    $("vp-meta").textContent = reason === "in_use" ? "live camera · in use" : "live camera · unavailable";
+    $("vp-meta").textContent = "live camera · unavailable";
+    scheduleCameraRetry();
   }
 
   function setMode(mode) {
@@ -623,8 +756,9 @@
   }
 
   async function refreshCameraAvailability() {
-    if (state.mode !== "camera" || document.hidden) return;
+    if (!cameraShouldConnect() || state.camera.availabilityInflight) return;
     const requestId = ++state.cameraAvailabilityRequest;
+    state.camera.availabilityInflight = true;
     if (state.daemonOnline !== true) {
       disconnectCameraStream("Daemon offline");
       return;
@@ -632,29 +766,25 @@
     setCameraPlaceholder("Checking live camera");
     try {
       const availability = await apiJson("/api/camera/availability");
-      if (requestId !== state.cameraAvailabilityRequest || state.mode !== "camera") return;
+      if (
+        requestId !== state.cameraAvailabilityRequest
+        || !cameraShouldConnect()
+      ) return;
       applyCameraAvailability(availability);
     } catch (error) {
-      if (requestId !== state.cameraAvailabilityRequest || state.mode !== "camera") return;
+      if (
+        requestId !== state.cameraAvailabilityRequest
+        || !cameraShouldConnect()
+      ) return;
       disconnectCameraStream(error.message || "Camera status unavailable", true);
       $("vp-meta").textContent = "live camera · error";
+      scheduleCameraRetry();
+    } finally {
+      if (requestId === state.cameraAvailabilityRequest) {
+        state.camera.availabilityInflight = false;
+      }
     }
   }
-
-  $("camera-stream").addEventListener("load", () => {
-    if (!cameraShouldConnect()) {
-      disconnectCameraStream();
-      return;
-    }
-    $("camera-stream").hidden = false;
-    $("camera-placeholder").hidden = true;
-    $("camera-placeholder").classList.remove("error");
-    $("vp-meta").textContent = "live camera · live";
-  });
-  $("camera-stream").addEventListener("error", () => {
-    disconnectCameraStream("Live camera unavailable", true);
-    $("vp-meta").textContent = "live camera · error";
-  });
 
   function renderApps(statuses = Array.from(appState.values())) {
     const active = statuses.find((app) => app.status === "running" || app.status === "loading" || app.status === "stopping") || null;
@@ -662,15 +792,13 @@
     // reconciles chip disabled-ness at ~10 Hz off this flag; the hint is only
     // touched on the flip.
     const appActive = Boolean(active);
-    const cameraOwner = statuses.find((app) => {
-      if (!["running", "loading", "stopping"].includes(app.status)) return false;
-      if (app.uses_camera === true) return true;
-      return app.uses_camera === undefined && ["reachy_chat", "reachy_lookat"].includes(app.name);
-    });
-    if (state.mode === "camera" && cameraOwner) {
-      disconnectCameraStream(`Camera in use by ${cameraOwner.name}`);
-      $("vp-meta").textContent = "live camera · in use";
-    } else if (state.mode === "camera" && cameraShouldConnect() && !$("camera-stream").getAttribute("src")) {
+    if (
+      state.mode === "camera"
+      && cameraShouldConnect()
+      && !$("camera-stream").getAttribute("src")
+      && !state.camera.retryTimer
+      && !state.camera.availabilityInflight
+    ) {
       void refreshCameraAvailability();
     }
     if (appActive !== state.appActive) {
@@ -690,7 +818,9 @@
       const isStopping = app.status === "stopping";
       const isError = app.status === "error";
       const statusClass = isRunning ? "running" : isLoading ? "loading" : isStopping ? "stopping" : isError ? "error" : "";
-      const uptime = isRunning && app.start_time ? ` · ${formatUptime(Date.now() / 1000 - Number(app.start_time))}` : "";
+      // Stable placeholder — updateAppUptimes patches its text at 1 Hz so the
+      // ticking seconds never enter the signed markup (see that function).
+      const uptime = isRunning && app.start_time ? `<span class="app-uptime" data-app="${name}"></span>` : "";
       const pid = isRunning && app.pid ? ` · pid ${app.pid}` : "";
       const external = isRunning && app.external ? ` · external` : "";
       const error = app.error ? `<br><span class="err">${escapeHtml(app.error)}</span>` : "";
@@ -717,23 +847,35 @@
         <span class="dot ${isRunning ? "live" : isLoading ? "loading" : isStopping ? "stopping" : isError ? "error" : ""}"></span>
         <div><div class="app-name">${escapeHtml(name)}</div>
         <div class="app-state">${stateContent}${error}</div></div>
-        ${button}
+        <div class="app-actions">${button}${appSettingsGearMarkup(app)}</div>
       </div>`;
     }).join("");
 
     const robotDotClass = `dot ${active ? "live" : "ok"}`;
     const robotValue = active ? active.name : "free";
 
+    // Reconcile the settings panel on the same cadence as the cards. Runs
+    // before the signature guard: panel state can change (retry countdown,
+    // pid-keyed reload) even when the card markup is byte-identical.
+    syncAppSettings(statuses);
+
     // pollAppsStatus re-renders at 1 Hz even when nothing changed; skip the
     // innerHTML rebuild (parse + reflow) + status writes when the output is
     // identical. The rendered markup IS the signature, so it is correct by
-    // construction: a running app's ticking uptime changes it (rebuild, as before),
-    // while an idle list is stable → zero rebuilds (#43).
+    // construction — and because ticking uptime lives in a patched span rather
+    // than the markup, a quietly running app is signature-stable too: zero
+    // rebuilds, and a focused gear (or caret) survives every tick (#43).
     const sig = `${html} ${robotDotClass} ${robotValue}`;
-    if (sig === lastAppsSig) return;
+    if (sig === lastAppsSig) {
+      updateAppUptimes(statuses);
+      return;
+    }
     lastAppsSig = sig;
 
     $("apps").innerHTML = html;
+    // Gear markup is state-neutral; reapply the open/aria patch the rebuild wiped.
+    patchSettingsGears();
+    updateAppUptimes(statuses);
     $("robot-dot").className = robotDotClass;
     $("robot-value").textContent = robotValue;
   }
@@ -790,6 +932,305 @@
       renderApps(Array.from(appState.values()));
     }
   }
+
+  // ── App settings (generic, schema-driven) ─────────────────────────────
+  // Any app whose /api/apps/status entry carries has_settings:true gets a gear
+  // in its card; the Apps panel swaps its card view for one shared settings
+  // view IN PLACE (same glass container) and renders whatever field schema
+  // GET /api/apps/{name}/settings returns. Nothing here is app-specific.
+  //
+  // The settings service lives inside the app process (port 7860 for
+  // reachy_chat), so it comes up AFTER the supervisor reports loading/running.
+  // Loads are single-flight, keyed by the app incarnation ("name#pid"): the
+  // 1 Hz apps poll calls syncAppSettings() every tick but only a key change
+  // starts a load, and a failed load retries on a bounded timer. Stopped and
+  // error states cancel retries and drop the schema.
+  const SETTINGS_RETRY_DELAY_MS = 1500;
+  const SETTINGS_RETRY_LIMIT = 8;
+
+  function settingsClearRetry() {
+    if (state.settings.retryTimer !== null) {
+      clearTimeout(state.settings.retryTimer);
+      state.settings.retryTimer = null;
+    }
+  }
+
+  function setSettingsStatus(phase, text) {
+    state.settings.phase = phase;
+    const dotClass = phase === "ready" ? "ok" : phase === "waiting" ? "loading" : phase === "unavailable" ? "error" : "";
+    $("app-settings-dot").className = `dot ${dotClass}`;
+    $("app-settings-state").textContent = text;
+  }
+
+  function setSettingsHint(text, kind = "") {
+    $("app-settings-hint").textContent = text;
+    $("app-settings-hint").className = `panel-hint${kind ? ` ${kind}` : ""}`;
+  }
+
+  // Gear affordance for an app card. Always clickable — a stopped app's panel
+  // shows the honest "start it first" state rather than hiding the affordance.
+  // The markup is deliberately NEUTRAL (no open/aria-expanded state): panel
+  // toggling must never force an #apps innerHTML rebuild, which would destroy
+  // the focused gear. patchSettingsGears() applies the live state in place.
+  function appSettingsGearMarkup(app) {
+    if (app.has_settings !== true) return "";
+    const name = escapeHtml(app.name);
+    return `<button class="btn gear" data-app="${name}" data-action="settings" title="${name} settings" aria-label="${name} settings" aria-expanded="false" aria-controls="app-settings">`
+      + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.08a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.08a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1.03Z"></path></svg>'
+      + "</button>";
+  }
+
+  // Reconcile every gear's open/aria state in place — after a card rebuild and
+  // on panel toggle — without touching innerHTML (keyboard focus survives).
+  function patchSettingsGears() {
+    $("apps").querySelectorAll('button[data-action="settings"]').forEach((button) => {
+      const open = button.dataset.app === state.settings.app;
+      button.classList.toggle("open", open);
+      button.setAttribute("aria-expanded", String(open));
+    });
+  }
+
+  // Ticking uptime is deliberately NOT part of the card markup renderApps
+  // signs and rebuilds — one second of uptime would change the signature every
+  // tick, and the innerHTML rebuild destroys a focused gear (or any caret in
+  // the cards). Running cards render a stable, empty `.app-uptime` span; this
+  // patches only its text at 1 Hz, before the signature early-return and after
+  // any genuine rebuild.
+  function updateAppUptimes(statuses) {
+    $("apps").querySelectorAll(".app-uptime").forEach((span) => {
+      const app = statuses.find((item) => item.name === span.dataset.app);
+      const text = app && app.status === "running" && app.start_time
+        ? ` · ${formatUptime(Date.now() / 1000 - Number(app.start_time))}`
+        : "";
+      if (span.textContent !== text) span.textContent = text;
+    });
+  }
+
+  function settingsFieldMarkup(field) {
+    const key = escapeHtml(String(field.key));
+    const id = `setting-${key}`;
+    const label = `<label for="${id}">${escapeHtml(field.label || field.key)}</label>`;
+    const help = field.help ? `<p class="field-help">${escapeHtml(field.help)}</p>` : "";
+    if (field.type === "password") {
+      const configured = field.configured === true;
+      // Secrets are write-only: the schema never carries the value and the
+      // input renders empty — "configured" is the only trace of a saved key.
+      return `<div class="control settings-field" data-key="${key}" data-type="password">${label}
+        <div class="field-row">
+          <input type="password" id="${id}" autocomplete="off" spellcheck="false" placeholder="${configured ? "configured — enter new value to replace" : "not configured"}">
+          <button class="btn start" type="button" data-save>Save</button>
+        </div>
+        <span class="field-state${configured ? " ok" : ""}">${configured ? "configured" : "not configured"}</span>${help}
+      </div>`;
+    }
+    if (field.type === "select") {
+      const current = field.value == null ? "" : String(field.value);
+      const optionList = Array.isArray(field.options) ? field.options : [];
+      const known = optionList.some((option) => {
+        const value = option && typeof option === "object" ? option.value : option;
+        return String(value) === current && current !== "";
+      });
+      const options = optionList.map((option) => {
+        const value = option && typeof option === "object" ? option.value : option;
+        const text = option && typeof option === "object" ? (option.label ?? option.value) : option;
+        return `<option value="${escapeHtml(String(value))}"${known && String(value) === current ? " selected" : ""}>${escapeHtml(String(text))}</option>`;
+      }).join("");
+      // Unknown current value: pin a disabled placeholder as the selection so
+      // Apply can never silently submit options[0] — the blank value trips the
+      // client-side "enter a value" guard until the user picks a real option.
+      const placeholder = known ? "" : `<option value="" selected disabled>${current ? `current “${escapeHtml(current)}” is not in this list — pick an option` : "select an option"}</option>`;
+      return `<div class="control settings-field" data-key="${key}" data-type="select">${label}
+        <div class="field-row">
+          <select id="${id}">${placeholder}${options}</select>
+          <button class="btn start" type="button" data-save>Apply</button>
+        </div>
+        <span class="field-state">current · ${current ? escapeHtml(current) : "unknown"}</span>${help}
+      </div>`;
+    }
+    return `<div class="control settings-field" data-key="${key}" data-type="unknown">${label}
+      <span class="field-state">unsupported field type “${escapeHtml(String(field.type))}”</span>${help}
+    </div>`;
+  }
+
+  function renderSettingsFields() {
+    const schema = state.settings.schema;
+    const fields = Array.isArray(schema?.fields) ? schema.fields : [];
+    $("app-settings-fields").innerHTML = fields.length
+      ? fields.map(settingsFieldMarkup).join("")
+      : "";
+  }
+
+  // The app's status is part of the key: a loading→running flip re-arms the
+  // bounded retry budget even when the pid is unchanged — "running" is fresh
+  // evidence the settings port should now answer.
+  const settingsLoadKeyFor = (app) => `${app.name}#${app.pid ?? "starting"}#${app.status}`;
+
+  function scheduleSettingsRetry(key) {
+    settingsClearRetry();
+    state.settings.retryTimer = setTimeout(() => {
+      state.settings.retryTimer = null;
+      void loadAppSettings(key);
+    }, SETTINGS_RETRY_DELAY_MS);
+  }
+
+  async function loadAppSettings(key) {
+    const settings = state.settings;
+    if (settings.app === null || key !== settings.loadKey) return;
+    if (settings.inflight) {
+      // A stale request (previous incarnation) is still on the wire; knock
+      // again after the delay instead of silently dropping this key forever.
+      scheduleSettingsRetry(key);
+      return;
+    }
+    settings.inflight = true;
+    try {
+      const schema = await apiJson(`/api/apps/${encodeURIComponent(settings.app)}/settings`);
+      if (settings.app === null || key !== settings.loadKey) return; // stale: panel closed or app restarted
+      settings.retryCount = 0;
+      settings.schema = schema && typeof schema === "object" ? schema : { fields: [] };
+      if (settings.schema.title) $("app-settings-app").textContent = settings.schema.title;
+      renderSettingsFields();
+      setSettingsStatus("ready", "ready");
+      setSettingsHint("");
+    } catch (error) {
+      if (settings.app === null || key !== settings.loadKey) return;
+      settings.retryCount += 1;
+      if (settings.retryCount < SETTINGS_RETRY_LIMIT) {
+        // The app process is up but its settings service may still be binding
+        // its port — keep knocking on a bounded timer.
+        setSettingsStatus("waiting", "connecting");
+        setSettingsHint("Waiting for the app's settings service…");
+        scheduleSettingsRetry(key);
+      } else {
+        setSettingsStatus("unavailable", "unavailable");
+        setSettingsHint(error.message || "Settings service unreachable.", "error");
+      }
+    } finally {
+      settings.inflight = false;
+    }
+  }
+
+  // Reconcile the open panel against the latest app statuses. Called from
+  // renderApps on every 1 Hz poll; cheap no-op unless something changed.
+  function syncAppSettings(statuses) {
+    const settings = state.settings;
+    if (settings.app === null) return;
+    const app = statuses.find((item) => item.name === settings.app) || { name: settings.app, status: "stopped" };
+    if (app.status !== "running" && app.status !== "loading") {
+      // Stopped / stopping / error: the in-app settings service is gone.
+      settingsClearRetry();
+      settings.loadKey = null;
+      settings.retryCount = 0;
+      if (settings.phase !== "stopped") {
+        settings.schema = null;
+        renderSettingsFields();
+        setSettingsStatus("stopped", app.status === "error" ? "app error" : "app stopped");
+        setSettingsHint(`Start ${settings.app} to configure.`);
+      }
+      return;
+    }
+    const key = settingsLoadKeyFor(app);
+    if (key === settings.loadKey) return; // this incarnation is already loaded / loading / retrying
+    settingsClearRetry();
+    settings.loadKey = key;
+    settings.retryCount = 0;
+    setSettingsStatus("waiting", "connecting");
+    setSettingsHint("Loading settings…");
+    void loadAppSettings(key);
+  }
+
+  function openAppSettings(name) {
+    const settings = state.settings;
+    if (settings.app === name) {
+      closeAppSettings();
+      return;
+    }
+    settingsClearRetry();
+    settings.app = name;
+    settings.schema = null;
+    settings.loadKey = null;
+    settings.retryCount = 0;
+    settings.phase = "idle";
+    $("app-settings-app").textContent = name;
+    renderSettingsFields();
+    setSettingsHint("");
+    // Swap the panel in place: same glass container, settings view instead of
+    // the app cards. Hiding #apps-view drops keyboard focus from the clicked
+    // gear, so move it to the Back control explicitly.
+    $("apps-view").hidden = true;
+    $("app-settings").hidden = false;
+    syncAppSettings(Array.from(appState.values()));
+    patchSettingsGears(); // in place — a rebuild would destroy the gear element
+    $("app-settings-back").focus();
+  }
+
+  function closeAppSettings() {
+    const settings = state.settings;
+    const returnTo = settings.app;
+    settingsClearRetry();
+    settings.app = null;
+    settings.schema = null;
+    settings.loadKey = null;
+    settings.retryCount = 0;
+    settings.phase = "idle";
+    $("app-settings").hidden = true;
+    $("apps-view").hidden = false;
+    renderSettingsFields();
+    setSettingsHint("");
+    patchSettingsGears();
+    // Land focus back on the gear that owned the panel — looked up fresh, the
+    // 1 Hz poll may have rebuilt the cards while the view was swapped out.
+    const gear = Array.from($("apps").querySelectorAll('button[data-action="settings"]'))
+      .find((button) => button.dataset.app === returnTo);
+    if (gear) gear.focus();
+  }
+
+  // Persist one field. Returns true on success so the DOM glue knows to wipe
+  // the typed secret; on failure the typed value is kept for correction.
+  async function submitAppSetting(key, rawValue) {
+    const settings = state.settings;
+    if (settings.saving || settings.app === null || !settings.schema) return false;
+    const field = (settings.schema.fields || []).find((item) => String(item.key) === String(key));
+    if (!field) return false;
+    const value = typeof rawValue === "string" ? rawValue : "";
+    if (!value.trim()) {
+      setSettingsHint(`Enter a value for ${field.label || field.key}.`, "error");
+      return false;
+    }
+    // Capture the panel identity: if the user switches apps or the app
+    // restarts while the POST is on the wire, the response must not overwrite
+    // the new panel's model or DOM.
+    const forApp = settings.app;
+    const forKey = settings.loadKey;
+    const stale = () => settings.app !== forApp || settings.loadKey !== forKey;
+    settings.saving = true;
+    setSettingsHint(`Saving ${field.label || field.key}…`);
+    try {
+      await apiJson(
+        `/api/apps/${encodeURIComponent(forApp)}/settings/${encodeURIComponent(String(field.key))}`,
+        { method: "POST", body: JSON.stringify({ value }) },
+      );
+      if (stale()) return false;
+      if (field.type === "password") {
+        field.configured = true;
+      } else {
+        field.value = value;
+      }
+      // Re-render from the model: rebuilds the password input empty (the
+      // secret never survives a successful save) and pins the select to the
+      // now-known current value.
+      renderSettingsFields();
+      setSettingsHint(`${field.label || field.key} saved.`, "ok");
+      return true;
+    } catch (error) {
+      if (stale()) return false;
+      setSettingsHint(error.message || "Save failed.", "error");
+      return false;
+    } finally {
+      settings.saving = false;
+    }
+  }
+  // ── end app settings ───────────────────────────────────────────────────
 
   // Expression datasets served by the daemon (via the transparent /api proxy).
   // Each strip's dataset id also lives on its container's data-dataset attribute.
@@ -1073,7 +1514,7 @@
   }
 
   // ── Audio spectrum visualizer ─────────────────────────────────────────
-  const NBARS = 36;
+  const NBARS = 18;
   const EQ_FLOOR = 4; // settled bar height (%)
   const EQ_SPAN = 88; // full-scale travel above the floor (%)
   // The daemon polls at 10 Hz. These per-sample gains reach roughly 75% of a
@@ -1096,11 +1537,8 @@
     eqEl.appendChild(bar);
     return bar;
   });
-  // Three overlapping band kernels centred on the low/mid/high thirds. Bar i
-  // renders clamp(w·[low, mid, high]) — three soft humps with smooth valleys
-  // instead of the old decorative sine bell.
-  const eqWeights = Array.from({ length: NBARS }, (_, index) =>
-    [5.5, 17.5, 29.5].map((center) => Math.max(0, 1 - Math.abs(index - center) / 12) ** 1.4));
+  // Bars map directly to the daemon's ascending measured bins: six low, six
+  // mid, and six high. No interpolation can invent a three-hump profile.
   const eqState = new Array(NBARS).fill(0);
   const eqLast = new Array(NBARS).fill(null);
   let eqSettled = false;
@@ -1128,6 +1566,12 @@
     const fields = ["rms", "rms_db", "low", "mid", "high", "sample_rate_hz"];
     if (!fields.every((field) => finiteAudioNumber(payload[field]))) return null;
     if (!["rms", "low", "mid", "high"].every((field) => payload[field] >= 0 && payload[field] <= 1)) return null;
+    const spectrum = payload.spectrum;
+    if (
+      !Array.isArray(spectrum) ||
+      spectrum.length !== NBARS ||
+      !spectrum.every((value) => finiteAudioNumber(value) && value >= 0 && value <= 1)
+    ) return null;
     if (payload.rms_db < -60 || payload.rms_db > 0 || payload.sample_rate_hz <= 0) return null;
     if (typeof payload.source !== "string" || !payload.source.trim()) return null;
     if (typeof payload.timestamp !== "string" || !payload.timestamp.trim()) return null;
@@ -1136,6 +1580,7 @@
       low: payload.low,
       mid: payload.mid,
       high: payload.high,
+      spectrum,
       db: payload.rms_db,
       rateHz: payload.sample_rate_hz,
       source: payload.source,
@@ -1190,10 +1635,9 @@
     eqSettled = false;
     let maxDelta = 0;
     eqState.forEach((value, index) => {
-      const weights = eqWeights[index];
-      const env = eqQuiet
-        ? 0
-        : clamp(weights[0] * levels.low + weights[1] * levels.mid + weights[2] * levels.high, 0, 1);
+      // Each measured FFT bin drives exactly one bar. The first, second, and
+      // third six-bin groups remain the low/mid/high regions.
+      const env = eqQuiet ? 0 : clamp(levels.spectrum[index], 0, 1);
       const target = EQ_FLOOR + EQ_SPAN * env;
       if (reduceMotion) {
         // Reduced motion has no interpolated visual step, but the model still
@@ -1592,8 +2036,37 @@
 
   $("apps").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");
-    if (!button || state.appBusy) return;
+    if (!button) return;
+    // The gear toggles the shared settings panel — allowed even mid start/stop.
+    if (button.dataset.action === "settings") {
+      openAppSettings(button.dataset.app);
+      return;
+    }
+    if (state.appBusy) return;
     void performAppAction(button.dataset.app, button.dataset.action);
+  });
+
+  $("app-settings-back").addEventListener("click", () => closeAppSettings());
+
+  const submitSettingsField = (fieldEl) => {
+    const input = fieldEl.querySelector("input, select");
+    void submitAppSetting(fieldEl.dataset.key, input ? input.value : "");
+  };
+
+  $("app-settings-fields").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-save]");
+    if (!button || button.disabled) return;
+    const fieldEl = button.closest(".settings-field");
+    if (fieldEl) submitSettingsField(fieldEl);
+  });
+
+  // Enter inside a settings input submits its own field.
+  $("app-settings-fields").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.target.tagName !== "INPUT") return;
+    const fieldEl = event.target.closest(".settings-field");
+    if (!fieldEl) return;
+    event.preventDefault();
+    submitSettingsField(fieldEl);
   });
 
   ["expr-emotions", "expr-dances"].forEach((id) => {
@@ -1922,6 +2395,10 @@
     state.live.streams = [];
     closeStatsStream();
     closeLogStream();
+    // A hidden tab keeps no settings-retry timers; loadKey resets so the panel
+    // reloads (fresh pid check) when the tab comes back.
+    settingsClearRetry();
+    state.settings.loadKey = null;
   }
 
   // Poll daemon status on the same cadence as the daemon connectivity check

@@ -15,6 +15,7 @@ LEVELS = {
     "low": 0.8,
     "mid": 0.2,
     "high": 0.05,
+    "spectrum": [0.8, 0.7, 0.4, 0.2, 0.1, 0.05, 0.2, 0.1, 0.05, 0.02, 0, 0, 0.05, 0.03, 0.02, 0.01, 0, 0],
     "sample_rate_hz": 16_000,
     "source": "daemon mic tap",
     "timestamp": "2026-07-16T08:00:00+00:00",
@@ -41,6 +42,12 @@ def parse_sse_data(event: str) -> dict:
         ("sample_rate_hz", 0),
         ("source", " "),
         ("timestamp", None),
+        ("spectrum", None),
+        ("spectrum", [0.0] * 17),
+        ("spectrum", [0.0] * 19),
+        ("spectrum", [0.0] * 17 + [math.nan]),
+        ("spectrum", [0.0] * 17 + [1.1]),
+        ("spectrum", tuple([0.0] * 18)),
     ],
 )
 def test_audio_levels_validator_rejects_incomplete_or_nonfinite_contract(

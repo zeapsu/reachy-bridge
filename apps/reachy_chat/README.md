@@ -16,7 +16,7 @@ A voice conversation app for Reachy Mini with multiple backend options. The defa
 
 3. Set `BACKEND_PROVIDER` in `.env` to one of: `openai_realtime`, `gemini`, `openai`, `huggingface`.
    - If not set, the app defaults to **`openai_realtime`**.
-4. Alternatively, configure backend and API keys via the **Settings UI** at `http://localhost:7860` when the app is running.
+4. When launched from Reachy Controller, use the settings button on the `reachy_chat` app card to configure the active backend's API key and conversation voice.
 
 ## Features
 
@@ -66,7 +66,6 @@ Use the `profiles/_reachy_chat_locked_profile` folder to customize your own app 
 
 To finalize your custom app:
 - Update this `README.md` file
-- Update the web app settings page (`src/reachy_chat/static/index.html`)
 
 ## Archived Documentation
 

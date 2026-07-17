@@ -13,7 +13,6 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from reachy_controller.app_supervisor import AppSupervisor
 from reachy_controller.daemon_proxy import DaemonProxy
 from reachy_controller.main import create_app
 from reachy_controller.routes import camera as camera_routes
@@ -143,7 +142,9 @@ def test_jetson_consumer_patch_builds_nvmm_conversion_pipeline(
     assert [element.factory_name for element in camera.pipeline.elements[0].links] == ["queue"]
     assert [element.factory_name for element in camera.pipeline.elements[1].links] == ["nvvidconv"]
     assert [element.factory_name for element in camera.pipeline.elements[2].links] == ["capsfilter"]
-    assert [element.factory_name for element in camera.pipeline.elements[3].links] == ["videoconvert"]
+    assert [element.factory_name for element in camera.pipeline.elements[3].links] == [
+        "videoconvert"
+    ]
     assert [element.factory_name for element in camera.pipeline.elements[4].links] == ["appsink"]
 
     calls = list(FakeFactory.calls)
@@ -180,6 +181,7 @@ async def test_one_reader_shares_latest_multipart_frame_and_stops_on_last_discon
     assert streamer.subscriber_count == 0
     assert FakeCamera.instances[0].closed
     assert not streamer.reader_alive
+
 
 @pytest.mark.asyncio
 async def test_new_subscriber_during_last_disconnect_starts_fresh_reader() -> None:
@@ -404,7 +406,9 @@ async def test_unready_media_is_an_honest_503_before_stream_headers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_subscribe_cancellation_during_reader_join_removes_subscriber(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_subscribe_cancellation_during_reader_join_removes_subscriber(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class BlockingReader:
         def __init__(self) -> None:
             self.joined = False
@@ -416,6 +420,7 @@ async def test_subscribe_cancellation_during_reader_join_removes_subscriber(monk
         def join(self, _timeout: float | None = None) -> None:
             self.joined = True
             self.closed = True
+
     daemon = FakeDaemon()
     streamer = CameraMJPEGStreamer(media_ready=lambda d: d.ready)
     reader = BlockingReader()
@@ -471,6 +476,7 @@ async def test_startup_timeout_removes_subscriber_and_stops_reader() -> None:
     assert streamer.subscriber_count == 0
     assert not streamer.reader_alive
     assert streamer._stop_event.is_set()
+
 
 @pytest.mark.asyncio
 async def test_daemon_stream_keeps_connect_timeout_and_disables_read_timeout() -> None:
@@ -581,6 +587,7 @@ class GatedCloseProxy(FakeProxy):
 
         return Context()
 
+
 @pytest.mark.asyncio
 async def test_controller_startup_deadline_closes_stalled_upstream() -> None:
     class StallingProxy(FakeProxy):
@@ -649,6 +656,7 @@ async def test_controller_forwards_multipart_chunks_and_releases_lease() -> None
     assert proxy.closed == 1
     assert app.state.camera_leases.active_count == 0
 
+
 @pytest.mark.asyncio
 async def test_controller_client_disconnect_closes_upstream() -> None:
     proxy = FakeProxy(FakeUpstreamResponse(chunks=(b"first",)))
@@ -685,7 +693,6 @@ async def test_controller_client_disconnect_closes_upstream() -> None:
 
     assert proxy.closed == 1
     assert app.state.camera_leases.active_count == 0
-
 
 
 @pytest.mark.asyncio
@@ -754,36 +761,34 @@ async def test_camera_takeover_close_all_awaits_inflight_route_cleanup() -> None
     assert proxy.closed == 1
     assert app.state.camera_leases.active_count == 0
 
+
 @pytest.mark.asyncio
-async def test_stream_rechecks_holder_after_lease_acquisition() -> None:
+async def test_running_vision_app_does_not_block_dashboard_stream() -> None:
     proxy = FakeProxy(FakeUpstreamResponse())
     app = create_app(proxy=proxy)  # type: ignore[arg-type]
+    app.state.app_supervisor._apps["reachy_chat"].status = "running"
 
-    def acquire_camera() -> None:
-        app.state.app_supervisor._apps["reachy_chat"].status = "loading"
-
-    proxy.on_enter = acquire_camera
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.get("/api/camera/stream")
 
-    assert response.status_code == 409
+    assert response.status_code == 200
+    assert response.content == b"ab"
+    assert proxy.entered == 1
     assert proxy.closed == 1
     assert app.state.camera_leases.active_count == 0
 
 
 @pytest.mark.asyncio
-async def test_camera_app_start_closes_all_leases_before_spawn() -> None:
-    supervisor = AppSupervisor()
-    manager = DashboardCameraLeaseManager()
+async def test_starting_vision_app_keeps_dashboard_lease_active() -> None:
+    app = create_app(proxy=FakeProxy(FakeUpstreamResponse()))  # type: ignore[arg-type]
     events: list[str] = []
 
     async def close_stream() -> None:
         events.append("close")
 
-    await manager.acquire(close_stream)
-    supervisor.set_camera_release_hook(manager.close_all)
+    lease = await app.state.camera_leases.acquire(close_stream)
 
     def spawn(*_: object, **__: object) -> MagicMock:
         events.append("spawn")
@@ -792,83 +797,15 @@ async def test_camera_app_start_closes_all_leases_before_spawn() -> None:
         return process
 
     with patch("reachy_controller.app_supervisor.subprocess.Popen", side_effect=spawn):
-        result = await supervisor.start_app("reachy_chat")
-
-    assert result["status"] == "loading"
-    assert events == ["close", "spawn"]
-    assert manager.active_count == 0
-    tasks = [*supervisor._reaper_tasks.values(), *supervisor._readiness_tasks.values()]
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-
-
-
-
-@pytest.mark.asyncio
-async def test_camera_app_start_waits_for_delayed_upstream_entry_cleanup() -> None:
-    class DelayedEntryProxy(FakeProxy):
-        def __init__(self) -> None:
-            super().__init__(FakeUpstreamResponse())
-            self.entry_started = asyncio.Event()
-            self.entry_cancelled = asyncio.Event()
-            self.close_started = asyncio.Event()
-            self.allow_close = asyncio.Event()
-
-        def stream(self, *args: object, **kwargs: object):
-            proxy = self
-
-            class Context:
-                async def __aenter__(self):
-                    proxy.entered += 1
-                    proxy.entry_started.set()
-                    try:
-                        await asyncio.Event().wait()
-                    except asyncio.CancelledError:
-                        proxy.entry_cancelled.set()
-                        raise
-
-                async def __aexit__(self, *exc: object) -> None:
-                    proxy.close_started.set()
-                    await proxy.allow_close.wait()
-                    proxy.closed += 1
-
-            return Context()
-
-    proxy = DelayedEntryProxy()
-    app = create_app(proxy=proxy)  # type: ignore[arg-type]
-    request = SimpleNamespace(app=app)
-    route_task = asyncio.create_task(camera_routes.camera_stream(request))  # type: ignore[arg-type]
-    await proxy.entry_started.wait()
-    assert app.state.camera_leases.active_count == 1
-
-    process = MagicMock()
-    process.pid = 12345
-    events: list[str] = []
-
-    def spawn(*_: object, **__: object) -> MagicMock:
-        assert proxy.entry_cancelled.is_set()
-        assert proxy.closed == 1
-        events.append("spawn")
-        return process
-
-    with patch("reachy_controller.app_supervisor.subprocess.Popen", side_effect=spawn):
-        start_task = asyncio.create_task(app.state.app_supervisor.start_app("reachy_chat"))
-        await proxy.entry_cancelled.wait()
-        await proxy.close_started.wait()
-        assert not start_task.done()
-        assert app.state.camera_leases.active_count == 1
-
-        proxy.allow_close.set()
-        result = await asyncio.wait_for(start_task, 1)
+        result = await app.state.app_supervisor.start_app("reachy_chat")
 
     assert result["status"] == "loading"
     assert events == ["spawn"]
-    assert proxy.closed == 1
-    assert app.state.camera_leases.active_count == 0
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(route_task, 1)
+    assert app.state.camera_leases.active_count == 1
 
+    await lease.release()
+    assert events == ["spawn"]
+    assert app.state.camera_leases.active_count == 0
     tasks = [
         *app.state.app_supervisor._reaper_tasks.values(),
         *app.state.app_supervisor._readiness_tasks.values(),
@@ -876,64 +813,10 @@ async def test_camera_app_start_waits_for_delayed_upstream_entry_cleanup() -> No
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
-@pytest.mark.asyncio
-async def test_camera_start_reservation_blocks_stream_during_paused_release() -> None:
-    proxy = FakeProxy(FakeUpstreamResponse())
-    app = create_app(proxy=proxy)  # type: ignore[arg-type]
-    supervisor = app.state.app_supervisor
-    release_started = asyncio.Event()
-    resume_release = asyncio.Event()
-
-    async def paused_release() -> None:
-        release_started.set()
-        await resume_release.wait()
-
-    supervisor.set_camera_release_hook(paused_release)
-    process = MagicMock()
-    process.pid = 9876
-    with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=process):
-        start_task = asyncio.create_task(supervisor.start_app("reachy_chat"))
-        await release_started.wait()
-        assert supervisor.camera_holder() == "reachy_chat"
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/camera/stream")
-        assert response.status_code == 409
-        assert proxy.entered == 0
-        resume_release.set()
-        result = await start_task
-
-    assert result["status"] == "loading"
-    assert supervisor.camera_holder() == "reachy_chat"
-    tasks = [*supervisor._reaper_tasks.values(), *supervisor._readiness_tasks.values()]
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
-async def test_camera_start_reservation_clears_on_spawn_failure() -> None:
-    supervisor = AppSupervisor()
-    release_seen = asyncio.Event()
-
-    async def release() -> None:
-        assert supervisor.camera_holder() == "reachy_chat"
-        release_seen.set()
-
-    supervisor.set_camera_release_hook(release)
-    with patch(
-        "reachy_controller.app_supervisor.subprocess.Popen",
-        side_effect=OSError("spawn failed"),
-    ):
-        result = await supervisor.start_app("reachy_chat")
-
-    assert release_seen.is_set()
-    assert result["status"] == "error"
-    assert supervisor.camera_holder() is None
-
-@pytest.mark.asyncio
-async def test_controller_maps_upstream_failure_and_camera_holder_to_expected_states() -> None:
+async def test_upstream_failure_is_forwarded_while_vision_app_runs() -> None:
     proxy = FakeProxy(FakeUpstreamResponse(status_code=503, chunks=(b"offline",)))
     app = create_app(proxy=proxy)  # type: ignore[arg-type]
     app.state.app_supervisor._apps["reachy_chat"].status = "running"
@@ -941,16 +824,9 @@ async def test_controller_maps_upstream_failure_and_camera_holder_to_expected_st
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        held = await client.get("/api/camera/stream")
-    assert held.status_code == 409
-    assert "reachy_chat" in held.json()["detail"]
+        response = await client.get("/api/camera/stream")
 
-    app.state.app_supervisor._apps["reachy_chat"].status = "stopped"
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        offline = await client.get("/api/camera/stream")
-    assert offline.status_code == 503
+    assert response.status_code == 503
     assert proxy.closed == 1
 
 

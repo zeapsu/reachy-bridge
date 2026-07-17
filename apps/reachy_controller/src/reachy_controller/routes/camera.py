@@ -11,7 +11,6 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
-from reachy_controller.app_supervisor import AppSupervisor
 from reachy_controller.daemon_proxy import DaemonProxy
 
 router = APIRouter(prefix="/api", tags=["camera"])
@@ -57,7 +56,7 @@ class DashboardCameraLeaseManager:
             self._active.pop(token, None)
 
     async def close_all(self) -> None:
-        """Close every stream before a camera app takes ownership."""
+        """Close every active dashboard stream during controller shutdown."""
         async with self._lock:
             entries = list(self._active.items())
         if entries:
@@ -75,11 +74,7 @@ class DashboardCameraLeaseManager:
 
 @router.get("/camera/availability")
 async def camera_availability(request: Request) -> dict[str, Any]:
-    """Return whether the dashboard may take camera ownership."""
-    supervisor: AppSupervisor = request.app.state.app_supervisor
-    holder = supervisor.camera_holder()
-    if holder is not None:
-        return {"available": False, "reason": "in_use", "holder": holder}
+    """Return whether daemon-owned camera media is healthy."""
 
     proxy: DaemonProxy = request.app.state.daemon_proxy
     media_status = await proxy.get_media_status()
@@ -95,7 +90,7 @@ async def camera_availability(request: Request) -> dict[str, Any]:
         return {"available": False, "reason": "media_unavailable", "holder": None}
 
     return {
-        "available": supervisor.camera_available(),
+        "available": True,
         "reason": "available",
         "holder": None,
     }
@@ -113,14 +108,7 @@ async def camera_specs(request: Request) -> dict[str, Any]:
 
 @router.get("/camera/stream")
 async def camera_stream(request: Request) -> Response:
-    """Forward the daemon MJPEG stream while retaining controller ownership."""
-    supervisor: AppSupervisor = request.app.state.app_supervisor
-    holder = supervisor.camera_holder()
-    if holder is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Camera is in use by {holder}; stop that app before opening the dashboard stream.",
-        )
+    """Forward the daemon MJPEG stream while retaining a dashboard lease."""
 
     proxy: DaemonProxy = request.app.state.daemon_proxy
     leases: DashboardCameraLeaseManager = request.app.state.camera_leases
@@ -211,7 +199,7 @@ async def camera_stream(request: Request) -> Response:
             "camera/stream.mjpg",
             headers={"accept": "multipart/x-mixed-replace"},
         )
-        # Register before any daemon startup await so camera-app takeover can
+        # Register before any daemon startup await so controller shutdown can
         # cancel a pending __aenter__ and wait for this route's cleanup.
         lease = await leases.acquire(release_resources)
         upstream = await _await_startup(
@@ -231,27 +219,15 @@ async def camera_stream(request: Request) -> Response:
                 headers={"content-type": content_type} if content_type else None,
             )
 
-        holder = supervisor.camera_holder()
-        if holder is not None:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Camera is in use by {holder}; stop that app before opening the dashboard stream.",
-            )
-
         iterator: AsyncIterator[bytes] = upstream.aiter_raw()
         first_chunk = await _await_startup(
             iterator.__anext__(),
             remaining_startup(),
         )
-        holder = supervisor.camera_holder()
-        if holder is not None or close_task is not None:
+        if close_task is not None:
             raise HTTPException(
-                status_code=409 if holder is not None else 503,
-                detail=(
-                    f"Camera is in use by {holder}; stop that app before opening the dashboard stream."
-                    if holder is not None
-                    else "Camera upstream closed during startup"
-                ),
+                status_code=503,
+                detail="Camera upstream closed during startup",
             )
     except asyncio.CancelledError:
         await release_resources()

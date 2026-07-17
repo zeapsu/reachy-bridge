@@ -10,8 +10,8 @@ import time
 import asyncio
 import logging
 import threading
+from typing import Any, List, Optional, Awaitable
 from inspect import isawaitable
-from typing import Any, Awaitable, List, Optional
 from pathlib import Path
 from collections.abc import Callable, AsyncGenerator
 
@@ -26,8 +26,8 @@ from reachy_chat.config import (
     GEMINI_BACKEND,
     LOCKED_PROFILE,
     OPENAI_BACKEND,
-    OPENAI_REALTIME_BACKEND,
     HF_REALTIME_WS_URL_ENV,
+    OPENAI_REALTIME_BACKEND,
     HF_LOCAL_CONNECTION_MODE,
     HF_DEPLOYED_CONNECTION_MODE,
     HF_REALTIME_CONNECTION_MODE_ENV,
@@ -52,29 +52,28 @@ from reachy_chat.conversation_handler import ConversationHandler
 
 try:
     # FastAPI is provided by the Reachy Mini Apps runtime
-    from fastapi import FastAPI, Request, Response
+    from fastapi import FastAPI, Request
     from pydantic import BaseModel
-    from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-    from starlette.staticfiles import StaticFiles
+    from fastapi.responses import JSONResponse, StreamingResponse
 except Exception:  # pragma: no cover - only loaded when settings_app is used
     FastAPI = object  # type: ignore
-    FileResponse = object  # type: ignore
     JSONResponse = object  # type: ignore
     StreamingResponse = object  # type: ignore
-    StaticFiles = object  # type: ignore
     BaseModel = object  # type: ignore
     Request = object  # type: ignore
 
 logger = logging.getLogger(__name__)
 
+
 class VoiceChangeError(RuntimeError):
     """Raised when a handler did not verify the requested voice change."""
+
 
 _SSE_KEEPALIVE_INTERVAL_SECONDS = 15.0  # below typical 60s proxy idle timeout
 
 
 def _detach_framework_root_routes(app: "FastAPI") -> None:
-    """Strip framework-registered GET / and /static routes so ours aren't silently shadowed."""
+    """Strip SDK-provided standalone page routes; settings are controller-native."""
     routes = getattr(app, "router", None)
     routes = getattr(routes, "routes", None) if routes else getattr(app, "routes", None)
     if routes is None:
@@ -432,6 +431,7 @@ class LocalStream:
             finally:
                 self._startup_transition_active = False
                 self._startup_transition_done.set()
+
     async def _shutdown_active_handler(self) -> None:
         """Stop the active handler and its LocalStream-owned startup child."""
         generation = self._startup_generation
@@ -512,7 +512,6 @@ class LocalStream:
         self._active_backend_name = get_backend_choice()
         return handler
 
-
     def _mark_restart_requested(self, reason: str) -> None:
         """Request a backend restart from a synchronous route handler."""
         logger.info("Backend restart requested: %s", reason)
@@ -530,13 +529,22 @@ class LocalStream:
         await self._shutdown_active_handler()
 
     async def _sleep_or_restart_requested(self, delay: float) -> None:
-        """Sleep for a retry interval, waking early if a restart is requested."""
-        if self._restart_requested.is_set():
+        """Sleep for a retry interval, waking early for restart or shutdown."""
+        if self._restart_requested.is_set() or self._stop_event.is_set():
             return
+        restart_wait = asyncio.create_task(self._restart_requested.wait())
+        stop_wait = asyncio.create_task(self._stop_event.wait())
         try:
-            await asyncio.wait_for(self._restart_requested.wait(), timeout=delay)
-        except asyncio.TimeoutError:
-            pass
+            await asyncio.wait(
+                {restart_wait, stop_wait},
+                timeout=delay,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for waiter in (restart_wait, stop_wait):
+                if not waiter.done():
+                    waiter.cancel()
+            await asyncio.gather(restart_wait, stop_wait, return_exceptions=True)
 
     @staticmethod
     def _format_backend_error(error: BaseException | str) -> str:
@@ -792,7 +800,10 @@ class LocalStream:
 
     def get_current_voice(self) -> str | Awaitable[str]:
         """Return the active handler voice, falling back only if lookup fails."""
-        fallback = lambda: get_default_voice_for_backend(get_backend_choice())
+
+        def fallback() -> str:
+            return get_default_voice_for_backend(get_backend_choice())
+
         handler = getattr(self, "handler", None)
         callback = getattr(handler, "get_current_voice", None)
         if not callable(callback):
@@ -803,6 +814,7 @@ class LocalStream:
             logger.warning("Unable to read active handler voice: %s", exc)
             return fallback()
         if isawaitable(current):
+
             async def _resolve_async() -> str:
                 try:
                     value = await current
@@ -853,9 +865,7 @@ class LocalStream:
         except Exception:
             raise
         if not isinstance(current, str) or current.strip() != requested:
-            raise VoiceChangeError(
-                f"voice change was not applied: requested {requested!r}, current {current!r}"
-            )
+            raise VoiceChangeError(f"voice change was not applied: requested {requested!r}, current {current!r}")
 
         self._voice_override = current.strip()
         self._persist_voice_override(self._voice_override)
@@ -870,30 +880,17 @@ class LocalStream:
             write_startup_settings(self._instance_path, profile=existing.profile, voice=voice)
         except Exception as e:
             logger.warning("Failed to persist startup voice: %s", e)
+            raise VoiceChangeError(f"failed to persist startup voice: {e}") from e
 
     def _init_settings_ui_if_needed(self) -> None:
-        """Attach minimal settings UI to the settings app.
-
-        Always mounts the UI when a settings_app is provided so that users
-        see a confirmation message even if the API key is already configured.
-        """
+        """Attach the internal settings API consumed by Reachy Controller."""
         if self._settings_initialized:
             return
         if self._settings_app is None:
             return
 
-        static_dir = Path(__file__).parent / "static"
-        index_file = static_dir / "index.html"
-        logger.info("Serving settings UI from %s", static_dir)
-
-        # Framework pre-registers GET / and /static; strip them so our routes aren't shadowed.
+        # The SDK may pre-register a standalone page; this app exposes API routes only.
         _detach_framework_root_routes(self._settings_app)
-
-        if hasattr(self._settings_app, "mount"):
-            try:
-                self._settings_app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-            except Exception:
-                pass
 
         class BackendPayload(BaseModel):
             backend: str
@@ -905,7 +902,8 @@ class LocalStream:
         def _status_payload() -> dict[str, object]:
             backend_provider = get_backend_choice()
             active_backend = self._active_backend()
-            has_openai_key = self._has_required_key(OPENAI_BACKEND)
+            has_openai_realtime_key = self._has_required_key(OPENAI_REALTIME_BACKEND)
+            has_openrouter_key = self._has_required_key(OPENAI_BACKEND)
             has_gemini_key = self._has_required_key(GEMINI_BACKEND)
             hf_session_url = get_hf_session_url()
             hf_ws_url = get_hf_direct_ws_url()
@@ -915,7 +913,7 @@ class LocalStream:
             hf_connection_selection = get_hf_connection_selection()
             hf_connection_mode = hf_connection_selection.mode
             has_hf_connection = hf_connection_selection.has_target
-            can_proceed_with_openai = has_openai_key
+            can_proceed_with_openai = has_openrouter_key
             can_proceed_with_gemini = has_gemini_key
             can_proceed_with_hf = has_hf_connection
             readiness_backend = backend_provider if self._can_rebuild_handler() else active_backend
@@ -926,7 +924,8 @@ class LocalStream:
                 "active_backend": active_backend,
                 "backend_provider": backend_provider,
                 "has_key": can_proceed,
-                "has_openai_key": has_openai_key,
+                "has_openai_realtime_key": has_openai_realtime_key,
+                "has_openrouter_key": has_openrouter_key,
                 "has_gemini_key": has_gemini_key,
                 "has_hf_session_url": has_hf_session_url,
                 "has_hf_ws_url": has_hf_ws_url,
@@ -941,16 +940,6 @@ class LocalStream:
                 "requires_restart": requires_restart,
                 **backend_connection,
             }
-
-        # GET / -> index.html
-        @self._settings_app.get("/")
-        def _root() -> FileResponse:
-            return FileResponse(str(index_file))
-
-        # GET /favicon.ico -> optional, avoid noisy 404s on some browsers
-        @self._settings_app.get("/favicon.ico")
-        def _favicon() -> Response:
-            return Response(status_code=204)
 
         # GET /status -> whether key is set
         @self._settings_app.get("/status")

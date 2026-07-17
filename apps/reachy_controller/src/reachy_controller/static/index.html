@@ -70,7 +70,6 @@
         <section class="glass viewport">
           <div class="vp-stage" id="vp">
             <div class="vp-layer" data-mode="camera">
-              <canvas id="cam" aria-hidden="true"></canvas>
               <img id="camera-stream" alt="" hidden aria-hidden="true">
               <p class="empty-state" id="camera-placeholder">Select live camera to connect</p>
             </div>
@@ -200,10 +199,23 @@
       </div>
 
       <div class="col">
-        <section class="glass pad instrument">
-          <div class="head"><h2>apps</h2><div class="rule"></div></div>
-          <div class="apps" id="apps" aria-live="polite"></div>
-          <p class="panel-hint" id="apps-message" role="status"></p>
+        <section class="glass pad instrument" id="apps-panel">
+          <div id="apps-view">
+            <div class="head"><h2>apps</h2><div class="rule"></div></div>
+            <div class="apps" id="apps" aria-live="polite"></div>
+            <p class="panel-hint" id="apps-message" role="status"></p>
+          </div>
+          <div id="app-settings" hidden>
+            <div class="head">
+              <button class="btn settings-back" id="app-settings-back" type="button" aria-label="Back to apps">‹ apps</button>
+              <h2>settings</h2>
+              <span class="settings-app" id="app-settings-app"></span>
+              <div class="rule"></div>
+              <span class="pill"><span class="dot" id="app-settings-dot"></span><span id="app-settings-state">idle</span></span>
+            </div>
+            <div class="settings-fields" id="app-settings-fields"></div>
+            <p class="panel-hint" id="app-settings-hint" role="status"></p>
+          </div>
         </section>
 
         <section class="glass pad instrument">
