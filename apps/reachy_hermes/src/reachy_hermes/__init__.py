@@ -10,7 +10,6 @@ from reachy_hermes.hermes import (
     HermesError,
     HermesHandler,
     HermesInvocationError,
-    HermesTimeout,
     is_cancel_phrase,
 )
 
@@ -24,6 +23,5 @@ __all__ = [
     "HermesError",
     "HermesHandler",
     "HermesInvocationError",
-    "HermesTimeout",
     "is_cancel_phrase",
 ]

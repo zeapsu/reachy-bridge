@@ -25,7 +25,6 @@ from reachy_hermes.gateway import (
     HermesGatewayClient,
     HermesInvocationError,
     HermesMissingBinary,
-    HermesTimeout,
     SAFETY_PROMPT,
 )
 from reachy_hermes.tts import NeuralTTS
@@ -733,7 +732,6 @@ __all__ = [
     "HermesHandler",
     "HermesInvocationError",
     "HermesMissingBinary",
-    "HermesTimeout",
     "SAFETY_PROMPT",
     "is_cancel_phrase",
     "to_spoken_text",

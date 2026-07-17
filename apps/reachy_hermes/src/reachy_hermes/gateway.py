@@ -20,7 +20,6 @@ HERMES_BINARY = Path("~/.local/bin/hermes").expanduser()
 HERMES_TOOLSETS = "all"
 HERMES_GATEWAY_PORT = 9120
 HERMES_GATEWAY_STARTUP_SECONDS = 60.0
-HERMES_TIMEOUT_SECONDS = 180.0
 HERMES_OUTPUT_LIMIT_BYTES = 32 * 1024
 HERMES_TERM_GRACE_SECONDS = 3.0
 HERMES_SESSION_TITLE = "reachy-hermes"
@@ -61,8 +60,6 @@ class HermesInvocationError(HermesError):
     """The Hermes gateway failed or returned an invalid response."""
 
 
-class HermesTimeout(HermesError):
-    """Hermes exceeded its bounded wall-clock timeout."""
 
 
 class HermesCancelled(HermesError):
@@ -200,40 +197,48 @@ class HermesGatewayClient:
         history: list[dict[str, str]] | None = None,
         status_callback: StatusCallback | None = None,
     ) -> str:
-        """Submit one turn and return the bounded final text response."""
+        """Submit one turn and wait until completion or explicit cancellation."""
         await self.start()
         self._cancel_requested = False
         buffered_events: list[dict[str, Any]] = []
         try:
-            async with asyncio.timeout(HERMES_TIMEOUT_SECONDS):
-                async with self._connect_factory(self.websocket_url) as websocket:
-                    self._active_websocket = websocket
-                    await self._wait_until_ready(websocket)
-                    self._session_id = await self._resume_or_create(
-                        websocket, buffered_events, history or []
-                    )
-                    await self._rpc(
-                        websocket,
-                        "config.set",
-                        {"session_id": self._session_id, "key": "yolo", "value": "on"},
-                        buffered_events,
-                    )
-                    await self._rpc(
-                        websocket,
-                        "prompt.submit",
-                        {"session_id": self._session_id, "text": prompt},
-                        buffered_events,
-                    )
-                    answer = await self._collect_response(websocket, buffered_events, status_callback)
-                    self._turns_in_session += 1
-                    return answer
-        except TimeoutError as exc:
-            await self.interrupt()
-            raise HermesTimeout(f"Hermes timed out after {HERMES_TIMEOUT_SECONDS:.0f} seconds") from exc
+            async with self._connect_factory(self.websocket_url) as websocket:
+                self._active_websocket = websocket
+                await self._wait_until_ready(websocket)
+                self._session_id = await self._resume_or_create(
+                    websocket,
+                    buffered_events,
+                    history or [],
+                )
+                await self._rpc(
+                    websocket,
+                    "config.set",
+                    {
+                        "session_id": self._session_id,
+                        "key": "yolo",
+                        "value": "on",
+                    },
+                    buffered_events,
+                )
+                await self._rpc(
+                    websocket,
+                    "prompt.submit",
+                    {"session_id": self._session_id, "text": prompt},
+                    buffered_events,
+                )
+                answer = await self._collect_response(
+                    websocket,
+                    buffered_events,
+                    status_callback,
+                )
+                self._turns_in_session += 1
+                return answer
         except HermesError:
             raise
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            raise HermesInvocationError(f"Hermes gateway connection failed: {exc}") from exc
+            raise HermesInvocationError(
+                f"Hermes gateway connection failed: {exc}"
+            ) from exc
         finally:
             self._active_websocket = None
             self._session_id = None
@@ -493,13 +498,11 @@ __all__ = [
     "HERMES_BINARY",
     "HERMES_GATEWAY_PORT",
     "HERMES_OUTPUT_LIMIT_BYTES",
-    "HERMES_TIMEOUT_SECONDS",
     "HERMES_TOOLSETS",
     "HermesCancelled",
     "HermesError",
     "HermesGatewayClient",
     "HermesInvocationError",
     "HermesMissingBinary",
-    "HermesTimeout",
     "SAFETY_PROMPT",
 ]
