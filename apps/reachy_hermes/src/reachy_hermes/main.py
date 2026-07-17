@@ -63,14 +63,22 @@ class ReachyHermes(ReachyMiniApp):  # type: ignore[misc]
             reachy_mini.enable_wobbling()
             threading.Thread(target=stop_stream, daemon=True, name="hermes-stop-watcher").start()
             try:
-                # Readiness is intentionally delayed until the first Whisper model load finishes.
+                # Readiness waits for both local speech models so the first turn
+                # does not pay a hidden download or initialization delay.
                 handler.ensure_whisper_loaded()
                 logger.info("Hermes Whisper model pre-warmed")
             except Exception as exc:
                 logger.warning("Hermes Whisper pre-warm failed; startup will retry lazily: %s", exc)
-            # a stop during model pre-warm must not launch or advertise a closed stream.
             if stop_event.is_set():
                 logger.info("Hermes stopped during Whisper pre-warm")
+                return
+            try:
+                handler.ensure_tts_loaded()
+                logger.info("Hermes neural TTS model pre-warmed")
+            except Exception as exc:
+                logger.warning("Hermes neural TTS pre-warm failed; startup will retry lazily: %s", exc)
+            if stop_event.is_set():
+                logger.info("Hermes stopped during speech-model pre-warm")
                 return
             _signal_ready()
             stream.launch()
