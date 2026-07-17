@@ -95,6 +95,8 @@ on the Jetson with `REACHY_MANAGE_DAEMON=1`, its power button manages the on-dev
 
 ## Repository workflow
 - Before substantive work, inspect recent git history and open GitHub issues.
-- Use GitHub issues to track work that spans sessions. Link pull requests to their issues and target
-  pull requests to `main`.
+- Use GitHub milestones for work spanning multiple issues. Put scope, non-scope, and dependency order
+  in the milestone description; keep detailed requirements and acceptance criteria in child issues.
+  Do not add a redundant PRD/tracker issue when the milestone already tracks the complete child set.
+- Link pull requests to their issues and target pull requests to `main`.
 - Leave merging to the user unless explicitly asked.
