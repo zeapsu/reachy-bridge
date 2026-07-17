@@ -138,7 +138,7 @@ class AppSupervisor:
             "module": "reachy_hermes",
             "uses_camera": False,
             "display": "Hermes",
-            "blurb": "Voice-driven read-only agent for longer tasks.",
+            "blurb": "Voice-driven agent for research and longer tasks.",
         },
     }
 

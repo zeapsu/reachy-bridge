@@ -432,7 +432,7 @@ async def test_vad_keeps_preroll_and_finalizes_after_shorter_silence() -> None:
 
 
 @pytest.mark.asyncio
-async def test_completion_emits_five_decaying_chimes_and_ear_wiggle() -> None:
+async def test_completion_emits_three_pulse_earcon_and_smooth_ear_wiggle() -> None:
     gateway = FakeGateway("final answer")
     handler = build_handler(gateway)
     handler.deps.reachy_mini.get_current_head_pose.return_value = np.eye(4)
@@ -446,11 +446,13 @@ async def test_completion_emits_five_decaying_chimes_and_ear_wiggle() -> None:
     sample_rate, chime = await handler.output_queue.get()
     assert sample_rate == 16_000
     assert chime.dtype == np.int16
-    assert chime.size == 37_600
+    assert chime.size == 10_560
     peaks = [
-        np.max(np.abs(chime[index * 9_120 : index * 9_120 + 1_120]))
-        for index in range(5)
+        np.max(np.abs(chime[index * 4_000 : index * 4_000 + 2_560]))
+        for index in range(3)
     ]
+    assert np.all(chime[2_560:4_000] == 0)
+    assert np.all(chime[6_560:8_000] == 0)
     assert peaks == sorted(peaks, reverse=True)
     move = handler.deps.movement_manager.queue_move.call_args.args[0]
     assert isinstance(move, EarWiggleMove)
@@ -461,7 +463,7 @@ async def test_completion_emits_five_decaying_chimes_and_ear_wiggle() -> None:
 
 
 @pytest.mark.asyncio
-async def test_working_updates_tick_every_eight_seconds_and_speak_periodically(
+async def test_working_updates_repeat_bursts_and_speak_periodically(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import reachy_hermes.hermes as hermes_module
@@ -490,8 +492,8 @@ async def test_working_updates_tick_every_eight_seconds_and_speak_periodically(
     monkeypatch.setattr(handler, "_speak_working_update", fake_update)
     await handler._working_status_updates()
     assert updates == [handler.WORKING_UPDATE_MESSAGE, handler.WORKING_UPDATE_MESSAGE]
-    assert delays == [8.0] * 7
-    assert ticks == [True] * 7
+    assert delays == [1.16] * 49
+    assert ticks == [True] * 49
     await handler.shutdown()
 
 

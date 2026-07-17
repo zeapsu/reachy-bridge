@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 WORKING_UPDATE_INITIAL_DELAY_SECONDS = 24.0
 WORKING_UPDATE_INTERVAL_SECONDS = 32.0
-PROGRESS_TICK_INTERVAL_SECONDS = 8.0
+PROCESSING_BURST_INTERVAL_SECONDS = 1.16
 WORKING_UPDATE_MESSAGE = "I'm still working on that."
 GATEWAY_HISTORY_MESSAGES = 6
 CANCEL_REPLY = "Okay, I stopped."
@@ -103,7 +103,7 @@ class EarWiggleMove(Move):  # type: ignore[misc]
 
     @property
     def duration(self) -> float:
-        return 1.4
+        return 0.66
 
     def evaluate(
         self, t: float
@@ -509,35 +509,47 @@ class HermesHandler(OpenRouterChatHandler):
         self._mark_activity("hermes_working")
 
     async def _queue_processing_chime(self) -> None:
-        """Emit a five-note decaying cue immediately after a turn is accepted."""
-        await self._queue_chime_cluster(volume=0.14)
+        """Start the repeating three-pulse processing earcon."""
+        await self._queue_processing_burst()
         self._queue_ear_wiggle()
         self._mark_activity("hermes_processing_chime")
 
     async def _queue_progress_tick(self) -> None:
-        """Repeat the decaying cue quietly so a long turn never sounds hung."""
-        await self._queue_chime_cluster(volume=0.07)
+        """Repeat one subtle processing burst while Hermes is working."""
+        await self._queue_processing_burst()
         self._queue_ear_wiggle()
 
-    async def _queue_chime_cluster(self, *, volume: float) -> None:
-        tone_samples = int(self.SAMPLE_RATE * 0.07)
-        gap_samples = int(self.SAMPLE_RATE * 0.5)
-        cluster = np.zeros(5 * tone_samples + 4 * gap_samples, dtype=np.float32)
-        times = np.arange(tone_samples, dtype=np.float32) / self.SAMPLE_RATE
-        envelope = np.sin(np.pi * np.arange(tone_samples, dtype=np.float32) / tone_samples) ** 2
-        cursor = 0
-        for index in range(5):
-            frequency = 440.0 - index * 30.0
-            amplitude = volume * (0.72**index)
-            cluster[cursor : cursor + tone_samples] = (
-                amplitude * envelope * np.sin(2.0 * np.pi * frequency * times)
+    async def _queue_processing_burst(self) -> None:
+        pulse_samples = int(self.SAMPLE_RATE * 0.16)
+        onset_samples = int(self.SAMPLE_RATE * 0.25)
+        burst = np.zeros(2 * onset_samples + pulse_samples, dtype=np.float32)
+        times = np.arange(pulse_samples, dtype=np.float32) / self.SAMPLE_RATE
+
+        attack_samples = int(self.SAMPLE_RATE * 0.01)
+        sustain_samples = int(self.SAMPLE_RATE * 0.08)
+        release_samples = pulse_samples - attack_samples - sustain_samples
+        envelope = np.concatenate(
+            (
+                np.sin(np.linspace(0.0, np.pi / 2.0, attack_samples, endpoint=False)) ** 2,
+                np.ones(sustain_samples, dtype=np.float64),
+                np.cos(np.linspace(0.0, np.pi / 2.0, release_samples)) ** 2,
             )
-            cursor += tone_samples + gap_samples
-        self._note_output_playback(self.SAMPLE_RATE, cluster.size)
+        ).astype(np.float32)
+
+        for index, frequency in enumerate((440.0, 494.0, 554.0)):
+            amplitude = 0.09 * (0.78**index)
+            wave = (
+                np.sin(2.0 * np.pi * frequency * times)
+                + 0.2 * np.sin(4.0 * np.pi * frequency * times)
+            ) / 1.2
+            offset = index * onset_samples
+            burst[offset : offset + pulse_samples] = amplitude * envelope * wave
+
+        self._note_output_playback(self.SAMPLE_RATE, burst.size)
         await self.output_queue.put(
             (
                 self.SAMPLE_RATE,
-                np.round(cluster * 32767.0).astype(np.int16),
+                np.round(burst * 32767.0).astype(np.int16),
             )
         )
 
@@ -576,10 +588,10 @@ class HermesHandler(OpenRouterChatHandler):
         next_spoken_update = self.WORKING_UPDATE_INITIAL_DELAY_SECONDS
         try:
             while self._gateway_turn_active:
-                await asyncio.sleep(PROGRESS_TICK_INTERVAL_SECONDS)
+                await asyncio.sleep(PROCESSING_BURST_INTERVAL_SECONDS)
                 if not self._gateway_turn_active:
                     return
-                elapsed += PROGRESS_TICK_INTERVAL_SECONDS
+                elapsed += PROCESSING_BURST_INTERVAL_SECONDS
                 await self._queue_progress_tick()
                 if elapsed >= next_spoken_update:
                     await self._speak_working_update()

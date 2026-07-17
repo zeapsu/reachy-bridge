@@ -128,7 +128,7 @@ const statuses = [
   { name: "reachy_dance", status: "stopped", display: "Reachy Dance", blurb: "Compose movement." },
   { name: "reachy_lookat", status: "stopped", display: "Reachy Look At", blurb: "Track a target." },
   { name: "reachy_simon", status: "stopped", display: "Reachy Simon", blurb: "Play a memory game." },
-  { name: "reachy_hermes", status: "stopped", display: "Hermes", blurb: "Run a read-only task." },
+  { name: "reachy_hermes", status: "stopped", display: "Hermes", blurb: "Voice-driven agent for research and longer tasks." },
 ];
 const results = {};
 renderApps(statuses);
