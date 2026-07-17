@@ -13,6 +13,7 @@ from typing import Any, TypeAlias, cast
 
 import numpy as np
 from fastrtc import AdditionalOutputs
+from reachy_mini.motion.move import Move
 from numpy.typing import NDArray
 from reachy_chat.openrouter_chat import OpenRouterChatHandler
 
@@ -61,11 +62,66 @@ def to_spoken_text(text: str) -> str:
     spoken = spoken.translate(str.maketrans({"*": "", "#": "", "`": "", "_": " ", "~": ""}))
     return re.sub(r"\s+", " ", spoken).strip()
 
+def split_for_speech(text: str, maximum: int = 90) -> list[str]:
+    """Split plain text at sentence boundaries for low-latency synthesis."""
+    chunks: list[str] = []
+    current = ""
+    for sentence in re.split(r"(?<=[.!?])\s+", text.strip()):
+        words = sentence.split()
+        while words:
+            candidate = f"{current} {' '.join(words)}".strip()
+            if len(candidate) <= maximum:
+                current = candidate
+                break
+            room = maximum - len(current) - (1 if current else 0)
+            taken: list[str] = []
+            while words and (not taken or len(" ".join(taken + [words[0]])) <= room):
+                taken.append(words.pop(0))
+            if current:
+                chunks.append(current)
+                current = ""
+                words = taken + words
+            else:
+                chunks.append(" ".join(taken))
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+class EarWiggleMove(Move):  # type: ignore[misc]
+    """Short antenna-only acknowledgement routed through MovementManager."""
+
+    def __init__(
+        self,
+        head: NDArray[np.float32],
+        antennas: tuple[float, float],
+        body_yaw: float,
+    ) -> None:
+        self.head = head.copy()
+        self.antennas = antennas
+        self.body_yaw = body_yaw
+
+    @property
+    def duration(self) -> float:
+        return 0.7
+
+    def evaluate(
+        self, t: float
+    ) -> tuple[NDArray[np.float32], NDArray[np.float64], float]:
+        clamped = min(max(t, 0.0), self.duration)
+        fade = np.sin(np.pi * clamped / self.duration)
+        offset = np.deg2rad(5.0) * fade * np.sin(2.0 * np.pi * 3.0 * clamped)
+        antennas = np.array(
+            [self.antennas[0] + offset, self.antennas[1] - offset],
+            dtype=np.float64,
+        )
+        return self.head, antennas, self.body_yaw
+
 
 class HermesHandler(OpenRouterChatHandler):
     """Reachy-owned STT/TTS with a persistent, isolated Hermes event loop."""
 
-    SPEECH_ENERGY_THRESHOLD = 0.008
+    SPEECH_ENERGY_THRESHOLD = 0.015
     SILENCE_DURATION_S = 0.6
     MIN_SPEECH_DURATION_S = 0.2
     PRE_ROLL_SECONDS = 0.35
@@ -162,6 +218,7 @@ class HermesHandler(OpenRouterChatHandler):
             self._speech_active = True
             self._set_listening(True)
             self._mark_activity("user_speech_started")
+            logger.info("Hermes speech started at RMS %.4f", energy)
             self._speech_chunks.extend(self._pre_roll_chunks)
             self._clear_pre_roll()
 
@@ -180,6 +237,12 @@ class HermesHandler(OpenRouterChatHandler):
 
         speech_duration = self._speech_samples / self.SAMPLE_RATE
         utterance = np.concatenate(self._speech_chunks) if self._speech_chunks else np.empty(0, dtype=np.float32)
+        logger.info(
+            "Hermes utterance finalized after %.2fs with %.2fs speech and %.2fs trailing silence",
+            utterance_duration,
+            speech_duration,
+            trailing_silence,
+        )
         self._reset_input_buffer()
         self._clear_pre_roll()
         self._set_listening(False)
@@ -188,6 +251,85 @@ class HermesHandler(OpenRouterChatHandler):
             return
         self._processing_turn = True
         self._processing_task = asyncio.create_task(self._process_turn(utterance), name="hermes-voice-turn")
+
+    async def _process_turn(self, audio: NDArray[np.float32]) -> None:
+        """Run STT and Hermes, then synthesize sentence chunks ahead of playback."""
+        started = time.monotonic()
+        self._processing_turn = True
+        try:
+            try:
+                transcript = (await self._transcribe(audio)).strip()
+            except Exception as exc:
+                logger.exception("Hermes speech transcription failed: %s", exc)
+                await self.output_queue.put(
+                    (self.SAMPLE_RATE, np.zeros(1_600, dtype=np.int16))
+                )
+                return
+            if not transcript:
+                logger.debug("Ignoring empty Hermes transcription")
+                return
+
+            address_result = self.address_gate.semantic_check(transcript)
+            logger.info(
+                "Hermes address gate: open=%s confidence=%.1f reason=%s",
+                address_result.is_open,
+                address_result.confidence,
+                address_result.reason,
+            )
+            if not address_result.is_open:
+                logger.info(
+                    "Filtered overheard Hermes speech confidence=%.1f transcript=%r",
+                    address_result.confidence,
+                    transcript,
+                )
+                return
+
+            self._record_message("user", transcript)
+            await self.output_queue.put(
+                AdditionalOutputs({"role": "user", "content": transcript})
+            )
+            self._mark_activity("user_transcription_completed")
+
+            try:
+                reply = await self._request_completion()
+            except Exception as exc:
+                logger.exception("Hermes completion failed: %s", exc)
+                reply = self.FALLBACK_REPLY
+
+            self._record_message("assistant", reply)
+            await self.output_queue.put(
+                AdditionalOutputs({"role": "assistant", "content": reply})
+            )
+            self._mark_activity("assistant_transcript_done")
+
+            playback_started: float | None = None
+            playback_seconds = 0.0
+            for speech_text in split_for_speech(reply):
+                try:
+                    sample_rate, speech = await self._synthesize(speech_text)
+                except Exception as exc:
+                    logger.exception("Hermes text-to-speech synthesis failed: %s", exc)
+                    break
+                if playback_started is None:
+                    playback_started = time.monotonic()
+                    self._mark_activity("assistant_audio_delta")
+                for offset in range(0, speech.size, self.OUTPUT_CHUNK_SAMPLES):
+                    await self.output_queue.put(
+                        (
+                            sample_rate,
+                            speech[offset : offset + self.OUTPUT_CHUNK_SAMPLES],
+                        )
+                    )
+                playback_seconds += speech.size / sample_rate
+
+            if playback_started is not None:
+                elapsed = time.monotonic() - playback_started
+                await asyncio.sleep(max(0.0, playback_seconds - elapsed))
+            logger.info("Hermes voice turn completed in %.2fs", time.monotonic() - started)
+        finally:
+            self._processing_turn = False
+            self._reset_input_buffer()
+            self._clear_pre_roll()
 
     def _remember_pre_roll(self, audio: NDArray[np.float32]) -> None:
         self._pre_roll_chunks.append(audio)
@@ -355,27 +497,49 @@ class HermesHandler(OpenRouterChatHandler):
         self._mark_activity("hermes_working")
 
     async def _queue_processing_chime(self) -> None:
-        """Emit a short two-note cue immediately after a turn is accepted."""
-        await self._queue_tone((660.0, 880.0), duration=0.18, volume=0.12)
+        """Emit a five-note decaying cue immediately after a turn is accepted."""
+        await self._queue_chime_cluster(volume=0.14)
+        self._queue_ear_wiggle()
         self._mark_activity("hermes_processing_chime")
 
     async def _queue_progress_tick(self) -> None:
-        """Emit a quiet heartbeat so a long agent turn never sounds hung."""
-        await self._queue_tone((520.0,), duration=0.08, volume=0.045)
+        """Repeat the decaying cue quietly so a long turn never sounds hung."""
+        await self._queue_chime_cluster(volume=0.07)
+        self._queue_ear_wiggle()
 
-    async def _queue_tone(self, frequencies: tuple[float, ...], *, duration: float, volume: float) -> None:
-        sample_count = int(self.SAMPLE_RATE * duration)
-        times = np.arange(sample_count, dtype=np.float32) / self.SAMPLE_RATE
-        frequency_array = np.asarray(frequencies, dtype=np.float32)
-        indices = np.minimum(
-            (np.arange(sample_count) * len(frequencies) // sample_count),
-            len(frequencies) - 1,
-        )
-        envelope = np.sin(np.pi * np.arange(sample_count, dtype=np.float32) / sample_count) ** 2
-        samples = volume * envelope * np.sin(2.0 * np.pi * frequency_array[indices] * times)
+    async def _queue_chime_cluster(self, *, volume: float) -> None:
+        tone_samples = int(self.SAMPLE_RATE * 0.07)
+        gap_samples = int(self.SAMPLE_RATE * 0.035)
+        cluster = np.zeros(5 * tone_samples + 4 * gap_samples, dtype=np.float32)
+        times = np.arange(tone_samples, dtype=np.float32) / self.SAMPLE_RATE
+        envelope = np.sin(np.pi * np.arange(tone_samples, dtype=np.float32) / tone_samples) ** 2
+        cursor = 0
+        for index in range(5):
+            frequency = 440.0 - index * 30.0
+            amplitude = volume * (0.72**index)
+            cluster[cursor : cursor + tone_samples] = (
+                amplitude * envelope * np.sin(2.0 * np.pi * frequency * times)
+            )
+            cursor += tone_samples + gap_samples
         await self.output_queue.put(
-            (self.SAMPLE_RATE, np.round(samples * 32767.0).astype(np.int16))
+            (
+                self.SAMPLE_RATE,
+                np.round(cluster * 32767.0).astype(np.int16),
+            )
         )
+
+    def _queue_ear_wiggle(self) -> None:
+        try:
+            robot = self.deps.reachy_mini
+            head = np.asarray(robot.get_current_head_pose(), dtype=np.float32)
+            head_joints, antenna_joints = robot.get_current_joint_positions()
+            body_yaw = float(head_joints[0])
+            antennas = (float(antenna_joints[0]), float(antenna_joints[1]))
+            self.deps.movement_manager.queue_move(
+                EarWiggleMove(head, antennas, body_yaw)
+            )
+        except Exception:
+            logger.debug("Unable to queue Hermes ear wiggle", exc_info=True)
 
     def _start_working_status_updates(self) -> None:
         task = self._working_status_task

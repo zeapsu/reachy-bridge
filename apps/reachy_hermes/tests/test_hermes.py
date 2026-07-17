@@ -21,7 +21,13 @@ from reachy_hermes.gateway import (
     HermesGatewayClient,
     HermesInvocationError,
 )
-from reachy_hermes.hermes import HermesHandler, is_cancel_phrase, to_spoken_text
+from reachy_hermes.hermes import (
+    EarWiggleMove,
+    HermesHandler,
+    is_cancel_phrase,
+    split_for_speech,
+    to_spoken_text,
+)
 from reachy_hermes.tts import NeuralTTS
 
 
@@ -140,6 +146,17 @@ def test_cancel_phrase_matching_is_conservative_and_case_insensitive() -> None:
 def test_markdown_is_defensively_normalized_for_speech() -> None:
     response = "## Update\n* **First:** done [source](https://example.com)\n* `Second` #2 [1]"
     assert to_spoken_text(response) == "Update First: done source Second 2"
+
+def test_speech_text_is_split_into_bounded_sentence_chunks() -> None:
+    text = (
+        "First, this answer should begin playing quickly. "
+        "Second, synthesis should continue while the first part plays. "
+        "Finally, the reply remains natural."
+    )
+    chunks = split_for_speech(text)
+    assert len(chunks) == 3
+    assert all(len(chunk) <= 90 for chunk in chunks)
+    assert " ".join(chunks) == text
 
 
 @pytest.mark.asyncio
@@ -389,17 +406,30 @@ async def test_vad_keeps_preroll_and_finalizes_after_shorter_silence() -> None:
 
 
 @pytest.mark.asyncio
-async def test_completion_emits_immediate_processing_chime() -> None:
+async def test_completion_emits_five_decaying_chimes_and_ear_wiggle() -> None:
     gateway = FakeGateway("final answer")
     handler = build_handler(gateway)
+    handler.deps.reachy_mini.get_current_head_pose.return_value = np.eye(4)
+    handler.deps.reachy_mini.get_current_joint_positions.return_value = (
+        np.array([0.1]),
+        np.array([-0.17, 0.17]),
+    )
     handler._record_message("user", "question")
     reply = await handler._request_completion()
     assert reply == "final answer"
     sample_rate, chime = await handler.output_queue.get()
     assert sample_rate == 16_000
     assert chime.dtype == np.int16
-    assert chime.size == 2_880
-    assert np.max(np.abs(chime)) > 0
+    assert chime.size == 7_840
+    peaks = [
+        np.max(np.abs(chime[offset : offset + 1_120]))
+        for offset in range(0, 7_840, 1_680)
+    ]
+    assert peaks == sorted(peaks, reverse=True)
+    move = handler.deps.movement_manager.queue_move.call_args.args[0]
+    assert isinstance(move, EarWiggleMove)
+    assert np.allclose(move.evaluate(0.0)[1], [-0.17, 0.17])
+    assert np.allclose(move.evaluate(move.duration)[1], [-0.17, 0.17])
     assert handler._working_status_task is None
     await handler.shutdown()
 
