@@ -103,14 +103,13 @@ class EarWiggleMove(Move):  # type: ignore[misc]
 
     @property
     def duration(self) -> float:
-        return 0.7
+        return 1.4
 
     def evaluate(
         self, t: float
     ) -> tuple[NDArray[np.float32], NDArray[np.float64], float]:
         clamped = min(max(t, 0.0), self.duration)
-        fade = np.sin(np.pi * clamped / self.duration)
-        offset = np.deg2rad(5.0) * fade * np.sin(2.0 * np.pi * 3.0 * clamped)
+        offset = np.deg2rad(4.0) * np.sin(np.pi * clamped / self.duration) ** 2
         antennas = np.array(
             [self.antennas[0] + offset, self.antennas[1] - offset],
             dtype=np.float64,
@@ -160,6 +159,7 @@ class HermesHandler(OpenRouterChatHandler):
         self._cancel_silence_samples = 0
         self._pre_roll_chunks: deque[NDArray[np.float32]] = deque()
         self._pre_roll_samples = 0
+        self._output_playback_until = 0.0
 
     def copy(self) -> "HermesHandler":
         """Create a fresh handler while preserving the configured binary."""
@@ -313,6 +313,7 @@ class HermesHandler(OpenRouterChatHandler):
                 if playback_started is None:
                     playback_started = time.monotonic()
                     self._mark_activity("assistant_audio_delta")
+                self._note_output_playback(sample_rate, speech.size)
                 for offset in range(0, speech.size, self.OUTPUT_CHUNK_SAMPLES):
                     await self.output_queue.put(
                         (
@@ -344,6 +345,11 @@ class HermesHandler(OpenRouterChatHandler):
         self._pre_roll_samples = 0
 
     def _receive_cancel_frame(self, frame: Any) -> None:
+        if time.monotonic() < self._output_playback_until:
+            if self._cancel_speech_active:
+                self._reset_cancel_input()
+                self._set_listening(False)
+            return
         sample_rate, samples = frame
         audio = self._prepare_audio(samples, sample_rate)
         if audio.size == 0:
@@ -395,6 +401,12 @@ class HermesHandler(OpenRouterChatHandler):
         if is_cancel_phrase(transcript):
             logger.info("Hermes request cancelled by voice phrase: %r", transcript)
             await self.cancel_current()
+
+    def _note_output_playback(self, sample_rate: int, sample_count: int) -> None:
+        duration = sample_count / sample_rate
+        self._output_playback_until = max(
+            time.monotonic(), self._output_playback_until
+        ) + duration
 
     async def cancel_current(self) -> None:
         """Interrupt the active gateway session after a spoken cancellation request."""
@@ -509,7 +521,7 @@ class HermesHandler(OpenRouterChatHandler):
 
     async def _queue_chime_cluster(self, *, volume: float) -> None:
         tone_samples = int(self.SAMPLE_RATE * 0.07)
-        gap_samples = int(self.SAMPLE_RATE * 0.035)
+        gap_samples = int(self.SAMPLE_RATE * 0.5)
         cluster = np.zeros(5 * tone_samples + 4 * gap_samples, dtype=np.float32)
         times = np.arange(tone_samples, dtype=np.float32) / self.SAMPLE_RATE
         envelope = np.sin(np.pi * np.arange(tone_samples, dtype=np.float32) / tone_samples) ** 2
@@ -521,6 +533,7 @@ class HermesHandler(OpenRouterChatHandler):
                 amplitude * envelope * np.sin(2.0 * np.pi * frequency * times)
             )
             cursor += tone_samples + gap_samples
+        self._note_output_playback(self.SAMPLE_RATE, cluster.size)
         await self.output_queue.put(
             (
                 self.SAMPLE_RATE,
@@ -584,6 +597,7 @@ class HermesHandler(OpenRouterChatHandler):
         except Exception:
             logger.exception("Hermes working-status TTS failed")
             return
+        self._note_output_playback(sample_rate, speech.size)
         for offset in range(0, speech.size, self.OUTPUT_CHUNK_SAMPLES):
             await self.output_queue.put((sample_rate, speech[offset : offset + self.OUTPUT_CHUNK_SAMPLES]))
         if speech.size:

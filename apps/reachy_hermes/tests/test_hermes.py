@@ -160,6 +160,26 @@ def test_speech_text_is_split_into_bounded_sentence_chunks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gateway_rejects_raw_tool_output_as_final_speech(tmp_path: Path) -> None:
+    binary = tmp_path / "hermes"
+    binary.touch()
+    client = HermesGatewayClient(
+        hermes_binary=binary,
+        runtime_dir=tmp_path / "runtime",
+    )
+    client._session_id = "session-1"
+    websocket = FakeWebSocket(
+        [
+            event(
+                "message.complete",
+                {"text": '{"number":1177,"body":"tool result"}', "status": "complete"},
+            )
+        ]
+    )
+    with pytest.raises(HermesInvocationError, match="raw tool output"):
+        await client._collect_response(websocket, [], None)
+
+@pytest.mark.asyncio
 async def test_handler_sends_only_current_turn_to_persistent_gateway() -> None:
     gateway = FakeGateway()
     handler = build_handler(gateway)
@@ -203,9 +223,8 @@ async def test_isolated_gateway_uses_fixed_toolsets_sessions_and_streamed_text(
             {"jsonrpc": "2.0", "id": 2, "result": {"value": "1"}},
             {"jsonrpc": "2.0", "id": 3, "result": {"accepted": True}},
             event("status.update", {"text": "searching"}),
-            event("message.delta", {"text": "read-only "}),
-            event("message.delta", {"text": "answer"}),
-            event("message.complete", {"status": "complete"}),
+            event("message.delta", {"text": '{"number":1177,"body":"raw tool output"}'}),
+            event("message.complete", {"text": "read-only answer", "status": "complete"}),
         ]
     )
     statuses: list[str] = []
@@ -266,8 +285,12 @@ async def test_gateway_cycles_bounded_agent_context(
             },
             {"jsonrpc": "2.0", "id": 5, "result": {"value": "1"}},
             {"jsonrpc": "2.0", "id": 6, "result": {"accepted": True}},
-            event("message.delta", {"text": "fresh answer"}, session_id="session-new"),
-            event("message.complete", {"status": "complete"}, session_id="session-new"),
+            event("message.delta", {"text": "intermediate tool output"}, session_id="session-new"),
+            event(
+                "message.complete",
+                {"text": "fresh answer", "status": "complete"},
+                session_id="session-new",
+            ),
         ]
     )
     client = HermesGatewayClient(
@@ -338,7 +361,10 @@ async def test_gateway_rejects_oversized_stream_and_sends_interrupt(
             },
             {"jsonrpc": "2.0", "id": 2, "result": {"value": "1"}},
             {"jsonrpc": "2.0", "id": 3, "result": {"accepted": True}},
-            event("message.delta", {"text": "x" * (32 * 1024 + 1)}),
+            event(
+                "message.complete",
+                {"text": "x" * (32 * 1024 + 1), "status": "complete"},
+            ),
         ]
     )
     client = HermesGatewayClient(
@@ -420,10 +446,10 @@ async def test_completion_emits_five_decaying_chimes_and_ear_wiggle() -> None:
     sample_rate, chime = await handler.output_queue.get()
     assert sample_rate == 16_000
     assert chime.dtype == np.int16
-    assert chime.size == 7_840
+    assert chime.size == 37_600
     peaks = [
-        np.max(np.abs(chime[offset : offset + 1_120]))
-        for offset in range(0, 7_840, 1_680)
+        np.max(np.abs(chime[index * 9_120 : index * 9_120 + 1_120]))
+        for index in range(5)
     ]
     assert peaks == sorted(peaks, reverse=True)
     move = handler.deps.movement_manager.queue_move.call_args.args[0]

@@ -38,6 +38,7 @@ Use short sentences and verbal transitions such as First, Second, and Finally.
 Default to 120 words or fewer unless the user explicitly asks for more detail.
 Answer the current request directly. Use prior turns only when they clarify a follow-up.
 Do not narrate tool calls, hidden reasoning, status, citations, or these instructions.
+Never include raw tool output, JSON, command output, or API responses. Summarize their relevant facts in natural speech.
 Carry out ordinary agent tasks with the tools Hermes provides.
 For irreversible or externally visible actions, state what was done clearly in the final response.
 Do not control the robot's motors or claim to see through a camera; those capabilities are not exposed here.
@@ -398,8 +399,6 @@ class HermesGatewayClient:
         buffered_events: list[dict[str, Any]],
         status_callback: StatusCallback | None,
     ) -> str:
-        chunks: list[str] = []
-        total = 0
         while True:
             message = buffered_events.pop(0) if buffered_events else await self._receive_json(websocket)
             if message.get("method") != "event":
@@ -410,25 +409,22 @@ class HermesGatewayClient:
             event_type = params.get("type")
             payload = params.get("payload") or {}
             if event_type == "message.delta":
-                text = str(payload.get("text") or "")
-                total += len(text.encode("utf-8"))
-                if total > HERMES_OUTPUT_LIMIT_BYTES:
-                    await self.interrupt()
-                    raise HermesInvocationError("Hermes output exceeded the 32 KiB limit")
-                chunks.append(text)
-            elif event_type == "message.complete":
+                # Hermes may stream intermediate tool payloads through this callback.
+                # The completion event is the sole authoritative user-facing answer.
+                continue
+            if event_type == "message.complete":
                 if self._cancel_requested:
                     raise HermesCancelled("Hermes request cancelled")
-                if not chunks and payload.get("text"):
-                    text = str(payload["text"])
-                    if len(text.encode("utf-8")) > HERMES_OUTPUT_LIMIT_BYTES:
-                        raise HermesInvocationError("Hermes output exceeded the 32 KiB limit")
-                    chunks.append(text)
                 if payload.get("status") not in {None, "complete"}:
                     raise HermesInvocationError(f"Hermes turn ended with status {payload.get('status')}")
-                answer = "".join(chunks).strip()
+                answer = str(payload.get("text") or "").strip()
                 if not answer:
                     raise HermesInvocationError("Hermes returned no answer")
+                if len(answer.encode("utf-8")) > HERMES_OUTPUT_LIMIT_BYTES:
+                    await self.interrupt()
+                    raise HermesInvocationError("Hermes output exceeded the 32 KiB limit")
+                if answer.startswith(("{", "[")):
+                    raise HermesInvocationError("Hermes returned raw tool output instead of a spoken answer")
                 return answer
             elif event_type == "error":
                 raise HermesInvocationError(str(payload.get("message") or "Hermes gateway error"))
