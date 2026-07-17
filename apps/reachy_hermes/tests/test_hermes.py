@@ -15,12 +15,13 @@ import pytest
 from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_hermes.gateway import (
     HERMES_GATEWAY_PORT,
+    HERMES_MAX_SESSION_TURNS,
     HERMES_TOOLSETS,
     HermesCancelled,
     HermesGatewayClient,
     HermesInvocationError,
 )
-from reachy_hermes.hermes import HermesHandler, is_cancel_phrase
+from reachy_hermes.hermes import HermesHandler, is_cancel_phrase, to_spoken_text
 from reachy_hermes.tts import NeuralTTS
 
 
@@ -28,14 +29,21 @@ class FakeGateway:
     def __init__(self, answer: str = "read-only answer") -> None:
         self.answer = answer
         self.prompts: list[str] = []
+        self.histories: list[list[dict[str, str]]] = []
         self.interrupted = False
         self.closed = False
         self.active = False
         self.wait_for_interrupt = False
         self._interrupt_event = asyncio.Event()
 
-    async def ask(self, prompt: str, status_callback: Any = None) -> str:
+    async def ask(
+        self,
+        prompt: str,
+        history: list[dict[str, str]] | None = None,
+        status_callback: Any = None,
+    ) -> str:
         self.prompts.append(prompt)
+        self.histories.append(history or [])
         self.active = True
         try:
             if status_callback is not None:
@@ -129,6 +137,10 @@ def test_cancel_phrase_matching_is_conservative_and_case_insensitive() -> None:
     assert is_cancel_phrase("please cancel that")
     assert not is_cancel_phrase("what is the weather")
 
+def test_markdown_is_defensively_normalized_for_speech() -> None:
+    response = "## Update\n* **First:** done [source](https://example.com)\n* `Second` #2 [1]"
+    assert to_spoken_text(response) == "Update First: done source Second 2"
+
 
 @pytest.mark.asyncio
 async def test_handler_sends_only_current_turn_to_persistent_gateway() -> None:
@@ -140,7 +152,13 @@ async def test_handler_sends_only_current_turn_to_persistent_gateway() -> None:
 
     assert await handler.invoke_hermes() == "read-only answer"
     assert gateway.prompts == ["what is next?"]
-    assert HERMES_TOOLSETS == "web,session_search"
+    assert gateway.histories == [
+        [
+            {"role": "user", "content": "older question"},
+            {"role": "assistant", "content": "older answer"},
+        ]
+    ]
+    assert HERMES_TOOLSETS == "all"
     await handler.shutdown()
 
 
@@ -160,10 +178,13 @@ async def test_isolated_gateway_uses_fixed_toolsets_sessions_and_streamed_text(
     websocket = FakeWebSocket(
         [
             event("gateway.ready", {}, session_id=""),
-            {"jsonrpc": "2.0", "id": 1, "error": {"code": 4007, "message": "not found"}},
-            {"jsonrpc": "2.0", "id": 2, "result": {"session_id": "session-1"}},
-            {"jsonrpc": "2.0", "id": 3, "result": {"value": "1"}},
-            {"jsonrpc": "2.0", "id": 4, "result": {"accepted": True}},
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"session_id": "session-1", "stored_session_id": "stored-1"},
+            },
+            {"jsonrpc": "2.0", "id": 2, "result": {"value": "1"}},
+            {"jsonrpc": "2.0", "id": 3, "result": {"accepted": True}},
             event("status.update", {"text": "searching"}),
             event("message.delta", {"text": "read-only "}),
             event("message.delta", {"text": "answer"}),
@@ -178,17 +199,18 @@ async def test_isolated_gateway_uses_fixed_toolsets_sessions_and_streamed_text(
         runtime_dir=tmp_path / "runtime",
     )
 
-    answer = await client.ask("question", statuses.append)
+    answer = await client.ask("question", status_callback=statuses.append)
     assert answer == "read-only answer"
     assert statuses == ["searching"]
     args, kwargs = spawn_calls[0]
     assert args[:2] == (str(binary), "serve")
     assert "--isolated" in args
-    assert kwargs["env"]["HERMES_TUI_TOOLSETS"] == "web,session_search"
+    assert kwargs["env"]["HERMES_TUI_TOOLSETS"] == "all"
     assert "HERMES_KANBAN_TASK" not in kwargs["env"]
     assert (tmp_path / "runtime" / "AGENTS.md").read_text().startswith("# Reachy Hermes voice policy")
     methods = [message["method"] for message in websocket.sent]
-    assert methods == ["session.resume", "session.create", "config.set", "prompt.submit"]
+    assert methods == ["session.create", "config.set", "prompt.submit"]
+    assert websocket.sent[0]["params"]["messages"] == []
     assert websocket.sent[-1]["params"]["text"] == "question"
 
     signals: list[int] = []
@@ -201,6 +223,64 @@ async def test_isolated_gateway_uses_fixed_toolsets_sessions_and_streamed_text(
     monkeypatch.setattr(client, "_signal_process_group", signal_process)
     await client.close()
     assert signals == [signal.SIGTERM]
+
+
+@pytest.mark.asyncio
+async def test_gateway_cycles_bounded_agent_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = tmp_path / "hermes"
+    binary.touch()
+    process = FakeProcess(stdout=[f"HERMES_BACKEND_READY port={HERMES_GATEWAY_PORT}\n".encode()])
+
+    async def spawn(*args: Any, **kwargs: Any) -> FakeProcess:
+        return process
+
+    websocket = FakeWebSocket(
+        [
+            event("gateway.ready", {}, session_id=""),
+            {"jsonrpc": "2.0", "id": 1, "result": {"session_id": "old-live"}},
+            {"jsonrpc": "2.0", "id": 2, "result": {"closed": True}},
+            {"jsonrpc": "2.0", "id": 3, "result": {"deleted": "stored-old"}},
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "result": {"session_id": "session-new", "stored_session_id": "stored-new"},
+            },
+            {"jsonrpc": "2.0", "id": 5, "result": {"value": "1"}},
+            {"jsonrpc": "2.0", "id": 6, "result": {"accepted": True}},
+            event("message.delta", {"text": "fresh answer"}, session_id="session-new"),
+            event("message.complete", {"status": "complete"}, session_id="session-new"),
+        ]
+    )
+    client = HermesGatewayClient(
+        hermes_binary=binary,
+        process_factory=spawn,
+        connect_factory=lambda url: FakeConnection(websocket),
+        runtime_dir=tmp_path / "runtime",
+    )
+    client._stored_session_id = "stored-old"
+    client._turns_in_session = HERMES_MAX_SESSION_TURNS
+    history = [{"role": "user", "content": "bounded context"}]
+
+    assert await client.ask("fresh question", history=history) == "fresh answer"
+    methods = [message["method"] for message in websocket.sent]
+    assert methods == [
+        "session.resume",
+        "session.close",
+        "session.delete",
+        "session.create",
+        "config.set",
+        "prompt.submit",
+    ]
+    assert websocket.sent[3]["params"]["messages"] == history
+
+    def signal_process(proc: Any, signum: int) -> None:
+        proc.returncode = 143
+        proc.done.set()
+
+    monkeypatch.setattr(client, "_signal_process_group", signal_process)
+    await client.close()
 
 
 @pytest.mark.asyncio
@@ -234,7 +314,11 @@ async def test_gateway_rejects_oversized_stream_and_sends_interrupt(
     websocket = FakeWebSocket(
         [
             event("gateway.ready", {}, session_id=""),
-            {"jsonrpc": "2.0", "id": 1, "result": {"session_id": "session-1"}},
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"session_id": "session-1", "stored_session_id": "stored-1"},
+            },
             {"jsonrpc": "2.0", "id": 2, "result": {"value": "1"}},
             {"jsonrpc": "2.0", "id": 3, "result": {"accepted": True}},
             event("message.delta", {"text": "x" * (32 * 1024 + 1)}),
@@ -321,12 +405,15 @@ async def test_completion_emits_immediate_processing_chime() -> None:
 
 
 @pytest.mark.asyncio
-async def test_working_updates_speak_after_30_seconds_then_every_60(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_working_updates_tick_every_eight_seconds_and_speak_periodically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import reachy_hermes.hermes as hermes_module
 
     handler = build_handler()
     handler._gateway_turn_active = True
     delays: list[float] = []
+    ticks: list[bool] = []
     updates: list[str] = []
     real_sleep = asyncio.sleep
 
@@ -334,16 +421,21 @@ async def test_working_updates_speak_after_30_seconds_then_every_60(monkeypatch:
         delays.append(delay)
         await real_sleep(0)
 
+    async def fake_tick() -> None:
+        ticks.append(True)
+
     async def fake_update() -> None:
         updates.append(handler.WORKING_UPDATE_MESSAGE)
         if len(updates) == 2:
             handler._gateway_turn_active = False
 
     monkeypatch.setattr(hermes_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(handler, "_queue_progress_tick", fake_tick)
     monkeypatch.setattr(handler, "_speak_working_update", fake_update)
     await handler._working_status_updates()
     assert updates == [handler.WORKING_UPDATE_MESSAGE, handler.WORKING_UPDATE_MESSAGE]
-    assert delays[:2] == [30.0, 60.0]
+    assert delays == [8.0] * 7
+    assert ticks == [True] * 7
     await handler.shutdown()
 
 

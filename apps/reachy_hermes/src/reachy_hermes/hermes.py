@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -30,9 +31,11 @@ from reachy_hermes.tts import NeuralTTS
 
 logger = logging.getLogger(__name__)
 
-WORKING_UPDATE_INITIAL_DELAY_SECONDS = 30.0
-WORKING_UPDATE_INTERVAL_SECONDS = 60.0
+WORKING_UPDATE_INITIAL_DELAY_SECONDS = 24.0
+WORKING_UPDATE_INTERVAL_SECONDS = 32.0
+PROGRESS_TICK_INTERVAL_SECONDS = 8.0
 WORKING_UPDATE_MESSAGE = "I'm still working on that."
+GATEWAY_HISTORY_MESSAGES = 6
 CANCEL_REPLY = "Okay, I stopped."
 MISSING_BINARY_REPLY = "I can't start Hermes because its executable is missing."
 FAILURE_REPLY = "I couldn't complete that request because Hermes failed."
@@ -46,6 +49,17 @@ def is_cancel_phrase(transcript: str) -> bool:
     """Return whether speech contains one of the supported stop phrases."""
     normalized = re.sub(r"[^a-z]+", " ", transcript.casefold()).strip()
     return _CANCEL_PATTERN.search(normalized) is not None
+
+def to_spoken_text(text: str) -> str:
+    """Convert defensive leftovers from Markdown into speech-safe plain text."""
+    spoken = re.sub(r"```(?:\w+)?\s*(.*?)```", r"\1", text, flags=re.DOTALL)
+    spoken = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", spoken)
+    spoken = re.sub(r"\[\d+\]", "", spoken)
+    spoken = re.sub(r"https?://\S+", "", spoken)
+    spoken = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", spoken)
+    spoken = re.sub(r"(?m)^\s*[-*+]\s+", "", spoken)
+    spoken = spoken.translate(str.maketrans({"*": "", "#": "", "`": "", "_": " ", "~": ""}))
+    return re.sub(r"\s+", " ", spoken).strip()
 
 
 class HermesHandler(OpenRouterChatHandler):
@@ -256,6 +270,7 @@ class HermesHandler(OpenRouterChatHandler):
         self.neural_tts.ensure_loaded()
 
     def _transcribe_blocking(self, audio: NDArray[np.float32]) -> str:
+        started = time.monotonic()
         self.ensure_whisper_loaded()
         segments, _ = self._whisper_model.transcribe(
             audio,
@@ -264,10 +279,15 @@ class HermesHandler(OpenRouterChatHandler):
             initial_prompt=WHISPER_INITIAL_PROMPT,
             condition_on_previous_text=False,
         )
-        return " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
+        transcript = " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
+        logger.info("Hermes STT completed in %.2fs: %r", time.monotonic() - started, transcript)
+        return transcript
 
     def _synthesize_blocking(self, text: str) -> tuple[int, NDArray[np.int16]]:
-        return self.neural_tts.synthesize(text)
+        started = time.monotonic()
+        result = self.neural_tts.synthesize(text)
+        logger.info("Hermes TTS completed in %.2fs for %d characters", time.monotonic() - started, len(text))
+        return result
 
     async def _request_completion(self, image_jpeg: bytes | None = None) -> str:
         """Submit the current text turn and convert gateway failures to speech."""
@@ -279,7 +299,11 @@ class HermesHandler(OpenRouterChatHandler):
         self._start_working_status_updates()
         try:
             try:
-                return await self.invoke_hermes()
+                answer = await self.invoke_hermes()
+                spoken = to_spoken_text(answer)
+                if not spoken:
+                    raise HermesInvocationError("Hermes returned no speech-safe answer")
+                return spoken
             except HermesCancelled:
                 return CANCEL_REPLY
             except HermesMissingBinary as exc:
@@ -295,7 +319,7 @@ class HermesHandler(OpenRouterChatHandler):
             self._set_listening(False)
 
     async def invoke_hermes(self, prompt: str | None = None) -> str:
-        """Send only the current turn; the persistent gateway owns conversation context."""
+        """Send the current turn with bounded plain-text context."""
         if prompt is None:
             prompt = next(
                 (
@@ -307,7 +331,24 @@ class HermesHandler(OpenRouterChatHandler):
             )
         if not prompt.strip():
             raise HermesInvocationError("Hermes request has no user prompt")
-        return await self.gateway.ask(prompt.strip(), self._on_gateway_status)
+
+        history_source = self.conversation_history
+        if history_source and history_source[-1]["role"] == "user" and history_source[-1]["content"] == prompt:
+            history_source = history_source[:-1]
+        history: list[dict[str, str]] = []
+        for message in history_source[-GATEWAY_HISTORY_MESSAGES:]:
+            content = to_spoken_text(cast(str, message["content"]))
+            if content and message["role"] in {"user", "assistant"}:
+                history.append({"role": cast(str, message["role"]), "content": content})
+
+        started = time.monotonic()
+        answer = await self.gateway.ask(
+            prompt.strip(),
+            history=history,
+            status_callback=self._on_gateway_status,
+        )
+        logger.info("Hermes agent turn completed in %.2fs", time.monotonic() - started)
+        return answer
 
     def _on_gateway_status(self, status: str) -> None:
         logger.info("Hermes status: %s", status)
@@ -315,15 +356,26 @@ class HermesHandler(OpenRouterChatHandler):
 
     async def _queue_processing_chime(self) -> None:
         """Emit a short two-note cue immediately after a turn is accepted."""
-        duration = 0.18
+        await self._queue_tone((660.0, 880.0), duration=0.18, volume=0.12)
+        self._mark_activity("hermes_processing_chime")
+
+    async def _queue_progress_tick(self) -> None:
+        """Emit a quiet heartbeat so a long agent turn never sounds hung."""
+        await self._queue_tone((520.0,), duration=0.08, volume=0.045)
+
+    async def _queue_tone(self, frequencies: tuple[float, ...], *, duration: float, volume: float) -> None:
         sample_count = int(self.SAMPLE_RATE * duration)
         times = np.arange(sample_count, dtype=np.float32) / self.SAMPLE_RATE
-        midpoint = sample_count // 2
-        frequencies = np.where(np.arange(sample_count) < midpoint, 660.0, 880.0)
+        frequency_array = np.asarray(frequencies, dtype=np.float32)
+        indices = np.minimum(
+            (np.arange(sample_count) * len(frequencies) // sample_count),
+            len(frequencies) - 1,
+        )
         envelope = np.sin(np.pi * np.arange(sample_count, dtype=np.float32) / sample_count) ** 2
-        samples = 0.12 * envelope * np.sin(2.0 * np.pi * frequencies * times)
-        await self.output_queue.put((self.SAMPLE_RATE, np.round(samples * 32767.0).astype(np.int16)))
-        self._mark_activity("hermes_processing_chime")
+        samples = volume * envelope * np.sin(2.0 * np.pi * frequency_array[indices] * times)
+        await self.output_queue.put(
+            (self.SAMPLE_RATE, np.round(samples * 32767.0).astype(np.int16))
+        )
 
     def _start_working_status_updates(self) -> None:
         task = self._working_status_task
@@ -343,11 +395,18 @@ class HermesHandler(OpenRouterChatHandler):
         await asyncio.gather(task, return_exceptions=True)
 
     async def _working_status_updates(self) -> None:
+        elapsed = 0.0
+        next_spoken_update = self.WORKING_UPDATE_INITIAL_DELAY_SECONDS
         try:
-            await asyncio.sleep(self.WORKING_UPDATE_INITIAL_DELAY_SECONDS)
             while self._gateway_turn_active:
-                await self._speak_working_update()
-                await asyncio.sleep(self.WORKING_UPDATE_INTERVAL_SECONDS)
+                await asyncio.sleep(PROGRESS_TICK_INTERVAL_SECONDS)
+                if not self._gateway_turn_active:
+                    return
+                elapsed += PROGRESS_TICK_INTERVAL_SECONDS
+                await self._queue_progress_tick()
+                if elapsed >= next_spoken_update:
+                    await self._speak_working_update()
+                    next_spoken_update += self.WORKING_UPDATE_INTERVAL_SECONDS
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -381,4 +440,5 @@ __all__ = [
     "HermesTimeout",
     "SAFETY_PROMPT",
     "is_cancel_phrase",
+    "to_spoken_text",
 ]

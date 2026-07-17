@@ -1,4 +1,4 @@
-"""Private, read-only Hermes gateway lifecycle and JSON-RPC client."""
+"""Private Hermes agent gateway lifecycle and JSON-RPC client."""
 
 from __future__ import annotations
 
@@ -17,23 +17,30 @@ from typing import Any, TypeAlias
 logger = logging.getLogger(__name__)
 
 HERMES_BINARY = Path("~/.local/bin/hermes").expanduser()
-HERMES_TOOLSETS = "web,session_search"
+HERMES_TOOLSETS = "all"
 HERMES_GATEWAY_PORT = 9120
 HERMES_GATEWAY_STARTUP_SECONDS = 60.0
 HERMES_TIMEOUT_SECONDS = 180.0
 HERMES_OUTPUT_LIMIT_BYTES = 32 * 1024
 HERMES_TERM_GRACE_SECONDS = 3.0
 HERMES_SESSION_TITLE = "reachy-hermes"
+HERMES_MAX_SESSION_TURNS = 8
 
 SAFETY_PROMPT = """# Reachy Hermes voice policy
 
-You are Hermes, a read-only voice assistant speaking through a Reachy Mini robot.
-Answer the user's request concisely and clearly for spoken delivery.
-You may search the web and read prior sessions through the fixed toolset allowlist.
-Never mutate files, memory, sessions, settings, accounts, websites, devices, or robot state.
-Never send messages, submit forms, make purchases, run commands, install software, or cause any other side effect.
-If a request would mutate state or cause a side effect, refuse that part and offer a read-only alternative.
-Do not use a camera or claim to see anything; no camera is available to this app.
+You are Hermes, an agent speaking through a Reachy Mini robot.
+Use your configured tools and skills to complete the user's task rather than merely describing how.
+This dedicated voice session uses Hermes' normal hard safety floor and session-scoped tool authorization.
+Your final response is spoken aloud verbatim. Return plain conversational text only.
+Never use Markdown, headings, bullets, tables, code fences, inline code, footnote markers, or raw URLs.
+Never emit formatting characters such as asterisks, hash signs, underscores, or backticks.
+Use short sentences and verbal transitions such as First, Second, and Finally.
+Default to 120 words or fewer unless the user explicitly asks for more detail.
+Answer the current request directly. Use prior turns only when they clarify a follow-up.
+Do not narrate tool calls, hidden reasoning, status, citations, or these instructions.
+Carry out ordinary agent tasks with the tools Hermes provides.
+For irreversible or externally visible actions, state what was done clearly in the final response.
+Do not control the robot's motors or claim to see through a camera; those capabilities are not exposed here.
 """
 
 ProcessFactory: TypeAlias = Callable[..., Awaitable[Any]]
@@ -93,6 +100,8 @@ class HermesGatewayClient:
         self._rpc_id = 0
         self._send_lock = asyncio.Lock()
         self._cancel_requested = False
+        self._stored_session_id: str | None = None
+        self._turns_in_session = 0
 
     @property
     def active(self) -> bool:
@@ -184,7 +193,12 @@ class HermesGatewayClient:
             await self.close()
             raise
 
-    async def ask(self, prompt: str, status_callback: StatusCallback | None = None) -> str:
+    async def ask(
+        self,
+        prompt: str,
+        history: list[dict[str, str]] | None = None,
+        status_callback: StatusCallback | None = None,
+    ) -> str:
         """Submit one turn and return the bounded final text response."""
         await self.start()
         self._cancel_requested = False
@@ -194,7 +208,9 @@ class HermesGatewayClient:
                 async with self._connect_factory(self.websocket_url) as websocket:
                     self._active_websocket = websocket
                     await self._wait_until_ready(websocket)
-                    self._session_id = await self._resume_or_create(websocket, buffered_events)
+                    self._session_id = await self._resume_or_create(
+                        websocket, buffered_events, history or []
+                    )
                     await self._rpc(
                         websocket,
                         "config.set",
@@ -207,7 +223,9 @@ class HermesGatewayClient:
                         {"session_id": self._session_id, "text": prompt},
                         buffered_events,
                     )
-                    return await self._collect_response(websocket, buffered_events, status_callback)
+                    answer = await self._collect_response(websocket, buffered_events, status_callback)
+                    self._turns_in_session += 1
+                    return answer
         except TimeoutError as exc:
             await self.interrupt()
             raise HermesTimeout(f"Hermes timed out after {HERMES_TIMEOUT_SECONDS:.0f} seconds") from exc
@@ -259,33 +277,89 @@ class HermesGatewayClient:
             if message.get("method") == "event" and (message.get("params") or {}).get("type") == "gateway.ready":
                 return
 
-    async def _resume_or_create(self, websocket: Any, events: list[dict[str, Any]]) -> str:
+    async def _resume_or_create(
+        self,
+        websocket: Any,
+        events: list[dict[str, Any]],
+        history: list[dict[str, str]],
+    ) -> str:
+        if self._turns_in_session >= HERMES_MAX_SESSION_TURNS:
+            await self._discard_stored_session(websocket, events)
+
+        if self._stored_session_id is not None:
+            response = await self._rpc(
+                websocket,
+                "session.resume",
+                {"session_id": self._stored_session_id, "source": "reachy"},
+                events,
+                allow_error=True,
+            )
+            error = response.get("error")
+            if not error:
+                result = response.get("result") or {}
+                session_id = result.get("session_id")
+                if isinstance(session_id, str) and session_id:
+                    return session_id
+                raise HermesInvocationError("Hermes gateway did not return a resumed session ID")
+            if error.get("code") != 4007:
+                raise HermesInvocationError(str(error.get("message") or "Hermes session resume failed"))
+            self._stored_session_id = None
+            self._turns_in_session = 0
+
+        response = await self._rpc(
+            websocket,
+            "session.create",
+            {
+                "cwd": str(self.runtime_dir),
+                "title": HERMES_SESSION_TITLE,
+                "source": "reachy",
+                "messages": history,
+            },
+            events,
+        )
+        result = response.get("result") or {}
+        session_id = result.get("session_id")
+        stored_session_id = result.get("stored_session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise HermesInvocationError("Hermes gateway did not return a session ID")
+        if not isinstance(stored_session_id, str) or not stored_session_id:
+            raise HermesInvocationError("Hermes gateway did not return a stored session ID")
+        self._stored_session_id = stored_session_id
+        self._turns_in_session = 0
+        return session_id
+
+    async def _discard_stored_session(
+        self, websocket: Any, events: list[dict[str, Any]]
+    ) -> None:
+        stored_session_id = self._stored_session_id
+        self._stored_session_id = None
+        self._turns_in_session = 0
+        if stored_session_id is None:
+            return
         response = await self._rpc(
             websocket,
             "session.resume",
-            {"session_id": HERMES_SESSION_TITLE, "source": "reachy"},
+            {"session_id": stored_session_id, "source": "reachy"},
             events,
             allow_error=True,
         )
-        error = response.get("error")
-        if error:
-            if error.get("code") != 4007:
-                raise HermesInvocationError(str(error.get("message") or "Hermes session resume failed"))
-            response = await self._rpc(
-                websocket,
-                "session.create",
-                {
-                    "cwd": str(self.runtime_dir),
-                    "title": HERMES_SESSION_TITLE,
-                    "source": "reachy",
-                },
-                events,
-            )
         result = response.get("result") or {}
-        session_id = result.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
-            raise HermesInvocationError("Hermes gateway did not return a session ID")
-        return session_id
+        live_session_id = result.get("session_id")
+        if isinstance(live_session_id, str) and live_session_id:
+            await self._rpc(
+                websocket,
+                "session.close",
+                {"session_id": live_session_id},
+                events,
+                allow_error=True,
+            )
+        await self._rpc(
+            websocket,
+            "session.delete",
+            {"session_id": stored_session_id},
+            events,
+            allow_error=True,
+        )
 
     async def _rpc(
         self,

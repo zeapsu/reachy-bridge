@@ -17,6 +17,7 @@ from reachy_mini.utils.interpolation import InterpolationTechnique
 from reachy_chat.console import LocalStream
 from reachy_chat.moves import MovementManager
 from reachy_chat.tools.core_tools import ToolDependencies
+from reachy_chat.utils import setup_logger
 
 from reachy_hermes.hermes import HermesHandler
 
@@ -151,6 +152,8 @@ def _return_home(robot: ReachyMini) -> None:
 
 def main() -> None:
     """Launch the Reachy Mini app through the SDK wrapper."""
+    setup_logger(False)
+    logger.info("Starting Reachy Hermes voice app")
     app = ReachyHermes()
     try:
         app.wrapped_run()
