@@ -48,6 +48,8 @@ FAILURE_REPLY = "I couldn't complete that request because Hermes failed."
 WHISPER_INITIAL_PROMPT = "Reachy Mini. Hermes."
 INTER_CHUNK_SILENCE_SECONDS = 0.08
 MIN_SPEECH_CHUNK_CHARS = 24
+NATIVE_SESSION_POLL_SECONDS = 0.75
+NATIVE_SESSION_QUIET_SECONDS = 1.5
 
 _CANCEL_PATTERN = re.compile(r"\b(?:stop|cancel|never\s+mind)\b", re.IGNORECASE)
 ProcessFactory: TypeAlias = Callable[..., Awaitable[Any]]
@@ -108,7 +110,7 @@ class HermesHandler(OpenRouterChatHandler):
     SPEECH_ENERGY_THRESHOLD = 0.035
     NOISE_CALIBRATION_SECONDS = 0.5
     SPEECH_ATTACK_SECONDS = 0.1
-    SILENCE_DURATION_S = 0.6
+    SILENCE_DURATION_S = 1.2
     MIN_SPEECH_DURATION_S = 0.2
     PRE_ROLL_SECONDS = 0.45
     WORKING_UPDATE_INITIAL_DELAY_SECONDS = WORKING_UPDATE_INITIAL_DELAY_SECONDS
@@ -140,7 +142,11 @@ class HermesHandler(OpenRouterChatHandler):
         self._working_status_task: asyncio.Task[None] | None = None
         self._working_update_queue: deque[str] = deque()
         self._last_working_update_message: str | None = None
+        self._pending_followups: deque[str] = deque()
+        self._local_session_prompts: deque[str] = deque()
+        self._session_relay_task: asyncio.Task[None] | None = None
         self._gateway_turn_active = False
+        self._native_text_turn_active = False
         self._cancel_detection_task: asyncio.Task[None] | None = None
         self._cancel_speech_active = False
         self._cancel_speech_chunks: list[NDArray[np.float32]] = []
@@ -170,13 +176,29 @@ class HermesHandler(OpenRouterChatHandler):
         await self.run()
 
     async def run(self) -> None:
-        """Expose a connected local handler until LocalStream requests shutdown."""
+        """Prepare the shared native session, then serve audio until shutdown."""
         self._stop_event.clear()
+        try:
+            await self.gateway.prepare()
+        except HermesMissingBinary:
+            logger.warning("Hermes executable is unavailable; voice requests will explain the error")
+        except HermesError:
+            logger.exception("Hermes native session preparation failed")
+        else:
+            self._session_relay_task = asyncio.create_task(
+                self._relay_native_session(),
+                name="hermes-native-session-relay",
+            )
         self.connection = self
         self._mark_activity("hermes_ready")
         try:
             await self._stop_event.wait()
         finally:
+            relay_task = self._session_relay_task
+            self._session_relay_task = None
+            if relay_task is not None and not relay_task.done():
+                relay_task.cancel()
+                await asyncio.gather(relay_task, return_exceptions=True)
             self.connection = None
 
     async def shutdown(self) -> None:
@@ -344,59 +366,20 @@ class HermesHandler(OpenRouterChatHandler):
                 return
 
             self._record_message("user", transcript)
+            self._local_session_prompts.append(transcript)
             await self.output_queue.put(
                 AdditionalOutputs({"role": "user", "content": transcript})
             )
             self._mark_activity("user_transcription_completed")
 
             try:
-                reply = await self._request_completion()
+                reply = await self._request_completion(prompt=transcript)
             except Exception as exc:
                 logger.exception("Hermes completion failed: %s", exc)
                 reply = self.FALLBACK_REPLY
 
             await self._end_processing_feedback()
-            self._record_message("assistant", reply)
-            await self.output_queue.put(
-                AdditionalOutputs({"role": "assistant", "content": reply})
-            )
-            self._mark_activity("assistant_transcript_done")
-
-            playback_started: float | None = None
-            playback_seconds = 0.0
-            speech_parts = split_for_speech(reply)
-            for index, speech_text in enumerate(speech_parts):
-                try:
-                    sample_rate, speech = await self._synthesize(speech_text)
-                except Exception as exc:
-                    logger.exception(
-                        "Hermes text-to-speech synthesis failed: %s", exc
-                    )
-                    break
-                if playback_started is None:
-                    playback_started = time.monotonic()
-                    self._mark_activity("assistant_audio_delta")
-                self._note_output_playback(sample_rate, speech.size)
-                for offset in range(0, speech.size, self.OUTPUT_CHUNK_SAMPLES):
-                    await self.output_queue.put(
-                        (
-                            sample_rate,
-                            speech[offset : offset + self.OUTPUT_CHUNK_SAMPLES],
-                        )
-                    )
-                playback_seconds += speech.size / sample_rate
-                if index + 1 < len(speech_parts):
-                    silence = np.zeros(
-                        int(sample_rate * INTER_CHUNK_SILENCE_SECONDS),
-                        dtype=np.int16,
-                    )
-                    self._note_output_playback(sample_rate, silence.size)
-                    await self.output_queue.put((sample_rate, silence))
-                    playback_seconds += silence.size / sample_rate
-
-            if playback_started is not None:
-                elapsed = time.monotonic() - playback_started
-                await asyncio.sleep(max(0.0, playback_seconds - elapsed))
+            await self._speak_response(reply)
             logger.info(
                 "Hermes voice turn completed in %.2fs", time.monotonic() - started
             )
@@ -405,6 +388,143 @@ class HermesHandler(OpenRouterChatHandler):
             self._processing_turn = False
             self._reset_input_buffer()
             self._clear_pre_roll()
+
+    async def _speak_response(self, reply: str) -> None:
+        """Publish and play one assistant response through Reachy's shared audio."""
+        self._record_message("assistant", reply)
+        await self.output_queue.put(
+            AdditionalOutputs({"role": "assistant", "content": reply})
+        )
+        self._mark_activity("assistant_transcript_done")
+
+        playback_started: float | None = None
+        playback_seconds = 0.0
+        speech_parts = split_for_speech(reply)
+        for index, speech_text in enumerate(speech_parts):
+            try:
+                sample_rate, speech = await self._synthesize(speech_text)
+            except Exception as exc:
+                logger.exception("Hermes text-to-speech synthesis failed: %s", exc)
+                break
+            if playback_started is None:
+                playback_started = time.monotonic()
+                self._mark_activity("assistant_audio_delta")
+            self._note_output_playback(sample_rate, speech.size)
+            for offset in range(0, speech.size, self.OUTPUT_CHUNK_SAMPLES):
+                await self.output_queue.put(
+                    (
+                        sample_rate,
+                        speech[offset : offset + self.OUTPUT_CHUNK_SAMPLES],
+                    )
+                )
+            playback_seconds += speech.size / sample_rate
+            if index + 1 < len(speech_parts):
+                silence = np.zeros(
+                    int(sample_rate * INTER_CHUNK_SILENCE_SECONDS),
+                    dtype=np.int16,
+                )
+                self._note_output_playback(sample_rate, silence.size)
+                await self.output_queue.put((sample_rate, silence))
+                playback_seconds += silence.size / sample_rate
+
+        if playback_started is not None:
+            elapsed = time.monotonic() - playback_started
+            await asyncio.sleep(max(0.0, playback_seconds - elapsed))
+
+    async def _relay_native_session(self) -> None:
+        """Speak completed turns submitted from native Hermes TUI or Desktop."""
+        cursor = 0
+        current_turn_is_external = False
+        relay_owns_processing = False
+        pending_answer: str | None = None
+        pending_since = 0.0
+        try:
+            initial_messages = await self.gateway.fetch_messages()
+            cursor = max(
+                (int(message.get("id") or 0) for message in initial_messages),
+                default=0,
+            )
+        except Exception:
+            logger.debug("Unable to establish Hermes native-session cursor", exc_info=True)
+
+        while not self._stop_event.is_set():
+            try:
+                messages = await self.gateway.fetch_messages()
+            except Exception:
+                logger.debug("Unable to poll Hermes native session", exc_info=True)
+                await asyncio.sleep(NATIVE_SESSION_POLL_SECONDS)
+                continue
+
+            for message in messages:
+                message_id = int(message.get("id") or 0)
+                if message_id <= cursor:
+                    continue
+                cursor = message_id
+                role = message.get("role")
+                content = str(message.get("content") or "").strip()
+                if role == "user" and content:
+                    first_local = (
+                        self._local_session_prompts[0]
+                        if self._local_session_prompts
+                        else None
+                    )
+                    if first_local is not None and (
+                        content == first_local
+                        or content.startswith(f"{first_local}\n\n")
+                    ):
+                        while (
+                            self._local_session_prompts
+                            and self._local_session_prompts[0] in content
+                        ):
+                            self._local_session_prompts.popleft()
+                        current_turn_is_external = False
+                    else:
+                        current_turn_is_external = True
+                        self._native_text_turn_active = True
+                        pending_answer = None
+                        if not self._processing_turn:
+                            self._processing_turn = True
+                            relay_owns_processing = True
+                        self._record_message("user", content)
+                        await self.output_queue.put(
+                            AdditionalOutputs({"role": "user", "content": content})
+                        )
+                        self._mark_activity("native_text_turn_started")
+                elif role == "assistant" and content and current_turn_is_external:
+                    spoken = to_spoken_text(content)
+                    if spoken:
+                        pending_answer = spoken
+                        pending_since = time.monotonic()
+
+            if current_turn_is_external and not self._native_text_turn_active:
+                current_turn_is_external = False
+                pending_answer = None
+                if relay_owns_processing:
+                    self._processing_turn = False
+                    relay_owns_processing = False
+                self._mark_activity("native_text_turn_cancelled")
+                await asyncio.sleep(NATIVE_SESSION_POLL_SECONDS)
+                continue
+            if current_turn_is_external and not self._processing_turn:
+                self._processing_turn = True
+                relay_owns_processing = True
+            if (
+                current_turn_is_external
+                and pending_answer is not None
+                and time.monotonic() - pending_since >= NATIVE_SESSION_QUIET_SECONDS
+            ):
+                await self._speak_response(pending_answer)
+                pending_answer = None
+                current_turn_is_external = False
+                self._native_text_turn_active = False
+                if relay_owns_processing:
+                    self._processing_turn = False
+                    relay_owns_processing = False
+                self._reset_input_buffer()
+                self._clear_pre_roll()
+                self._mark_activity("native_text_turn_completed")
+
+            await asyncio.sleep(NATIVE_SESSION_POLL_SECONDS)
 
     def _remember_pre_roll(self, audio: NDArray[np.float32]) -> None:
         self._pre_roll_chunks.append(audio)
@@ -475,6 +595,19 @@ class HermesHandler(OpenRouterChatHandler):
         if is_cancel_phrase(transcript):
             logger.info("Hermes request cancelled by voice phrase: %r", transcript)
             await self.cancel_current()
+            return
+        if not transcript:
+            return
+        queued = await self.gateway.queue_prompt(transcript)
+        if not queued:
+            self._pending_followups.append(transcript)
+        self._local_session_prompts.append(transcript)
+        self._record_message("user", transcript)
+        await self.output_queue.put(
+            AdditionalOutputs({"role": "user", "content": transcript})
+        )
+        self._mark_activity("user_followup_queued")
+        logger.info("Hermes follow-up %s: %r", "queued" if queued else "pending", transcript)
 
     def _note_output_playback(self, sample_rate: int, sample_count: int) -> None:
         duration = sample_count / sample_rate
@@ -486,12 +619,17 @@ class HermesHandler(OpenRouterChatHandler):
         """Interrupt the active gateway session after a spoken cancellation request."""
         await self._stop_working_status_updates()
         await self.gateway.interrupt()
+        external_turn = self._native_text_turn_active and not self._gateway_turn_active
+        self._native_text_turn_active = False
         clear_queue = self._clear_queue
         if clear_queue is not None:
             try:
                 clear_queue()
             except Exception:
                 logger.debug("Unable to clear audio after Hermes cancellation", exc_info=True)
+        if external_turn:
+            self._processing_turn = False
+            await self._speak_response(CANCEL_REPLY)
 
     def ensure_tts_loaded(self) -> None:
         """Ensure the neural speech engine and verified model are ready."""
@@ -517,14 +655,19 @@ class HermesHandler(OpenRouterChatHandler):
         logger.info("Hermes TTS completed in %.2fs for %d characters", time.monotonic() - started, len(text))
         return result
 
-    async def _request_completion(self, image_jpeg: bytes | None = None) -> str:
+    async def _request_completion(
+        self,
+        image_jpeg: bytes | None = None,
+        *,
+        prompt: str | None = None,
+    ) -> str:
         """Submit the current text turn and convert gateway failures to speech."""
         del image_jpeg
         self._reset_cancel_input()
         self._set_listening(False)
         try:
             try:
-                answer = await self.invoke_hermes()
+                answer = await self.invoke_hermes(prompt)
                 spoken = to_spoken_text(answer)
                 if not spoken:
                     raise HermesInvocationError(
@@ -558,13 +701,21 @@ class HermesHandler(OpenRouterChatHandler):
             raise HermesInvocationError("Hermes request has no user prompt")
 
         history_source = self.conversation_history
-        if history_source and history_source[-1]["role"] == "user" and history_source[-1]["content"] == prompt:
-            history_source = history_source[:-1]
+        for index in range(len(history_source) - 1, -1, -1):
+            message = history_source[index]
+            if message["role"] == "user" and message["content"] == prompt:
+                history_source = history_source[:index]
+                break
         history: list[dict[str, str]] = []
         for message in history_source[-GATEWAY_HISTORY_MESSAGES:]:
             content = to_spoken_text(cast(str, message["content"]))
             if content and message["role"] in {"user", "assistant"}:
                 history.append({"role": cast(str, message["role"]), "content": content})
+
+        if self._pending_followups:
+            additions = "\n".join(self._pending_followups)
+            self._pending_followups.clear()
+            prompt = f"{prompt.strip()}\n\nThe user added: {additions}"
 
         started = time.monotonic()
         answer = await self.gateway.ask(

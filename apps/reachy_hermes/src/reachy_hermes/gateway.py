@@ -13,6 +13,8 @@ import signal
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, TypeAlias
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +100,7 @@ class HermesGatewayClient:
         self._rpc_id = 0
         self._send_lock = asyncio.Lock()
         self._cancel_requested = False
+        self._followup_queued = False
         self._stored_session_id: str | None = None
         self._turns_in_session = 0
 
@@ -108,6 +111,35 @@ class HermesGatewayClient:
     @property
     def websocket_url(self) -> str:
         return f"ws://127.0.0.1:{self.port}/api/ws?token={self._token}"
+
+    @property
+    def connection_file(self) -> Path:
+        return self.runtime_dir / "connection.json"
+
+    async def prepare(self) -> None:
+        """Start Hermes and create the shared native session before voice input."""
+        await self.start()
+        buffered_events: list[dict[str, Any]] = []
+        async with self._connect_factory(self.websocket_url) as websocket:
+            await self._wait_until_ready(websocket)
+            await self._resume_or_create(websocket, buffered_events, [])
+        self._write_connection_file()
+
+    async def fetch_messages(self) -> list[dict[str, Any]]:
+        """Read committed messages without rebinding the live session transport."""
+        if self._stored_session_id is None:
+            return []
+        payload = await asyncio.to_thread(self._fetch_messages_blocking)
+        resolved_id = payload.get("session_id")
+        if (
+            isinstance(resolved_id, str)
+            and resolved_id
+            and resolved_id != self._stored_session_id
+        ):
+            self._stored_session_id = resolved_id
+            self._write_connection_file()
+        messages = payload.get("messages")
+        return messages if isinstance(messages, list) else []
 
     async def start(self) -> None:
         """Start the isolated server and wait for its explicit readiness line."""
@@ -200,6 +232,7 @@ class HermesGatewayClient:
         """Submit one turn and wait until completion or explicit cancellation."""
         await self.start()
         self._cancel_requested = False
+        self._followup_queued = False
         buffered_events: list[dict[str, Any]] = []
         try:
             async with self._connect_factory(self.websocket_url) as websocket:
@@ -210,6 +243,7 @@ class HermesGatewayClient:
                     buffered_events,
                     history or [],
                 )
+                self._write_connection_file()
                 await self._rpc(
                     websocket,
                     "config.set",
@@ -244,16 +278,78 @@ class HermesGatewayClient:
             self._session_id = None
 
     async def interrupt(self) -> None:
-        """Interrupt the active gateway turn without stopping the shared session server."""
+        """Interrupt the active or externally attached shared Hermes session."""
         self._cancel_requested = True
         websocket = self._active_websocket
         session_id = self._session_id
-        if websocket is None or session_id is None:
+        if websocket is not None and session_id is not None:
+            try:
+                await self._send_request(
+                    websocket,
+                    "session.interrupt",
+                    {"session_id": session_id},
+                )
+            except Exception:
+                logger.debug("Unable to send Hermes session interrupt", exc_info=True)
             return
+
+        if self._stored_session_id is None or self._process is None:
+            return
+        buffered_events: list[dict[str, Any]] = []
         try:
-            await self._send_request(websocket, "session.interrupt", {"session_id": session_id})
+            async with self._connect_factory(self.websocket_url) as external_websocket:
+                await self._wait_until_ready(external_websocket)
+                response = await self._rpc(
+                    external_websocket,
+                    "session.resume",
+                    {
+                        "session_id": self._stored_session_id,
+                        "source": "reachy",
+                    },
+                    buffered_events,
+                    allow_error=True,
+                )
+                result = response.get("result") or {}
+                external_session_id = result.get("session_id")
+                if not isinstance(external_session_id, str) or not external_session_id:
+                    return
+                await self._rpc(
+                    external_websocket,
+                    "session.interrupt",
+                    {"session_id": external_session_id},
+                    buffered_events,
+                    allow_error=True,
+                )
         except Exception:
-            logger.debug("Unable to send Hermes session interrupt", exc_info=True)
+            logger.debug("Unable to interrupt externally attached Hermes session", exc_info=True)
+
+    async def queue_prompt(self, prompt: str) -> bool:
+        """Queue a follow-up on the live native Hermes session."""
+        text = prompt.strip()
+        websocket = self._active_websocket
+        session_id = self._session_id
+        if not text or websocket is None or session_id is None:
+            return False
+        try:
+            await self._send_request(
+                websocket,
+                "config.set",
+                {
+                    "session_id": session_id,
+                    "key": "busy",
+                    "value": "queue",
+                },
+            )
+            await self._send_request(
+                websocket,
+                "prompt.submit",
+                {"session_id": session_id, "text": text},
+            )
+        except Exception:
+            logger.debug("Unable to queue Hermes follow-up", exc_info=True)
+            return False
+        self._followup_queued = True
+        return True
 
     async def close(self) -> None:
         """Interrupt work and terminate the isolated server process group."""
@@ -276,6 +372,10 @@ class HermesGatewayClient:
         self._stderr_task = None
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            self.connection_file.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Unable to remove Hermes connection file", exc_info=True)
 
     async def _wait_until_ready(self, websocket: Any) -> None:
         while True:
@@ -430,6 +530,9 @@ class HermesGatewayClient:
                     raise HermesInvocationError("Hermes output exceeded the 32 KiB limit")
                 if answer.startswith(("{", "[")):
                     raise HermesInvocationError("Hermes returned raw tool output instead of a spoken answer")
+                if self._followup_queued:
+                    self._followup_queued = False
+                    continue
                 return answer
             elif event_type == "error":
                 raise HermesInvocationError(str(payload.get("message") or "Hermes gateway error"))
@@ -451,6 +554,51 @@ class HermesGatewayClient:
         if not isinstance(message, dict):
             raise HermesInvocationError("Hermes gateway returned a non-object message")
         return message
+
+    def _write_connection_file(self) -> None:
+        if self._stored_session_id is None:
+            return
+        payload = {
+            "gateway_url": f"http://127.0.0.1:{self.port}",
+            "websocket_url": self.websocket_url,
+            "session_id": self._stored_session_id,
+            "session_title": HERMES_SESSION_TITLE,
+        }
+        self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        temporary = self.connection_file.with_suffix(".tmp")
+        descriptor = json.dumps(payload, indent=2) + "\n"
+        file_descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        try:
+            with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+                handle.write(descriptor)
+            os.replace(temporary, self.connection_file)
+            os.chmod(self.connection_file, 0o600)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        logger.info("Hermes native session connection file ready at %s", self.connection_file)
+
+    def _fetch_messages_blocking(self) -> dict[str, Any]:
+        session_id = self._stored_session_id
+        if session_id is None:
+            return {"messages": []}
+        url = (
+            f"http://127.0.0.1:{self.port}/api/sessions/"
+            f"{quote(session_id, safe='')}/messages?limit=500"
+        )
+        request = Request(
+            url,
+            headers={"X-Hermes-Session-Token": self._token},
+        )
+        with urlopen(request, timeout=5) as response:
+            payload = json.load(response)
+        if not isinstance(payload, dict):
+            raise HermesInvocationError("Hermes message history returned a non-object response")
+        return payload
 
     async def _drain_stream(self, stream: Any) -> tuple[bytes, bool]:
         chunks: list[bytes] = []
