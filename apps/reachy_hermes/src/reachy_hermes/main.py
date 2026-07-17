@@ -6,6 +6,8 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,24 @@ from reachy_hermes.hermes import HermesHandler
 logger = logging.getLogger(__name__)
 
 
+@contextmanager
+def _skip_local_camera_initialization() -> Iterator[None]:
+    """Keep Hermes' local audio backend from opening an unused camera reader."""
+    from reachy_mini.media.media_manager import MediaManager
+
+    original_init_camera = MediaManager._init_camera
+
+    def skip_camera_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        del self, args, kwargs
+        logger.info("Hermes is audio-only; skipping local camera IPC initialization")
+
+    MediaManager._init_camera = skip_camera_init  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        MediaManager._init_camera = original_init_camera  # type: ignore[method-assign]
+
+
 class HermesLocalStream(LocalStream):
     """LocalStream variant that does not gate startup on an OpenRouter key."""
 
@@ -39,6 +59,12 @@ class ReachyHermes(ReachyMiniApp):  # type: ignore[misc]
 
     custom_app_url: str | None = None
     request_media_backend = "local"
+
+    def wrapped_run(self) -> None:
+        """Run Hermes with local audio only, leaving the daemon camera shared."""
+        with _skip_local_camera_initialization():
+            super().wrapped_run()
+
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         """Start speech and movement services, then cleanly return the robot home."""

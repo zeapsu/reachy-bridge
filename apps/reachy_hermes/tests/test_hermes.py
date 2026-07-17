@@ -570,6 +570,29 @@ async def test_voice_cancel_transcript_stops_current_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_midtask_followup_uses_calibrated_speech_threshold() -> None:
+    gateway = FakeGateway()
+    gateway.active = True
+    handler = build_handler(gateway)
+    handler._processing_turn = True
+    handler._speech_on_threshold = 0.015
+    handler._speech_off_threshold = 0.01
+    handler._transcribe = MagicMock(  # type: ignore[method-assign]
+        return_value=asyncio.sleep(0, result="also compare the alternatives")
+    )
+    speech = np.full(1_600, 0.02, dtype=np.float32)
+    silence = np.zeros(1_600, dtype=np.float32)
+
+    for frame in [speech, speech, *([silence] * 12)]:
+        handler._receive_cancel_frame((16_000, frame))
+
+    assert handler._cancel_detection_task is not None
+    await handler._cancel_detection_task
+    assert gateway.queued_prompts == ["also compare the alternatives"]
+    await handler.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_vad_keeps_preroll_and_waits_for_natural_pause() -> None:
     handler = build_handler()
     captured: list[np.ndarray[Any, Any]] = []
@@ -759,3 +782,73 @@ def test_module_entrypoint_invokes_sdk_wrapper_without_robot(monkeypatch: pytest
     monkeypatch.setattr(ReachyMiniApp, "wrapped_run", lambda self: called.append(True), raising=False)
     runpy.run_module("reachy_hermes.main", run_name="__main__")
     assert called == [True]
+
+
+def test_wrapped_run_skips_unused_local_camera_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import reachy_hermes.main as hermes_main
+    from reachy_mini import ReachyMiniApp
+    from reachy_mini.media.media_manager import MediaBackend, MediaManager
+
+    camera_calls: list[bool] = []
+    audio_calls: list[bool] = []
+
+    def unexpected_camera_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        del self, args, kwargs
+        camera_calls.append(True)
+
+    class FakeAudio:
+        def stop_recording(self) -> None:
+            return None
+
+        def stop_playing(self) -> None:
+            return None
+
+        def cleanup(self) -> None:
+            return None
+
+    def fake_audio_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        audio_calls.append(True)
+        self.audio = FakeAudio()
+
+    monkeypatch.setattr(MediaManager, "_init_camera", unexpected_camera_init)
+    monkeypatch.setattr(MediaManager, "_init_audio", fake_audio_init)
+
+    def fake_wrapped_run(self: ReachyMiniApp) -> None:
+        del self
+        media = MediaManager(backend=MediaBackend.LOCAL, log_level="WARNING")
+        assert media.camera is None
+        assert isinstance(media.audio, FakeAudio)
+        media.close()
+
+    monkeypatch.setattr(ReachyMiniApp, "wrapped_run", fake_wrapped_run)
+    hermes_main.ReachyHermes().wrapped_run()
+
+    assert camera_calls == []
+    assert audio_calls == [True]
+    assert MediaManager._init_camera is unexpected_camera_init
+
+
+def test_wrapped_run_restores_camera_initializer_on_startup_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import reachy_hermes.main as hermes_main
+    from reachy_mini import ReachyMiniApp
+    from reachy_mini.media.media_manager import MediaManager
+
+    def camera_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        del self, args, kwargs
+
+    def fail_wrapped_run(self: ReachyMiniApp) -> None:
+        del self
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(MediaManager, "_init_camera", camera_init)
+    monkeypatch.setattr(ReachyMiniApp, "wrapped_run", fail_wrapped_run)
+
+    with pytest.raises(RuntimeError, match="startup failed"):
+        hermes_main.ReachyHermes().wrapped_run()
+
+    assert MediaManager._init_camera is camera_init

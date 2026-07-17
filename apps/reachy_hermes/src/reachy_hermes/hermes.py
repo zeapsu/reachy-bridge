@@ -549,7 +549,12 @@ class HermesHandler(OpenRouterChatHandler):
         if audio.size == 0:
             return
         energy = float(np.sqrt(np.mean(np.square(audio, dtype=np.float32))))
-        is_speech = energy >= self.SPEECH_ENERGY_THRESHOLD
+        threshold = (
+            self._speech_off_threshold
+            if self._cancel_speech_active
+            else self._speech_on_threshold
+        )
+        is_speech = energy >= threshold
         if is_speech:
             if not self._cancel_speech_active:
                 self._cancel_speech_active = True
