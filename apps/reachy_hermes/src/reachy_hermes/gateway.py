@@ -117,13 +117,12 @@ class HermesGatewayClient:
         return self.runtime_dir / "connection.json"
 
     async def prepare(self) -> None:
-        """Start Hermes and create the shared native session before voice input."""
+        """Start the private gateway before the first voice turn."""
+        try:
+            self.connection_file.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Unable to remove stale Hermes connection file", exc_info=True)
         await self.start()
-        buffered_events: list[dict[str, Any]] = []
-        async with self._connect_factory(self.websocket_url) as websocket:
-            await self._wait_until_ready(websocket)
-            await self._resume_or_create(websocket, buffered_events, [])
-        self._write_connection_file()
 
     async def fetch_messages(self) -> list[dict[str, Any]]:
         """Read committed messages without rebinding the live session transport."""
