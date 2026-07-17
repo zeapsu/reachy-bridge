@@ -454,11 +454,17 @@ async def test_completion_emits_three_pulse_earcon_and_smooth_ear_wiggle() -> No
     assert np.all(chime[2_560:4_000] == 0)
     assert np.all(chime[6_560:8_000] == 0)
     assert peaks == sorted(peaks, reverse=True)
+    dominant_bin = int(np.argmax(np.abs(np.fft.rfft(chime[:2_560]))))
+    dominant_frequency = dominant_bin * sample_rate / 2_560
+    assert 320.0 <= dominant_frequency <= 340.0
     move = handler.deps.movement_manager.queue_move.call_args.args[0]
     assert isinstance(move, EarWiggleMove)
     assert np.allclose(move.evaluate(0.0)[1], [-0.17, 0.17])
     assert np.allclose(move.evaluate(move.duration)[1], [-0.17, 0.17])
     assert handler._working_status_task is None
+    handler.deps.movement_manager.queue_move.reset_mock()
+    await handler._queue_progress_tick()
+    handler.deps.movement_manager.queue_move.assert_not_called()
     await handler.shutdown()
 
 

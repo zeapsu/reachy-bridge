@@ -103,7 +103,7 @@ class EarWiggleMove(Move):  # type: ignore[misc]
 
     @property
     def duration(self) -> float:
-        return 0.66
+        return 1.4
 
     def evaluate(
         self, t: float
@@ -517,7 +517,6 @@ class HermesHandler(OpenRouterChatHandler):
     async def _queue_progress_tick(self) -> None:
         """Repeat one subtle processing burst while Hermes is working."""
         await self._queue_processing_burst()
-        self._queue_ear_wiggle()
 
     async def _queue_processing_burst(self) -> None:
         pulse_samples = int(self.SAMPLE_RATE * 0.16)
@@ -536,12 +535,13 @@ class HermesHandler(OpenRouterChatHandler):
             )
         ).astype(np.float32)
 
-        for index, frequency in enumerate((440.0, 494.0, 554.0)):
+        frequency = 330.0
+        wave = (
+            np.sin(2.0 * np.pi * frequency * times)
+            + 0.2 * np.sin(4.0 * np.pi * frequency * times)
+        ) / 1.2
+        for index in range(3):
             amplitude = 0.09 * (0.78**index)
-            wave = (
-                np.sin(2.0 * np.pi * frequency * times)
-                + 0.2 * np.sin(4.0 * np.pi * frequency * times)
-            ) / 1.2
             offset = index * onset_samples
             burst[offset : offset + pulse_samples] = amplitude * envelope * wave
 
