@@ -264,6 +264,7 @@ class MovementManager:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._is_listening = False
+        self._is_processing = False
         self._last_commanded_pose: FullBodyPose = clone_full_body_pose(self.state.last_primary_pose)
         self._listening_antennas: Tuple[float, float] = self._last_commanded_pose[1]
         self._antenna_unfreeze_blend = 1.0
@@ -330,6 +331,10 @@ class MovementManager:
         self._command_queue.put(
             ("wiggle_antennas", (float(duration), float(amplitude)))
         )
+
+    def set_processing(self, processing: bool) -> None:
+        """Hold the current head pose while allowing additive antenna feedback."""
+        self._command_queue.put(("set_processing", bool(processing)))
 
     def set_moving_state(self, duration: float) -> None:
         """Mark the robot as actively moving for the provided duration.
@@ -429,6 +434,9 @@ class MovementManager:
             self._antenna_wiggle_duration = duration
             self._antenna_wiggle_amplitude = amplitude
             self.state.update_activity()
+        elif command == "set_processing":
+            self._is_processing = bool(payload)
+            self.state.update_activity()
         elif command == "mark_activity":
             self.state.update_activity()
         elif command == "set_listening":
@@ -485,6 +493,7 @@ class MovementManager:
             self.state.current_move is None
             and not self.move_queue
             and not self._is_listening
+            and not self._is_processing
             and not self._breathing_active
         ):
             idle_for = current_time - self.state.last_activity_time
@@ -509,11 +518,13 @@ class MovementManager:
                     self._breathing_active = False
                     logger.error("Failed to start breathing: %s", e)
 
-        if isinstance(self.state.current_move, BreathingMove) and self.move_queue:
+        if isinstance(self.state.current_move, BreathingMove) and (
+            self.move_queue or self._is_processing
+        ):
             self.state.current_move = None
             self.state.move_start_time = None
             self._breathing_active = False
-            logger.debug("Stopping breathing due to new move activity")
+            logger.debug("Stopping breathing due to move or processing activity")
 
         if self.state.current_move is not None and not isinstance(self.state.current_move, BreathingMove):
             self._breathing_active = False

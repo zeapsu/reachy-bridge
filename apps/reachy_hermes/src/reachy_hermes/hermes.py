@@ -165,6 +165,7 @@ class HermesHandler(OpenRouterChatHandler):
             await asyncio.gather(detection_task, return_exceptions=True)
         self._cancel_detection_task = None
         await self._stop_working_status_updates()
+        self._set_processing(False)
         await self.gateway.close()
         await super().shutdown()
 
@@ -420,15 +421,18 @@ class HermesHandler(OpenRouterChatHandler):
         del image_jpeg
         self._reset_cancel_input()
         self._set_listening(False)
-        await self._queue_processing_chime()
+        self._set_processing(True)
         self._gateway_turn_active = True
-        self._start_working_status_updates()
         try:
+            await self._queue_processing_chime()
+            self._start_working_status_updates()
             try:
                 answer = await self.invoke_hermes()
                 spoken = to_spoken_text(answer)
                 if not spoken:
-                    raise HermesInvocationError("Hermes returned no speech-safe answer")
+                    raise HermesInvocationError(
+                        "Hermes returned no speech-safe answer"
+                    )
                 return spoken
             except HermesCancelled:
                 return CANCEL_REPLY
@@ -443,6 +447,7 @@ class HermesHandler(OpenRouterChatHandler):
             await self._stop_working_status_updates()
             self._reset_cancel_input()
             self._set_listening(False)
+            self._set_processing(False)
 
     async def invoke_hermes(self, prompt: str | None = None) -> str:
         """Send the current turn with bounded plain-text context."""
@@ -507,7 +512,7 @@ class HermesHandler(OpenRouterChatHandler):
             )
         ).astype(np.float32)
 
-        frequency = 165.0
+        frequency = 132.0
         wave = (
             np.sin(2.0 * np.pi * frequency * times)
             + 0.2 * np.sin(4.0 * np.pi * frequency * times)
@@ -530,6 +535,12 @@ class HermesHandler(OpenRouterChatHandler):
             self.deps.movement_manager.wiggle_antennas()
         except Exception:
             logger.debug("Unable to queue Hermes ear wiggle", exc_info=True)
+
+    def _set_processing(self, processing: bool) -> None:
+        try:
+            self.deps.movement_manager.set_processing(processing)
+        except Exception:
+            logger.debug("Unable to update Hermes processing motion", exc_info=True)
 
     def _start_working_status_updates(self) -> None:
         task = self._working_status_task

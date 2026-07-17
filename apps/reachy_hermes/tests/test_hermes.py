@@ -455,8 +455,12 @@ async def test_completion_emits_three_pulse_earcon_and_smooth_ear_wiggle() -> No
     assert peaks == sorted(peaks, reverse=True)
     dominant_bin = int(np.argmax(np.abs(np.fft.rfft(chime[:2_560]))))
     dominant_frequency = dominant_bin * sample_rate / 2_560
-    assert 155.0 <= dominant_frequency <= 175.0
+    assert 125.0 <= dominant_frequency <= 140.0
     handler.deps.movement_manager.wiggle_antennas.assert_called_once_with()
+    assert [
+        call.args[0]
+        for call in handler.deps.movement_manager.set_processing.call_args_list
+    ] == [True, False]
     assert handler._working_status_task is None
     handler.deps.movement_manager.wiggle_antennas.reset_mock()
     await handler._queue_progress_tick()

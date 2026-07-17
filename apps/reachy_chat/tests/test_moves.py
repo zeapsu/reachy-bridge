@@ -28,6 +28,31 @@ def test_antenna_wiggle_is_additive_and_never_moves_head_or_body() -> None:
     assert finished[1] == pytest.approx(baseline[1])
     assert finished[2] == baseline[2]
 
+def test_processing_holds_head_still_and_suppresses_breathing() -> None:
+    """Processing stops automatic head breathing without freezing the ears."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = np.eye(4, dtype=np.float32)
+    robot.get_current_joint_positions.return_value = (
+        np.zeros(7),
+        np.array([-0.17, 0.17]),
+    )
+    manager = MovementManager(robot)
+    baseline = manager._compose_full_body_pose(10.0)
+    manager.state.last_activity_time = 0.0
+    manager._manage_breathing(10.0)
+    manager._manage_move_queue(10.0)
+    assert manager.state.current_move is not None
+
+    manager.set_processing(True)
+    manager._poll_signals(10.1)
+    manager._manage_breathing(10.1)
+    assert manager.state.current_move is None
+    assert np.allclose(manager._compose_full_body_pose(10.2)[0], baseline[0])
+
+    manager.state.last_activity_time = 0.0
+    manager._manage_breathing(20.0)
+    assert not manager.move_queue
+
 
 def test_antenna_wiggle_rejects_invalid_parameters() -> None:
     """Invalid wiggle durations and amplitudes fail before queuing."""
