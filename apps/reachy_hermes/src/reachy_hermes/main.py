@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -39,6 +40,7 @@ from reachy_chat.moves import MovementManager
 from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.utils import setup_logger
 
+from reachy_hermes.gateway import HermesGatewayClient
 from reachy_hermes.hermes import HermesHandler
 
 
@@ -83,7 +85,6 @@ class ReachyHermes(ReachyMiniApp):  # type: ignore[misc]
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         """Start speech and movement services, then cleanly return the robot home."""
-        _signal_stage("starting-gateway")
         movement_manager = MovementManager(current_robot=reachy_mini, camera_worker=None)
         deps = ToolDependencies(
             reachy_mini=reachy_mini,
@@ -91,7 +92,11 @@ class ReachyHermes(ReachyMiniApp):  # type: ignore[misc]
             camera_worker=None,
             vision_processor=None,
         )
-        handler = HermesHandler(deps)
+        gateway = HermesGatewayClient(stage_callback=_signal_stage)
+        # Verify synchronously in the app startup path, before readiness can be
+        # signalled. The gateway caches this identity and reuses it at spawn.
+        asyncio.run(gateway.verify_runtime())
+        handler = HermesHandler(deps, gateway=gateway)
         stream = HermesLocalStream(handler, reachy_mini)
 
         def stop_stream() -> None:

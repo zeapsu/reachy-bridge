@@ -378,7 +378,9 @@ async def _close_runtime(runtime: _ServeRuntime) -> None:
             await asyncio.gather(*runtime.tasks, return_exceptions=True)
 
 
-async def _run_version(binary: Path) -> tuple[int, bytes, bytes]:
+async def _run_version(
+    binary: Path, *, environment: dict[str, str] | None = None
+) -> tuple[int, bytes, bytes]:
     process = await asyncio.create_subprocess_exec(
         str(binary),
         "--version",
@@ -386,6 +388,7 @@ async def _run_version(binary: Path) -> tuple[int, bytes, bytes]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
+        env=environment,
     )
     if process.stdout is None or process.stderr is None:
         await _terminate_process(process)

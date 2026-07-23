@@ -25,6 +25,7 @@ from reachy_hermes.gateway import (
     HermesGatewayClient,
     HermesInvocationError,
     HermesMissingBinary,
+    HermesRuntimeMismatch,
     SAFETY_PROMPT,
 )
 from reachy_hermes.tts import NeuralTTS
@@ -189,6 +190,9 @@ class HermesHandler(OpenRouterChatHandler):
             await self.gateway.prepare()
         except HermesMissingBinary:
             logger.warning("Hermes executable is unavailable; voice requests will explain the error")
+        except HermesRuntimeMismatch:
+            logger.exception("Hermes runtime does not match the accepted pin")
+            raise
         except HermesError:
             logger.exception("Hermes native session preparation failed")
         else:

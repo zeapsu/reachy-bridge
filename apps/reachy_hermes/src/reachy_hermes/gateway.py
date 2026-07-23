@@ -16,6 +16,9 @@ from typing import Any, TypeAlias
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from reachy_hermes.compat_gate import _run_version, parse_build_identity
+from reachy_hermes.runtime_pin import RUNTIME_PIN, describe
+
 logger = logging.getLogger(__name__)
 
 HERMES_BINARY = Path("~/.local/bin/hermes").expanduser()
@@ -27,6 +30,7 @@ HERMES_OUTPUT_LIMIT_BYTES = 32 * 1024
 HERMES_TERM_GRACE_SECONDS = 3.0
 HERMES_SESSION_TITLE = "reachy-hermes"
 HERMES_MAX_SESSION_TURNS = 8
+HERMES_ALLOW_UNPINNED_ENV = "REACHY_HERMES_ALLOW_UNPINNED"
 
 SAFETY_PROMPT = """# Reachy Hermes voice policy
 
@@ -49,6 +53,8 @@ Do not control the robot's motors or claim to see through a camera; those capabi
 ProcessFactory: TypeAlias = Callable[..., Awaitable[Any]]
 ConnectFactory: TypeAlias = Callable[[str], Any]
 StatusCallback: TypeAlias = Callable[[str], Awaitable[None] | None]
+StageCallback: TypeAlias = Callable[[str], None]
+VersionRunner: TypeAlias = Callable[[Path], Awaitable[tuple[int, bytes, bytes]]]
 
 
 class HermesError(RuntimeError):
@@ -61,6 +67,68 @@ class HermesMissingBinary(HermesError):
 
 class HermesInvocationError(HermesError):
     """The Hermes gateway failed or returned an invalid response."""
+
+
+class HermesRuntimeMismatch(HermesError):
+    """The configured Hermes executable does not match the accepted runtime."""
+
+
+async def verify_hermes_runtime(
+    binary: Path,
+    *,
+    pin: dict[str, Any] | None = None,
+    version_runner: VersionRunner | None = None,
+    environment: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return the public build identity after enforcing the tracked runtime pin."""
+    accepted = RUNTIME_PIN if pin is None else pin
+    try:
+        if version_runner is None:
+            returncode, stdout, stderr = await _run_version(
+                binary, environment=environment
+            )
+        else:
+            returncode, stdout, stderr = await version_runner(binary)
+    except FileNotFoundError as exc:
+        raise HermesMissingBinary(f"Hermes executable not found at {binary}") from exc
+    except Exception as exc:
+        raise HermesInvocationError(
+            f"Unable to verify Hermes runtime at {binary}: {exc}"
+        ) from exc
+    if returncode != 0:
+        detail = (stderr or stdout).decode("utf-8", errors="replace").strip()[-500:]
+        suffix = f": {detail}" if detail else ""
+        raise HermesInvocationError(
+            f"Hermes --version exited with code {returncode}{suffix}"
+        )
+    try:
+        identity = parse_build_identity(stdout.decode("utf-8", errors="replace"))
+    except ValueError as exc:
+        raise HermesInvocationError(f"Unable to parse Hermes runtime identity: {exc}") from exc
+
+    expected = {
+        field: accepted.get(field)
+        for field in ("version", "build_date", "upstream_sha", "local_sha")
+        if accepted.get(field) is not None
+    }
+    found = {field: identity.get(field) for field in expected}
+    mismatches = {
+        field: (value, found[field])
+        for field, value in expected.items()
+        if found[field] != value
+    }
+    if mismatches:
+        message = f"Hermes runtime mismatch: expected {expected}, found {found}"
+        if os.getenv(HERMES_ALLOW_UNPINNED_ENV) == "1":
+            logger.warning(
+                "UNPINNED HERMES RUNTIME ALLOWED FOR CANDIDATE TESTING: %s",
+                message,
+            )
+        else:
+            raise HermesRuntimeMismatch(message)
+    else:
+        logger.info("Verified Hermes runtime: %s (pin: %s)", identity, describe())
+    return identity
 
 
 
@@ -86,12 +154,20 @@ class HermesGatewayClient:
         connect_factory: ConnectFactory | None = None,
         port: int = HERMES_GATEWAY_PORT,
         runtime_dir: str | Path | None = None,
+        state_root: str | Path | None = None,
+        version_runner: VersionRunner | None = None,
+        stage_callback: StageCallback | None = None,
     ) -> None:
         self.hermes_binary = Path(hermes_binary).expanduser()
         self._process_factory = process_factory or asyncio.create_subprocess_exec
         self._connect_factory = connect_factory or _default_connect
+        self._version_runner = version_runner
+        self._stage_callback = stage_callback
         self.port = port
-        self.runtime_dir = Path(runtime_dir or "~/.cache/reachy-hermes/session").expanduser()
+        self._runtime_dir = Path(runtime_dir).expanduser() if runtime_dir else None
+        self._state_root = Path(state_root or "~/.cache/reachy-hermes").expanduser()
+        self._hermes_home: Path | None = None
+        self._verified_identity: dict[str, str] | None = None
         self._token = secrets.token_urlsafe(32)
         self._process: Any | None = None
         self._stdout_task: asyncio.Task[tuple[bytes, bool]] | None = None
@@ -114,16 +190,53 @@ class HermesGatewayClient:
         return f"ws://127.0.0.1:{self.port}/api/ws?token={self._token}"
 
     @property
+    def runtime_dir(self) -> Path:
+        if self._runtime_dir is None:
+            raise HermesInvocationError("Hermes runtime paths requested before version verification")
+        return self._runtime_dir
+
+    @property
+    def hermes_home(self) -> Path:
+        if self._hermes_home is None:
+            raise HermesInvocationError("Hermes home requested before version verification")
+        return self._hermes_home
+
+    @property
     def connection_file(self) -> Path:
         return self.runtime_dir / "connection.json"
 
     async def prepare(self) -> None:
         """Start the private gateway before the first voice turn."""
+        await self.verify_runtime()
         try:
             self.connection_file.unlink(missing_ok=True)
         except OSError:
             logger.debug("Unable to remove stale Hermes connection file", exc_info=True)
         await self.start()
+
+    async def verify_runtime(self) -> dict[str, str]:
+        """Verify once and select version-scoped state paths from the found version."""
+        if self._verified_identity is not None:
+            return self._verified_identity
+        if not self.hermes_binary.is_file():
+            raise HermesMissingBinary(f"Hermes executable not found at {self.hermes_binary}")
+        if self._stage_callback is not None:
+            self._stage_callback("verifying-hermes-runtime")
+        preflight_home = self._state_root / "preflight" / "home"
+        preflight_home.mkdir(parents=True, exist_ok=True)
+        preflight_environment = os.environ.copy()
+        preflight_environment["HERMES_HOME"] = str(preflight_home)
+        identity = await verify_hermes_runtime(
+            self.hermes_binary,
+            version_runner=self._version_runner,
+            environment=preflight_environment,
+        )
+        version_root = self._state_root / f"v{identity['version']}"
+        self._hermes_home = version_root / "home"
+        if self._runtime_dir is None:
+            self._runtime_dir = version_root / "session"
+        self._verified_identity = identity
+        return identity
 
     async def fetch_messages(self) -> list[dict[str, Any]]:
         """Read committed messages without rebinding the live session transport."""
@@ -145,16 +258,17 @@ class HermesGatewayClient:
         """Start the isolated server and wait for its explicit readiness line."""
         if self._process is not None and getattr(self._process, "returncode", None) is None:
             return
-        if not self.hermes_binary.is_file():
-            raise HermesMissingBinary(f"Hermes executable not found at {self.hermes_binary}")
+        await self.verify_runtime()
 
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        self.hermes_home.mkdir(parents=True, exist_ok=True)
         (self.runtime_dir / "AGENTS.md").write_text(SAFETY_PROMPT, encoding="utf-8")
         environment = os.environ.copy()
         environment.pop("HERMES_KANBAN_TASK", None)
         environment.update(
             {
                 "HERMES_DASHBOARD_SESSION_TOKEN": self._token,
+                "HERMES_HOME": str(self.hermes_home),
                 "HERMES_TUI_TOOLSETS": HERMES_TOOLSETS,
             }
         )
@@ -168,6 +282,8 @@ class HermesGatewayClient:
             "--skip-build",
             "--isolated",
         ]
+        if self._stage_callback is not None:
+            self._stage_callback("starting-gateway")
         try:
             process = await self._process_factory(
                 *command,
@@ -386,10 +502,11 @@ class HermesGatewayClient:
         self._stderr_task = None
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        try:
-            self.connection_file.unlink(missing_ok=True)
-        except OSError:
-            logger.debug("Unable to remove Hermes connection file", exc_info=True)
+        if self._runtime_dir is not None:
+            try:
+                self.connection_file.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("Unable to remove Hermes connection file", exc_info=True)
 
     async def _wait_until_ready(self, websocket: Any) -> None:
         try:
@@ -675,5 +792,7 @@ __all__ = [
     "HermesGatewayClient",
     "HermesInvocationError",
     "HermesMissingBinary",
+    "HermesRuntimeMismatch",
     "SAFETY_PROMPT",
+    "verify_hermes_runtime",
 ]

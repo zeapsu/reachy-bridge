@@ -30,6 +30,15 @@ from reachy_hermes.hermes import (
 from reachy_hermes.tts import NeuralTTS
 
 
+VERSION_OUTPUT = b"""Hermes Agent v0.19.0 (2026.7.20) \xc2\xb7 upstream e1367b44
+Install directory: /opt/hermes-agent
+"""
+
+
+async def accepted_version(_: Path) -> tuple[int, bytes, bytes]:
+    return 0, VERSION_OUTPUT, b""
+
+
 class FakeGateway:
     def __init__(self, answer: str = "read-only answer") -> None:
         self.answer = answer
@@ -561,6 +570,8 @@ async def test_isolated_gateway_uses_fixed_toolsets_sessions_and_streamed_text(
         process_factory=spawn,
         connect_factory=lambda url: FakeConnection(websocket),
         runtime_dir=tmp_path / "runtime",
+        state_root=tmp_path / "state",
+        version_runner=accepted_version,
     )
 
     answer = await client.ask("question", status_callback=statuses.append)
@@ -631,6 +642,8 @@ async def test_gateway_cycles_bounded_agent_context(
         process_factory=spawn,
         connect_factory=lambda url: FakeConnection(websocket),
         runtime_dir=tmp_path / "runtime",
+        state_root=tmp_path / "state",
+        version_runner=accepted_version,
     )
     client._stored_session_id = "stored-old"
     client._turns_in_session = HERMES_MAX_SESSION_TURNS
@@ -705,6 +718,8 @@ async def test_gateway_rejects_oversized_stream_and_sends_interrupt(
         process_factory=spawn,
         connect_factory=lambda url: FakeConnection(websocket),
         runtime_dir=tmp_path / "runtime",
+        state_root=tmp_path / "state",
+        version_runner=accepted_version,
     )
     with pytest.raises(HermesInvocationError, match="32 KiB"):
         await client.ask("too much")
@@ -967,6 +982,9 @@ def test_stop_during_whisper_prewarm_skips_readiness_and_stream_launch(
     signal_ready = MagicMock()
     return_home = MagicMock()
     monkeypatch.setattr(hermes_main, "MovementManager", MagicMock(return_value=movement))
+    gateway = MagicMock()
+    gateway.verify_runtime = AsyncMock()
+    monkeypatch.setattr(hermes_main, "HermesGatewayClient", MagicMock(return_value=gateway))
     monkeypatch.setattr(hermes_main, "HermesHandler", MagicMock(return_value=handler))
     monkeypatch.setattr(hermes_main, "HermesLocalStream", MagicMock(return_value=stream))
     monkeypatch.setattr(hermes_main, "_signal_ready", signal_ready)
@@ -976,6 +994,10 @@ def test_stop_during_whisper_prewarm_skips_readiness_and_stream_launch(
 
     hermes_main.ReachyHermes().run(robot, stop_event)
 
+    gateway.verify_runtime.assert_awaited_once_with()
+    hermes_main.HermesGatewayClient.assert_called_once_with(
+        stage_callback=hermes_main._signal_stage
+    )
     handler.ensure_tts_loaded.assert_not_called()
     signal_ready.assert_not_called()
     stream.launch.assert_not_called()
