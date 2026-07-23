@@ -1,4 +1,5 @@
 """Reachy Mini app entrypoint for the local Hermes voice assistant."""
+# ruff: noqa: E402
 
 from __future__ import annotations
 
@@ -11,6 +12,20 @@ from contextlib import contextmanager
 from importlib import resources
 from pathlib import Path
 from typing import Any
+
+
+def _signal_stage(stage: str) -> None:
+    """Best-effort publish the current startup stage for the controller."""
+    ready_file = os.getenv("REACHY_READY_FILE")
+    if not ready_file:
+        return
+    try:
+        Path(f"{ready_file}.stage").write_text(stage, encoding="utf-8")
+    except Exception:
+        pass
+
+
+_signal_stage("importing")
 
 from reachy_mini import ReachyMini, ReachyMiniApp
 from reachy_mini.utils import create_head_pose
@@ -68,6 +83,7 @@ class ReachyHermes(ReachyMiniApp):  # type: ignore[misc]
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         """Start speech and movement services, then cleanly return the robot home."""
+        _signal_stage("starting-gateway")
         movement_manager = MovementManager(current_robot=reachy_mini, camera_worker=None)
         deps = ToolDependencies(
             reachy_mini=reachy_mini,
@@ -135,6 +151,7 @@ class ReachyHermes(ReachyMiniApp):  # type: ignore[misc]
 
 def _signal_ready() -> None:
     """Touch the controller-provided readiness marker, when configured."""
+    _signal_stage("ready")
     ready_file = os.getenv("REACHY_READY_FILE")
     if not ready_file:
         return
@@ -180,6 +197,7 @@ def main() -> None:
     """Launch the Reachy Mini app through the SDK wrapper."""
     setup_logger(False)
     logger.info("Starting Reachy Hermes voice app")
+    _signal_stage("connecting-daemon")
     app = ReachyHermes()
     try:
         app.wrapped_run()

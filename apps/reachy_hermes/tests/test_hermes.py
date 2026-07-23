@@ -983,6 +983,41 @@ def test_stop_during_whisper_prewarm_skips_readiness_and_stream_launch(
     return_home.assert_called_once_with(robot)
 
 
+def test_startup_stage_writer_is_best_effort(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import reachy_hermes.main as hermes_main
+
+    monkeypatch.delenv("REACHY_READY_FILE", raising=False)
+    hermes_main._signal_stage("importing")
+
+    ready_file = tmp_path / "hermes.ready"
+    monkeypatch.setenv("REACHY_READY_FILE", str(ready_file))
+    hermes_main._signal_stage("connecting-daemon")
+    assert Path(f"{ready_file}.stage").read_text() == "connecting-daemon"
+
+    def fail_write(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise OSError("unwritable")
+
+    monkeypatch.setattr(hermes_main.Path, "write_text", fail_write)
+    hermes_main._signal_stage("starting-gateway")
+
+
+def test_signal_ready_writes_ready_stage_and_marker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import reachy_hermes.main as hermes_main
+
+    ready_file = tmp_path / "hermes.ready"
+    monkeypatch.setenv("REACHY_READY_FILE", str(ready_file))
+
+    hermes_main._signal_ready()
+
+    assert ready_file.exists()
+    assert Path(f"{ready_file}.stage").read_text() == "ready"
+
+
 def test_module_entrypoint_invokes_sdk_wrapper_without_robot(monkeypatch: pytest.MonkeyPatch) -> None:
     from reachy_mini import ReachyMiniApp
 
