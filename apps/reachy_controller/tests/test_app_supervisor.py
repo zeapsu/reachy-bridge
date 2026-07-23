@@ -18,9 +18,11 @@ import pytest
 from reachy_controller.app_supervisor import (
     _APP_READINESS_POLL_S,
     _APP_READINESS_TIMEOUT_S,
+    _HERMES_STARTUP_BUDGET_S,
     _STOP_SIGINT_GRACE_S,
     AppSupervisor,
     LocalApp,
+    _hermes_startup_budget,
     _signal_process_tree,
 )
 
@@ -1151,6 +1153,172 @@ async def test_readiness_monitor_process_death_during_loading_errors() -> None:
 
             # Status should still be error, not promoted to running
             assert supervisor._apps["reachy_chat"].status == "error"
+
+
+def test_hermes_startup_budget_is_configurable_and_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REACHY_HERMES_STARTUP_BUDGET_S", "12.5")
+    assert _hermes_startup_budget() == 12.5
+
+    for invalid in ("", "invalid", "nan", "inf", "0", "-1"):
+        monkeypatch.setenv("REACHY_HERMES_STARTUP_BUDGET_S", invalid)
+        assert _hermes_startup_budget() == _HERMES_STARTUP_BUDGET_S
+
+
+@pytest.mark.asyncio
+async def test_hermes_readiness_ignores_daemon_lock_without_marker(tmp_path: Path) -> None:
+    proxy = AsyncMock()
+    proxy.get_robot_app_lock_status.return_value = {
+        "state": "local_app",
+        "holder_name": "reachy_hermes",
+    }
+    supervisor = AppSupervisor(daemon_proxy=proxy)
+    app = supervisor._apps["reachy_hermes"]
+    app.status = "loading"
+    app.start_time = time.time()
+    app.ready_file = tmp_path / "hermes.ready"
+
+    with patch("reachy_controller.app_supervisor._APP_READINESS_POLL_S", 0.001):
+        monitor = asyncio.create_task(supervisor._monitor_readiness(app.name, 0.2))
+        await asyncio.sleep(0.02)
+        assert app.status == "loading"
+        proxy.get_robot_app_lock_status.assert_not_awaited()
+
+        app.ready_file.touch()
+        await asyncio.wait_for(monitor, timeout=1)
+
+    assert app.status == "running"
+
+
+@pytest.mark.asyncio
+async def test_hermes_readiness_budget_timeout_stops_tree_and_reports_stage(
+    tmp_path: Path,
+) -> None:
+    supervisor = AppSupervisor()
+    app = supervisor._apps["reachy_hermes"]
+    process = MagicMock()
+    process.pid = 12345
+    process.wait.return_value = 0
+    app.process = process
+    app.pid = process.pid
+    app.status = "loading"
+    app.start_time = time.time()
+    app.ready_file = tmp_path / "hermes.ready"
+    stage_file = Path(f"{app.ready_file}.stage")
+    stage_file.write_text("starting-gateway")
+
+    with (
+        patch("reachy_controller.app_supervisor._APP_READINESS_POLL_S", 0.001),
+        patch("reachy_controller.app_supervisor._signal_process_tree") as signal_tree,
+    ):
+        await supervisor._monitor_readiness(app.name, 0.01)
+
+    assert app.status == "error"
+    assert app.error is not None
+    assert "starting-gateway" in app.error
+    assert app.process is None
+    signal_tree.assert_called_once_with(12345, signal.SIGINT)
+    assert not stage_file.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exit_code,expected_phrase",
+    [(1, "during startup"), (0, "before signalling")],
+)
+async def test_hermes_early_exit_during_loading_reports_stage(
+    tmp_path: Path, exit_code: int, expected_phrase: str
+) -> None:
+    supervisor = AppSupervisor()
+    app = supervisor._apps["reachy_hermes"]
+    process = MagicMock()
+    process.pid = 12345
+    process.wait.return_value = exit_code
+    app.process = process
+    app.pid = process.pid
+    app.status = "loading"
+    app.ready_file = tmp_path / "hermes.ready"
+    Path(f"{app.ready_file}.stage").write_text("connecting-daemon")
+
+    await supervisor._reap_app(app.name)
+
+    assert app.status == "error"
+    assert app.error is not None
+    assert "connecting-daemon" in app.error
+    assert expected_phrase in app.error
+
+
+@pytest.mark.asyncio
+async def test_hermes_budget_timeout_does_not_clobber_relaunch(tmp_path: Path) -> None:
+    """A stale budget-timeout monitor must not error a fresh relaunch.
+
+    If the user relaunches Hermes while stop_app is in flight, the monitor
+    re-acquires the lock to find a new process and status back at loading. It
+    must leave that launch untouched.
+    """
+    supervisor = AppSupervisor()
+    app = supervisor._apps["reachy_hermes"]
+    app.process = MagicMock(pid=111)
+    app.pid = 111
+    app.status = "loading"
+    app.error = None
+    app.start_time = time.time()
+    app.ready_file = tmp_path / "hermes.ready"
+
+    new_process = MagicMock(pid=222)
+
+    async def fake_stop(name: str) -> dict:
+        # Simulate stop_app tearing down this launch, then a concurrent relaunch
+        # installing a fresh process before the monitor re-checks identity.
+        app.status = "loading"
+        app.process = new_process
+        app.pid = 222
+        return {"name": name, "status": "stopped"}
+
+    supervisor.stop_app = fake_stop  # type: ignore[method-assign]
+
+    with patch("reachy_controller.app_supervisor._APP_READINESS_POLL_S", 0.001):
+        await supervisor._monitor_readiness(app.name, 0.01)
+
+    assert app.status == "loading"
+    assert app.process is new_process
+    assert app.error is None
+
+
+@pytest.mark.asyncio
+async def test_hermes_valid_marker_promotes_to_running(tmp_path: Path) -> None:
+    supervisor = AppSupervisor()
+    app = supervisor._apps["reachy_hermes"]
+    app.status = "loading"
+    app.start_time = time.time()
+    app.ready_file = tmp_path / "hermes.ready"
+    app.ready_file.touch()
+
+    await supervisor._monitor_readiness(app.name, 0.1)
+
+    assert app.status == "running"
+
+
+@pytest.mark.asyncio
+async def test_hermes_marker_can_arrive_after_generic_ceiling(tmp_path: Path) -> None:
+    supervisor = AppSupervisor()
+    app = supervisor._apps["reachy_hermes"]
+    app.status = "loading"
+    app.start_time = time.time()
+    app.ready_file = tmp_path / "hermes.ready"
+
+    with (
+        patch("reachy_controller.app_supervisor._APP_READINESS_TIMEOUT_S", 0.005),
+        patch("reachy_controller.app_supervisor._APP_READINESS_POLL_S", 0.001),
+    ):
+        monitor = asyncio.create_task(supervisor._monitor_readiness(app.name, 0.2))
+        await asyncio.sleep(0.02)
+        assert app.status == "loading"
+        app.ready_file.touch()
+        await asyncio.wait_for(monitor, timeout=1)
+
+    assert app.status == "running"
 
 
 @pytest.mark.asyncio

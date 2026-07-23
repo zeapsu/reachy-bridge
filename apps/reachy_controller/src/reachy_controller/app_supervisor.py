@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import signal
 import subprocess
@@ -32,6 +33,16 @@ _APP_READINESS_POLL_S = 0.5  # Polling interval for readiness monitor
 _APP_READINESS_TIMEOUT_S = (
     60.0  # Ceiling timeout for app startup before promoting loading → running
 )
+_HERMES_STARTUP_BUDGET_S = 300.0
+
+
+def _hermes_startup_budget() -> float:
+    """Read the per-launch Hermes startup budget, falling back safely."""
+    try:
+        budget = float(os.getenv("REACHY_HERMES_STARTUP_BUDGET_S", ""))
+    except ValueError:
+        return _HERMES_STARTUP_BUDGET_S
+    return budget if math.isfinite(budget) and budget > 0 else _HERMES_STARTUP_BUDGET_S
 
 
 def _signal_process_tree(pid: int, sig: int) -> None:
@@ -389,7 +400,12 @@ class AppSupervisor:
                 self._reaper_tasks[name] = reaper_task
 
                 # Spawn readiness monitor task
-                monitor_task = asyncio.create_task(self._monitor_readiness(name))
+                if name == "reachy_hermes":
+                    monitor_task = asyncio.create_task(
+                        self._monitor_readiness(name, _hermes_startup_budget())
+                    )
+                else:
+                    monitor_task = asyncio.create_task(self._monitor_readiness(name))
                 self._readiness_tasks[name] = monitor_task
 
                 return {
@@ -484,10 +500,15 @@ class AppSupervisor:
 
             # Clean up ready file
             if app.ready_file is not None:
+                stage_file = Path(f"{app.ready_file}.stage")
                 try:
                     app.ready_file.unlink(missing_ok=True)
                 except Exception as e:
                     logger.debug(f"Failed to clean up ready file for {name}: {e}")
+                try:
+                    stage_file.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"Failed to clean up stage file for {name}: {e}")
                 app.ready_file = None
 
             return {"name": name, "status": "stopped"}
@@ -529,8 +550,13 @@ class AppSupervisor:
                 app.external = False
                 self.log_broker.set_status(app.name, "stopped")
                 if app.ready_file is not None:
+                    stage_file = Path(f"{app.ready_file}.stage")
                     try:
                         app.ready_file.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    try:
+                        stage_file.unlink(missing_ok=True)
                     except OSError:
                         pass
                     app.ready_file = None
@@ -539,7 +565,9 @@ class AppSupervisor:
         """Stop launched children without blocking the controller event loop."""
         await asyncio.to_thread(self.stop_all)
 
-    async def _monitor_readiness(self, name: str) -> None:
+    async def _monitor_readiness(
+        self, name: str, hermes_startup_budget_s: float | None = None
+    ) -> None:
         """Monitor app readiness and promote from loading to running.
 
         Uses a multi-strategy approach:
@@ -548,6 +576,9 @@ class AppSupervisor:
         3. Ceiling: timeout (_APP_READINESS_TIMEOUT_S) as fallback, logs WARNING if hit.
         """
         app = self._apps[name]
+        is_hermes = name == "reachy_hermes"
+        if is_hermes and hermes_startup_budget_s is None:
+            hermes_startup_budget_s = _HERMES_STARTUP_BUDGET_S
         if app.start_time is None:
             logger.error(f"_monitor_readiness for {name}: start_time is None")
             return
@@ -556,6 +587,13 @@ class AppSupervisor:
         # start_time: an NTP step / DST change mid-boot must not distort `elapsed`.
         # (app.start_time stays wall-clock — the frontend reads it as a timestamp.)
         start_mono = time.monotonic()
+
+        # Identity of the launch this monitor watches. The Hermes budget-timeout
+        # branch re-checks it after stop_app to avoid clobbering a concurrent relaunch.
+        launch_process = app.process
+        # Captured while the loop is running; asyncio.current_task() in the finally
+        # would raise if the coroutine is garbage-collected without a running loop.
+        current_task = asyncio.current_task()
 
         try:
             while True:
@@ -567,7 +605,7 @@ class AppSupervisor:
                     break
 
                 # Try secondary: daemon lock (best-effort, won't fire for direct launches)
-                if self.daemon_proxy is not None:
+                if not is_hermes and self.daemon_proxy is not None:
                     try:
                         lock_status = await self.daemon_proxy.get_robot_app_lock_status()
                         if (
@@ -582,7 +620,32 @@ class AppSupervisor:
                         logger.debug(f"Lock check for {name} failed (best-effort): {e}")
 
                 # Check ceiling timeout
-                if elapsed >= _APP_READINESS_TIMEOUT_S:
+                if is_hermes and elapsed >= hermes_startup_budget_s:
+                    stage = self._read_startup_stage(app)
+                    error = (
+                        f"Hermes startup timed out after {hermes_startup_budget_s:g}s "
+                        f"(stage: {stage}, marker: {app.ready_file})"
+                    )
+                    logger.error(error)
+                    # De-register before stop_app so its readiness-task cancel does
+                    # not abort this task mid-error-write. The finally below re-checks
+                    # identity, so it won't evict a relaunch's fresh monitor.
+                    self._readiness_tasks.pop(name, None)
+                    await self.stop_app(name)
+                    async with self._lock:
+                        # stop_app released the lock; a relaunch may have installed a
+                        # fresh process and flipped status back to loading/running.
+                        # Only record the timeout error if this launch still owns the
+                        # app — never clobber the newer launch.
+                        if app.status not in ("loading", "running") and (
+                            app.process is None or app.process is launch_process
+                        ):
+                            app.status = "error"
+                            app.error = error
+                            self.log_broker.set_status(name, "error")
+                    return
+
+                if not is_hermes and elapsed >= _APP_READINESS_TIMEOUT_S:
                     logger.warning(
                         f"App {name} readiness signal never arrived within {_APP_READINESS_TIMEOUT_S}s, promoting by fallback ceiling"
                     )
@@ -601,10 +664,15 @@ class AppSupervisor:
 
             # Clean up ready file after promotion (served its purpose)
             if app.ready_file is not None:
+                stage_file = Path(f"{app.ready_file}.stage")
                 try:
                     app.ready_file.unlink(missing_ok=True)
                 except Exception as e:
                     logger.debug(f"Failed to clean up ready file for {name}: {e}")
+                try:
+                    stage_file.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"Failed to clean up stage file for {name}: {e}")
                 app.ready_file = None
         except asyncio.CancelledError:
             # Task was cancelled during stop_app; expected
@@ -613,7 +681,22 @@ class AppSupervisor:
         except Exception as e:
             logger.error(f"Readiness monitor error for {name}: {e}")
         finally:
-            self._readiness_tasks.pop(name, None)
+            # Only evict our own registration. The budget-timeout branch already
+            # popped this task, so after a relaunch the registry holds the new
+            # launch's monitor — identity-guard prevents evicting it.
+            if self._readiness_tasks.get(name) is current_task:
+                self._readiness_tasks.pop(name, None)
+
+    @staticmethod
+    def _read_startup_stage(app: LocalApp) -> str:
+        """Read an app's best-effort startup stage marker."""
+        if app.ready_file is None:
+            return "unknown"
+        try:
+            stage = Path(f"{app.ready_file}.stage").read_text(encoding="utf-8").strip()
+            return stage or "unknown"
+        except OSError:
+            return "unknown"
 
     async def _reap_app(self, name: str) -> None:
         """Monitor a child process and update status when it exits."""
@@ -646,6 +729,7 @@ class AppSupervisor:
             # pump join fails, leave all ownership intact for a retry.
             if app.status == "stopping":
                 return
+            exited_while_loading = app.status == "loading"
 
             readiness_task = self._readiness_tasks.pop(name, None)
             if readiness_task is not None and readiness_task is not current_task:
@@ -666,23 +750,48 @@ class AppSupervisor:
             app.process = None
             app.pid = None
             app.external = False
+            # Only the hermes-exited-while-loading branch consumes the stage, and
+            # it must be read before the cleanup below deletes the .stage file.
+            startup_stage = (
+                self._read_startup_stage(app)
+                if name == "reachy_hermes" and exited_while_loading
+                else "unknown"
+            )
             if app.ready_file is not None:
+                stage_file = Path(f"{app.ready_file}.stage")
                 try:
                     app.ready_file.unlink(missing_ok=True)
                 except Exception as e:
                     logger.debug(f"Failed to clean up ready file for {name}: {e}")
+                try:
+                    stage_file.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"Failed to clean up stage file for {name}: {e}")
                 app.ready_file = None
 
             if wait_error is not None:
                 app.status = "error"
                 app.error = str(wait_error)
+            elif name == "reachy_hermes" and exited_while_loading:
+                app.status = "error"
+                if exit_code == 0:
+                    app.error = (
+                        f"Exited cleanly (code 0) before signalling ready "
+                        f"(stage: {startup_stage})"
+                    )
+                else:
+                    app.error = (
+                        f"Exited with code {exit_code} during startup "
+                        f"(stage: {startup_stage})"
+                    )
             elif exit_code == 0:
                 app.status = "stopped"
                 app.error = None
             else:
                 app.status = "error"
                 app.error = f"Exited with code {exit_code}"
-            self.log_broker.set_status(name, "stopped")
+            # Keep the log panel status in step with the app card.
+            self.log_broker.set_status(name, "error" if app.status == "error" else "stopped")
             logger.info(f"App {name} exited (code {exit_code}, status {app.status})")
 
     def _scan_for_live_apps(self) -> dict[str, tuple[int, float]]:
