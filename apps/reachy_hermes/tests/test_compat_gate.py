@@ -9,8 +9,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from reachy_hermes import compat_gate
 from reachy_hermes.compat_gate import (
+    FAIL_CLOSED_MARKER,
     _delivery_mode,
+    _in_turn_image_errors,
+    _model_profile_result,
+    _persistence_check,
+    _single_use_errors,
     assemble_result,
     make_check,
     parse_build_identity,
@@ -122,6 +128,107 @@ def test_probe_plugin_registers_expected_multimodal_envelope(
     assert envelope["text_summary"]
     assert not nonce.exists()
     assert audit.read_text(encoding="utf-8") == "image\n"
+
+
+def test_in_turn_image_requires_exactly_one_image_delivery() -> None:
+    ok = _in_turn_image_errors(
+        image_deliveries=1, prompt_count=1, status="complete", text="blue REACHY"
+    )
+    assert ok == []
+    # A retried/denied call is fine as long as one image entered the turn.
+    assert _in_turn_image_errors(
+        image_deliveries=0, prompt_count=1, status="complete", text="blue REACHY"
+    )
+    assert _in_turn_image_errors(
+        image_deliveries=2, prompt_count=1, status="complete", text="blue REACHY"
+    )
+
+
+def test_single_use_accepts_extra_retries_after_one_image() -> None:
+    marker = f"result: {FAIL_CLOSED_MARKER}"
+    # Three tool calls, image once then failed closed on every retry.
+    assert (
+        _single_use_errors(
+            tool_invocations=3,
+            audit_delta=["image", "denied", "denied"],
+            complete_text=marker,
+            completion_text="",
+            nonce_exists=False,
+        )
+        == []
+    )
+    # The original exact-two contract still passes.
+    assert (
+        _single_use_errors(
+            tool_invocations=2,
+            audit_delta=["image", "denied"],
+            complete_text=marker,
+            completion_text="",
+            nonce_exists=False,
+        )
+        == []
+    )
+
+
+def test_single_use_rejects_broken_fail_closed_shapes() -> None:
+    marker = f"result: {FAIL_CLOSED_MARKER}"
+    base = dict(complete_text=marker, completion_text="", nonce_exists=False)
+    # No denied entry means nothing failed closed.
+    assert _single_use_errors(tool_invocations=2, audit_delta=["image"], **base)
+    # A second image means the one-shot did not hold.
+    assert _single_use_errors(
+        tool_invocations=2, audit_delta=["image", "image"], **base
+    )
+    # Fewer than two invocations cannot prove single-use.
+    assert _single_use_errors(
+        tool_invocations=1, audit_delta=["image", "denied"], **base
+    )
+    # Missing fail-closed marker fails even with a valid audit shape.
+    assert _single_use_errors(
+        tool_invocations=2,
+        audit_delta=["image", "denied"],
+        complete_text="",
+        completion_text="",
+        nonce_exists=False,
+    )
+
+
+def test_model_profile_records_missing_metadata_when_delivery_recognized() -> None:
+    check = _model_profile_result(None, None, "The image is blue and says REACHY.")
+    assert check["status"] == "pass"
+    assert check["evidence"]["provider"] == "unknown"
+    assert check["evidence"]["model"] == "unknown"
+    assert check["evidence"]["metadata_not_found"] == ["provider", "model"]
+
+
+def test_model_profile_fails_only_when_delivery_unclassifiable() -> None:
+    # Named provider/model but an unclassifiable delivery -> fail.
+    unverified = _model_profile_result("openai", "gpt-4o", "Snapshot captured.")
+    assert unverified["status"] == "fail"
+    # An explicit text downgrade is a classification, so it records and passes.
+    downgraded = _model_profile_result(
+        "openai", "gpt-4o", "The tool returned only a text confirmation, no actual image."
+    )
+    assert downgraded["status"] == "pass"
+    assert downgraded["evidence"]["delivery_mode"] == "text-downgraded"
+
+
+def test_persistence_check_failure_does_not_clobber_other_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Mechanism proxy: a scan-time exception must become a failing
+    # no_raw_persistence check, never an escaping exception (which run_gate's
+    # outer handler would use to discard already-recorded live checks).
+    def _boom() -> str:
+        raise RuntimeError("probe plugin unreadable")
+
+    monkeypatch.setattr(compat_gate, "_load_probe_base64", _boom)
+    check = _persistence_check(tmp_path, None)
+    assert check == {
+        "id": "no_raw_persistence",
+        "status": "fail",
+        "evidence": {"error": "persistence scan failed: probe plugin unreadable"},
+    }
 
 
 def test_probe_plugin_one_shot_token_fails_closed(

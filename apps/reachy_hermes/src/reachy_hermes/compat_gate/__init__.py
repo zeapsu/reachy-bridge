@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import hashlib
 import json
 import os
@@ -134,6 +135,12 @@ def scan_for_probe_payload(
     return hits
 
 
+# ponytail: stat-keyed hash memo; unchanged (mtime_ns, size) means unchanged
+# content. Ceiling: a mutation that preserves both stat fields would go
+# unnoticed — acceptable here, upgrade to always-hash if that ever matters.
+_STATE_HASH_CACHE: dict[str, tuple[int, int, str]] = {}
+
+
 def _state_snapshot() -> dict[str, dict[str, Any]]:
     snapshot: dict[str, dict[str, Any]] = {}
     real_home = Path.home() / ".hermes"
@@ -144,9 +151,15 @@ def _state_snapshot() -> dict[str, dict[str, Any]]:
             continue
         try:
             stat = path.stat()
+            cached = _STATE_HASH_CACHE.get(name)
+            if cached is not None and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+                sha = cached[2]
+            else:
+                sha = hashlib.sha256(path.read_bytes()).hexdigest()
+                _STATE_HASH_CACHE[name] = (stat.st_mtime_ns, stat.st_size, sha)
             snapshot[name] = {
                 "present": True,
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "sha256": sha,
                 "mtime_ns": stat.st_mtime_ns,
             }
         except OSError as exc:
@@ -654,6 +667,7 @@ def _delivery_mode(completion_text: str) -> str:
     return "unverified"
 
 
+@functools.lru_cache(maxsize=1)
 def _load_probe_base64() -> str:
     plugin_path = PROJECT_DIR / ".hermes/plugins/reachy_probe/__init__.py"
     namespace: dict[str, Any] = {}
@@ -668,9 +682,149 @@ def _load_probe_base64() -> str:
     return image_base64
 
 
+def _in_turn_image_errors(
+    *, image_deliveries: int, prompt_count: int, status: Any, text: str
+) -> list[str]:
+    """Assert exactly one image envelope entered a single-prompt turn.
+
+    A model may retry a failed/denied call, so the tool.start count is not
+    asserted — what matters is exactly one image delivery reached the turn.
+    """
+    errors: list[str] = []
+    if image_deliveries != 1:
+        errors.append(f"expected exactly one image delivery, observed {image_deliveries}")
+    if prompt_count != 1:
+        errors.append(f"expected one prompt.submit, observed {prompt_count}")
+    if status != "complete":
+        errors.append(f"message.complete status={status!r}")
+    if EXPECTED_COLOR not in text.casefold():
+        errors.append(f"completion did not contain {EXPECTED_COLOR!r}")
+    if EXPECTED_WORD.casefold() not in text.casefold():
+        errors.append(f"completion did not contain {EXPECTED_WORD!r}")
+    return errors
+
+
+def _single_use_errors(
+    *,
+    tool_invocations: int,
+    audit_delta: list[str],
+    complete_text: str,
+    completion_text: str,
+    nonce_exists: bool,
+) -> list[str]:
+    """Assert the probe returned one image then failed closed on every retry.
+
+    Contract: at least two tool invocations, audit delta is a single ``image``
+    followed by one-or-more ``denied`` (which subsumes "exactly one image
+    envelope observed"), the fail-closed marker surfaced, and the one-shot
+    nonce is gone.
+    """
+    errors: list[str] = []
+    if tool_invocations < 2:
+        errors.append(
+            f"expected at least two tool invocations, observed {tool_invocations}"
+        )
+    if (
+        FAIL_CLOSED_MARKER not in complete_text
+        and FAIL_CLOSED_MARKER not in completion_text
+    ):
+        errors.append("second tool result did not expose the fail-closed marker")
+    fail_closed_shape = (
+        len(audit_delta) >= 2
+        and audit_delta[0] == "image"
+        and all(entry == "denied" for entry in audit_delta[1:])
+    )
+    if not fail_closed_shape:
+        errors.append(
+            f"expected audit ['image', 'denied', ...], observed {audit_delta!r}"
+        )
+    if nonce_exists:
+        errors.append("one-shot nonce still exists after first tool use")
+    return errors
+
+
+def _model_profile_result(
+    provider: str | None, model: str | None, completion_text: str
+) -> dict[str, Any]:
+    """Record provider/model + delivery mode without gating on missing metadata.
+
+    "Record, don't guess": absent provider/model keys are noted as ``unknown``,
+    never a failure. Only a delivery mode we could not classify (``unverified``)
+    fails — and in_turn_image already fails alongside it, so this check is never
+    the sole cause of ``go=false``.
+    """
+    recognized = (
+        EXPECTED_COLOR in completion_text.casefold()
+        and EXPECTED_WORD.casefold() in completion_text.casefold()
+    )
+    delivery_mode = _delivery_mode(completion_text)
+    downgraded = delivery_mode == "text-downgraded"
+    metadata_not_found = [
+        name for name, value in (("provider", provider), ("model", model)) if not value
+    ]
+    classified = delivery_mode != "unverified"
+    return make_check(
+        "model_profile",
+        "pass" if classified else "fail",
+        {
+            "provider": provider or "unknown",
+            "model": model or "unknown",
+            "delivery_mode": delivery_mode,
+            "basis": (
+                "model named both image-only test values after one multimodal tool call"
+                if recognized
+                else "model explicitly reported text-only image delivery"
+                if downgraded
+                else "completion did not prove native image inspection"
+            ),
+            "metadata_not_found": metadata_not_found,
+            "errors": []
+            if classified
+            else ["delivery mode unverified: image delivery could not be classified"],
+        },
+    )
+
+
+def _persistence_check(home: Path, runtime: _ServeRuntime | None) -> dict[str, Any]:
+    """Scan scratch home + drained stream hits for raw probe payload.
+
+    Any failure here yields a failing no_raw_persistence check rather than an
+    escaping exception, so already-recorded live checks are never discarded by
+    run_gate's outer handler. Stream content is covered by the incremental
+    ``_Capture`` scan (``raw_hits``); only on-disk files need a fresh scan.
+    """
+    try:
+        image_base64 = _load_probe_base64()
+        hits = scan_for_probe_payload([home], [], image_base64)
+        if runtime is not None:
+            for label, capture in (
+                ("hermes serve stdout", runtime.stdout),
+                ("hermes serve stderr", runtime.stderr),
+            ):
+                hits.extend(f"{label}: {hit}" for hit in capture.raw_hits)
+    except Exception as exc:
+        return make_check(
+            "no_raw_persistence",
+            "fail",
+            {"error": f"persistence scan failed: {exc}"},
+        )
+    return make_check(
+        "no_raw_persistence",
+        "fail" if hits else "pass",
+        hits
+        or {
+            "scanned": [
+                "scratch HERMES_HOME recursively",
+                "full drained Hermes serve stdout/stderr",
+            ],
+            "hits": 0,
+        },
+    )
+
+
 async def _run_live_checks(
     binary: Path, state_audit: Callable[[str], None] | None = None
-) -> tuple[list[dict[str, Any]], list[tuple[str, bytes]], Path | None]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     checks: list[dict[str, Any]] = []
 
     def add(check: dict[str, Any]) -> None:
@@ -678,11 +832,11 @@ async def _run_live_checks(
         if state_audit is not None:
             state_audit(check["id"])
 
-    captures: list[tuple[str, bytes]] = []
     temporary = tempfile.TemporaryDirectory(prefix="reachy-hermes-live-")
     home = Path(temporary.name)
     _write_scratch_config(home)
     runtime: _ServeRuntime | None = None
+    plugin_check: dict[str, Any] | None = None
     first_probe: _GatewayProbe | None = None
     first_completion: dict[str, Any] | None = None
     try:
@@ -696,6 +850,16 @@ async def _run_live_checks(
                 runtime.plugin_loaded,
                 STARTUP_TIMEOUT_SECONDS,
                 "reachy_probe registration debug line",
+            )
+            # Derive plugin_discovery from this shared live serve rather than
+            # starting a second discovery serve.
+            plugin_check = make_check(
+                "plugin_discovery",
+                "pass",
+                {
+                    "matched_log_lines": runtime.matched_plugin_lines,
+                    "method": "shared live hermes serve runtime discovery",
+                },
             )
             add(
                 make_check(
@@ -713,6 +877,7 @@ async def _run_live_checks(
             if runtime is not None:
                 evidence["stdout_tail"] = runtime.stdout.text_tail()
                 evidence["stderr_tail"] = runtime.stderr.text_tail()
+            plugin_check = make_check("plugin_discovery", "fail", evidence)
             add(make_check("serve_isolated", "fail", evidence))
             for check_id in ("in_turn_image", "single_use"):
                 add(
@@ -722,23 +887,8 @@ async def _run_live_checks(
                 )
             if runtime is not None:
                 await _close_runtime(runtime)
-                captures.extend(runtime.captured_blobs)
-            image_base64 = _load_probe_base64()
-            hits = scan_for_probe_payload([home], captures, image_base64)
-            if runtime is not None:
-                for stream_name, capture in (
-                    ("hermes serve stdout", runtime.stdout),
-                    ("hermes serve stderr", runtime.stderr),
-                ):
-                    hits.extend(f"{stream_name}: {hit}" for hit in capture.raw_hits)
-                runtime = None
-            add(
-                make_check(
-                    "no_raw_persistence",
-                    "fail" if hits else "pass",
-                    hits or {"scanned": "scratch HERMES_HOME", "hits": 0},
-                )
-            )
+            add(_persistence_check(home, runtime))
+            runtime = None
             add(
                 make_check(
                     "model_profile",
@@ -746,7 +896,7 @@ async def _run_live_checks(
                     "no provider/model or delivery mode observed because serve failed",
                 )
             )
-            return checks, captures, home
+            return plugin_check, checks
 
         nonce_file = home / "reachy-probe-nonce"
         audit_file = home / "reachy-probe-audit.txt"
@@ -760,21 +910,18 @@ async def _run_live_checks(
             text = str(first_completion.get("text") or "")
             starts = _event_payloads(first_probe, "tool.start")
             prompt_count = first_probe.sent_methods.count("prompt.submit")
-            errors = []
-            if len(starts) != 1:
-                errors.append(
-                    f"expected exactly one tool.start, observed {len(starts)}"
-                )
-            if prompt_count != 1:
-                errors.append(f"expected one prompt.submit, observed {prompt_count}")
-            if first_completion.get("status") != "complete":
-                errors.append(
-                    f"message.complete status={first_completion.get('status')!r}"
-                )
-            if EXPECTED_COLOR not in text.casefold():
-                errors.append(f"completion did not contain {EXPECTED_COLOR!r}")
-            if EXPECTED_WORD.casefold() not in text.casefold():
-                errors.append(f"completion did not contain {EXPECTED_WORD!r}")
+            audit_lines = (
+                audit_file.read_text(encoding="utf-8").splitlines()
+                if audit_file.exists()
+                else []
+            )
+            image_deliveries = audit_lines.count("image")
+            errors = _in_turn_image_errors(
+                image_deliveries=image_deliveries,
+                prompt_count=prompt_count,
+                status=first_completion.get("status"),
+                text=text,
+            )
             add(
                 make_check(
                     "in_turn_image",
@@ -784,6 +931,7 @@ async def _run_live_checks(
                         "event_types": first_probe.event_types,
                         "prompt_submit_count": prompt_count,
                         "tool_invocation_count": len(starts),
+                        "image_delivery_count": image_deliveries,
                         "completion_text": text,
                     },
                 )
@@ -824,22 +972,13 @@ async def _run_live_checks(
             starts = _event_payloads(second_probe, "tool.start")
             completes = _event_payloads(second_probe, "tool.complete")
             complete_text = json.dumps(completes, sort_keys=True)
-            errors = []
-            if len(starts) != 2:
-                errors.append(f"expected two tool.start events, observed {len(starts)}")
-            if (
-                FAIL_CLOSED_MARKER not in complete_text
-                and FAIL_CLOSED_MARKER not in str(second_completion.get("text") or "")
-            ):
-                errors.append(
-                    "second tool result did not expose the fail-closed marker"
-                )
-            if audit_delta != ["image", "denied"]:
-                errors.append(
-                    f"expected audit ['image', 'denied'], observed {audit_delta!r}"
-                )
-            if nonce_file.exists():
-                errors.append("one-shot nonce still exists after first tool use")
+            errors = _single_use_errors(
+                tool_invocations=len(starts),
+                audit_delta=audit_delta,
+                complete_text=complete_text,
+                completion_text=str(second_completion.get("text") or ""),
+                nonce_exists=nonce_file.exists(),
+            )
             add(
                 make_check(
                     "single_use",
@@ -866,29 +1005,8 @@ async def _run_live_checks(
             )
 
         await _close_runtime(runtime)
-        captures.extend(runtime.captured_blobs)
-        image_base64 = _load_probe_base64()
-        hits = scan_for_probe_payload([home], captures, image_base64)
-        for stream_name, capture in (
-            ("hermes serve stdout", runtime.stdout),
-            ("hermes serve stderr", runtime.stderr),
-        ):
-            hits.extend(f"{stream_name}: {hit}" for hit in capture.raw_hits)
+        add(_persistence_check(home, runtime))
         runtime = None
-        add(
-            make_check(
-                "no_raw_persistence",
-                "fail" if hits else "pass",
-                hits
-                or {
-                    "scanned": [
-                        "scratch HERMES_HOME recursively",
-                        "full drained Hermes serve stdout/stderr",
-                    ],
-                    "hits": 0,
-                },
-            )
-        )
 
         if first_probe is None or first_completion is None:
             add(
@@ -906,42 +1024,15 @@ async def _run_live_checks(
                     "events": first_probe.events,
                 }
             )
-            completion_text = str(first_completion.get("text") or "")
-            recognized = (
-                EXPECTED_COLOR in completion_text.casefold()
-                and EXPECTED_WORD.casefold() in completion_text.casefold()
-            )
-            delivery_mode = _delivery_mode(completion_text)
-            downgraded = delivery_mode == "text-downgraded"
-            missing = [
-                name
-                for name, value in (("provider", provider), ("model", model))
-                if not value
-            ]
             add(
-                make_check(
-                    "model_profile",
-                    "fail" if missing else "pass",
-                    {
-                        "provider": provider,
-                        "model": model,
-                        "delivery_mode": delivery_mode,
-                        "basis": (
-                            "model named both image-only test values after one multimodal tool call"
-                            if recognized
-                            else "model explicitly reported text-only image delivery"
-                            if downgraded
-                            else "completion did not prove native image inspection"
-                        ),
-                        "errors": [f"missing {name}" for name in missing],
-                    },
+                _model_profile_result(
+                    provider, model, str(first_completion.get("text") or "")
                 )
             )
-        return checks, captures, home
+        return plugin_check, checks
     finally:
         if runtime is not None:
             await _close_runtime(runtime)
-            captures.extend(runtime.captured_blobs)
         temporary.cleanup()
 
 
@@ -965,17 +1056,16 @@ async def run_gate(*, live: bool) -> dict[str, Any]:
     checks.append(build_check)
     audit_state("build_identity")
 
-    plugin_check = await _check_plugin_discovery(binary)
-    checks.append(plugin_check)
-    audit_state("plugin_discovery")
-
-    state_placeholder_index = len(checks)
-    checks.append(make_check("state_isolation", "pass", {}))
-
     if live:
+        # The live serve already waits for the plugin_loaded log line, so
+        # plugin_discovery is derived from it instead of starting a second
+        # discovery serve.
         try:
-            live_checks, _, _ = await _run_live_checks(binary, audit_state)
+            plugin_check, live_checks = await _run_live_checks(binary, audit_state)
         except Exception as exc:
+            plugin_check = make_check(
+                "plugin_discovery", "fail", f"unexpected live setup failure: {exc}"
+            )
             live_checks = [
                 make_check(
                     "serve_isolated", "fail", f"unexpected live setup failure: {exc}"
@@ -989,19 +1079,30 @@ async def run_gate(*, live: bool) -> dict[str, Any]:
             ]
             for check in live_checks:
                 audit_state(check["id"])
-        for check in live_checks:
-            checks.append(check)
     else:
+        plugin_check = await _check_plugin_discovery(binary)
         reason = "not run without --live"
-        for check_id in (
-            "serve_isolated",
-            "in_turn_image",
-            "single_use",
-            "no_raw_persistence",
-            "model_profile",
-        ):
-            checks.append(make_check(check_id, "skip", reason))
-            audit_state(check_id)
+        live_checks = [
+            make_check(check_id, "skip", reason)
+            for check_id in (
+                "serve_isolated",
+                "in_turn_image",
+                "single_use",
+                "no_raw_persistence",
+                "model_profile",
+            )
+        ]
+
+    checks.append(plugin_check)
+    audit_state("plugin_discovery")
+
+    state_placeholder_index = len(checks)
+    checks.append(make_check("state_isolation", "pass", {}))
+
+    for check in live_checks:
+        checks.append(check)
+        if not live:
+            audit_state(check["id"])
 
     final_state = _state_snapshot()
     if final_state != original_state and not mutations:
