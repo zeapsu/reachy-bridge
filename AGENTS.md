@@ -109,8 +109,12 @@ on the Jetson with `REACHY_MANAGE_DAEMON=1`, its power button manages the on-dev
 
 ## Repository workflow
 - Before substantive work, inspect recent git history and open GitHub issues.
-- Use GitHub milestones for work spanning multiple issues. Put scope, non-scope, and dependency order
-  in the milestone description; keep detailed requirements and acceptance criteria in child issues.
-  Do not add a redundant PRD/tracker issue when the milestone already tracks the complete child set.
+- Organize work as epic → milestones → issues. An epic is a tracking issue labeled `epic` whose
+  body lists its milestones and a task list of child issues; it tracks a product outcome across
+  multiple milestones. Use GitHub milestones for work spanning multiple issues. Put scope,
+  non-scope, and dependency order in the milestone description; keep detailed requirements and
+  acceptance criteria in child issues. Epics are the only tracker issues — do not add a separate
+  PRD/tracker issue below the epic level.
+- Label issues by type: `epic` for epics, `bug`/`enhancement`/`documentation` for child issues.
 - Link pull requests to their issues and target pull requests to `main`.
 - Leave merging to the user unless explicitly asked.
