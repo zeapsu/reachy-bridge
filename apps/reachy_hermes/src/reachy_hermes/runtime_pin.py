@@ -12,6 +12,8 @@ from typing import Any
 
 RUNTIME_PIN: dict[str, Any] = {
     "version": "0.19.0",
+    # Recorded for the record and logged, but not enforced (only version and any
+    # recorded SHA are). model_profile below is likewise documentation.
     "build_date": "2026.7.20",
     # Record these from the accepted robot-host binary when available. A None
     # value documents that the field has not been recorded and is not enforced.

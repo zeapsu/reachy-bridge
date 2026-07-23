@@ -20,6 +20,8 @@ from reachy_hermes.gateway import (
     HermesCancelled,
     HermesGatewayClient,
     HermesInvocationError,
+    HermesMissingBinary,
+    HermesRuntimeMismatch,
 )
 from reachy_hermes.hermes import (
     HermesHandler,
@@ -35,7 +37,10 @@ Install directory: /opt/hermes-agent
 """
 
 
-async def accepted_version(_: Path) -> tuple[int, bytes, bytes]:
+async def accepted_version(
+    _: Path, *, environment: dict[str, str] | None = None
+) -> tuple[int, bytes, bytes]:
+    del environment
     return 0, VERSION_OUTPUT, b""
 
 
@@ -1003,6 +1008,67 @@ def test_stop_during_whisper_prewarm_skips_readiness_and_stream_launch(
     stream.launch.assert_not_called()
     stream.close.assert_called_once_with()
     return_home.assert_called_once_with(robot)
+
+
+def _run_with_patched_gateway(
+    monkeypatch: pytest.MonkeyPatch, verify_runtime: AsyncMock
+) -> tuple[Any, MagicMock, MagicMock]:
+    """Drive ReachyHermes.run() with a stubbed startup and the given verify behavior."""
+    import reachy_hermes.main as hermes_main
+
+    stop_event = hermes_main.threading.Event()
+    movement = MagicMock()
+    handler = MagicMock()
+    handler.ensure_whisper_loaded.side_effect = stop_event.set
+    stream = MagicMock()
+    monkeypatch.setattr(hermes_main, "MovementManager", MagicMock(return_value=movement))
+    gateway = MagicMock()
+    gateway.verify_runtime = verify_runtime
+    monkeypatch.setattr(hermes_main, "HermesGatewayClient", MagicMock(return_value=gateway))
+    monkeypatch.setattr(hermes_main, "HermesHandler", MagicMock(return_value=handler))
+    monkeypatch.setattr(hermes_main, "HermesLocalStream", MagicMock(return_value=stream))
+    monkeypatch.setattr(hermes_main, "_signal_ready", MagicMock())
+    monkeypatch.setattr(hermes_main, "_return_home", MagicMock())
+    monkeypatch.setattr(hermes_main.threading, "Thread", MagicMock())
+    return hermes_main, stop_event, gateway
+
+
+def test_missing_binary_at_startup_is_not_fatal_and_run_proceeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hermes_main, stop_event, gateway = _run_with_patched_gateway(
+        monkeypatch,
+        AsyncMock(side_effect=HermesMissingBinary("Hermes executable not found")),
+    )
+
+    # A missing binary must not kill startup: run() proceeds into the fail-open path
+    # (the handler is still built and served; ask() later speaks MISSING_BINARY_REPLY).
+    hermes_main.ReachyHermes().run(MagicMock(), stop_event)
+
+    gateway.verify_runtime.assert_awaited_once_with()
+    hermes_main.HermesHandler.assert_called_once()
+    assert hermes_main.HermesHandler.call_args.kwargs["gateway"] is gateway
+
+
+def test_runtime_mismatch_at_startup_is_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hermes_main, stop_event, gateway = _run_with_patched_gateway(
+        monkeypatch,
+        AsyncMock(side_effect=HermesRuntimeMismatch("runtime mismatch")),
+    )
+
+    with pytest.raises(HermesRuntimeMismatch):
+        hermes_main.ReachyHermes().run(MagicMock(), stop_event)
+
+    gateway.verify_runtime.assert_awaited_once_with()
+    hermes_main.HermesHandler.assert_not_called()
+
+
+def test_handler_copy_reuses_verified_gateway() -> None:
+    gateway = FakeGateway()
+    handler = build_handler(gateway)
+    assert handler.copy().gateway is gateway
 
 
 def test_startup_stage_writer_is_best_effort(

@@ -19,18 +19,22 @@ from reachy_hermes.runtime_pin import RUNTIME_PIN, describe
 def version_output(
     *,
     version: str = "0.19.0",
+    build_date: str = "2026.7.20",
     upstream_sha: str = "e1367b44",
     local_sha: str | None = "15dc65ee",
 ) -> bytes:
     local = f" · local {local_sha} (+2 carried commits)" if local_sha else ""
     return (
-        f"Hermes Agent v{version} (2026.7.20) · upstream {upstream_sha}{local}\n"
+        f"Hermes Agent v{version} ({build_date}) · upstream {upstream_sha}{local}\n"
         "Install directory: /opt/hermes-agent\n"
     ).encode()
 
 
 def runner(output: bytes):
-    async def run(_: Path) -> tuple[int, bytes, bytes]:
+    async def run(
+        _: Path, *, environment: dict[str, str] | None = None
+    ) -> tuple[int, bytes, bytes]:
+        del environment
         return 0, output, b""
 
     return run
@@ -79,6 +83,19 @@ async def test_sha_is_enforced_only_when_recorded_in_pin() -> None:
             pin=pinned_sha,
             version_runner=runner(version_output(upstream_sha="deadbeef")),
         )
+
+
+@pytest.mark.asyncio
+async def test_build_date_is_recorded_not_enforced() -> None:
+    # A binary whose version matches the pin but reports a different build date
+    # verifies without raising; build_date is documentation, not a gate.
+    identity = await verify_hermes_runtime(
+        Path("/opt/hermes"),
+        version_runner=runner(version_output(build_date="2026.8.01")),
+    )
+    assert identity["version"] == RUNTIME_PIN["version"]
+    assert identity["build_date"] == "2026.8.01"
+    assert RUNTIME_PIN["build_date"] == "2026.7.20"
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,8 @@ Reachy Hermes runs the local Hermes Agent behind the Reachy Mini voice applicati
 ## Accepted Hermes runtime
 
 Reachy currently accepts Hermes Agent **v0.19.0 (2026.7.20)**. The tracked pin is in
-`src/reachy_hermes/runtime_pin.py`: the required version and build date are enforced, the accepted
+`src/reachy_hermes/runtime_pin.py`: the required version is enforced while the build date is
+recorded for the record only, the accepted
 plugin set is `["reachy_probe"]`, and the vision model profile is `unrecorded` until the operator
 runs the live compatibility gate on the robot host. Upstream and local SHAs are likewise
 `None` until recorded; once either field is set, startup enforces it. The optional local-build

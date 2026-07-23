@@ -171,13 +171,19 @@ class HermesHandler(OpenRouterChatHandler):
         self._speech_off_threshold = self.SPEECH_ENERGY_THRESHOLD * 0.65
 
     def copy(self) -> "HermesHandler":
-        """Create a fresh handler while preserving the configured binary."""
+        """Create a fresh handler, reusing the already-verified gateway."""
+        # Propagate the live gateway so the copy keeps its cached identity and
+        # stage_callback instead of re-verifying from scratch. Safe: at copy()
+        # time the gateway is verified-but-not-started (main.py calls
+        # verify_runtime() only; prepare()/start() run later in the served
+        # handler's run()), so there is no live connection state to share.
         return HermesHandler(
             self.deps,
             self.instance_path,
             startup_voice=self._voice_override,
             hermes_binary=self.hermes_binary,
             process_factory=self._process_factory,
+            gateway=self.gateway,
         )
 
     async def start_up(self) -> None:

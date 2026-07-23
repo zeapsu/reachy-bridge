@@ -54,7 +54,9 @@ ProcessFactory: TypeAlias = Callable[..., Awaitable[Any]]
 ConnectFactory: TypeAlias = Callable[[str], Any]
 StatusCallback: TypeAlias = Callable[[str], Awaitable[None] | None]
 StageCallback: TypeAlias = Callable[[str], None]
-VersionRunner: TypeAlias = Callable[[Path], Awaitable[tuple[int, bytes, bytes]]]
+# Mirrors compat_gate._run_version: the runner receives the preflight environment
+# (with the scratch HERMES_HOME) so injected runners cannot silently drop it.
+VersionRunner: TypeAlias = Callable[..., Awaitable[tuple[int, bytes, bytes]]]
 
 
 class HermesError(RuntimeError):
@@ -88,7 +90,9 @@ async def verify_hermes_runtime(
                 binary, environment=environment
             )
         else:
-            returncode, stdout, stderr = await version_runner(binary)
+            returncode, stdout, stderr = await version_runner(
+                binary, environment=environment
+            )
     except FileNotFoundError as exc:
         raise HermesMissingBinary(f"Hermes executable not found at {binary}") from exc
     except Exception as exc:
@@ -106,9 +110,11 @@ async def verify_hermes_runtime(
     except ValueError as exc:
         raise HermesInvocationError(f"Unable to parse Hermes runtime identity: {exc}") from exc
 
+    # Enforce version always; SHAs only when recorded in the pin. build_date and
+    # model_profile are documentation, recorded (and logged) but not enforced.
     expected = {
         field: accepted.get(field)
-        for field in ("version", "build_date", "upstream_sha", "local_sha")
+        for field in ("version", "upstream_sha", "local_sha")
         if accepted.get(field) is not None
     }
     found = {field: identity.get(field) for field in expected}
