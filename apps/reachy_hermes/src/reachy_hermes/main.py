@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Any
 
 
+logger = logging.getLogger(__name__)
+
+
 def _signal_stage(stage: str) -> None:
     """Best-effort publish the current startup stage for the controller."""
     ready_file = os.getenv("REACHY_READY_FILE")
@@ -21,8 +24,8 @@ def _signal_stage(stage: str) -> None:
         return
     try:
         Path(f"{ready_file}.stage").write_text(stage, encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("startup stage write failed: %s", exc)
 
 
 _signal_stage("importing")
@@ -37,9 +40,6 @@ from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.utils import setup_logger
 
 from reachy_hermes.hermes import HermesHandler
-
-
-logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -159,7 +159,11 @@ def _signal_ready() -> None:
         Path(ready_file).touch()
         logger.debug("Signalled Hermes readiness via %s", ready_file)
     except Exception as exc:
-        logger.debug("Could not write Hermes readiness file: %s", exc)
+        logger.warning(
+            "readiness marker write failed: %s — the controller will stop this "
+            "app when the startup budget expires",
+            exc,
+        )
 
 
 def _return_home(robot: ReachyMini) -> None:

@@ -1223,12 +1223,18 @@ async def test_hermes_readiness_budget_timeout_stops_tree_and_reports_stage(
 
 
 @pytest.mark.asyncio
-async def test_hermes_early_exit_during_loading_reports_stage(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "exit_code,expected_phrase",
+    [(1, "during startup"), (0, "before signalling")],
+)
+async def test_hermes_early_exit_during_loading_reports_stage(
+    tmp_path: Path, exit_code: int, expected_phrase: str
+) -> None:
     supervisor = AppSupervisor()
     app = supervisor._apps["reachy_hermes"]
     process = MagicMock()
     process.pid = 12345
-    process.wait.return_value = 1
+    process.wait.return_value = exit_code
     app.process = process
     app.pid = process.pid
     app.status = "loading"
@@ -1240,6 +1246,44 @@ async def test_hermes_early_exit_during_loading_reports_stage(tmp_path: Path) ->
     assert app.status == "error"
     assert app.error is not None
     assert "connecting-daemon" in app.error
+    assert expected_phrase in app.error
+
+
+@pytest.mark.asyncio
+async def test_hermes_budget_timeout_does_not_clobber_relaunch(tmp_path: Path) -> None:
+    """A stale budget-timeout monitor must not error a fresh relaunch.
+
+    If the user relaunches Hermes while stop_app is in flight, the monitor
+    re-acquires the lock to find a new process and status back at loading. It
+    must leave that launch untouched.
+    """
+    supervisor = AppSupervisor()
+    app = supervisor._apps["reachy_hermes"]
+    app.process = MagicMock(pid=111)
+    app.pid = 111
+    app.status = "loading"
+    app.error = None
+    app.start_time = time.time()
+    app.ready_file = tmp_path / "hermes.ready"
+
+    new_process = MagicMock(pid=222)
+
+    async def fake_stop(name: str) -> dict:
+        # Simulate stop_app tearing down this launch, then a concurrent relaunch
+        # installing a fresh process before the monitor re-checks identity.
+        app.status = "loading"
+        app.process = new_process
+        app.pid = 222
+        return {"name": name, "status": "stopped"}
+
+    supervisor.stop_app = fake_stop  # type: ignore[method-assign]
+
+    with patch("reachy_controller.app_supervisor._APP_READINESS_POLL_S", 0.001):
+        await supervisor._monitor_readiness(app.name, 0.01)
+
+    assert app.status == "loading"
+    assert app.process is new_process
+    assert app.error is None
 
 
 @pytest.mark.asyncio
