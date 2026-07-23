@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -39,6 +40,12 @@ from reachy_chat.moves import MovementManager
 from reachy_chat.tools.core_tools import ToolDependencies
 from reachy_chat.utils import setup_logger
 
+from reachy_hermes.gateway import (
+    HermesGatewayClient,
+    HermesInvocationError,
+    HermesMissingBinary,
+    HermesRuntimeMismatch,
+)
 from reachy_hermes.hermes import HermesHandler
 
 
@@ -83,7 +90,6 @@ class ReachyHermes(ReachyMiniApp):  # type: ignore[misc]
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         """Start speech and movement services, then cleanly return the robot home."""
-        _signal_stage("starting-gateway")
         movement_manager = MovementManager(current_robot=reachy_mini, camera_worker=None)
         deps = ToolDependencies(
             reachy_mini=reachy_mini,
@@ -91,7 +97,24 @@ class ReachyHermes(ReachyMiniApp):  # type: ignore[misc]
             camera_worker=None,
             vision_processor=None,
         )
-        handler = HermesHandler(deps)
+        gateway = HermesGatewayClient(stage_callback=_signal_stage)
+        # Verify synchronously so a mismatched runtime is rejected at startup (#103);
+        # that is the only fatal case. A missing or unrunnable binary must stay
+        # fail-open exactly as before the pin: log and continue so the app still
+        # serves audio and speaks the error (hermes.py's handlers). verify_runtime
+        # caches identity only on success, so the lazy verify in gateway.prepare()
+        # re-raises these into those handlers.
+        try:
+            asyncio.run(gateway.verify_runtime())
+        except HermesRuntimeMismatch:
+            raise
+        except (HermesMissingBinary, HermesInvocationError) as exc:
+            logger.warning(
+                "Hermes runtime verification deferred; voice requests will explain "
+                "the error: %s",
+                exc,
+            )
+        handler = HermesHandler(deps, gateway=gateway)
         stream = HermesLocalStream(handler, reachy_mini)
 
         def stop_stream() -> None:
