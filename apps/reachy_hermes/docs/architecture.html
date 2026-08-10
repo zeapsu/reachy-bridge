@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Hermes integration architecture. Standalone copy of the page published from the
+  2026-07-25 session; the body below is kept verbatim so it can be re-synced.
+
+  Fully offline: mermaid 11.16.0 is vendored at vendor/mermaid.min.js so the diagrams
+  draw with no network access. To update it, replace that file from
+  https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js and re-check that all
+  four diagrams still render.
+-->
+<title>Hermes integration — architecture map</title>
+<script src="./vendor/mermaid.min.js"></script>
+<style>*, *::before, *::after { box-sizing: border-box; }</style>
+</head>
+<body>
+
+<style>
+  :root {
+    color-scheme: light dark;
+
+    --ink: #15171b;
+    --ink-2: #3d434c;
+    --ink-3: #6b7280;
+    --paper: #f7f6f3;
+    --paper-2: #efede8;
+    --rule: #d8d4cb;
+
+    --amber: #a9670c;
+    --amber-soft: #f0e2c6;
+    --slate: #57707f;
+    --alarm: #9d3326;
+
+    /* The schematic plates stay light in both themes: a rendered SVG cannot
+       re-theme itself, and a legible printed-schematic surface beats an
+       inverted one. */
+    --plate: #fcfbf8;
+    --plate-rule: #ded9cf;
+    --plate-ink: #15171b;
+
+    --measure: 74ch;
+    --step-0: 1rem;
+    --step-1: 1.1875rem;
+    --step-2: 1.5rem;
+    --step-3: 2.125rem;
+    --step-4: 3rem;
+
+    --sans: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+    --body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #ece9e3;
+      --ink-2: #b6b2aa;
+      --ink-3: #8a8781;
+      --paper: #16171a;
+      --paper-2: #1e2024;
+      --rule: #32353b;
+      --amber: #eaa53d;
+      --amber-soft: #3a2e18;
+      --slate: #93a9b8;
+      --alarm: #ef8272;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ink: #ece9e3;
+    --ink-2: #b6b2aa;
+    --ink-3: #8a8781;
+    --paper: #16171a;
+    --paper-2: #1e2024;
+    --rule: #32353b;
+    --amber: #eaa53d;
+    --amber-soft: #3a2e18;
+    --slate: #93a9b8;
+    --alarm: #ef8272;
+  }
+
+  :root[data-theme="light"] {
+    --ink: #15171b;
+    --ink-2: #3d434c;
+    --ink-3: #6b7280;
+    --paper: #f7f6f3;
+    --paper-2: #efede8;
+    --rule: #d8d4cb;
+    --amber: #a9670c;
+    --amber-soft: #f0e2c6;
+    --slate: #57707f;
+    --alarm: #9d3326;
+  }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: var(--step-0);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 74rem;
+    margin: 0 auto;
+    padding: clamp(1.5rem, 4vw, 4rem) clamp(1.1rem, 4vw, 3rem) 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(2.5rem, 5vw, 4rem);
+  }
+
+  .prose {
+    max-width: var(--measure);
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--amber);
+    margin: 0;
+  }
+
+  h1 {
+    font-family: var(--sans);
+    font-size: var(--step-4);
+    font-weight: 700;
+    letter-spacing: -0.028em;
+    line-height: 1.02;
+    text-wrap: balance;
+    margin: 0.35rem 0 0;
+  }
+
+  h2 {
+    font-family: var(--sans);
+    font-size: var(--step-2);
+    font-weight: 700;
+    letter-spacing: -0.018em;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  h3 {
+    font-family: var(--sans);
+    font-size: var(--step-1);
+    font-weight: 700;
+    letter-spacing: -0.012em;
+    margin: 0;
+  }
+
+  p { margin: 0; }
+  .prose p { color: var(--ink-2); }
+  .lede { font-size: var(--step-1); color: var(--ink); }
+
+  code, .mono { font-family: var(--mono); font-size: 0.86em; }
+  code {
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 0.05em 0.32em;
+    word-break: break-word;
+  }
+
+  a { color: var(--amber); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 3px;
+  }
+
+  header .meta {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--ink-3);
+    margin-top: 1.1rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.4rem;
+  }
+
+  /* Legend + status pills */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--amber);
+    background: var(--paper-2);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--ink-2);
+  }
+  .key { display: inline-flex; align-items: center; gap: 0.5rem; }
+  .swatch { width: 1.6rem; height: 0; border-top: 2px solid var(--ink); flex: none; }
+  .swatch.planned { border-top-style: dashed; border-top-color: var(--slate); }
+  .swatch.hazard { border-top-color: var(--alarm); }
+
+  /* Schematic plates */
+  figure {
+    margin: 0;
+    border: 1px solid var(--plate-rule);
+    background: var(--plate);
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
+  }
+  figcaption {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #5d5a53;
+    border-bottom: 1px solid var(--plate-rule);
+    padding: 0.6rem 0.9rem;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.4rem 1rem;
+  }
+  figcaption b { color: var(--plate-ink); font-weight: 700; }
+  .plate-body { overflow-x: auto; padding: 1.2rem 0.9rem 1.5rem; }
+  .mermaid { color: var(--plate-ink); }
+  /* Render at natural size and scroll the plate. Fitting a wide graph to the
+     container downscales the SVG until the labels are unreadable. */
+  .mermaid svg { max-width: none !important; height: auto; }
+
+  /* Tables */
+  .table-scroll { overflow-x: auto; border: 1px solid var(--rule); }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 40rem;
+    font-size: 0.9rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  thead th {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    background: var(--paper-2);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.id { font-family: var(--mono); white-space: nowrap; color: var(--ink); }
+  td.owner { color: var(--ink-2); }
+
+  .pill {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.14rem 0.45rem;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .pill.done { color: var(--amber); }
+  .pill.open { color: var(--slate); }
+  .pill.hw { color: var(--alarm); }
+
+  /* Callouts for the two edges that matter */
+  .edges { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); }
+  .edge {
+    border: 1px solid var(--rule);
+    border-top: 3px solid var(--alarm);
+    background: var(--paper-2);
+    padding: 1rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+  .edge h3 { font-size: 1.02rem; }
+  .edge p { color: var(--ink-2); font-size: 0.94rem; }
+  .edge .where { font-family: var(--mono); font-size: 0.76rem; color: var(--ink-3); }
+
+  .section { display: flex; flex-direction: column; gap: 1.1rem; }
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 0; }
+
+  ul { margin: 0; padding-left: 1.15rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.4rem; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">Epic #110 · Milestone 3 · Hermes Still-Image Vision</p>
+    <h1>How Hermes is wired into the Reachy console</h1>
+    <p class="lede" style="max-width: var(--measure); margin-top: 1rem; color: var(--ink-2);">
+      Four processes on the robot host, two transports between the app and the agent, and one
+      camera path that is deliberately still disconnected. Everything drawn solid exists on
+      <code>main</code> today; everything dashed is an open issue in the current milestone.
+    </p>
+    <div class="meta">
+      <span>read at f92f2bb</span>
+      <span>3 of 11 issues closed</span>
+      <span>describes main — the robot host is behind it</span>
+      <span>host referred to as &lt;robot-host&gt;</span>
+    </div>
+  </header>
+
+  <div class="legend" role="note">
+    <span class="key"><span class="swatch"></span> shipped on main</span>
+    <span class="key"><span class="swatch planned"></span> planned — dashed, labelled with its issue</span>
+    <span class="key"><span class="swatch hazard"></span> known hazard / open bug</span>
+  </div>
+
+  <section class="section">
+    <div class="prose">
+      <h2>1 · Processes and transports</h2>
+      <p>
+        The controller never talks to Hermes. It launches the app and watches a marker file; the
+        app owns the agent. Nothing in the controller imports or calls anything from
+        <code>reachy_hermes</code>, and the daemon is not Hermes-aware — the only coupling is
+        process supervision plus a ready file.
+      </p>
+      <p>
+        The daemon owns the physical devices, but it is not the only process reading the camera:
+        apps attach as independent GStreamer IPC consumers of the daemon's published stream, and
+        the dashboard lease is deliberately left running while a vision app is up. One app at a
+        time is enforced by the supervisor, not by the camera.
+      </p>
+    </div>
+
+    <figure>
+      <figcaption><b>View 1</b> <span>process topology · robot host</span></figcaption>
+      <div class="plate-body">
+<pre class="mermaid">
+flowchart TB
+  browser["Operator browser over Tailnet HTTPS"]
+
+  subgraph host["robot host - NVIDIA Jetson"]
+
+    subgraph ctl["reachy_controller - FastAPI 127.0.0.1:7861"]
+      sup["AppSupervisor - one app at a time"]
+      prox["DaemonProxy"]
+      camroute["GET /api/camera/stream"]
+    end
+
+    subgraph app["reachy_hermes app - python -m reachy_hermes.main"]
+      handler["HermesHandler - VAD, Whisper, TTS"]
+      gwc["HermesGatewayClient - runtime pin 0.19.0"]
+      broker["one-shot token broker - planned 106, app-side"]
+    end
+
+    subgraph srv["hermes serve --isolated :9120"]
+      agent["Hermes agent - toolsets all"]
+      plug["reachy_camera plugin - planned 107"]
+    end
+
+    subgraph dae["reachy_mini daemon :8000 - owns the physical devices"]
+      media["shared media - mic, speaker, motors"]
+      mjpeg["CameraMJPEGStreamer - latest_jpeg, frame_sequence, no route exposes them"]
+      snapep["bounded loopback snapshot endpoint - planned 106, new route"]
+    end
+
+    descriptor["connection.json - carries the session token, mode 0600"]
+    native["native Hermes TUI or Desktop"]
+  end
+
+  browser -->|"Tailscale Serve"| sup
+  prox -->|"HTTP and WebSocket"| media
+  camroute -->|"camera/stream.mjpg"| mjpeg
+  sup -->|"spawn, ready marker"| handler
+  handler -->|"local media backend"| media
+  handler --> gwc
+  gwc -->|"spawn, --version pin check"| agent
+  gwc -->|"JSON-RPC WebSocket"| agent
+  gwc -->|"HTTP message poll every 0.75 s"| agent
+  gwc -->|"writes"| descriptor
+  descriptor -->|"hands out the token"| native
+  native -->|"attaches, inherits yolo=on"| agent
+  agent -.->|"planned 107"| plug
+  plug -.->|"redeem once, fails closed"| broker
+  broker -.->|"planned 106"| snapep
+  snapep -.->|"reuses latest_jpeg"| mjpeg
+
+  classDef planned fill:#f6f4ef,stroke:#57707f,stroke-dasharray:5 4,color:#3d434c
+  classDef hazard fill:#fbf1ef,stroke:#9d3326,color:#6b2b22
+  class plug,snapep,broker planned
+  class native,descriptor hazard
+</pre>
+      </div>
+    </figure>
+
+    <div class="prose">
+      <p>
+        Specifics behind the boxes: the daemon is launched through
+        <code>tools/reachy_mini_daemon_jetson.py</code>, but the camera and audio-level routes
+        themselves are defined in <code>tools/reachy_mini_daemon_media.py</code> and installed only
+        when the host is a Jetson — on a Mac simulation daemon those routes do not exist at all.
+        The dashboard stream is leased through <code>DashboardCameraLeaseManager</code>; speech is
+        <code>faster-whisper base.en</code> in and <code>kitten-nano</code> out; and the agent runs
+        under a version-scoped <code>HERMES_HOME=~/.cache/reachy-hermes/v0.19.0/home</code>, so a
+        rollback to a previously accepted release resumes that version's own state with no
+        migration.
+      </p>
+      <p>
+        <code>connection.json</code> and the native client are drawn as hazards because the
+        descriptor contains the WebSocket URL <em>including the session token</em>. The local
+        WebSocket has no per-connection authentication, so the entire trust boundary is the
+        loopback bind plus the secrecy of that file — and because every tool call is auto-approved,
+        the toolset allowlist is the only thing bounding what an attached client can do. That is
+        the reason #104 starts by not publishing the descriptor.
+      </p>
+      <p>
+        The topology says what exists; it cannot say in what order it comes up. That ordering is
+        where the readiness issues live, so it gets its own view below.
+      </p>
+    </div>
+
+    <figure>
+      <figcaption><b>View 1b</b> <span>startup and readiness handshake</span></figcaption>
+      <div class="plate-body">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant SUP as AppSupervisor
+  participant APP as reachy_hermes process
+  participant DAE as reachy_mini daemon
+  participant GW as HermesGatewayClient
+  participant SRV as hermes serve
+
+  SUP->>APP: spawn python -m reachy_hermes.main
+  APP->>SUP: stage file - importing
+  APP->>SUP: stage file - connecting-daemon
+  APP->>DAE: connect, local media backend, camera init skipped
+  APP->>SUP: stage file - verifying-hermes-runtime
+  APP->>GW: verify_runtime
+  GW-->>APP: identity checked against pin 0.19.0, mismatch is fatal
+  APP->>APP: prewarm faster-whisper, then kitten-nano TTS
+  APP->>SUP: touch REACHY_READY_FILE, controller turns green
+  Note over APP,SUP: today the marker lands here, before the gateway exists
+  APP->>GW: stream.launch, then gateway.prepare
+  APP->>SUP: stage file - starting-gateway
+  GW->>SRV: spawn hermes serve --isolated
+  SRV-->>GW: HERMES_BACKEND_READY port=9120, 60 s limit
+  GW->>SRV: native-session relay poll begins
+  Note over APP,SUP: issue 108 moves the marker to here, after full preflight
+  SUP->>SUP: 300 s budget, then stop and report the last stage
+</pre>
+      </div>
+    </figure>
+
+    <div class="prose">
+      <p>
+        Steps 9 through 15 are the whole of issue #108: readiness is currently declared once the
+        two speech models are warm, so a dead gateway, a missing plugin, or an unhealthy snapshot
+        path all leave the controller reporting a healthy app. Model pre-warm failures are logged
+        and retried lazily rather than being fatal — also on #108's list.
+      </p>
+      <p>
+        The two camera boxes on the right of view 1 never meet today. <code>CameraMJPEGStreamer</code> already
+        holds <code>latest_jpeg</code> and <code>frame_sequence</code> for the dashboard stream —
+        #106 hangs a single-use capability off that existing state rather than opening a second
+        capture device, and #107 is the only thing allowed to redeem it.
+      </p>
+    </div>
+  </section>
+
+  <hr />
+
+  <section class="section">
+    <div class="prose">
+      <h2>2 · One voice turn</h2>
+      <p>
+        Each step gates the next. Completion is event-driven: the gateway's
+        <code>message.complete</code> is the single authoritative answer, and
+        <code>message.delta</code> is dropped precisely because it can carry intermediate tool
+        payloads. The VAD keeps a 0.45 s pre-roll so the first syllable survives, and
+        <code>config.set yolo=on</code> lands on the session native clients also attach to — see
+        section 3.
+      </p>
+    </div>
+
+    <figure>
+      <figcaption><b>View 2</b> <span>one voice turn · mic to speaker</span></figcaption>
+      <div class="plate-body">
+<pre class="mermaid">
+flowchart TB
+  mic["daemon mic frames, resampled to 16 kHz"]
+  vad["VAD - adaptive RMS, 0.5 s calibration, 1.2 s silence, 30 s cap"]
+  short{"speech under 0.2 s?"}
+  dropshort["discarded, no reply"]
+  stt["faster-whisper base.en"]
+  gate{"addressed to Reachy?"}
+  drop["dropped as overheard"]
+  ask["gateway.ask"]
+  sess["session.resume, or create seeded with the last 6 messages - recycled every 8 turns"]
+  yolo["config.set yolo=on"]
+  submit["prompt.submit"]
+  events{"gateway event"}
+  work["earcon every 1.45 s, spoken update from 24 s"]
+  ignored["ignored, may hold tool payloads"]
+  answer["answer - 32 KiB cap, no raw JSON"]
+  clean["to_spoken_text, split_for_speech"]
+  tts["kitten-nano TTS"]
+  spk["output_queue to speaker, 0.5 s echo guard"]
+  camera["reachy_camera snapshot - planned 106 and 107"]
+
+  mic --> vad
+  vad -->|"utterance finalized"| short
+  short -->|"yes"| dropshort
+  short -->|"no"| stt
+  stt --> gate
+  gate -->|"no"| drop
+  gate -->|"yes"| ask
+  ask --> sess
+  sess --> yolo
+  yolo --> submit
+  submit --> events
+  events -->|"status.update, tool.start"| work
+  events -->|"message.delta"| ignored
+  events -->|"message.complete"| answer
+  answer --> clean
+  clean --> tts
+  tts --> spk
+  submit -.->|"model decides, one image max"| camera
+  camera -.-> events
+
+  classDef planned fill:#f6f4ef,stroke:#57707f,stroke-dasharray:5 4,color:#3d434c
+  classDef muted fill:#f4f2ee,stroke:#9a958c,color:#6b7280
+  class camera planned
+  class drop,ignored,dropshort muted
+</pre>
+      </div>
+    </figure>
+
+    <div class="prose">
+      <p>
+        While a turn is in flight, mic input is rerouted to a second detector: a bare
+        <em>stop</em> or <em>cancel</em> interrupts the session, and anything else is queued onto
+        the live turn as a follow-up — or held in <code>_pending_followups</code> and answered by a
+        standalone turn if the original one already committed.
+      </p>
+      <p>
+        Two things this view leaves out. Head wobbling is suppressed for the duration of a turn and
+        restored after, and every stage marks activity onto a conversation event bus that the
+        settings UI consumes over SSE. And this is not the only way a turn can start — the relay in
+        section 3 is a second, concurrent turn source.
+      </p>
+      <p>
+        The turn is genuinely unbounded today: no timeout wraps the wait for
+        <code>message.complete</code>. The only timeouts in the gateway are for process boot and the
+        <code>gateway.ready</code> event. That is precisely the hole #105 fills.
+      </p>
+    </div>
+  </section>
+
+  <hr />
+
+  <section class="section">
+    <div class="prose">
+      <h2>3 · The two edges that explain the backlog</h2>
+      <p>
+        Neither is on the happy path, and between them they account for most of what is still open
+        in the milestone.
+      </p>
+    </div>
+
+    <div class="edges">
+      <div class="edge">
+        <h3>The native-session relay</h3>
+        <p>
+          A background task polls the agent over plain HTTP every 0.75 s, separate from the
+          JSON-RPC socket, and speaks any turn it did not originate — so a prompt typed into the
+          native TUI comes out of the robot's speaker. External turns hold
+          <code>_processing_turn</code> with no cap, which is how #96 stayed stuck until the
+          controller stopped the app. #104 removes the descriptor and the relay.
+        </p>
+        <p class="where">hermes.py · _relay_native_session</p>
+      </div>
+      <div class="edge">
+        <h3><code>yolo=on</code> is never reset</h3>
+        <p>
+          Auto-approval is sent on every <code>ask()</code> against the shared, persistent session
+          and is never turned back off, so TUI-submitted tool calls skip the approval gating the TUI
+          would normally provide. With <code>HERMES_TUI_TOOLSETS=all</code> and no per-connection
+          auth on the socket, the allowlist #104 introduces is the actual security boundary.
+        </p>
+        <p class="where">gateway.py · ask, HERMES_TOOLSETS</p>
+      </div>
+      <div class="edge">
+        <h3>Voice cancel was unreachable</h3>
+        <p>
+          #96's third deficiency, and the least obvious: during the loop the mic kept triggering on
+          noise, but VAD stripped essentially every 30 s capture, so no transcript ever formed and
+          no <em>stop</em> could be recognised. The cancel path existed and could not be reached.
+          Still true today — nothing skips a capture whose VAD output is empty.
+        </p>
+        <p class="where">hermes.py · _process_cancel_utterance</p>
+      </div>
+    </div>
+  </section>
+
+  <hr />
+
+  <section class="section">
+    <div class="prose">
+      <h2>4 · Runtime pin and the compatibility gate</h2>
+      <p>
+        The gate is a ceremony, not a runtime component: it runs offline against a candidate
+        binary and its output is what may be copied into the pin. At app startup only the cheap
+        half runs — a <code>--version</code> parse compared against the pin.
+      </p>
+    </div>
+
+    <figure>
+      <figcaption><b>View 3</b> <span>offline ceremony · not in the request path</span></figcaption>
+      <div class="plate-body">
+<pre class="mermaid">
+flowchart LR
+  cand["candidate hermes binary"]
+  gate["python -m reachy_hermes.compat_gate - static on Mac, --live on robot host"]
+  checks["8 checks - build identity, plugin discovery, state isolation, serve isolated, in-turn image, single use, no raw persistence, model profile"]
+  go{"go?"}
+  pin["runtime_pin.py and README - version, SHAs, model profile - issue 117"]
+  stay["stay on 0.19.0, record failing checks"]
+  verify["startup verify_runtime - mismatch fatal, missing binary fail-open"]
+
+  cand --> gate
+  gate --> checks
+  checks --> go
+  go -->|"true"| pin
+  go -->|"false"| stay
+  pin --> verify
+
+  classDef ceremony fill:#f4f2ee,stroke:#a9670c,color:#15171b
+  class gate,checks ceremony
+</pre>
+      </div>
+    </figure>
+
+    <div class="prose">
+      <p>
+        The gate's live checks drive a throwaway <code>reachy_probe</code> plugin under
+        <code>apps/reachy_hermes/.hermes/plugins/</code> that returns a fixed base64 JPEG behind a
+        one-shot nonce file. It is scaffolding that proves the mechanism exists — not the
+        production camera tool.
+      </p>
+      <h3>What the gate established about the Hermes surface</h3>
+      <ul>
+        <li>
+          A plugin delivers an image into the <em>active</em> turn by returning
+          <code>{"_multimodal": true, "content": [image_url data URI], "text_summary": …}</code>
+          straight from the tool handler — no second <code>prompt.submit</code>, no upload RPC, no
+          file path. The check passes only when the model's answer names a colour and a word it
+          could only get from the pixels.
+        </li>
+        <li>
+          <strong>There is no Hermes-native single-use primitive.</strong> Fail-closed behaviour is
+          implemented in the plugin's own Python using an out-of-band nonce file. That is exactly
+          why #106 needs an app-side broker rather than a platform feature.
+        </li>
+        <li>
+          Provider and model identity are <em>scraped</em> by walking the payload for
+          <code>provider</code>/<code>model</code>-shaped keys — there is no documented Hermes field,
+          which is why the pin records them as unrecorded rather than guessing.
+        </li>
+        <li>
+          Project-local plugin discovery is opt-in, requiring
+          <code>HERMES_ENABLE_PROJECT_PLUGINS=1</code>, and is proven by matching a debug log line
+          from a real <code>hermes serve</code>.
+        </li>
+        <li>
+          The no-raw-persistence check scans the scratch state directory and the child's captured
+          output for JPEG magic bytes and base64 fragments. It cannot say anything about what an
+          upstream provider does with the bytes once they leave the host, and does not claim to.
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <hr />
+
+  <section class="section">
+    <div class="prose">
+      <h2>5 · Milestone state</h2>
+      <p>
+        The foundation tier is in. What remains is the lockdown, the lifecycle bounds, the camera
+        path itself, and one hardware sitting.
+      </p>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Issue</th>
+            <th scope="col">State</th>
+            <th scope="col">What it changes in the map above</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="id">#101</td>
+            <td><span class="pill done">merged</span></td>
+            <td class="owner">The compatibility gate and probe plugin — View 3.</td>
+          </tr>
+          <tr>
+            <td class="id">#102</td>
+            <td><span class="pill done">merged</span></td>
+            <td class="owner">Marker-strict readiness: the supervisor trusts <code>REACHY_READY_FILE</code>, with a 300 s budget and a <code>.stage</code> breadcrumb.</td>
+          </tr>
+          <tr>
+            <td class="id">#103</td>
+            <td><span class="pill done">merged</span></td>
+            <td class="owner">The pin plus version-scoped <code>HERMES_HOME</code> and session dirs.</td>
+          </tr>
+          <tr>
+            <td class="id">#104</td>
+            <td><span class="pill open">open</span></td>
+            <td class="owner">Kills the connection descriptor and the relay; swaps toolsets <code>all</code> for an allowlist. Removes both hazard edges.</td>
+          </tr>
+          <tr>
+            <td class="id">#105</td>
+            <td><span class="pill open">open</span></td>
+            <td class="owner">Bounds the turn: 120 s inactivity watchdog, 60 min ceiling, per-stage deadlines, recovery that revokes the capability.</td>
+          </tr>
+          <tr>
+            <td class="id">#106</td>
+            <td><span class="pill open">open</span></td>
+            <td class="owner">Two parts: a new bounded loopback snapshot route on the daemon reusing <code>latest_jpeg</code>, plus the app-side one-shot broker that makes it single-use. Nothing exposes <code>latest_jpeg</code> over HTTP today, so this is new code on both sides rather than a wire-up.</td>
+          </tr>
+          <tr>
+            <td class="id">#107</td>
+            <td><span class="pill open">open</span></td>
+            <td class="owner">The <code>reachy_camera</code> plugin, and the safety-prompt line that currently forbids camera claims.</td>
+          </tr>
+          <tr>
+            <td class="id">#108</td>
+            <td><span class="pill open">open</span></td>
+            <td class="owner">Moves the marker write behind full preflight — audio, media, gateway, runtime, plugin, snapshot health.</td>
+          </tr>
+          <tr>
+            <td class="id">#109 · #117</td>
+            <td><span class="pill hw">hardware</span></td>
+            <td class="owner">One Jetson sitting: release verification, and the <code>--live</code> gate run that may promote the pin.</td>
+          </tr>
+          <tr>
+            <td class="id">#96</td>
+            <td><span class="pill open">open</span></td>
+            <td class="owner">The unbounded-loop bug the relay and <code>yolo=on</code> edges produced.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="prose">
+      <h3>Where vision is stubbed today</h3>
+      <ul>
+        <li><code>_request_completion</code> takes <code>image_jpeg</code> and immediately deletes it.</li>
+        <li>The app builds <code>ToolDependencies</code> with <code>camera_worker=None</code> and <code>vision_processor=None</code>, and no-ops <code>MediaManager._init_camera</code> so it never opens a competing device.</li>
+        <li>The safety prompt ends with an explicit instruction not to claim camera sight.</li>
+      </ul>
+    </div>
+  </section>
+
+  <hr />
+
+  <section class="section">
+    <div class="prose">
+      <h2>6 · What is traced, and what is inferred</h2>
+      <p>
+        Every solid box and edge was followed in source at <code>f92f2bb</code> and independently
+        re-verified against the app, controller, and daemon packages, the merged pull requests for
+        #101 to #103, and the retained decision record. Nothing here was observed running on the
+        robot.
+      </p>
+      <p>
+        <strong>The most important caveat is not about the diagrams.</strong> This map describes
+        <code>main</code>. The robot host has none of #101, #102, or #103 deployed — it is still
+        running the pre-pin, pre-marker-strict build. Any behaviour you check on hardware today will
+        not match views 1b or 4.
+      </p>
+      <h3>Schematic rather than literal</h3>
+      <ul>
+        <li>
+          <strong>Tailscale Serve</strong> is operator configuration in the robot owner's shell, not
+          in this repository. The controller itself only binds <code>127.0.0.1:7861</code>.
+        </li>
+        <li>
+          <strong>The <code>DaemonProxy</code> edge</strong> is drawn to the daemon's media box for
+          readability; the proxy actually carries full-state WebSocket, controls, stats, and media
+          status alike, and it is the controller's only path to the daemon API.
+        </li>
+        <li>
+          <strong>The browser edge</strong> lands on <code>AppSupervisor</code> to show what the
+          operator triggers; requests really arrive at the controller's routes, which call it.
+        </li>
+      </ul>
+      <h3>Upgraded from inference to mechanism</h3>
+      <p>
+        The native-client edge was previously guesswork on my part. It is not: the descriptor the
+        gateway writes contains the WebSocket URL with the session token embedded, so publishing it
+        is what makes an attached native client possible. The hazard is structural, not incidental.
+      </p>
+      <h3>Still uncertain</h3>
+      <ul>
+        <li>
+          <strong>The dashed edges are issue text, not implementation.</strong> #106's split across
+          a daemon route and an app-side broker follows the recorded design decision, but no code for
+          it exists yet; if it lands differently, this map is wrong there first.
+        </li>
+        <li>
+          <strong>Nothing here describes the upstream Hermes binary's own source</strong>, which was
+          never read. The RPC and event surface shown is what our client sends and what the
+          compatibility gate observed — a claim about our code and about measured behaviour, not
+          about Hermes' documented API.
+        </li>
+        <li>
+          <strong>Multiple simultaneous camera IPC consumers</strong> are allowed and tested at this
+          repository's boundary, but whether the daemon's GStreamer producer guarantees it lives in
+          the external SDK, outside this workspace.
+        </li>
+      </ul>
+    </div>
+  </section>
+
+</div>
+<script>mermaid.initialize({ startOnLoad: true });</script>
+</body>
+</html>
