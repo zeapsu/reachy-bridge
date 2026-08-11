@@ -19,6 +19,10 @@ env/
 *.local.sh
 !.env.example
 
+# --- Operator-local robot access instructions ---
+/AGENTS.md
+/CLAUDE.md
+
 # --- Model / data caches (e.g. faster-whisper downloads) ---
 .cache/
 models/
