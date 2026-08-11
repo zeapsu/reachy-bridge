@@ -15,6 +15,7 @@ dependencies = [
     "sherpa-onnx-core==1.13.4",
     "websockets>=13,<17",
     "reachy_chat",
+    "pi-agent-core==0.1.1",
 ]
 
 [project.entry-points."reachy_mini_apps"]

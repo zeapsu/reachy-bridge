@@ -2,6 +2,20 @@
 
 Reachy Hermes runs the local Hermes Agent behind the Reachy Mini voice application.
 
+## Pi Realtime tool harness
+
+`reachy_hermes.pi_harness` is a small, non-integrated boundary for a future
+Pi-backed Realtime experiment. It is not a Hermes replacement and it does not
+start an agent, provider, gateway, daemon, or robot action. Its only public
+factory requires an explicit `PiRealtimeHarnessConfig`; it does not read
+environment variables, user files, or global Pi configuration.
+
+The harness exposes exactly one typed tool,
+`get_realtime_tool_capabilities`. It accepts no arguments and returns only a
+deterministic description of its fixed allowlist. Unknown, malformed, or
+argument-bearing calls fail closed. It has no shell, process, network,
+filesystem, media, daemon, or controller access.
+
 ## Accepted Hermes runtime
 
 Reachy currently accepts Hermes Agent **v0.19.0 (2026.7.20)**. The tracked pin is in

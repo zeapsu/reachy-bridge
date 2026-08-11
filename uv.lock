@@ -1885,6 +1885,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pi-agent-core"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c2/04/0fa88a8be7f7f8fea650fcd374203c7cd5f91f0411d3d8bf94c82ae1c68d/pi_agent_core-0.1.1.tar.gz", hash = "sha256:ed45a5aa51d26a9471888cb4de22758587b0dd311496f490dabff456d3c8ee5b", size = 17873, upload-time = "2026-02-15T14:06:28.93Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/93/e6/69f59a57398ff3091b75b6d8f844eab4f62ed71bed77f8545d041b1013cb/pi_agent_core-0.1.1-py3-none-any.whl", hash = "sha256:f915ed1d79775ae340bac41eea2ec65089e197333e08f16c4bec5245a99c073b", size = 21721, upload-time = "2026-02-15T14:06:30.724Z" },
+]
+
+[[package]]
 name = "pillow"
 version = "11.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4938,6 +4951,7 @@ source = { editable = "apps/reachy_hermes" }
 dependencies = [
     { name = "fastrtc" },
     { name = "numpy" },
+    { name = "pi-agent-core" },
     { name = "reachy-chat" },
     { name = "reachy-mini" },
     { name = "sherpa-onnx" },
@@ -4955,6 +4969,7 @@ dev = [
 requires-dist = [
     { name = "fastrtc", specifier = ">=0.0.34" },
     { name = "numpy", specifier = ">=2.0" },
+    { name = "pi-agent-core", specifier = "==0.1.1" },
     { name = "reachy-chat", editable = "apps/reachy_chat" },
     { name = "reachy-mini", specifier = ">=1.8.3" },
     { name = "sherpa-onnx", specifier = "==1.13.4" },
