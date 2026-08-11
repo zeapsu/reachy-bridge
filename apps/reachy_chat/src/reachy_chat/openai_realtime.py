@@ -15,6 +15,7 @@ from openai.types.realtime.realtime_audio_input_turn_detection_param import Serv
 from reachy_chat.config import OPENAI_REALTIME_BACKEND, config, get_default_voice_for_backend
 from reachy_chat.prompts import get_session_voice, get_session_instructions
 from reachy_chat.base_realtime import BaseRealtimeHandler, to_realtime_tools_config
+from reachy_chat.console_provider import request_openai_realtime_client_secret
 from reachy_chat.tools.core_tools import get_active_tool_specs
 
 
@@ -130,10 +131,7 @@ class OpenaiRealtimeHandler(BaseRealtimeHandler):
     async def _build_realtime_client(self) -> AsyncOpenAI:
         """Build the OpenAI Realtime SDK client."""
         self._realtime_connect_query = {}
-        resolved_api_key = (config.OPENAI_API_KEY or "").strip()
+        resolved_api_key = await request_openai_realtime_client_secret(config.MODEL_NAME)
         if not resolved_api_key:
-            # In headless console mode, LocalStream blocks startup until the key is provided.
-            # Unit tests may invoke this handler directly with a stubbed client.
-            logger.warning("OPENAI_API_KEY missing. Proceeding with a placeholder (tests/offline).")
-            resolved_api_key = "DUMMY"
+            raise RuntimeError("Console OpenAI Realtime setup is required")
         return AsyncOpenAI(api_key=resolved_api_key)

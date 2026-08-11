@@ -5,18 +5,42 @@ A voice conversation app for Reachy Mini with multiple backend options. The defa
 ## Setup
 
 1. Copy `.env.example` to `.env` in the app root directory (next to this README).
-2. Choose your backend and set the required API key(s):
+2. Choose your backend. OpenAI Realtime credentials are configured once from
+   Reachy Console, not in this app's `.env` file.
 
 | Backend | Required Keys | Optional |
 |---------|---------------|----------|
-| **OpenAI Realtime** (default) | `OPENAI_API_KEY` | `OPENAI_REALTIME_MODEL` |
+| **OpenAI Realtime** (default) | Reachy Console provider setup | `MODEL_NAME` |
 | Gemini Live | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | — |
 | OpenRouter Chat | `OPENROUTER_API_KEY` | `OPENROUTER_MODEL` (default: `minimax/minimax-m3`) |
 | Hugging Face | — | `HF_TOKEN` |
 
 3. Set `BACKEND_PROVIDER` in `.env` to one of: `openai_realtime`, `gemini`, `openai`, `huggingface`.
    - If not set, the app defaults to **`openai_realtime`**.
-4. When launched from Reachy Controller, use the settings button on the `reachy_chat` app card to configure the active backend's API key and conversation voice.
+4. Start `reachy_chat` from Reachy Console, then open its settings. If OpenAI
+   Realtime is not configured, enter the key in the write-only Console field.
+   Console validates Realtime access before storing it in the host credential
+   service. Reachy Chat receives only a short-lived session credential.
+
+### OpenAI Realtime first run, rotation, and removal
+
+Run Reachy Console on the host that will run the apps. Start Reachy Chat and
+open its settings panel. The OpenAI Realtime field reports either
+**not configured** or **configured**; its value is never displayed or retained
+in browser storage. Save a replacement to rotate the host credential, or use
+**Remove** to revoke the Console-owned stored credential.
+
+If the host injects the credential through its service manager, Console cannot
+remove that external source; update or remove it in the service-manager secret
+configuration instead.
+
+The first save validates that the selected Realtime model can mint a session,
+then uses the operating system's secure credential service. If that service is
+unavailable, Console leaves the key unpersisted and reports setup failure. The
+deployment hook is to enable an OS-backed keyring for the service account
+running Reachy Console (for example, the native keychain or a Linux Secret
+Service); do not substitute a project `.env` file. An already service-injected
+OpenAI credential is honored without copying it into an app or project file.
 
 ## Features
 

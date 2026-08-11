@@ -16,6 +16,7 @@ import psutil
 
 from reachy_controller.app_supervisor import _get_workspace_root
 from reachy_controller.log_stream import LogBroker, ProcessLogPump
+from reachy_controller.secret_boundary import child_process_env
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,7 @@ class DaemonSupervisor:
                     text=True,
                     bufsize=1,
                     start_new_session=True,
+                    env=child_process_env(),
                 )
                 log_pump = ProcessLogPump(
                     process,

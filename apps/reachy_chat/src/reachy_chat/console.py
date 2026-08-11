@@ -44,6 +44,7 @@ from reachy_chat.config import (
     refresh_runtime_config_from_env,
     get_available_voices_for_backend,
 )
+from reachy_chat.console_provider import openai_realtime_is_configured
 from reachy_chat.startup_settings import read_startup_settings, write_startup_settings
 from reachy_chat.personality_routes import mount_personality_routes
 from reachy_chat.audio.startup_config import apply_audio_startup_config
@@ -586,7 +587,10 @@ class LocalStream:
         if backend == HF_BACKEND:
             return has_hf_realtime_target()
         if backend == OPENAI_REALTIME_BACKEND:
-            return self._has_key(config.OPENAI_API_KEY)
+            # Runtime test doubles may set this legacy field directly; normal
+            # application configuration always leaves it unset and consults
+            # the Console-owned provider status instead.
+            return openai_realtime_is_configured() or self._has_key(config.OPENAI_API_KEY)
         return self._has_key(config.OPENROUTER_API_KEY)
 
     @staticmethod
@@ -638,9 +642,9 @@ class LocalStream:
             logger.info("Persisted %s to %s", ", ".join(sorted(normalized_updates)), env_path)
 
             try:
-                from dotenv import load_dotenv
+                from reachy_chat.config import _load_dotenv_without_openai_credential
 
-                load_dotenv(dotenv_path=str(env_path))
+                _load_dotenv_without_openai_credential(dotenv_path=str(env_path))
             except Exception:
                 pass
             refresh_runtime_config_from_env()
@@ -690,9 +694,9 @@ class LocalStream:
         self._remove_persisted_env_values(("HF_REALTIME_SESSION_URL",))
 
     def _persist_api_key(self, key: str, backend: str | None = None) -> None:
-        """Persist API key for the appropriate backend to environment and instance `.env`."""
+        """Persist a backend credential using that backend's approved store."""
         if backend == OPENAI_REALTIME_BACKEND:
-            self._persist_env_value("OPENAI_API_KEY", key)
+            raise RuntimeError("OpenAI Realtime credentials are owned by Reachy Console")
         else:
             self._persist_env_value("OPENROUTER_API_KEY", key)
 
@@ -925,6 +929,7 @@ class LocalStream:
                 "backend_provider": backend_provider,
                 "has_key": can_proceed,
                 "has_openai_realtime_key": has_openai_realtime_key,
+                "model_name": get_model_name_for_backend(OPENAI_REALTIME_BACKEND),
                 "has_openrouter_key": has_openrouter_key,
                 "has_gemini_key": has_gemini_key,
                 "has_hf_session_url": has_hf_session_url,
@@ -986,7 +991,7 @@ class LocalStream:
             return JSONResponse({"muted": self._mic_muted})
 
         @self._settings_app.post("/backend_config")
-        def _set_backend(payload: BackendPayload) -> JSONResponse:
+        async def _set_backend(payload: BackendPayload) -> JSONResponse:
             backend = payload.backend.strip().lower()
             if backend not in {OPENAI_BACKEND, OPENAI_REALTIME_BACKEND, GEMINI_BACKEND, HF_BACKEND}:
                 return JSONResponse({"ok": False, "error": "invalid_backend"}, status_code=400)
@@ -998,7 +1003,10 @@ class LocalStream:
             if backend == OPENAI_BACKEND and api_key:
                 self._persist_api_key(api_key, backend=OPENAI_BACKEND)
             if backend == OPENAI_REALTIME_BACKEND and api_key:
-                self._persist_api_key(api_key, backend=OPENAI_REALTIME_BACKEND)
+                return JSONResponse(
+                    {"ok": False, "error": "openai_credentials_are_console_owned"},
+                    status_code=403,
+                )
             if backend == GEMINI_BACKEND and api_key:
                 self._persist_gemini_api_key(api_key)
             if backend == HF_BACKEND:
@@ -1040,6 +1048,7 @@ class LocalStream:
                     **payload_data,
                 }
             )
+
 
         if not self._personality_routes_initialized:
             mount_personality_routes(
@@ -1197,11 +1206,11 @@ class LocalStream:
         # Try to load an existing instance .env first (covers subsequent runs)
         if self._instance_path:
             try:
-                from dotenv import load_dotenv
+                from reachy_chat.config import _load_dotenv_without_openai_credential
 
                 env_path = Path(self._instance_path) / ".env"
                 if env_path.exists():
-                    load_dotenv(dotenv_path=str(env_path), override=True)
+                    _load_dotenv_without_openai_credential(dotenv_path=str(env_path))
                     refresh_runtime_config_from_env()
             except Exception:
                 pass  # Instance .env loading is optional; continue with defaults

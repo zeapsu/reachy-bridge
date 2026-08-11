@@ -107,11 +107,11 @@ def run(
 
     if instance_path is not None:
         try:
-            from dotenv import load_dotenv
+            from reachy_chat.config import _load_dotenv_without_openai_credential
 
             env_path = Path(instance_path) / ".env"
             if env_path.exists():
-                load_dotenv(dotenv_path=str(env_path), override=True)
+                _load_dotenv_without_openai_credential(dotenv_path=str(env_path))
                 refresh_runtime_config_from_env()
                 logger.info("Loaded instance configuration from %s", env_path)
         except Exception as e:

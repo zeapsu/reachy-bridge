@@ -352,6 +352,15 @@ if LOCKED_PROFILE is not None:
 
 _skip_dotenv = _env_flag("REACHY_MINI_SKIP_DOTENV", default=False)
 
+
+def _load_dotenv_without_openai_credential(*, dotenv_path: str) -> None:
+    """Load normal configuration while discarding every legacy OpenAI key."""
+    # Console is the sole durable-key holder.  A managed app must neither read
+    # an inherited service key nor restore a legacy key from its app `.env`.
+    os.environ.pop("OPENAI_API_KEY", None)
+    load_dotenv(dotenv_path=dotenv_path, override=True)
+    os.environ.pop("OPENAI_API_KEY", None)
+
 if _skip_dotenv:
     logger.info("Skipping .env loading because REACHY_MINI_SKIP_DOTENV is set")
 else:
@@ -362,17 +371,22 @@ else:
 
     if app_root_dotenv.exists():
         dotenv_path = str(app_root_dotenv)
-        load_dotenv(dotenv_path=dotenv_path, override=True)
+        _load_dotenv_without_openai_credential(dotenv_path=dotenv_path)
         logger.info(f"Configuration loaded from {dotenv_path}")
     else:
         # Fallback: search upward from current working directory
         fallback_dotenv = find_dotenv(usecwd=True)
         if fallback_dotenv:
             dotenv_path = fallback_dotenv
-            load_dotenv(dotenv_path=dotenv_path, override=True)
+            _load_dotenv_without_openai_credential(dotenv_path=dotenv_path)
             logger.info(f"Configuration loaded from {dotenv_path}")
         else:
             logger.warning("No .env file found, using environment variables")
+
+# Also cover launches that skip dotenv or have no dotenv file at all.  The
+# ephemeral Console client secret is requested only when a Realtime session is
+# built and is never stored in this process environment.
+os.environ.pop("OPENAI_API_KEY", None)
 
 
 class Config:
@@ -380,7 +394,9 @@ class Config:
 
     # Required (one of these depending on BACKEND_PROVIDER)
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    # The Console owns the durable OpenAI credential.  Reachy Chat receives
+    # only a short-lived provider capability when it starts.
+    OPENAI_API_KEY = None
     OPENROUTER_BASE_URL = OPENROUTER_BASE_URL
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
@@ -501,7 +517,7 @@ config = Config()
 def refresh_runtime_config_from_env() -> None:
     """Refresh mutable runtime config fields from the current environment."""
     config.OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-    config.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    config.OPENAI_API_KEY = None
     config.GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     config.BACKEND_PROVIDER = _normalize_backend_provider(
         os.getenv("BACKEND_PROVIDER"),

@@ -27,6 +27,30 @@ from reachy_chat.tools.background_tool_manager import ToolCallRoutine, ToolNotif
 OPENAI_DEFAULT_VOICE = get_default_voice_for_backend(OPENAI_REALTIME_BACKEND)
 
 
+@pytest.mark.asyncio
+async def test_build_realtime_client_uses_console_secret_not_legacy_key(monkeypatch: Any) -> None:
+    """The Chat SDK client receives only the Console-minted session secret."""
+    captured_keys: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *, api_key: str) -> None:
+            captured_keys.append(api_key)
+
+    console_secret = AsyncMock(return_value="ephemeral-session-secret")
+    monkeypatch.setattr(rt_mod, "AsyncOpenAI", FakeClient)
+    monkeypatch.setattr(rt_mod, "request_openai_realtime_client_secret", console_secret)
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "legacy-durable-key")
+    monkeypatch.setattr(config, "MODEL_NAME", "gpt-realtime")
+
+    handler = OpenaiRealtimeHandler(
+        ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    )
+    await handler._build_realtime_client()
+
+    console_secret.assert_awaited_once_with("gpt-realtime")
+    assert captured_keys == ["ephemeral-session-secret"]
+
+
 def _build_handler(loop: asyncio.AbstractEventLoop) -> OpenaiRealtimeHandler:
     asyncio.set_event_loop(loop)
     deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
@@ -812,6 +836,11 @@ async def test_start_up_retries_on_abrupt_close(monkeypatch: Any, caplog: Any) -
 
     # Patch the OpenAI client used by the handler
     monkeypatch.setattr(rt_mod, "AsyncOpenAI", FakeClient)
+    monkeypatch.setattr(
+        rt_mod,
+        "request_openai_realtime_client_secret",
+        AsyncMock(return_value="ephemeral-test-token"),
+    )
     monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
 
     # Build handler with minimal deps
@@ -1253,6 +1282,11 @@ async def test_response_sender_retries_on_active_response_rejection(monkeypatch:
             self.realtime = FakeRealtime()
 
     monkeypatch.setattr(rt_mod, "AsyncOpenAI", FakeClient)
+    monkeypatch.setattr(
+        rt_mod,
+        "request_openai_realtime_client_secret",
+        AsyncMock(return_value="ephemeral-test-token"),
+    )
     monkeypatch.setattr(config, "BACKEND_PROVIDER", "openai")
 
     # Patch dispatch_tool_call so tools complete with a result.

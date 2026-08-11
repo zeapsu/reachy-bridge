@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -14,10 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import psutil
 import pytest
 
-
 from reachy_controller.app_supervisor import (
-    _APP_READINESS_POLL_S,
-    _APP_READINESS_TIMEOUT_S,
     _HERMES_STARTUP_BUDGET_S,
     _STOP_SIGINT_GRACE_S,
     AppSupervisor,
@@ -1143,7 +1140,7 @@ async def test_readiness_monitor_process_death_during_loading_errors() -> None:
             if monitor_task:
                 try:
                     await asyncio.wait_for(monitor_task, timeout=5.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Monitor should exit relatively quickly once status != loading
                     monitor_task.cancel()
                     try:
@@ -1362,8 +1359,11 @@ async def test_stop_app_sets_stopping_status_during_wait() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_app_passes_ready_file_env(tmp_path: Path) -> None:
-    """Test that start_app passes REACHY_READY_FILE env var to Popen."""
+async def test_start_app_passes_ready_file_env_without_durable_openai_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Child apps get readiness/capability values, never the parent provider key."""
+    monkeypatch.setenv("OPENAI_API_KEY", "durable-parent-key")
     supervisor = AppSupervisor()
     supervisor._workspace_root = tmp_path
 
@@ -1386,6 +1386,7 @@ async def test_start_app_passes_ready_file_env(tmp_path: Path) -> None:
     popen_env = popen_kwargs.get("env")
     assert popen_env is not None, "Popen env should not be None"
     assert "REACHY_READY_FILE" in popen_env, "REACHY_READY_FILE should be in Popen env"
+    assert "OPENAI_API_KEY" not in popen_env
 
     # Verify the ready file path is valid
     ready_file_path = popen_env["REACHY_READY_FILE"]
@@ -1395,6 +1396,23 @@ async def test_start_app_passes_ready_file_env(tmp_path: Path) -> None:
     # Verify it's stored on the app
     app = supervisor._apps["reachy_chat"]
     assert app.ready_file is not None, "App ready_file should not be None"
+
+
+def test_external_app_adoption_invalidates_old_provider_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A token minted for a Console launch cannot authorize an adopted process."""
+    supervisor = AppSupervisor()
+    chat = supervisor._apps["reachy_chat"]
+    chat.status = "stopped"
+    chat.provider_capability = "old-capability"
+    monkeypatch.setattr(supervisor, "_scan_for_live_apps", lambda: {"reachy_chat": (1234, 1.0)})
+
+    supervisor.reconcile_orphans()
+
+    assert chat.external is True
+    assert chat.provider_capability is None
+    assert supervisor.accepts_provider_capability("old-capability") is False
 
 
 @pytest.mark.asyncio

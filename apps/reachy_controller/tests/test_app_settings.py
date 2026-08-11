@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
 from reachy_controller.main import create_app
+from reachy_controller.openai_provider import OpenAIProviderError
 
 
 class FakeDaemonProxy:
@@ -21,10 +23,12 @@ class FakeDaemonProxy:
 def _build_app(
     handler: Callable[[httpx.Request], httpx.Response],
 ) -> Any:
-    return create_app(
+    app = create_app(
         proxy=FakeDaemonProxy(),
         settings_transport=httpx.MockTransport(handler),
     )
+    app.state.openai_realtime_provider.is_configured = MagicMock(return_value=True)
+    return app
 
 
 async def _request(
@@ -151,29 +155,85 @@ async def test_key_setting_reads_backend_then_saves_without_echoing_secret() -> 
                 json={"backend_provider": "openai_realtime", "has_openai_realtime_key": False},
                 request=request,
             )
-        if request.url.path == "/backend_config":
-            return httpx.Response(200, json={"ok": True, "api_key": "sk-secret"}, request=request)
         raise AssertionError(request.url.path)
 
     app = _build_app(handler)
+    configure = AsyncMock()
+    app.state.openai_realtime_provider.configure = configure
     response = await _request(
         app,
         "POST",
         "/api/apps/reachy_chat/settings/api_key",
-        json={"value": "sk-secret"},
+        json={"value": "test-credential"},
     )
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
-    assert "sk-secret" not in response.text
+    assert "test-credential" not in response.text
     assert seen == [
         ("GET", "/status", None),
-        (
-            "POST",
-            "/backend_config",
-            {"backend": "openai_realtime", "api_key": "sk-secret"},
-        ),
     ]
+    configure.assert_awaited_once_with("test-credential", "gpt-realtime")
+
+
+@pytest.mark.asyncio
+async def test_key_setting_hides_provider_failure_details() -> None:
+    """A save error must not reflect a credential or provider exception."""
+    app = _build_app(_schema_handler)
+    app.state.openai_realtime_provider.configure = AsyncMock(
+        side_effect=OpenAIProviderError("provider rejected test-credential")
+    )
+
+    response = await _request(
+        app,
+        "POST",
+        "/api/apps/reachy_chat/settings/api_key",
+        json={"value": "test-credential"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Reachy Chat settings request failed"}
+    assert "test-credential" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_key_removal_is_console_owned_and_does_not_call_chat() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path == "/status":
+            return httpx.Response(
+                200,
+                json={"backend_provider": "openai_realtime"},
+                request=request,
+            )
+        raise AssertionError(request.url.path)
+
+    app = _build_app(handler)
+    remove = MagicMock()
+    app.state.openai_realtime_provider.remove = remove
+
+    response = await _request(app, "DELETE", "/api/apps/reachy_chat/settings/api_key")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert seen == ["/status"]
+    remove.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_key_removal_hides_provider_failure_details() -> None:
+    app = _build_app(_schema_handler)
+    app.state.openai_realtime_provider.remove = MagicMock(
+        side_effect=OpenAIProviderError("could not remove test-credential")
+    )
+
+    response = await _request(app, "DELETE", "/api/apps/reachy_chat/settings/api_key")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Reachy Chat settings request failed"}
+    assert "test-credential" not in response.text
 
 
 @pytest.mark.asyncio

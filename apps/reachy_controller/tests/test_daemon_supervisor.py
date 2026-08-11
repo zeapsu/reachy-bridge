@@ -32,7 +32,10 @@ async def test_start_refuses_when_not_manageable() -> None:
 @pytest.mark.asyncio
 async def test_start_when_manageable() -> None:
     """Test successful daemon start when manageable."""
-    with patch.dict("os.environ", {"REACHY_MANAGE_DAEMON": "1"}):
+    with patch.dict(
+        "os.environ",
+        {"REACHY_MANAGE_DAEMON": "1", "OPENAI_API_KEY": "durable-parent-key"},
+    ):
         supervisor = DaemonSupervisor()
 
         mock_process = MagicMock()
@@ -58,6 +61,7 @@ async def test_start_when_manageable() -> None:
         assert call_args.kwargs["text"] is True
         assert call_args.kwargs["bufsize"] == 1
         assert call_args.kwargs["start_new_session"] is True
+        assert "OPENAI_API_KEY" not in call_args.kwargs["env"]
 
     assert result["status"] == "starting"
     assert result["pid"] == 12345

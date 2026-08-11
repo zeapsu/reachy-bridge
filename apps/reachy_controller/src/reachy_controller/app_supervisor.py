@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -21,6 +22,7 @@ from typing import Any, TextIO, TypeGuard
 import psutil
 
 from reachy_controller.log_stream import LogBroker, ProcessLogPump
+from reachy_controller.secret_boundary import child_process_env
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,7 @@ class LocalApp:
     log_handle: TextIO | None = None
     log_pump: ProcessLogPump | None = None
     ready_file: Path | None = None
+    provider_capability: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to serializable dict."""
@@ -194,6 +197,19 @@ class AppSupervisor:
             candidate = root / "apps" / "reachy_controller"
             controller_root = candidate if candidate.is_dir() else root
         return controller_root / ".favorites.json"
+
+    def accepts_provider_capability(self, capability: str | None) -> bool:
+        """Return whether a live Console-launched app owns this capability."""
+        if not capability:
+            return False
+        return any(
+            app.name == "reachy_chat"
+            and app.status in {"loading", "running"}
+            and not app.external
+            and app.provider_capability is not None
+            and secrets.compare_digest(app.provider_capability, capability)
+            for app in self._apps.values()
+        )
 
     @classmethod
     def _valid_favorites(cls, value: object) -> TypeGuard[list[str]]:
@@ -365,6 +381,7 @@ class AppSupervisor:
             # Generate unique ready file path for this app launch
             ready_path = Path(tempfile.gettempdir()) / f"reachy_ready_{name}_{uuid.uuid4().hex}"
             app.ready_file = ready_path
+            app.provider_capability = secrets.token_urlsafe(32) if name == "reachy_chat" else None
 
             # Every launch truncates its file, clears the prior ring, and immediately
             # starts a dedicated drain for the merged stdout/stderr pipe.
@@ -373,6 +390,21 @@ class AppSupervisor:
             self.log_broker.reset(name, status="empty")
 
             try:
+                child_env = {
+                    **child_process_env(),
+                    "REACHY_READY_FILE": str(ready_path),
+                    # Unbuffered so the pump receives each child line promptly.
+                    "PYTHONUNBUFFERED": "1",
+                }
+                if app.provider_capability is not None:
+                    child_env.update(
+                        {
+                            "REACHY_CONSOLE_PROVIDER_URL": (
+                                f"http://127.0.0.1:{os.getenv('CONTROLLER_PORT', '7861')}"
+                            ),
+                            "REACHY_CONSOLE_PROVIDER_CAPABILITY": app.provider_capability,
+                        }
+                    )
                 app.process = subprocess.Popen(
                     argv,
                     cwd=app_dir,
@@ -380,12 +412,7 @@ class AppSupervisor:
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
-                    env={
-                        **os.environ,
-                        "REACHY_READY_FILE": str(ready_path),
-                        # Unbuffered so the pump receives each child line promptly.
-                        "PYTHONUNBUFFERED": "1",
-                    },
+                    env=child_env,
                 )
                 app.log_pump = ProcessLogPump(app.process, name, self.log_broker, log_file_path)
                 app.log_handle = app.log_pump.file_handle
@@ -418,6 +445,7 @@ class AppSupervisor:
             except Exception as e:
                 app.status = "error"
                 app.error = str(e)
+                app.provider_capability = None
                 logger.error(f"Failed to start app {name}: {e}")
                 await asyncio.to_thread(self._close_log_handle, app)
                 if app.process is not None:
@@ -496,6 +524,7 @@ class AppSupervisor:
             app.pid = None
             app.process = None
             app.external = False
+            app.provider_capability = None
             self.log_broker.set_status(name, "stopped")
 
             # Clean up ready file
@@ -548,6 +577,7 @@ class AppSupervisor:
                 app.process = None
                 app.pid = None
                 app.external = False
+                app.provider_capability = None
                 self.log_broker.set_status(app.name, "stopped")
                 if app.ready_file is not None:
                     stage_file = Path(f"{app.ready_file}.stage")
@@ -750,6 +780,7 @@ class AppSupervisor:
             app.process = None
             app.pid = None
             app.external = False
+            app.provider_capability = None
             # Only the hermes-exited-while-loading branch consumes the stage, and
             # it must be read before the cleanup below deletes the .stage file.
             startup_stage = (
@@ -826,6 +857,7 @@ class AppSupervisor:
             app.status = "running"
             app.start_time = create_time
             app.external = True
+            app.provider_capability = None
             self.log_broker.set_status(name, "unavailable")
             logger.info(f"Reconciled orphaned app {name} (pid {pid})")
 
@@ -849,6 +881,7 @@ class AppSupervisor:
                 self.log_broker.set_status(app.name, "stopped")
                 app.external = False
                 app.pid = None
+                app.provider_capability = None
 
             for name, (pid, create_time) in found.items():
                 app = self._apps[name]
@@ -860,6 +893,7 @@ class AppSupervisor:
                 app.start_time = create_time
                 self.log_broker.set_status(name, "unavailable")
                 app.external = True
+                app.provider_capability = None
                 logger.info(f"Adopted external app {name} (pid {pid})")
             return [app.to_dict() for app in self._apps.values()]
 
@@ -881,6 +915,7 @@ class AppSupervisor:
                         self.log_broker.set_status(app.name, "stopped")
                         app.external = False
                         app.pid = None
+                        app.provider_capability = None
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     # Process is dead; transition to stopped
                     logger.info(f"App {app.name} (pid {app.pid}) is dead; transition to stopped")
@@ -888,6 +923,7 @@ class AppSupervisor:
                     self.log_broker.set_status(app.name, "stopped")
                     app.external = False
                     app.pid = None
+                    app.provider_capability = None
 
         # Adoption pass: scan for any stopped/pid-less app that is live in process table
         found = self._scan_for_live_apps()
@@ -904,6 +940,7 @@ class AppSupervisor:
                 app.start_time = create_time
                 self.log_broker.set_status(name, "unavailable")
                 app.external = True
+                app.provider_capability = None
                 logger.info(f"Adopted external app {name} (pid {pid})")
 
         return [app.to_dict() for app in self._apps.values()]

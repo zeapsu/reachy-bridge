@@ -4,17 +4,86 @@ Reachy Hermes runs the local Hermes Agent behind the Reachy Mini voice applicati
 
 ## Pi Realtime tool harness
 
-`reachy_hermes.pi_harness` is a small, non-integrated boundary for a future
-Pi-backed Realtime experiment. It is not a Hermes replacement and it does not
-start an agent, provider, gateway, daemon, or robot action. Its only public
-factory requires an explicit `PiRealtimeHarnessConfig`; it does not read
-environment variables, user files, or global Pi configuration.
+`reachy_hermes.pi_harness` is a small, provider-neutral bridge for a Realtime
+client running on its **local host**. It is not a Hermes replacement and it
+never starts a Reachy daemon, controller, media device, or robot action. It
+starts the operator-managed local Pi CLI in documented JSONL RPC mode and
+continues Pi's persisted session for that service working directory. A
+Jetson/headless deployment is supported, but is not required.
 
-The harness exposes exactly one typed tool,
-`get_realtime_tool_capabilities`. It accepts no arguments and returns only a
-deterministic description of its fixed allowlist. Unknown, malformed, or
-argument-bearing calls fail closed. It has no shell, process, network,
-filesystem, media, daemon, or controller access.
+The Python workspace intentionally does not install a similarly named PyPI
+package. The supported external runtime contract is the local host's
+`@mariozechner/pi-coding-agent` npm package at `0.73.1` (with Node 25.9.0 when
+this integration was evaluated). The bridge verifies the package name and
+version from its external `package.json` before launching it.
+
+### Configuration and execution boundary
+
+Pi's configuration and sessions are operator-owned and must never be committed.
+Resolution is deliberately bounded:
+
+1. `PI_CONFIG_PATH` — an existing absolute Pi **agent** directory. The bridge
+   passes it through as Pi's documented `PI_CODING_AGENT_DIR`.
+2. `~/.pi/agent` — the documented conventional location.
+3. No Pi configuration override — only if neither location exists. Pi then
+   receives its own vanilla configuration defaults.
+
+There is no recursive home-directory scan and the bridge does **not** search
+`PATH` for a `pi` executable. The normal external CLI is resolved only from
+`<agent-dir>/npm/node_modules/@mariozechner/pi-coding-agent/dist/cli.js`.
+Therefore a host using vanilla Pi defaults must set `PI_CLI_PATH` explicitly;
+that path is launched without `PI_CODING_AGENT_DIR`. `PI_NODE_PATH` is available
+when the local host's Node executable is not on `PATH`.
+
+Register `realtime_functions()` with the Realtime client and route its structured
+calls to `PiRealtimeHarness.dispatch()`:
+
+- `get_pi_tool_inventory` obtains Pi's live extension/skill command inventory
+  through RPC, lists only declared MCP server names, and makes that safe
+  inventory available as `harness.last_inventory`. It never exposes MCP
+  commands, arguments, URLs, configuration values, or secrets.
+- `invoke_pi_session` accepts one `message` string (up to 4,000 characters),
+  forwards it to Pi's continued local session, and returns compact assistant
+  text plus a tool-call count. Extension UI dialogs are cancelled, never
+  auto-approved.
+
+Use `function.as_dict()` when registering the functions with the Realtime
+session. When the client receives a function call, pass its `call_id`, `name`,
+and JSON argument string to `adapt_realtime_function_call()`, send the returned
+`conversation.item.create` event, then request the next Realtime response. The
+adapter returns a compact safe error payload for local Pi failures so the voice
+connection can continue.
+
+Every call records only aggregate operation, success, elapsed milliseconds,
+configuration source, command/tool-call counts, token totals, and cost. The
+default local telemetry file is
+`~/.local/state/reachy-hermes/pi-realtime.jsonl`; use `PI_TELEMETRY_PATH` to
+select another operator-local path. Prompts, responses, session paths, config
+contents, commands, credentials, and endpoints are intentionally not recorded.
+The row also records whether a warm local Pi process was reused and, on failure,
+only the error class.
+
+The harness keeps one Pi RPC process warm while it is open, serializing calls
+through that process. Call `await harness.aclose()` during application shutdown
+or use `async with PiRealtimeHarness(...)`; cleanup first terminates the child
+and then kills it if it does not exit promptly.
+
+Do not register or invoke `invoke_pi_session` against hardware until the owner
+has separately said to start hardware testing. This bridge contains no Reachy
+control code, but Pi's externally declared tools are the source of truth and
+may have their own authority.
+
+### Evaluation contract
+
+Before a non-actuating local-host evaluation, run only an inventory call and
+compare the local telemetry row with the Realtime client's timing/token
+telemetry. Confirm that the second inventory call reports
+`session_reused: true`, then close the harness and verify no Pi child remains.
+Keep the comparison in operator-local notes. A session prompt is a separate
+action; use a harmless prompt first, verify its compact result and telemetry,
+then stop. On a Jetson/headless host, the same evaluation contract applies.
+Starting the Reachy controller, daemon, or robot hardware remains a separate
+owner-authorized step.
 
 ## Accepted Hermes runtime
 

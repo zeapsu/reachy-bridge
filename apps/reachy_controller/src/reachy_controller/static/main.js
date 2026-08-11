@@ -1215,6 +1215,7 @@
         <div class="field-row">
           <input type="password" id="${id}" autocomplete="off" spellcheck="false" placeholder="${configured ? "configured — enter new value to replace" : "not configured"}">
           <button class="btn start" type="button" data-save>Save</button>
+          ${configured ? '<button class="btn stop" type="button" data-remove>Remove</button>' : ""}
         </div>
         <span class="field-state${configured ? " ok" : ""}">${configured ? "configured" : "not configured"}</span>${help}
       </div>`;
@@ -1433,6 +1434,32 @@
     } catch (error) {
       if (stale()) return false;
       setSettingsHint(error.message || "Save failed.", "error");
+      return false;
+    } finally {
+      settings.saving = false;
+    }
+  }
+
+  async function removeAppSetting(key) {
+    const settings = state.settings;
+    if (settings.saving || settings.app === null || !settings.schema) return false;
+    const field = (settings.schema.fields || []).find((item) => String(item.key) === String(key));
+    if (!field || field.type !== "password" || field.configured !== true) return false;
+    const forApp = settings.app;
+    const forKey = settings.loadKey;
+    const stale = () => settings.app !== forApp || settings.loadKey !== forKey;
+    settings.saving = true;
+    setSettingsHint(`Removing ${field.label || field.key}…`);
+    try {
+      await apiJson(`/api/apps/${encodeURIComponent(forApp)}/settings/${encodeURIComponent(String(field.key))}`, { method: "DELETE" });
+      if (stale()) return false;
+      field.configured = false;
+      renderSettingsFields();
+      setSettingsHint(`${field.label || field.key} removed.`, "ok");
+      return true;
+    } catch (error) {
+      if (stale()) return false;
+      setSettingsHint(error.message || "Removal failed.", "error");
       return false;
     } finally {
       settings.saving = false;
@@ -2282,6 +2309,12 @@
   };
 
   $("app-settings-fields").addEventListener("click", (event) => {
+    const removeButton = event.target.closest("button[data-remove]");
+    if (removeButton && !removeButton.disabled) {
+      const fieldEl = removeButton.closest(".settings-field");
+      if (fieldEl) void removeAppSetting(fieldEl.dataset.key);
+      return;
+    }
     const button = event.target.closest("button[data-save]");
     if (!button || button.disabled) return;
     const fieldEl = button.closest(".settings-field");

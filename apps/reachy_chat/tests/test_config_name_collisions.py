@@ -69,6 +69,21 @@ def test_backend_provider_defaults_to_openai_realtime_when_unset() -> None:
     assert config_mod._normalize_backend_provider(None, "gemini-3.1-flash-live-preview") == config_mod.GEMINI_BACKEND
 
 
+def test_dotenv_loader_discards_inherited_and_legacy_openai_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reachy Chat can never recover a durable key from environment or `.env`."""
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("OPENAI_API_KEY=legacy-project-key\n", encoding="utf-8")
+    monkeypatch.setenv("OPENAI_API_KEY", "inherited-service-key")
+
+    config_mod._load_dotenv_without_openai_credential(dotenv_path=str(dotenv_path))
+    config_mod.refresh_runtime_config_from_env()
+
+    assert "OPENAI_API_KEY" not in config_mod.os.environ
+    assert config_mod.config.OPENAI_API_KEY is None
+
+
 def test_voice_fallbacks_are_provider_specific() -> None:
     """OpenRouter's platform-default fallback must not inherit Realtime voices."""
     assert config_mod.get_available_voices_for_backend(config_mod.OPENAI_BACKEND) == [

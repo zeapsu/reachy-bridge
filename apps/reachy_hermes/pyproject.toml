@@ -15,8 +15,13 @@ dependencies = [
     "sherpa-onnx-core==1.13.4",
     "websockets>=13,<17",
     "reachy_chat",
-    "pi-agent-core==0.1.1",
 ]
+
+[tool.reachy-hermes.pi]
+# Pi is an operator-managed local Node runtime, not a PyPI dependency.
+# This exact contract was evaluated on a Jetson on 2026-08-11; Jetson is optional.
+package = "@mariozechner/pi-coding-agent"
+version = "0.73.1"
 
 [project.entry-points."reachy_mini_apps"]
 reachy_hermes = "reachy_hermes.main:ReachyHermes"

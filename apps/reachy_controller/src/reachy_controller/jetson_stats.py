@@ -7,6 +7,8 @@ import socket
 from pathlib import Path
 from typing import Any
 
+from reachy_controller.secret_boundary import child_process_env
+
 
 def _memory() -> tuple[float, float]:
     """Return (used_gb, total_gb) from /proc/meminfo."""
@@ -122,6 +124,7 @@ def _parse_alsa_pcm_volume(card: int) -> int | None:
             capture_output=True,
             text=True,
             timeout=5,
+            env=child_process_env(),
         )
         if result.returncode != 0:
             return None
@@ -143,6 +146,7 @@ def _parse_pipewire_sink_volume() -> float | None:
             capture_output=True,
             text=True,
             timeout=5,
+            env=child_process_env(),
         )
         if result.returncode != 0:
             return None

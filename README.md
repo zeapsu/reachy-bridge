@@ -53,7 +53,9 @@ Dashboard + API: <http://localhost:8000/> · API docs: <http://localhost:8000/do
 | `reachy_chat` | Configurable realtime or local-turn voice conversation | structure ✅ | **mic/speaker** + provider configuration |
 | `reachy_hermes` | mic → faster-whisper → local Hermes CLI → KittenTTS (sherpa-onnx, int8) → speaker | unit ✅ | **mic/speaker** + local Hermes installation |
 
-`reachy_chat` provider configuration lives in `apps/reachy_chat/.env` and its controller settings.
+`reachy_chat` OpenAI Realtime setup belongs to Reachy Console's host credential
+service; its controller settings are write-only and Reachy Chat receives a
+short-lived provider capability rather than the durable key.
 `reachy_hermes` requires `~/.local/bin/hermes` on the robot host.
 First run downloads the faster-whisper `base.en` model (~200 MB) and the KittenTTS int8 model.
 

@@ -11,6 +11,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, field_validator
 
+from reachy_controller.openai_provider import OpenAIProviderError, OpenAIRealtimeProvider
+
 DEFAULT_REACHY_CHAT_SETTINGS_URL = "http://127.0.0.1:7860"
 SETTINGS_UNAVAILABLE_DETAIL = "Reachy Chat settings service unavailable"
 INVALID_UPSTREAM_DETAIL = "Reachy Chat settings service returned an invalid response"
@@ -125,8 +127,9 @@ class ReachyChatSettingsProvider:
     app_name = "reachy_chat"
     title = "Reachy Chat"
 
-    def __init__(self, proxy: AppSettingsProxy) -> None:
+    def __init__(self, proxy: AppSettingsProxy, openai_provider: OpenAIRealtimeProvider) -> None:
         self.proxy = proxy
+        self.openai_provider = openai_provider
 
     async def _json_request(
         self,
@@ -185,12 +188,17 @@ class ReachyChatSettingsProvider:
         credential = self._credential_definition(status)
         if credential is not None:
             label, configured_key = credential
+            configured = (
+                self.openai_provider.is_configured()
+                if str(status.get("backend_provider") or "").strip().lower() == "openai_realtime"
+                else bool(status.get(configured_key, False))
+            )
             fields.append(
                 {
                     "key": "api_key",
                     "label": label,
                     "type": "password",
-                    "configured": bool(status.get(configured_key, False)),
+                    "configured": configured,
                 }
             )
         fields.append(
@@ -212,6 +220,17 @@ class ReachyChatSettingsProvider:
             provider = self._backend_provider(status)
             if self._credential_definition(status) is None:
                 raise KeyError(key)
+            if provider == "openai_realtime":
+                model_name = str(status.get("model_name") or "gpt-realtime").strip()
+                model_name = model_name or "gpt-realtime"
+                try:
+                    await self.openai_provider.configure(value, model_name)
+                except OpenAIProviderError as exc:
+                    raise UpstreamHTTPError(
+                        httpx.Response(400, json={"detail": str(exc)}),
+                        contains_secret=True,
+                    ) from exc
+                return {"ok": True}
             response = await self._json_request(
                 "POST",
                 "/backend_config",
@@ -229,6 +248,22 @@ class ReachyChatSettingsProvider:
             return _sanitize_payload(response)
 
         raise KeyError(key)
+
+    async def remove_value(self, key: str) -> Any:
+        """Remove a provider credential without sending a secret to an app."""
+        if key != "api_key":
+            raise KeyError(key)
+        status = await self._json_request("GET", "/status")
+        if not isinstance(status, dict) or self._backend_provider(status) != "openai_realtime":
+            raise KeyError(key)
+        try:
+            self.openai_provider.remove()
+        except OpenAIProviderError as exc:
+            raise UpstreamHTTPError(
+                httpx.Response(503, json={"detail": str(exc)}),
+                contains_secret=True,
+            ) from exc
+        return {"ok": True}
 
 
 router = APIRouter(prefix="/api", tags=["app-settings"])
@@ -303,3 +338,19 @@ async def set_app_setting(
         return _upstream_error_response(error)
     except InvalidUpstreamResponseError:
         return JSONResponse({"detail": INVALID_UPSTREAM_DETAIL}, status_code=502)
+
+
+@router.delete("/apps/{app_name}/settings/{key}")
+async def remove_app_setting(app_name: str, key: str, request: Request) -> Any:
+    provider = _provider_or_404(request, app_name)
+    remover = getattr(provider, "remove_value", None)
+    if not callable(remover):
+        raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
+    try:
+        return await remover(key)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown setting: {key}") from None
+    except SettingsUnavailableError:
+        return JSONResponse({"detail": SETTINGS_UNAVAILABLE_DETAIL}, status_code=503)
+    except UpstreamHTTPError as error:
+        return _upstream_error_response(error)

@@ -30,6 +30,7 @@ from reachy_controller.daemon_proxy import DaemonProxy
 from reachy_controller.daemon_proxy import router as daemon_router
 from reachy_controller.daemon_supervisor import DaemonSupervisor
 from reachy_controller.log_stream import ControllerLogHandler, LogBroker
+from reachy_controller.openai_provider import OpenAIRealtimeProvider
 from reachy_controller.routes.apps import router as apps_router
 from reachy_controller.routes.audio import router as audio_router
 from reachy_controller.routes.camera import DashboardCameraLeaseManager
@@ -39,6 +40,7 @@ from reachy_controller.routes.daemon import router as daemon_control_router
 from reachy_controller.routes.expressions import ExpressionPlayer
 from reachy_controller.routes.expressions import router as expressions_router
 from reachy_controller.routes.logs import router as logs_router
+from reachy_controller.routes.providers import router as providers_router
 from reachy_controller.routes.system_stats import router as system_stats_router
 from reachy_controller.routes.telemetry import (
     root_router as telemetry_root_router,
@@ -52,7 +54,14 @@ from reachy_controller.shared_streams import (
     StatsBroadcaster,
 )
 
+# Keep a supervisor-injected provider credential available, but never accept a
+# legacy project `.env` value as the Console-owned OpenAI secret.
+_service_openai_api_key = os.environ.get("OPENAI_API_KEY")
 load_dotenv()
+if _service_openai_api_key is None:
+    os.environ.pop("OPENAI_API_KEY", None)
+else:
+    os.environ["OPENAI_API_KEY"] = _service_openai_api_key
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = PACKAGE_DIR / "static"
@@ -85,7 +94,10 @@ def create_app(
         os.getenv("REACHY_CHAT_SETTINGS_URL", "http://127.0.0.1:7860"),
         transport=settings_transport,
     )
-    app_settings = AppSettingsRegistry({"reachy_chat": ReachyChatSettingsProvider(settings_proxy)})
+    openai_realtime_provider = OpenAIRealtimeProvider()
+    app_settings = AppSettingsRegistry(
+        {"reachy_chat": ReachyChatSettingsProvider(settings_proxy, openai_realtime_provider)}
+    )
     camera_leases = DashboardCameraLeaseManager()
     app_supervisor = AppSupervisor(daemon_proxy=daemon_proxy, log_broker=broker)
     daemon_supervisor = DaemonSupervisor(daemon_proxy=daemon_proxy, log_broker=broker)
@@ -139,6 +151,7 @@ def create_app(
     app = FastAPI(title="Reachy Controller", version="0.1.0", lifespan=lifespan)
     app.state.app_settings = app_settings
     app.state.app_settings_proxy = settings_proxy
+    app.state.openai_realtime_provider = openai_realtime_provider
     app.state.daemon_proxy = daemon_proxy
     app.state.state_broadcaster = state_broadcaster
     app.state.audio_levels_broadcaster = audio_levels_broadcaster
@@ -169,6 +182,7 @@ def create_app(
     app.include_router(telemetry_router)
     app.include_router(telemetry_root_router)
     app.include_router(app_settings_router)
+    app.include_router(providers_router)
     app.include_router(apps_router)
     app.include_router(system_stats_router)
     app.include_router(controls_router)
