@@ -23,7 +23,7 @@ env/
 /AGENTS.md
 /CLAUDE.md
 
-# --- Model / data caches (e.g. faster-whisper downloads) ---
+# --- Model / data caches ---
 .cache/
 models/
 *.bin
@@ -42,9 +42,7 @@ Thumbs.db
 /reachy_mini_conversation_app/
 
 # --- Agent scratch / local QA artifacts (not committed) ---
-/.claude/*
-!/.claude/workflows/
+/.claude/
 /.superpowers/
 /.playwright-mcp/
 /.reachy-logs/
-/issue23-*.png

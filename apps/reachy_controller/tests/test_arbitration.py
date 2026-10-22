@@ -1,16 +1,22 @@
-"""Cross-surface arbitration: apps <-> expressions (#66) + motor-enable return-home (#67)."""
+"""Cross-surface arbitration: apps <-> expressions (#66) + motor-enable return-home (#67).
+
+Apps now run inside the daemon, so "an app is active" is read from the daemon's
+``/api/apps/current-app-status``.
+"""
 
 from __future__ import annotations
-
-from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 
-from reachy_controller.app_supervisor import AppSupervisor
 from reachy_controller.daemon_proxy import DaemonProxy
 from reachy_controller.main import create_app
 from reachy_controller.routes.expressions import ExpressionPlayer
+
+INSTALLED = [
+    {"name": "reachy_mini_radio", "extra": {"custom_app_url": "http://0.0.0.0:8042"}},
+    {"name": "hello_world", "extra": {"custom_app_url": None}},
+]
 
 
 def _make_app(handler):
@@ -18,21 +24,62 @@ def _make_app(handler):
     return create_app(proxy)
 
 
-def test_any_app_active_states() -> None:
-    supervisor = AppSupervisor()
-    assert supervisor.any_app_active() is False
-    for status, expected in (
-        ("running", True),
-        ("loading", True),
-        ("stopped", False),
-        ("stopping", False),
-        ("error", False),
-    ):
-        supervisor._apps["reachy_chat"].status = status
-        assert supervisor.any_app_active() is expected, status
+def _apps_handler(current=None, start_posts=None, fallback=None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/apps/current-app-status":
+            return httpx.Response(200, json=current)
+        if path == "/api/apps/list-available/installed":
+            return httpx.Response(200, json=INSTALLED)
+        if path.startswith("/api/apps/start-app/"):
+            if start_posts is not None:
+                start_posts.append(path)
+            name = path.rsplit("/", 1)[1]
+            return httpx.Response(200, json={"info": {"name": name}, "state": "starting"})
+        if fallback is not None:
+            return fallback(request)
+        return httpx.Response(404)
+
+    return handler
+
+
+def _running(name: str = "reachy_mini_radio", state: str = "running") -> dict:
+    return {"info": {"name": name}, "state": state, "error": None}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        (None, False),
+        (_running(state="starting"), True),
+        (_running(state="running"), True),
+        (_running(state="stopping"), False),
+        (_running(state="error"), False),
+        (_running(state="done"), False),
+    ],
+)
+async def test_any_app_active_states(current, expected) -> None:
+    app = _make_app(_apps_handler(current=current))
+    async with app.router.lifespan_context(app):
+        assert await app.state.daemon_apps.refresh_active() is expected
+
+
+@pytest.mark.asyncio
+async def test_unreachable_daemon_counts_as_active() -> None:
+    """Fail closed: if we can't see the app state, don't actuate."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down")
+
+    app = _make_app(handler)
+    async with app.router.lifespan_context(app):
+        assert await app.state.daemon_apps.refresh_active() is True
 
 
 def test_expression_player_active_property() -> None:
+    from unittest.mock import AsyncMock
+
     player = ExpressionPlayer(AsyncMock())
     assert player.active is False
     player._session = {"uuid": None, "dataset": None, "move": None, "phase": "returning_home"}
@@ -40,10 +87,11 @@ def test_expression_player_active_property() -> None:
 
 
 @pytest.mark.asyncio
-async def test_play_expression_409_while_app_running() -> None:
+@pytest.mark.parametrize("state", ["running", "starting"])
+async def test_play_expression_409_while_app_active(state: str) -> None:
     play_posts: list[str] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def fallback(request: httpx.Request) -> httpx.Response:
         if request.url.path.startswith("/api/move/play/"):
             play_posts.append(request.url.path)
             return httpx.Response(200, json={"uuid": "u1"})
@@ -51,9 +99,8 @@ async def test_play_expression_409_while_app_running() -> None:
             return httpx.Response(200, json=[])
         return httpx.Response(404)
 
-    app = _make_app(handler)
+    app = _make_app(_apps_handler(current=_running(state=state), fallback=fallback))
     async with app.router.lifespan_context(app):
-        app.state.app_supervisor._apps["reachy_chat"].status = "running"
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -63,73 +110,57 @@ async def test_play_expression_409_while_app_running() -> None:
     assert play_posts == []  # never reached the daemon
 
 
-@pytest.mark.asyncio
-async def test_play_expression_409_while_app_loading() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(404)
-
-    app = _make_app(handler)
-    async with app.router.lifespan_context(app):
-        app.state.app_supervisor._apps["reachy_dance"].status = "loading"
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post("/api/expressions/play/dataset1/move1")
-            assert response.status_code == 409
-
-
 def _expr_session(phase: str = "playing") -> dict:
     return {"uuid": "u1" if phase == "playing" else None,
             "dataset": None, "move": None, "phase": phase}
 
 
 @pytest.mark.asyncio
-async def test_app_start_refused_while_expression_playing() -> None:
-    app = _make_app(lambda request: httpx.Response(404))
+@pytest.mark.parametrize("phase", ["playing", "returning_home"])
+async def test_app_start_refused_while_expression_session(phase: str) -> None:
+    start_posts: list[str] = []
+    app = _make_app(_apps_handler(start_posts=start_posts))
     async with app.router.lifespan_context(app):
-        app.state.expression_player._session = _expr_session("playing")
+        app.state.expression_player._session = _expr_session(phase)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            with patch.object(AppSupervisor, "start_app", new=AsyncMock()) as start:
-                response = await client.post("/api/apps/start/reachy_chat")
+            response = await client.post("/api/apps/start/reachy_mini_radio")
             assert response.status_code == 200  # existing refusal shape, not 409
             body = response.json()
             assert body["status"] == "refused"
-            assert body["name"] == "reachy_chat"
+            assert body["name"] == "reachy_mini_radio"
             assert "expression" in body["error"].lower()
-            start.assert_not_awaited()  # refused before delegation
-
-
-@pytest.mark.asyncio
-async def test_app_start_refused_while_returning_home() -> None:
-    """Pins #67 auto-blocking: a return-home session also refuses app starts."""
-    app = _make_app(lambda request: httpx.Response(404))
-    async with app.router.lifespan_context(app):
-        app.state.expression_player._session = _expr_session("returning_home")
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post("/api/apps/start/reachy_chat")
-            assert response.json()["status"] == "refused"
+    assert start_posts == []  # refused before reaching the daemon
 
 
 @pytest.mark.asyncio
 async def test_app_start_allowed_when_expression_idle() -> None:
-    """The guard must not over-block: no session -> delegates to the supervisor."""
-    app = _make_app(lambda request: httpx.Response(404))
+    """The guard must not over-block: no session -> delegates to the daemon."""
+    start_posts: list[str] = []
+    app = _make_app(_apps_handler(start_posts=start_posts))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            with patch.object(
-                AppSupervisor,
-                "start_app",
-                new=AsyncMock(return_value={"name": "reachy_dance", "status": "loading", "pid": 1}),
-            ) as start:
-                response = await client.post("/api/apps/start/reachy_dance")
-            assert response.json()["status"] == "loading"
-            start.assert_awaited_once_with("reachy_dance")
+            response = await client.post("/api/apps/start/reachy_mini_radio")
+            body = response.json()
+            assert body["status"] == "loading"
+            assert body["ui_port"] == 8042
+    assert start_posts == ["/api/apps/start-app/reachy_mini_radio"]
+
+
+@pytest.mark.asyncio
+async def test_app_start_unknown_app_is_404() -> None:
+    start_posts: list[str] = []
+    app = _make_app(_apps_handler(start_posts=start_posts))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/apps/start/not_installed")
+            assert response.status_code == 404
+    assert start_posts == []
 
 
 @pytest.mark.asyncio
@@ -147,7 +178,7 @@ async def test_motor_enable_route_kicks_return_home() -> None:
             return httpx.Response(200, json=[])
         return httpx.Response(404)
 
-    app = _make_app(handler)
+    app = _make_app(_apps_handler(fallback=handler))
     async with app.router.lifespan_context(app):
         app.state.expression_player.POLL_INTERVAL_S = 0.01
         async with httpx.AsyncClient(
@@ -175,7 +206,7 @@ async def test_motor_disable_route_sets_needs_home() -> None:
             return httpx.Response(200, json=[])
         return httpx.Response(404)
 
-    app = _make_app(handler)
+    app = _make_app(_apps_handler(fallback=handler))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -205,7 +236,7 @@ async def test_play_blocked_during_post_enable_return_home() -> None:
             return httpx.Response(200, json=[{"uuid": "home-uuid"}] if goto_posted else [])
         return httpx.Response(404)
 
-    app = _make_app(handler)
+    app = _make_app(_apps_handler(fallback=handler))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

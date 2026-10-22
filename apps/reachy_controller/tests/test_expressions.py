@@ -412,6 +412,8 @@ async def test_play_propagates_daemon_404() -> None:
             return httpx.Response(200, json={"uuid": "test-uuid"})
         if path == "/api/move/running":
             return httpx.Response(200, json=[])
+        if path == "/api/apps/current-app-status":
+            return httpx.Response(200, content=b"null")
         return httpx.Response(404)
 
     proxy = DaemonProxy("http://daemon.local:8000", transport=httpx.MockTransport(handler))
@@ -440,6 +442,8 @@ async def test_play_returns_session_in_app() -> None:
             return httpx.Response(200, json={"uuid": "test-uuid"})
         elif path == "/api/move/running":
             return httpx.Response(200, json=[])
+        elif path == "/api/apps/current-app-status":
+            return httpx.Response(200, content=b"null")
         return httpx.Response(404)
 
     proxy = DaemonProxy("http://daemon.local:8000", transport=httpx.MockTransport(handler))

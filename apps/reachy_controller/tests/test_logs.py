@@ -221,7 +221,7 @@ def _stream_request(app: object) -> object:
             "type": "http",
             "method": "GET",
             "path": "/api/logs/stream",
-            "query_string": b"source=reachy_chat",
+            "query_string": b"source=daemon",
             "headers": [],
             "scheme": "http",
             "app": app,
@@ -235,18 +235,18 @@ async def test_stream_keeps_lines_published_during_persisted_tail(
 ) -> None:
     app = create_app()
     broker = app.state.log_broker
-    path = tmp_path / "reachy_chat.log"
+    path = tmp_path / "daemon.log"
     path.write_text("persisted\n", encoding="utf-8")
-    broker.set_file("reachy_chat", path)
-    broker.reset("reachy_chat", status="empty")
+    broker.set_file("daemon", path)
+    broker.reset("daemon", status="empty")
 
     def delayed_tail(_: Path, __: int, ___: int | None = None) -> list[str]:
-        broker.publish("reachy_chat", "during-tail")
+        broker.publish("daemon", "during-tail")
         time.sleep(0.02)
         return ["persisted"]
 
     monkeypatch.setattr(broker, "tail_file", delayed_tail)
-    response = await log_stream(_stream_request(app), "reachy_chat")  # type: ignore[arg-type]
+    response = await log_stream(_stream_request(app), "daemon")  # type: ignore[arg-type]
     stream = response.body_iterator
     reset = await stream.__anext__()
     assert json.loads(reset.split("data: ", 1)[1]) == {
@@ -265,12 +265,12 @@ async def test_stream_keeps_lines_published_during_persisted_tail(
 async def test_stream_reset_status_matches_persisted_source_status(tmp_path: Path) -> None:
     app = create_app()
     broker = app.state.log_broker
-    path = tmp_path / "reachy_chat.log"
+    path = tmp_path / "daemon.log"
     path.write_text("persisted\n", encoding="utf-8")
-    broker.set_file("reachy_chat", path)
-    broker.reset("reachy_chat", status="empty")
+    broker.set_file("daemon", path)
+    broker.reset("daemon", status="empty")
 
-    response = await log_stream(_stream_request(app), "reachy_chat")  # type: ignore[arg-type]
+    response = await log_stream(_stream_request(app), "daemon")  # type: ignore[arg-type]
     reset = await response.body_iterator.__anext__()
     payload = json.loads(reset.split("data: ", 1)[1])
     assert payload["status"] == "stopped"
@@ -297,8 +297,7 @@ async def test_log_sources_reject_unknown_and_report_dynamic_sources() -> None:
         response = await client.get("/api/logs/sources")
         assert response.status_code == 200
         ids = [item["id"] for item in response.json()["sources"]]
-        assert ids[:2] == ["controller", "daemon"]
-        assert "reachy_chat" in ids
+        assert ids == ["controller", "daemon"]
         assert (await client.get("/api/logs/stream?source=not-a-source")).status_code == 404
     await app.state.log_broker.aclose()
 
@@ -430,10 +429,10 @@ async def test_live_publish_during_tail_is_not_replayed_twice(
 ) -> None:
     app = create_app()
     broker = app.state.log_broker
-    path = tmp_path / "reachy_chat.log"
+    path = tmp_path / "daemon.log"
     path.write_text("persisted\n", encoding="utf-8")
-    broker.set_file("reachy_chat", path)
-    broker.reset("reachy_chat", status="live")
+    broker.set_file("daemon", path)
+    broker.reset("daemon", status="live")
     entered = asyncio.Event()
     release = asyncio.Event()
     original_tail = broker.tail_file
@@ -447,12 +446,12 @@ async def test_live_publish_during_tail_is_not_replayed_twice(
         return original_tail(path_arg, limit, end=end)
 
     monkeypatch.setattr(broker, "tail_file", delayed_tail)
-    task = asyncio.create_task(log_stream(_stream_request(app), "reachy_chat"))  # type: ignore[arg-type]
+    task = asyncio.create_task(log_stream(_stream_request(app), "daemon"))  # type: ignore[arg-type]
     await entered.wait()
     with broker._lock:
         with path.open("a", encoding="utf-8") as handle:
             handle.write("during-tail\n")
-        broker.publish("reachy_chat", "during-tail")
+        broker.publish("daemon", "during-tail")
     release.set()
     response = await task
     stream = response.body_iterator
@@ -470,12 +469,12 @@ async def test_live_subscription_replays_persisted_tail_for_empty_ring(
 ) -> None:
     app = create_app()
     broker = app.state.log_broker
-    path = tmp_path / "reachy_chat.log"
+    path = tmp_path / "daemon.log"
     path.write_text("stale-file-line\n", encoding="utf-8")
-    broker.set_file("reachy_chat", path)
-    broker.reset("reachy_chat", status="live")
+    broker.set_file("daemon", path)
+    broker.reset("daemon", status="live")
 
-    response = await log_stream(_stream_request(app), "reachy_chat")  # type: ignore[arg-type]
+    response = await log_stream(_stream_request(app), "daemon")  # type: ignore[arg-type]
     reset = await response.body_iterator.__anext__()
     assert json.loads(reset.split("data: ", 1)[1]) == {
         "status": "live",
@@ -491,12 +490,12 @@ async def test_unavailable_adopted_subscription_replays_persisted_tail(
 ) -> None:
     app = create_app()
     broker = app.state.log_broker
-    path = tmp_path / "reachy_chat.log"
+    path = tmp_path / "daemon.log"
     path.write_text("adopted-file-line\n", encoding="utf-8")
-    broker.set_file("reachy_chat", path)
-    broker.reset("reachy_chat", status="unavailable")
+    broker.set_file("daemon", path)
+    broker.reset("daemon", status="unavailable")
 
-    response = await log_stream(_stream_request(app), "reachy_chat")  # type: ignore[arg-type]
+    response = await log_stream(_stream_request(app), "daemon")  # type: ignore[arg-type]
     reset = await response.body_iterator.__anext__()
     assert json.loads(reset.split("data: ", 1)[1]) == {
         "status": "unavailable",
@@ -533,12 +532,12 @@ async def test_stopped_app_replays_persisted_tail_with_captured_status(
 ) -> None:
     app = create_app()
     broker = app.state.log_broker
-    path = tmp_path / "reachy_chat.log"
+    path = tmp_path / "daemon.log"
     path.write_text("stopped-file-line\n", encoding="utf-8")
-    broker.set_file("reachy_chat", path)
-    broker.reset("reachy_chat", status="stopped")
+    broker.set_file("daemon", path)
+    broker.reset("daemon", status="stopped")
 
-    response = await log_stream(_stream_request(app), "reachy_chat")  # type: ignore[arg-type]
+    response = await log_stream(_stream_request(app), "daemon")  # type: ignore[arg-type]
     reset = await response.body_iterator.__anext__()
     assert json.loads(reset.split("data: ", 1)[1]) == {
         "status": "stopped",

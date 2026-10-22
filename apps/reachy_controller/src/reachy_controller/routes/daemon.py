@@ -1,75 +1,70 @@
-"""Daemon process control routes."""
+"""Robot power routes, backed by the daemon's own start/stop API.
+
+systemd owns the daemon process. "Power" here switches the robot backend on
+and off inside the always-running daemon: on starts without the wake-up move
+(motors stay disabled until the operator enables them, which triggers the
+guarded return-home), off puts the robot to sleep and releases torque.
+"""
 
 from __future__ import annotations
 
-import time
+import contextlib
 from typing import Any
 
-from fastapi import APIRouter, Request
+import httpx
+from fastapi import APIRouter, HTTPException, Request
 
-from reachy_controller.daemon_supervisor import DaemonSupervisor
+from reachy_controller.daemon_proxy import DaemonProxy
 
 router = APIRouter(prefix="/api/daemon", tags=["daemon"])
 
-# TTL for the daemon status cache, in seconds. A ~1s stale window is acceptable:
-# daemon up/down transitions are infrequent and the client polls status at ~1 Hz,
-# so this coalesces redundant full-state probes without status feeling sticky.
-_DAEMON_STATUS_TTL_SECONDS = 1.0
+_TRANSITIONS = {"starting": "starting", "stopping": "stopping"}
 
 
-async def _get_daemon_running(request: Request) -> bool:
-    """Check if the daemon is reachable via HTTP with caching.
-
-    Reuses the existing DaemonProxy reachability mechanism, but caches
-    the result for _DAEMON_STATUS_TTL_SECONDS to reduce redundant probes
-    from rapid polling.
-    """
-    proxy = request.app.state.daemon_proxy
-    now = time.monotonic()
-
-    # Lazily initialize or retrieve the cache from app state
-    cache = getattr(request.app.state, "_daemon_status_cache", None)
-
-    # Check if cache is fresh
-    if cache is not None:
-        timestamp, cached_result = cache
-        if now - timestamp < _DAEMON_STATUS_TTL_SECONDS:
-            # Cache is still fresh, return the cached result
-            return cached_result
-
-    # Cache is stale or missing, re-probe
+async def _post(request: Request, path: str, params: dict[str, str]) -> dict[str, Any]:
+    proxy: DaemonProxy = request.app.state.daemon_proxy
     try:
-        state = await proxy.get_full_state()
-        result = state is not None
-    except Exception:
-        result = False
-
-    # Update cache with new timestamp and result
-    request.app.state._daemon_status_cache = (now, result)
-
-    return result
+        response = await proxy.request("POST", path, params=params)
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail="Reachy daemon unavailable") from exc
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail")
+        except ValueError:
+            detail = None
+        raise HTTPException(status_code=response.status_code, detail=detail or "Daemon refused")
+    return response.json()
 
 
 @router.get("/status")
 async def get_daemon_status(request: Request) -> dict[str, Any]:
-    """Get daemon status (running, manageable, transient status, pid, start_time).
-
-    Authoritative 'running' comes from daemon's :8000 reachability.
-    """
-    supervisor: DaemonSupervisor = request.app.state.daemon_supervisor
-    running = await _get_daemon_running(request)
-    return supervisor.status(running=running)
+    """Robot backend state, in the shape the dashboard power button expects."""
+    proxy: DaemonProxy = request.app.state.daemon_proxy
+    status = await proxy.get_daemon_status()
+    if status is None:
+        return {"reachable": False, "running": False, "manageable": False, "status": "offline"}
+    state = str(status.get("state", "unknown"))
+    return {
+        "reachable": True,
+        "running": state == "running",
+        "manageable": True,
+        "status": _TRANSITIONS.get(state, state),
+        "error": status.get("error"),
+    }
 
 
 @router.post("/start")
-async def start_daemon(request: Request) -> dict[str, Any]:
-    """Start the daemon process."""
-    supervisor: DaemonSupervisor = request.app.state.daemon_supervisor
-    return await supervisor.start()
+async def start_robot(request: Request) -> dict[str, Any]:
+    """Switch the robot on without the wake-up move."""
+    return await _post(request, "daemon/start", {"wake_up": "false"})
 
 
 @router.post("/stop")
-async def stop_daemon(request: Request) -> dict[str, Any]:
-    """Stop the daemon process."""
-    supervisor: DaemonSupervisor = request.app.state.daemon_supervisor
-    return await supervisor.stop()
+async def stop_robot(request: Request) -> dict[str, Any]:
+    """Stop any app, put the robot to sleep and release torque."""
+    apps = request.app.state.daemon_apps
+    if await apps.refresh_active():
+        proxy: DaemonProxy = request.app.state.daemon_proxy
+        with contextlib.suppress(httpx.RequestError):
+            await proxy.request("POST", "apps/stop-current-app")
+    return await _post(request, "daemon/stop", {"goto_sleep": "true"})

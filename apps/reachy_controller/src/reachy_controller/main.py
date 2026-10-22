@@ -8,7 +8,6 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import httpx
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -19,17 +18,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from reachy_controller.app_settings import (
-    AppSettingsProxy,
-    AppSettingsRegistry,
-    ReachyChatSettingsProvider,
-)
-from reachy_controller.app_settings import router as app_settings_router
-from reachy_controller.app_supervisor import AppSupervisor
+from reachy_controller.daemon_apps import DaemonApps
 from reachy_controller.daemon_proxy import DaemonProxy
 from reachy_controller.daemon_proxy import router as daemon_router
-from reachy_controller.daemon_supervisor import DaemonSupervisor
+from reachy_controller.journal_logs import JournalFollower
 from reachy_controller.log_stream import ControllerLogHandler, LogBroker
+from reachy_controller.paths import state_dir
 from reachy_controller.routes.apps import router as apps_router
 from reachy_controller.routes.audio import router as audio_router
 from reachy_controller.routes.camera import DashboardCameraLeaseManager
@@ -71,29 +65,20 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def create_app(
-    proxy: DaemonProxy | None = None,
-    *,
-    settings_transport: httpx.AsyncBaseTransport | None = None,
-) -> FastAPI:
+def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     broker = LogBroker()
     daemon_proxy = proxy or DaemonProxy(
         os.getenv("DAEMON_URL", "http://127.0.0.1:8000"),
         timeout=float(os.getenv("DAEMON_TIMEOUT", "2.0")),
     )
-    settings_proxy = AppSettingsProxy(
-        os.getenv("REACHY_CHAT_SETTINGS_URL", "http://127.0.0.1:7860"),
-        transport=settings_transport,
-    )
-    app_settings = AppSettingsRegistry({"reachy_chat": ReachyChatSettingsProvider(settings_proxy)})
     camera_leases = DashboardCameraLeaseManager()
-    app_supervisor = AppSupervisor(daemon_proxy=daemon_proxy, log_broker=broker)
-    daemon_supervisor = DaemonSupervisor(daemon_proxy=daemon_proxy, log_broker=broker)
+    daemon_apps = DaemonApps(daemon_proxy)
+    journal = JournalFollower(broker)
     state_broadcaster = StateBroadcaster(daemon_proxy)
     audio_levels_broadcaster = AudioLevelsBroadcaster(daemon_proxy)
     stats_broadcaster = StatsBroadcaster(daemon_proxy)
     expression_player = ExpressionPlayer(daemon_proxy)
-    controller_log_path = app_supervisor._workspace_root / ".reachy-logs" / "controller.log"
+    controller_log_path = state_dir() / "logs" / "controller.log"
     root_logger = logging.getLogger()
     controller_loggers = (
         root_logger,
@@ -110,9 +95,7 @@ def create_app(
         app.state.controller_log_handler = controller_handler
         try:
             await app.state.daemon_proxy.start()
-            await app.state.app_settings_proxy.start()
-            app.state.app_supervisor.reconcile_orphans()
-            app.state.daemon_supervisor.reconcile_orphans()
+            app.state.journal.start()
             for target_logger in controller_loggers:
                 target_logger.addHandler(controller_handler)
             try:
@@ -130,22 +113,18 @@ def create_app(
             await app.state.state_broadcaster.aclose()
             await app.state.audio_levels_broadcaster.aclose()
             await app.state.stats_broadcaster.aclose()
-            await app.state.app_supervisor.aclose()
-            await app.state.daemon_supervisor.aclose()
+            await app.state.journal.aclose()
             await app.state.log_broker.aclose()
             await app.state.daemon_proxy.close()
-            await app.state.app_settings_proxy.close()
 
-    app = FastAPI(title="Reachy Controller", version="0.1.0", lifespan=lifespan)
-    app.state.app_settings = app_settings
-    app.state.app_settings_proxy = settings_proxy
+    app = FastAPI(title="reachy-bridge controller", version="0.1.0", lifespan=lifespan)
     app.state.daemon_proxy = daemon_proxy
     app.state.state_broadcaster = state_broadcaster
     app.state.audio_levels_broadcaster = audio_levels_broadcaster
     app.state.stats_broadcaster = stats_broadcaster
-    app.state.app_supervisor = app_supervisor
+    app.state.daemon_apps = daemon_apps
+    app.state.journal = journal
     app.state.camera_leases = camera_leases
-    app.state.daemon_supervisor = daemon_supervisor
     app.state.expression_player = expression_player
     app.state.log_broker = broker
     app.state.controller_log_handler = None
@@ -168,7 +147,6 @@ def create_app(
 
     app.include_router(telemetry_router)
     app.include_router(telemetry_root_router)
-    app.include_router(app_settings_router)
     app.include_router(apps_router)
     app.include_router(system_stats_router)
     app.include_router(controls_router)

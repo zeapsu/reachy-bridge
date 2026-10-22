@@ -19,8 +19,8 @@ This is reinstall-proof: it patches at runtime and never edits the venv, so it
 keeps working after ``uv sync`` / SDK upgrades. On non-Jetson hosts it is a
 transparent pass-through to the daemon.
 
-Mirrors the app-side shim in
-``apps/reachy_chat/src/reachy_chat/gstreamer_nvidia_patch.py``.
+Apps that read the camera over local IPC need the matching consumer-side
+alias in their own process (tracked in the platform-layer issue, #140).
 """
 
 import logging
