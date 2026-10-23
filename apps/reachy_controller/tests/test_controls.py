@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from reachy_controller.daemon_proxy import DaemonProxy
+from reachy_controller.daemon_proxy import DaemonProxy, DaemonRefused
 from reachy_controller.main import create_app
 
 
@@ -95,6 +95,18 @@ class ControlProxy:
         self.disable_wobbling = AsyncMock(return_value=self.result)
         self.play_sound = AsyncMock(return_value=self.result)
         self.play_test_sound = AsyncMock(return_value=self.result)
+        self.kinematics = {"engine": "Placo", "active": "Placo", "available": ["Placo"]}
+        self.current_app: dict[str, object] | None = None
+
+    async def request(self, method: str, path: str, **_kwargs: object) -> httpx.Response:
+        payloads = {
+            ("GET", "bridge/kinematics"): self.kinematics,
+            ("GET", "apps/current-app-status"): self.current_app,
+        }
+        assert (method, path) in payloads
+        return httpx.Response(
+            200, json=payloads[(method, path)], request=httpx.Request(method, f"http://d/api/{path}")
+        )
 
     async def close(self) -> None:
         return None
@@ -239,3 +251,68 @@ async def test_motor_route_rejects_invalid_mode() -> None:
     proxy.set_motor_mode.assert_not_awaited()
 
 
+
+
+@pytest.mark.asyncio
+async def test_gravity_compensation_needs_placo_kinematics() -> None:
+    proxy = ControlProxy()
+    proxy.kinematics = {
+        "engine": "AnalyticalKinematics", "active": "AnalyticalKinematics", "available": []
+    }
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/motors/set_mode/gravity_compensation")
+
+    assert response.status_code == 409
+    assert "Placo" in response.json()["detail"]
+    proxy.set_motor_mode.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_motor_mode_reports_a_daemon_refusal_instead_of_unavailable() -> None:
+    proxy = ControlProxy()
+    proxy.set_motor_mode = AsyncMock(side_effect=DaemonRefused(500, None))
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/motors/set_mode/enabled")
+
+    assert response.status_code == 502
+    assert "unavailable" not in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_daemon_proxy_set_motor_mode_raises_on_refusal() -> None:
+    proxy = DaemonProxy(
+        "http://daemon.local:8000",
+        transport=httpx.MockTransport(lambda _: httpx.Response(409, json={"detail": "busy"})),
+    )
+    try:
+        with pytest.raises(DaemonRefused) as refused:
+            await proxy.set_motor_mode("enabled")
+    finally:
+        await proxy.close()
+    assert (refused.value.status_code, refused.value.detail) == (409, "busy")
+
+
+@pytest.mark.asyncio
+async def test_gravity_compensation_is_refused_while_an_app_runs() -> None:
+    # The motors ignore move targets under gravity compensation, so an app's
+    # expressions would silently do nothing.
+    proxy = ControlProxy()
+    proxy.current_app = {"info": {"name": "conversation"}, "state": "running", "error": None}
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/motors/set_mode/gravity_compensation")
+
+    assert response.status_code == 409
+    assert "app" in response.json()["detail"]
+    proxy.set_motor_mode.assert_not_awaited()

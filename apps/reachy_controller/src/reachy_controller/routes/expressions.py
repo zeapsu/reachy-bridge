@@ -79,7 +79,10 @@ class ExpressionPlayer:
             if self.needs_home:
                 return {
                     "status": "busy",
-                    "detail": "Robot pose is not homed — set motor mode to enabled to return home.",
+                    "detail": (
+                        "Robot pose is not homed — set Motors to Enabled, or turn off"
+                        " gravity compensation, to return home."
+                    ),
                 }
 
             # Check for foreign running moves

@@ -16,6 +16,15 @@ from fastapi.responses import Response
 from websockets.exceptions import WebSocketException
 
 
+class DaemonRefused(Exception):
+    """The daemon answered, but with an error status."""
+
+    def __init__(self, status_code: int, detail: str | None) -> None:
+        super().__init__(detail or f"HTTP {status_code}")
+        self.status_code = status_code
+        self.detail = detail
+
+
 class DaemonProxy:
     """Own an async client whose requests are constrained to the daemon API."""
 
@@ -168,7 +177,21 @@ class DaemonProxy:
             return None
 
     async def set_motor_mode(self, mode: str) -> dict[str, Any] | None:
-        return await self._post_json(f"motors/set_mode/{mode}")
+        """``None`` when the daemon is unreachable; ``DaemonRefused`` when it says no."""
+        try:
+            response = await self.request("POST", f"motors/set_mode/{mode}")
+        except httpx.RequestError:
+            return None
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("detail")
+            except (ValueError, AttributeError):
+                detail = None
+            raise DaemonRefused(response.status_code, detail)
+        try:
+            return response.json()
+        except ValueError:
+            return None
 
     async def enable_wobbling(self) -> dict[str, Any] | None:
         return await self._post_json("media/wobbling/enable")

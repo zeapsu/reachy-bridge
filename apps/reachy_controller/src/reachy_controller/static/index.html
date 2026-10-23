@@ -135,6 +135,7 @@
               <button id="daemon-power" type="button" title="Start daemon" aria-label="Start daemon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 3.2v8"/><path d="M6.5 6.6a8 8 0 1 0 11 0"/></svg>
               </button>
+              <span class="vp-power-label" id="vp-power-label" aria-live="polite" hidden></span>
             </div>
 
             <div class="vp-badge" id="vp-badge"><span class="rec" id="vp-rec"></span><span id="vp-badge-t">SCHEMATIC</span></div>
@@ -236,7 +237,10 @@
           <p class="panel-hint" id="control-hint">Controls enable when the daemon is online.</p>
           <div class="control"><label for="vol-spk">Speaker volume</label><div class="with-val"><input type="range" id="vol-spk" min="0" max="100" value="80"><span class="ctl-val" id="vol-spk-v">80</span></div></div>
           <div class="control"><label for="vol-mic">Microphone volume</label><div class="with-val"><input type="range" id="vol-mic" min="0" max="100" value="60"><span class="ctl-val" id="vol-mic-v">60</span></div></div>
-          <div class="control"><label>Motor mode</label><div class="segmented" id="motor-seg"><button data-mode="enabled">Enabled</button><button data-mode="gravity_compensation">Gravity-comp</button><button data-mode="disabled">Disabled</button></div></div>
+          <div class="control"><label>Motors</label><div class="segmented" id="motor-seg"><button data-mode="enabled">Enabled</button><button data-mode="disabled">Disabled</button></div></div>
+          <div class="control"><label>Kinematics</label><div class="segmented" id="kin-seg"><button data-engine="AnalyticalKinematics">Analytical</button><button data-engine="Placo">Placo</button></div></div>
+          <div class="control toggle-row"><label for="gravity">Gravity compensation</label><label class="switch"><input type="checkbox" id="gravity"><span class="slider"></span></label></div>
+          <p class="panel-hint" id="kin-hint">Gravity compensation needs Placo kinematics.</p>
           <div class="control toggle-row"><label for="wobble">Audio-reactive wobble</label><label class="switch"><input type="checkbox" id="wobble"><span class="slider"></span></label></div>
           <p class="panel-hint" id="wobble-hint" hidden>Reacts to audio — press <b>Play test sound</b> (or run an app) to see the head move.</p>
           <div class="control action"><button class="btn wide" id="testsound">Play test sound</button></div>

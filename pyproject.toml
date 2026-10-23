@@ -15,6 +15,13 @@ dependencies = [
     # (tools/reachy_mini_daemon_media.py). reachy-mini only ships OpenCV as an
     # extra; <5 matches that extra's bound.
     "opencv-python-headless<5",
+    # Optional Placo kinematics engine (needed for gravity compensation),
+    # pinned like reachy-mini's placo-kinematics extra. placo 0.9.14 links
+    # urdfdom 4 and tinyxml2 10; newer cmeel builds of those resolve by default
+    # and make `import placo` fail with a missing shared library.
+    "placo==0.9.14",
+    "cmeel-urdfdom<5",
+    "cmeel-tinyxml2<11",
 ]
 
 [dependency-groups]
