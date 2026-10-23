@@ -187,6 +187,47 @@ def _apply_camera_ipc_patch() -> None:
     logger.info("Patched GstMediaServer._build_ipc_branch for Jetson NVMM camera transport")
 
 
+def _apply_keep_awake_on_app_stop_patch() -> None:
+    """Keep the robot awake when the operator stops an app.
+
+    Upstream, every app exit frees the robot slot, which schedules an idle
+    reset: 1.5 s later the robot plays the sleep move and goes limp. That is
+    right for a crash, but a requested stop should leave the robot at the
+    home pose the app manager already returns it to. So the became-free hook
+    is detached for the duration of ``stop_current_app`` only; crashes and
+    remote-session drops still trigger the reset.
+    """
+    try:
+        from reachy_mini.apps.manager import AppManager
+    except ImportError as e:
+        logger.warning("Could not import AppManager for keep-awake patch: %s", e)
+        return
+
+    original = AppManager.stop_current_app
+
+    async def stop_current_app(self, *args, **kwargs):
+        daemon = getattr(self, "daemon", None)
+        lock = getattr(daemon, "robot_app_lock", None)
+        handler = getattr(lock, "_on_became_free", None)
+        if lock is None or handler is None:
+            return await original(self, *args, **kwargs)
+        lock.set_on_became_free_handler(None)
+        try:
+            return await original(self, *args, **kwargs)
+        finally:
+            backend = getattr(daemon, "backend", None)
+            # daemon.stop() detaches the hook itself; don't re-arm it then.
+            if (
+                lock._on_became_free is None
+                and backend is not None
+                and not getattr(backend, "is_shutting_down", False)
+            ):
+                lock.set_on_became_free_handler(handler)
+
+    AppManager.stop_current_app = stop_current_app
+    logger.info("Patched AppManager.stop_current_app to keep the robot awake on stop")
+
+
 def _find_reachy_audio_card() -> int | None:
     """Return the ALSA card number for the Reachy Mini Audio device."""
     try:
@@ -294,6 +335,7 @@ def main() -> int:
     _apply_nvidia_unixfd_patch()
     _apply_webrtcsink_compat_patch()
     _apply_camera_ipc_patch()
+    _apply_keep_awake_on_app_stop_patch()
     if _is_jetson():
         # Importing the extension is lazy so this wrapper remains a transparent
         # daemon pass-through on non-Jetson development machines.
