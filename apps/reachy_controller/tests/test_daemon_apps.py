@@ -79,13 +79,15 @@ async def test_status_reports_unreachable_daemon() -> None:
 
 
 @pytest.mark.asyncio
-async def test_power_on_skips_wake_up_move() -> None:
+async def test_power_on_wakes_robot_and_clears_needs_home() -> None:
     daemon = FakeDaemon()
     app, client = await _client(daemon)
+    app.state.expression_player.needs_home = True
     async with client:
         response = await client.post("/api/daemon/start")
     assert response.status_code == 200
-    assert ("POST", "/api/daemon/start?wake_up=false") in daemon.calls
+    assert ("POST", "/api/daemon/start?wake_up=true") in daemon.calls
+    assert app.state.expression_player.needs_home is False
 
 
 @pytest.mark.asyncio
@@ -97,6 +99,7 @@ async def test_power_off_stops_running_app_then_sleeps() -> None:
         await client.post("/api/daemon/stop")
     posts = [path for method, path in daemon.calls if method == "POST"]
     assert posts == ["/api/apps/stop-current-app", "/api/daemon/stop?goto_sleep=true"]
+    assert app.state.expression_player.needs_home is True
 
 
 @pytest.mark.asyncio

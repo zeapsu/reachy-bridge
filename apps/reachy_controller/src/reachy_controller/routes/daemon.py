@@ -1,9 +1,9 @@
 """Robot power routes, backed by the daemon's own start/stop API.
 
 systemd owns the daemon process. "Power" here switches the robot backend on
-and off inside the always-running daemon: on starts without the wake-up move
-(motors stay disabled until the operator enables them, which triggers the
-guarded return-home), off puts the robot to sleep and releases torque.
+and off inside the always-running daemon: on enables the motors and plays the
+wake-up move (ending at the home pose), off stops any app, plays the sleep
+move and releases torque.
 """
 
 from __future__ import annotations
@@ -55,16 +55,22 @@ async def get_daemon_status(request: Request) -> dict[str, Any]:
 
 @router.post("/start")
 async def start_robot(request: Request) -> dict[str, Any]:
-    """Switch the robot on without the wake-up move."""
-    return await _post(request, "daemon/start", {"wake_up": "false"})
+    """Switch the robot on: enable motors and play the wake-up move."""
+    result = await _post(request, "daemon/start", {"wake_up": "true"})
+    # The wake-up move ends at the home pose, so expressions may run once the
+    # daemon reports running (its state gates them until then).
+    request.app.state.expression_player.needs_home = False
+    return result
 
 
 @router.post("/stop")
 async def stop_robot(request: Request) -> dict[str, Any]:
-    """Stop any app, put the robot to sleep and release torque."""
+    """Stop any app, play the sleep move and release torque."""
     apps = request.app.state.daemon_apps
     if await apps.refresh_active():
         proxy: DaemonProxy = request.app.state.daemon_proxy
         with contextlib.suppress(httpx.RequestError):
             await proxy.request("POST", "apps/stop-current-app")
-    return await _post(request, "daemon/stop", {"goto_sleep": "true"})
+    result = await _post(request, "daemon/stop", {"goto_sleep": "true"})
+    request.app.state.expression_player.needs_home = True
+    return result
