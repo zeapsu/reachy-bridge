@@ -13,4 +13,4 @@ import reachy_controller.journal_logs as journal_logs
 def _isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REACHY_BRIDGE_STATE_DIR", str(tmp_path))
     # The app lifespan would otherwise follow the host's real journal.
-    monkeypatch.setattr(journal_logs.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(journal_logs.JournalFollower, "start", lambda _self: None)

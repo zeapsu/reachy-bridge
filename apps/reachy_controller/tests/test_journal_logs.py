@@ -50,3 +50,24 @@ async def test_journalctl_errors_are_shown_and_mark_the_source_unavailable(
     await follower._run()
     assert broker.ring(SOURCE) == ["journalctl: No journal files were opened"]
     assert broker.source_status(SOURCE) == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_closing_the_follower_reports_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_exec = asyncio.create_subprocess_exec
+
+    async def fake_exec(*_args, **kwargs):
+        return await real_exec(sys.executable, "-c", "import time; time.sleep(30)", **kwargs)
+
+    monkeypatch.setattr(journal_logs.shutil, "which", lambda _name: "/usr/bin/journalctl")
+    monkeypatch.setattr(journal_logs.asyncio, "create_subprocess_exec", fake_exec)
+    broker = LogBroker()
+    follower = JournalFollower(broker)
+    # conftest stubs start() for app tests; run the follower task directly.
+    follower._task = asyncio.create_task(follower._run())
+    for _ in range(100):
+        if broker.source_status(SOURCE) == "live":
+            break
+        await asyncio.sleep(0.02)
+    await follower.aclose()
+    assert broker.source_status(SOURCE) == "stopped"

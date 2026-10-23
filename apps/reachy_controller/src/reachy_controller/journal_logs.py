@@ -29,6 +29,7 @@ class JournalFollower:
         self.unit = unit or os.getenv("REACHY_DAEMON_UNIT", "reachy-bridge.service")
         self._task: asyncio.Task[None] | None = None
         self._process: asyncio.subprocess.Process | None = None
+        self._closing = False
         broker.bind_source(SOURCE, status="empty")
 
     def start(self) -> None:
@@ -63,7 +64,8 @@ class JournalFollower:
                 self._pump(self._process.stdout, ""),
                 self._pump(self._process.stderr, "journalctl: "),
             )
-            if await self._process.wait() != 0:
+            # A non-zero exit is a failure unless aclose() terminated it.
+            if await self._process.wait() != 0 and not self._closing:
                 status = "unavailable"
         finally:
             self.broker.set_status(SOURCE, status)
@@ -92,6 +94,7 @@ class JournalFollower:
             self.broker.publish(SOURCE, prefix + raw.decode("utf-8", "replace").rstrip("\r\n"))
 
     async def aclose(self) -> None:
+        self._closing = True
         if self._process is not None and self._process.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 self._process.terminate()
