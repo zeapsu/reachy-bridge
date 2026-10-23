@@ -4,9 +4,10 @@
   const $ = (id) => document.getElementById(id);
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const TAU = Math.PI * 2;
-  const APP_NAMES = ["reachy_chat", "reachy_dance", "reachy_lookat", "reachy_simon", "reachy_hermes"];
-  const DEFAULT_FAVORITES = ["reachy_chat", "reachy_dance", "reachy_lookat"];
-  const appState = new Map(APP_NAMES.map((name) => [name, { name, status: "stopped" }]));
+  // Installed apps come from the daemon's HF app manager; refreshed by pollAppsStatus.
+  let APP_NAMES = [];
+  const DEFAULT_FAVORITES = [];
+  const appState = new Map();
   const LOG_CAP = 500;
   const LOG_DEFAULT_SOURCE = "controller";
   const LOADING_FRAGMENTS = ["Booting…", "Resolving env…", "Connecting to daemon…", "Activating motors…", "Waking up…"];
@@ -47,16 +48,6 @@
     cameraAvailabilityRequest: 0,
     log: { source: LOG_DEFAULT_SOURCE, stream: null, lines: 0, follow: true, loading: false, openGeneration: 0, openAbort: null },
     sysView: "stats",
-    settings: {
-      app: null,        // app whose settings panel is open (null = closed)
-      schema: null,     // last loaded {app,title,fields:[…]} for that app
-      loadKey: null,    // "name#pid" incarnation the current load/retry belongs to
-      phase: "idle",    // idle | stopped | waiting | ready | unavailable
-      inflight: false,
-      retryTimer: null,
-      retryCount: 0,
-      saving: false,
-    },
     library: {
       open: false,
       favorites: [...DEFAULT_FAVORITES],
@@ -831,9 +822,6 @@
     const robotDotClass = `dot ${active ? "live" : "ok"}`;
     const robotValue = active ? active.name : "free";
 
-    // Reconcile the settings panel on the same cadence as the cards.
-    syncAppSettings(statuses);
-
     // The library is secondary, but active status changes still need to reach it
     // while it is open so its stop/loading affordances stay honest.
     if (state.library?.open) renderLibrary(statuses);
@@ -846,7 +834,6 @@
     }
     lastAppsSig = sig;
     $("apps").innerHTML = html;
-    patchSettingsGears();
     updateAppUptimes(statuses);
     $("robot-dot").className = robotDotClass;
     $("robot-value").textContent = robotValue;
@@ -855,7 +842,9 @@
     if (!Array.isArray(values)) return [];
     const seen = new Set();
     return values.filter((name) => {
-      if (!APP_NAMES.includes(name) || seen.has(name) || seen.size >= 3) return false;
+      if (typeof name !== "string" || seen.has(name) || seen.size >= 3) return false;
+      // Drop favorites for apps that are no longer installed (once the list is known).
+      if (APP_NAMES.length && !APP_NAMES.includes(name)) return false;
       seen.add(name);
       return true;
     });
@@ -873,14 +862,12 @@
     const isError = app.status === "error";
     // Stable uptime markup keeps the 1 Hz poll from stealing focus from cards.
     const uptime = isRunning && app.start_time ? `<span class="app-uptime" data-app="${escapeHtml(name)}"></span>` : "";
-    const pid = isRunning && app.pid ? ` · pid ${escapeHtml(app.pid)}` : "";
-    const external = isRunning && app.external ? " · external" : "";
     const error = app.error ? `<br><span class="err">${escapeHtml(app.error)}</span>` : "";
     const frag = LOADING_FRAGMENTS[loadingTick % LOADING_FRAGMENTS.length];
     const spinner = isLoading ? `<span class="spinner-glyph" aria-hidden="true"></span><span class="loading-frag">${escapeHtml(frag)}</span>` : "";
     const stopping = isStopping ? `<span class="spinner-glyph" aria-hidden="true"></span><span class="stopping-label">Stopping…</span>` : "";
     const text = isRunning
-      ? `<span class="up">running</span>${external}${pid}${uptime}`
+      ? `<span class="up">running</span>${uptime}`
       : isLoading ? spinner : isStopping ? stopping : escapeHtml(app.status || "stopped");
     return {
       isRunning,
@@ -897,7 +884,9 @@
     const status = appCardStatusMarkup(app);
     const name = escapeHtml(app.name);
     if (status.isRunning) {
-      return `<button class="btn stop" data-app="${name}" data-action="stop" ${state.appBusy ? "disabled" : ""}>Stop</button>`;
+      // Running apps hand off to their own UI; the controller only starts and stops them.
+      const open = app.has_ui ? `<button class="btn open" data-app="${name}" data-action="open" title="Open the app's own interface">Open</button>` : "";
+      return `${open}<button class="btn stop" data-app="${name}" data-action="stop" ${state.appBusy ? "disabled" : ""}>Stop</button>`;
     }
     if (status.isLoading) return '<button class="btn pending" disabled>Loading</button>';
     if (status.isStopping) return '<button class="btn pending" disabled>Stopping</button>';
@@ -933,7 +922,7 @@
         ${metadata}
         <div class="app-state">${status.text}${transientLabel}</div>
       </div>
-      <div class="app-actions">${appActionMarkup(app, active)}${appSettingsGearMarkup(app)}${star}</div>
+      <div class="app-actions">${appActionMarkup(app, active)}${star}</div>
     </div>`;
   }
 
@@ -1054,7 +1043,6 @@
     library.open = true;
     library.lastSig = null;
     $("apps-view").hidden = true;
-    $("app-settings").hidden = true;
     $("app-library").hidden = false;
     $("app-library-open").setAttribute("aria-expanded", "true");
     if (!library.loaded) void loadFavorites(); // retry a failed initial fetch
@@ -1067,7 +1055,6 @@
     library.open = false;
     library.lastSig = null;
     $("app-library").hidden = true;
-    $("app-settings").hidden = true;
     $("apps-view").hidden = false;
     $("app-library-open").setAttribute("aria-expanded", "false");
     renderApps(Array.from(appState.values()));
@@ -1090,6 +1077,15 @@
       loadingTick++;
       const statuses = await apiJson("/api/apps/status");
       if (Array.isArray(statuses)) {
+        APP_NAMES = statuses.map((app) => app.name);
+        // An app uninstalled since favorites loaded must not keep a favorite
+        // slot: it would count toward the limit but never render.
+        const pruned = normalizeFavorites(state.library.favorites);
+        if (pruned.length !== state.library.favorites.length) {
+          state.library.favorites = pruned;
+          state.library.lastSig = null;
+        }
+        appState.clear();
         statuses.forEach((app) => appState.set(app.name, app));
         renderApps(Array.from(appState.values()));
         $("apps-message").textContent = "";
@@ -1104,6 +1100,17 @@
   }
 
   async function performAppAction(name, action) {
+    // Open the tab inside the click (popup blockers) and point it at the app
+    // once its server answers.
+    let pendingWindow = null;
+    if (action === "start" && appState.get(name)?.has_ui) {
+      pendingWindow = window.open("", "_blank");
+      if (pendingWindow) {
+        pendingWindow.opener = null;
+        pendingWindow.document.title = `Starting ${name}…`;
+        pendingWindow.document.body.textContent = `Starting ${name}… waking the robot and the app.`;
+      }
+    }
     state.appBusy = true;
     $("apps-message").textContent = `${action === "start" ? "starting" : "stopping"} ${name}`;
     $("apps-message").className = "panel-hint";
@@ -1114,10 +1121,13 @@
       if (result && (result.status === "refused" || result.error)) {
         throw new Error(result.error || "Request refused");
       }
+      if (action === "start" && result && result.ui_port) void waitAndOpenAppUi(name, pendingWindow);
+      else if (pendingWindow) pendingWindow.close();
       await pollAppsStatus();
       $("apps-message").textContent = result && result.status ? `${name} ${result.status}` : "";
       $("apps-message").className = "panel-hint ok";
     } catch (error) {
+      if (pendingWindow) pendingWindow.close();
       $("apps-message").textContent = error.message || "App request failed";
       $("apps-message").className = "panel-hint error";
       await pollAppsStatus();
@@ -1127,69 +1137,43 @@
     }
   }
 
-  // ── App settings (generic, schema-driven) ─────────────────────────────
-  // Any app whose /api/apps/status entry carries has_settings:true gets a gear
-  // in its card; the Apps panel swaps its card view for one shared settings
-  // view IN PLACE (same glass container) and renders whatever field schema
-  // GET /api/apps/{name}/settings returns. Nothing here is app-specific.
-  //
-  // The settings service lives inside the app process (port 7860 for
-  // reachy_chat), so it comes up AFTER the supervisor reports loading/running.
-  // Loads are single-flight, keyed by the app incarnation ("name#pid"): the
-  // 1 Hz apps poll calls syncAppSettings() every tick but only a key change
-  // starts a load, and a failed load retries on a bounded timer. Stopped and
-  // error states cancel retries and drop the schema.
-  const SETTINGS_RETRY_DELAY_MS = 1500;
-  const SETTINGS_RETRY_LIMIT = 8;
+  // Apps serve their own UI on the robot host (custom_app_url); pair the port with
+  // the hostname this page was loaded from so it works from any tailnet device.
+  function openAppUi(port) {
+    const url = `http://${window.location.hostname}:${encodeURIComponent(port)}/`;
+    window.open(url, "_blank", "noopener");
+  }
 
-  function settingsClearRetry() {
-    if (state.settings.retryTimer !== null) {
-      clearTimeout(state.settings.retryTimer);
-      state.settings.retryTimer = null;
+  async function waitAndOpenAppUi(name, targetWindow) {
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      try {
+        const payload = await apiJson(`/api/apps/${encodeURIComponent(name)}/ui`);
+        if (payload && payload.port && payload.ready) {
+          const url = `http://${window.location.hostname}:${encodeURIComponent(payload.port)}/`;
+          if (targetWindow && !targetWindow.closed) targetWindow.location.href = url;
+          else openAppUi(payload.port);
+          return;
+        }
+      } catch (_) {
+        // keep waiting
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    if (targetWindow && !targetWindow.closed) {
+      targetWindow.document.body.textContent = `${name} did not open its interface within 30 s.`;
     }
   }
 
-  function setSettingsStatus(phase, text) {
-    state.settings.phase = phase;
-    const dotClass = phase === "ready" ? "ok" : phase === "waiting" ? "loading" : phase === "unavailable" ? "error" : "";
-    $("app-settings-dot").className = `dot ${dotClass}`;
-    $("app-settings-state").textContent = text;
+  async function openInstalledAppUi(name) {
+    try {
+      const payload = await apiJson(`/api/apps/${encodeURIComponent(name)}/ui`);
+      if (payload && payload.port) openAppUi(payload.port);
+    } catch (error) {
+      $("apps-message").textContent = error.message || "App UI unavailable";
+      $("apps-message").className = "panel-hint error";
+    }
   }
 
-  function setSettingsHint(text, kind = "") {
-    $("app-settings-hint").textContent = text;
-    $("app-settings-hint").className = `panel-hint${kind ? ` ${kind}` : ""}`;
-  }
-
-  // Gear affordance for an app card. Always clickable — a stopped app's panel
-  // shows the honest "start it first" state rather than hiding the affordance.
-  // The markup is deliberately NEUTRAL (no open/aria-expanded state): panel
-  // toggling must never force an #apps innerHTML rebuild, which would destroy
-  // the focused gear. patchSettingsGears() applies the live state in place.
-  function appSettingsGearMarkup(app) {
-    if (app.has_settings !== true) return "";
-    const name = escapeHtml(app.name);
-    return `<button class="btn gear" data-app="${name}" data-action="settings" title="${name} settings" aria-label="${name} settings" aria-expanded="false" aria-controls="app-settings">`
-      + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.08a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.08a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1.03Z"></path></svg>'
-      + "</button>";
-  }
-
-  // Reconcile every gear's open/aria state in place — after a card rebuild and
-  // on panel toggle — without touching innerHTML (keyboard focus survives).
-  function patchSettingsGears() {
-    $("apps").querySelectorAll('button[data-action="settings"]').forEach((button) => {
-      const open = button.dataset.app === state.settings.app;
-      button.classList.toggle("open", open);
-      button.setAttribute("aria-expanded", String(open));
-    });
-  }
-
-  // Ticking uptime is deliberately NOT part of the card markup renderApps
-  // signs and rebuilds — one second of uptime would change the signature every
-  // tick, and the innerHTML rebuild destroys a focused gear (or any caret in
-  // the cards). Running cards render a stable, empty `.app-uptime` span; this
-  // patches only its text at 1 Hz, before the signature early-return and after
-  // any genuine rebuild.
   function updateAppUptimes(statuses) {
     [$("apps"), $("app-library-list")].filter(Boolean).forEach((root) => {
       root.querySelectorAll(".app-uptime").forEach((span) => {
@@ -1202,243 +1186,6 @@
     });
   }
 
-  function settingsFieldMarkup(field) {
-    const key = escapeHtml(String(field.key));
-    const id = `setting-${key}`;
-    const label = `<label for="${id}">${escapeHtml(field.label || field.key)}</label>`;
-    const help = field.help ? `<p class="field-help">${escapeHtml(field.help)}</p>` : "";
-    if (field.type === "password") {
-      const configured = field.configured === true;
-      // Secrets are write-only: the schema never carries the value and the
-      // input renders empty — "configured" is the only trace of a saved key.
-      return `<div class="control settings-field" data-key="${key}" data-type="password">${label}
-        <div class="field-row">
-          <input type="password" id="${id}" autocomplete="off" spellcheck="false" placeholder="${configured ? "configured — enter new value to replace" : "not configured"}">
-          <button class="btn start" type="button" data-save>Save</button>
-        </div>
-        <span class="field-state${configured ? " ok" : ""}">${configured ? "configured" : "not configured"}</span>${help}
-      </div>`;
-    }
-    if (field.type === "select") {
-      const current = field.value == null ? "" : String(field.value);
-      const optionList = Array.isArray(field.options) ? field.options : [];
-      const known = optionList.some((option) => {
-        const value = option && typeof option === "object" ? option.value : option;
-        return String(value) === current && current !== "";
-      });
-      const options = optionList.map((option) => {
-        const value = option && typeof option === "object" ? option.value : option;
-        const text = option && typeof option === "object" ? (option.label ?? option.value) : option;
-        return `<option value="${escapeHtml(String(value))}"${known && String(value) === current ? " selected" : ""}>${escapeHtml(String(text))}</option>`;
-      }).join("");
-      // Unknown current value: pin a disabled placeholder as the selection so
-      // Apply can never silently submit options[0] — the blank value trips the
-      // client-side "enter a value" guard until the user picks a real option.
-      const placeholder = known ? "" : `<option value="" selected disabled>${current ? `current “${escapeHtml(current)}” is not in this list — pick an option` : "select an option"}</option>`;
-      return `<div class="control settings-field" data-key="${key}" data-type="select">${label}
-        <div class="field-row">
-          <select id="${id}">${placeholder}${options}</select>
-          <button class="btn start" type="button" data-save>Apply</button>
-        </div>
-        <span class="field-state">current · ${current ? escapeHtml(current) : "unknown"}</span>${help}
-      </div>`;
-    }
-    return `<div class="control settings-field" data-key="${key}" data-type="unknown">${label}
-      <span class="field-state">unsupported field type “${escapeHtml(String(field.type))}”</span>${help}
-    </div>`;
-  }
-
-  function renderSettingsFields() {
-    const schema = state.settings.schema;
-    const fields = Array.isArray(schema?.fields) ? schema.fields : [];
-    $("app-settings-fields").innerHTML = fields.length
-      ? fields.map(settingsFieldMarkup).join("")
-      : "";
-  }
-
-  // The app's status is part of the key: a loading→running flip re-arms the
-  // bounded retry budget even when the pid is unchanged — "running" is fresh
-  // evidence the settings port should now answer.
-  const settingsLoadKeyFor = (app) => `${app.name}#${app.pid ?? "starting"}#${app.status}`;
-
-  function scheduleSettingsRetry(key) {
-    settingsClearRetry();
-    state.settings.retryTimer = setTimeout(() => {
-      state.settings.retryTimer = null;
-      void loadAppSettings(key);
-    }, SETTINGS_RETRY_DELAY_MS);
-  }
-
-  async function loadAppSettings(key) {
-    const settings = state.settings;
-    if (settings.app === null || key !== settings.loadKey) return;
-    if (settings.inflight) {
-      // A stale request (previous incarnation) is still on the wire; knock
-      // again after the delay instead of silently dropping this key forever.
-      scheduleSettingsRetry(key);
-      return;
-    }
-    settings.inflight = true;
-    try {
-      const schema = await apiJson(`/api/apps/${encodeURIComponent(settings.app)}/settings`);
-      if (settings.app === null || key !== settings.loadKey) return; // stale: panel closed or app restarted
-      settings.retryCount = 0;
-      settings.schema = schema && typeof schema === "object" ? schema : { fields: [] };
-      if (settings.schema.title) $("app-settings-app").textContent = settings.schema.title;
-      renderSettingsFields();
-      setSettingsStatus("ready", "ready");
-      setSettingsHint("");
-    } catch (error) {
-      if (settings.app === null || key !== settings.loadKey) return;
-      settings.retryCount += 1;
-      if (settings.retryCount < SETTINGS_RETRY_LIMIT) {
-        // The app process is up but its settings service may still be binding
-        // its port — keep knocking on a bounded timer.
-        setSettingsStatus("waiting", "connecting");
-        setSettingsHint("Waiting for the app's settings service…");
-        scheduleSettingsRetry(key);
-      } else {
-        setSettingsStatus("unavailable", "unavailable");
-        setSettingsHint(error.message || "Settings service unreachable.", "error");
-      }
-    } finally {
-      settings.inflight = false;
-    }
-  }
-
-  // Reconcile the open panel against the latest app statuses. Called from
-  // renderApps on every 1 Hz poll; cheap no-op unless something changed.
-  function syncAppSettings(statuses) {
-    const settings = state.settings;
-    if (settings.app === null) return;
-    const app = statuses.find((item) => item.name === settings.app) || { name: settings.app, status: "stopped" };
-    if (app.status !== "running" && app.status !== "loading") {
-      // Stopped / stopping / error: the in-app settings service is gone.
-      settingsClearRetry();
-      settings.loadKey = null;
-      settings.retryCount = 0;
-      if (settings.phase !== "stopped") {
-        settings.schema = null;
-        renderSettingsFields();
-        setSettingsStatus("stopped", app.status === "error" ? "app error" : "app stopped");
-        setSettingsHint(`Start ${settings.app} to configure.`);
-      }
-      return;
-    }
-    const key = settingsLoadKeyFor(app);
-    if (key === settings.loadKey) return; // this incarnation is already loaded / loading / retrying
-    settingsClearRetry();
-    settings.loadKey = key;
-    settings.retryCount = 0;
-    setSettingsStatus("waiting", "connecting");
-    setSettingsHint("Loading settings…");
-    void loadAppSettings(key);
-  }
-
-  function openAppSettings(name) {
-    const settings = state.settings;
-    if (settings.app === name) {
-      closeAppSettings();
-      return;
-    }
-    settingsClearRetry();
-    settings.app = name;
-    settings.returnView = state.library?.open ? "library" : "apps";
-    settings.schema = null;
-    settings.loadKey = null;
-    settings.retryCount = 0;
-    settings.phase = "idle";
-    $("app-settings-app").textContent = name;
-    renderSettingsFields();
-    setSettingsHint("");
-    // Swap the panel in place: same glass container, settings view instead of
-    // cards/library. Hiding the source view drops focus, so move it explicitly.
-    $("apps-view").hidden = true;
-    if (settings.returnView === "library") $("app-library").hidden = true;
-    $("app-settings").hidden = false;
-    syncAppSettings(Array.from(appState.values()));
-    patchSettingsGears();
-    $("app-settings-back").focus();
-  }
-
-  function closeAppSettings() {
-    const settings = state.settings;
-    const returnTo = settings.app;
-    const returnView = settings.returnView || "apps";
-    settingsClearRetry();
-    settings.app = null;
-    settings.returnView = null;
-    settings.schema = null;
-    settings.loadKey = null;
-    settings.retryCount = 0;
-    settings.phase = "idle";
-    $("app-settings").hidden = true;
-    if (returnView === "library") {
-      state.library.open = true;
-      $("app-library").hidden = false;
-      renderLibrary(Array.from(appState.values()));
-      $("app-library-list").querySelectorAll('button[data-action="settings"]').forEach((button) => {
-        if (button.dataset.app === returnTo) button.focus();
-      });
-    } else {
-      $("apps-view").hidden = false;
-      // Land focus back on the gear that owned the panel — looked up fresh,
-      // because the 1 Hz poll may have rebuilt the cards while it was hidden.
-      const gear = Array.from($("apps").querySelectorAll('button[data-action="settings"]'))
-        .find((button) => button.dataset.app === returnTo);
-      if (gear) gear.focus();
-    }
-    renderSettingsFields();
-    setSettingsHint("");
-    patchSettingsGears();
-  }
-
-  // Persist one field. Returns true on success so the DOM glue knows to wipe
-  // the typed secret; on failure the typed value is kept for correction.
-  async function submitAppSetting(key, rawValue) {
-    const settings = state.settings;
-    if (settings.saving || settings.app === null || !settings.schema) return false;
-    const field = (settings.schema.fields || []).find((item) => String(item.key) === String(key));
-    if (!field) return false;
-    const value = typeof rawValue === "string" ? rawValue : "";
-    if (!value.trim()) {
-      setSettingsHint(`Enter a value for ${field.label || field.key}.`, "error");
-      return false;
-    }
-    // Capture the panel identity: if the user switches apps or the app
-    // restarts while the POST is on the wire, the response must not overwrite
-    // the new panel's model or DOM.
-    const forApp = settings.app;
-    const forKey = settings.loadKey;
-    const stale = () => settings.app !== forApp || settings.loadKey !== forKey;
-    settings.saving = true;
-    setSettingsHint(`Saving ${field.label || field.key}…`);
-    try {
-      await apiJson(
-        `/api/apps/${encodeURIComponent(forApp)}/settings/${encodeURIComponent(String(field.key))}`,
-        { method: "POST", body: JSON.stringify({ value }) },
-      );
-      if (stale()) return false;
-      if (field.type === "password") {
-        field.configured = true;
-      } else {
-        field.value = value;
-      }
-      // Re-render from the model: rebuilds the password input empty (the
-      // secret never survives a successful save) and pins the select to the
-      // now-known current value.
-      renderSettingsFields();
-      setSettingsHint(`${field.label || field.key} saved.`, "ok");
-      return true;
-    } catch (error) {
-      if (stale()) return false;
-      setSettingsHint(error.message || "Save failed.", "error");
-      return false;
-    } finally {
-      settings.saving = false;
-    }
-  }
-  // ── end app settings ───────────────────────────────────────────────────
 
   // Expression datasets served by the daemon (via the transparent /api proxy).
   // Each strip's dataset id also lives on its container's data-dataset attribute.
@@ -2245,9 +1992,8 @@
   $("apps").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");
     if (!button) return;
-    // The gear toggles the shared settings panel — allowed even mid start/stop.
-    if (button.dataset.action === "settings") {
-      openAppSettings(button.dataset.app);
+    if (button.dataset.action === "open") {
+      void openInstalledAppUi(button.dataset.app);
       return;
     }
     if (state.appBusy) return;
@@ -2264,37 +2010,14 @@
       void toggleFavorite(button.dataset.app);
       return;
     }
-    if (action === "settings") {
-      openAppSettings(button.dataset.app);
+    if (action === "open") {
+      void openInstalledAppUi(button.dataset.app);
       return;
     }
     if (state.appBusy) return;
     // Library start/stop uses the same action function and arbitration gates
     // as the favorite-only panel; it never writes to an endpoint directly.
     void performAppAction(button.dataset.app, action);
-  });
-
-  $("app-settings-back").addEventListener("click", () => closeAppSettings());
-
-  const submitSettingsField = (fieldEl) => {
-    const input = fieldEl.querySelector("input, select");
-    void submitAppSetting(fieldEl.dataset.key, input ? input.value : "");
-  };
-
-  $("app-settings-fields").addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-save]");
-    if (!button || button.disabled) return;
-    const fieldEl = button.closest(".settings-field");
-    if (fieldEl) submitSettingsField(fieldEl);
-  });
-
-  // Enter inside a settings input submits its own field.
-  $("app-settings-fields").addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" || event.target.tagName !== "INPUT") return;
-    const fieldEl = event.target.closest(".settings-field");
-    if (!fieldEl) return;
-    event.preventDefault();
-    submitSettingsField(fieldEl);
   });
 
   ["expr-emotions", "expr-dances"].forEach((id) => {
@@ -2395,7 +2118,7 @@
       const status = await apiJson("/api/daemon/status");
 
       let powerClass = "";
-      let title = "Start daemon";
+      let title = "Switch robot on";
       let disabled = false;
 
       if (state.daemonStopping && status.running) {
@@ -2406,17 +2129,22 @@
       } else {
         // Daemon is down — clear the transitional state, fall through to red default.
         if (state.daemonStopping) state.daemonStopping = false;
-        if (!status.manageable) {
+        if (!status.reachable) {
           powerClass = "disabled";
-          title = "Daemon managed on device";
+          title = "Daemon service offline";
           disabled = true;
         } else if (status.running) {
           powerClass = "running";
-          title = "Stop daemon";
+          title = "Switch robot off";
+          disabled = false;
+        } else if (status.status === "asleep") {
+          // Backend up, motors released (e.g. the daemon slept after an app exited).
+          powerClass = "stopping";
+          title = "Robot asleep — wake up";
           disabled = false;
         } else if (status.status === "starting") {
           powerClass = "starting";
-          title = "Daemon starting…";
+          title = "Robot starting…";
           disabled = true;
         }
         // else: defaults above (no power class, "Start daemon", enabled).
@@ -2624,10 +2352,6 @@
     state.live.streams = [];
     closeStatsStream();
     closeLogStream();
-    // A hidden tab keeps no settings-retry timers; loadKey resets so the panel
-    // reloads (fresh pid check) when the tab comes back.
-    settingsClearRetry();
-    state.settings.loadKey = null;
   }
 
   // Poll daemon status on the same cadence as the daemon connectivity check

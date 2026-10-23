@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
-from reachy_controller.app_supervisor import AppSupervisor
 from reachy_controller.main import create_app
 
 
@@ -24,40 +23,11 @@ class CameraProxy:
         return None
 
 
-def test_app_status_exposes_camera_capability_without_ownership() -> None:
-    supervisor = AppSupervisor()
-
-    statuses = {item["name"]: item for item in supervisor.get_all_status()}
-
-    assert statuses["reachy_chat"]["uses_camera"] is True
-    assert statuses["reachy_lookat"]["uses_camera"] is True
-    assert statuses["reachy_dance"]["uses_camera"] is False
-    assert statuses["reachy_simon"]["uses_camera"] is False
-    assert statuses["reachy_hermes"]["uses_camera"] is False
-
-
-@pytest.mark.asyncio
-async def test_vision_app_starts_with_camera_capability_metadata() -> None:
-    supervisor = AppSupervisor()
-    mock_process = MagicMock()
-    mock_process.pid = 12345
-
-    with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
-        result = await supervisor.start_app("reachy_chat")
-
-    assert result["status"] == "loading"
-    assert supervisor._apps["reachy_chat"].uses_camera is True
-
-
 @pytest.mark.asyncio
 async def test_camera_availability_stays_available_with_running_vision_app() -> None:
     proxy = CameraProxy(daemon_status={"ready": True}, media_status={"owner": "daemon"})
     app = create_app(proxy=proxy)  # type: ignore[arg-type]
-    mock_process = MagicMock()
-    mock_process.pid = 12345
-
-    with patch("reachy_controller.app_supervisor.subprocess.Popen", return_value=mock_process):
-        await app.state.app_supervisor.start_app("reachy_chat")
+    app.state.daemon_apps._current = {"info": {"name": "vision_app"}, "state": "running"}
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),

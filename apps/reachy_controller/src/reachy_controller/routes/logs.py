@@ -10,7 +10,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from reachy_controller.app_supervisor import AppSupervisor
 from reachy_controller.log_stream import LogBroker, LogSubscription
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
@@ -19,17 +18,16 @@ _BATCH_SECONDS = 0.25
 _BATCH_LINES = 32
 
 
-def _source_ids(request: Request) -> list[str]:
-    supervisor: AppSupervisor = request.app.state.app_supervisor
-    return ["controller", "daemon", *supervisor.APPS]
+# App output goes to the daemon's journal, so "daemon" covers running apps too.
+SOURCE_IDS = ("controller", "daemon")
+
+
+def _source_ids(request: Request) -> tuple[str, ...]:
+    return SOURCE_IDS
 
 def _status_for_source(request: Request, source: str) -> str:
     broker: LogBroker = request.app.state.log_broker
     status = broker.source_status(source)
-    if source == "daemon":
-        daemon = request.app.state.daemon_supervisor
-        if getattr(daemon._daemon, "external", False):
-            return "unavailable"
     if status == "empty":
         path = broker.source_file(source)
         if path is not None and path.exists():
@@ -40,19 +38,12 @@ def _status_for_source(request: Request, source: str) -> str:
 @router.get("/sources")
 async def log_sources(request: Request) -> dict[str, list[dict[str, Any]]]:
     """Return dynamic source ids and honest capture/status metadata."""
-    supervisor: AppSupervisor = request.app.state.app_supervisor
-    statuses = await supervisor.aget_all_status()
-    by_name = {item["name"]: item for item in statuses}
-    sources: list[dict[str, Any]] = []
-    for source in _source_ids(request):
-        item: dict[str, Any] = {"id": source, "status": _status_for_source(request, source)}
-        if source in by_name:
-            app = by_name[source]
-            item.update({"pid": app.get("pid"), "app_status": app.get("status"), "external": app.get("external", False)})
-            if app.get("external"):
-                item["status"] = "unavailable"
-        sources.append(item)
-    return {"sources": sources}
+    return {
+        "sources": [
+            {"id": source, "status": _status_for_source(request, source)}
+            for source in _source_ids(request)
+        ]
+    }
 
 
 async def _stream_events(

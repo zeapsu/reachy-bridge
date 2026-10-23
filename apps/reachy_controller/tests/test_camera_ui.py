@@ -149,7 +149,7 @@ const state = {
     availabilityInflight: false,
   },
 };
-const APP_NAMES = ["future_vision"];
+let APP_NAMES = ["future_vision"];
 const LOADING_FRAGMENTS = ["Booting…"];
 let loadingTick = 0;
 let lastAppsSig = null;
@@ -197,9 +197,6 @@ async function refreshCameraAvailability() {
   availabilityChecks += 1;
 }
 const escapeHtml = (value) => String(value ?? "");
-const appSettingsGearMarkup = () => "";
-const syncAppSettings = () => {};
-const patchSettingsGears = () => {};
 const updateAppUptimes = () => {};
 const appState = new Map();
 __RENDER_APPS__

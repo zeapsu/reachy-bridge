@@ -1,18 +1,20 @@
 [project]
-name = "reachy-console"
+name = "reachy-bridge"
 version = "0.1.0"
-description = "Reachy Mini Lite workspace root: pins the daemon/SDK so a fresh clone can run the daemon and the root diagnostic scripts. Apps under apps/ have their own independent uv projects."
+description = "Run a Reachy Mini Lite from a headless Linux edge device: daemon service, controller UI, Hugging Face apps."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     # Brings the ReachyMini SDK + the `reachy-mini-daemon` entry point.
-    # Pinned: SDK/daemon versions must match our apps (see CLAUDE.md).
+    # Pinned: the controller and runtime wrapper are tested against this daemon.
     "reachy-mini==1.8.3",
     # 3.2.x throws `unrecognized attribute: site1` on the Reachy model (see CLAUDE.md).
     "mujoco==3.3.7",
-    # Used directly by mic_test.py (RMS probe).
     "numpy",
 ]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<9", "pytest-asyncio>=0.25,<1", "ruff>=0.12,<1"]
 
 [tool.uv]
 # Workspace root is a virtual project (not an installable package): it pins the
@@ -23,7 +25,5 @@ package = false
 required-version = ">=0.11,<0.12"
 
 [tool.uv.workspace]
-# One lockfile + one shared .venv for the whole repo. Apps remain independently
-# launchable; deliberate workspace dependencies, such as reachy_hermes reusing
-# reachy_chat's local audio pipeline, are declared by the consuming app.
+# One lockfile + one shared .venv for the whole repo.
 members = ["apps/*"]

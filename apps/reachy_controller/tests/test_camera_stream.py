@@ -766,7 +766,7 @@ async def test_camera_takeover_close_all_awaits_inflight_route_cleanup() -> None
 async def test_running_vision_app_does_not_block_dashboard_stream() -> None:
     proxy = FakeProxy(FakeUpstreamResponse())
     app = create_app(proxy=proxy)  # type: ignore[arg-type]
-    app.state.app_supervisor._apps["reachy_chat"].status = "running"
+    app.state.daemon_apps._current = {"info": {"name": "vision_app"}, "state": "running"}
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -781,45 +781,10 @@ async def test_running_vision_app_does_not_block_dashboard_stream() -> None:
 
 
 @pytest.mark.asyncio
-async def test_starting_vision_app_keeps_dashboard_lease_active() -> None:
-    app = create_app(proxy=FakeProxy(FakeUpstreamResponse()))  # type: ignore[arg-type]
-    events: list[str] = []
-
-    async def close_stream() -> None:
-        events.append("close")
-
-    lease = await app.state.camera_leases.acquire(close_stream)
-
-    def spawn(*_: object, **__: object) -> MagicMock:
-        events.append("spawn")
-        process = MagicMock()
-        process.pid = 12345
-        return process
-
-    with patch("reachy_controller.app_supervisor.subprocess.Popen", side_effect=spawn):
-        result = await app.state.app_supervisor.start_app("reachy_chat")
-
-    assert result["status"] == "loading"
-    assert events == ["spawn"]
-    assert app.state.camera_leases.active_count == 1
-
-    await lease.release()
-    assert events == ["spawn"]
-    assert app.state.camera_leases.active_count == 0
-    tasks = [
-        *app.state.app_supervisor._reaper_tasks.values(),
-        *app.state.app_supervisor._readiness_tasks.values(),
-    ]
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-
-
-@pytest.mark.asyncio
 async def test_upstream_failure_is_forwarded_while_vision_app_runs() -> None:
     proxy = FakeProxy(FakeUpstreamResponse(status_code=503, chunks=(b"offline",)))
     app = create_app(proxy=proxy)  # type: ignore[arg-type]
-    app.state.app_supervisor._apps["reachy_chat"].status = "running"
+    app.state.daemon_apps._current = {"info": {"name": "vision_app"}, "state": "running"}
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

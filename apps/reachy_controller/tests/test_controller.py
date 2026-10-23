@@ -107,7 +107,7 @@ async def test_telemetry_combines_daemon_and_host_state() -> None:
                 "doa": {"angle": 0.7, "speech_detected": True},
             },
             "apps/current-app-status": {
-                "info": {"name": "reachy_chat", "source_kind": "local"},
+                "info": {"name": "reachy_mini_radio", "source_kind": "local"},
                 "state": "running",
             },
             "motors/status": {"mode": "enabled"},
@@ -128,7 +128,7 @@ async def test_telemetry_combines_daemon_and_host_state() -> None:
     assert payload["daemon"] == {"online": True, "status": {"ready": True}}
     assert payload["robot"]["state"]["body_yaw"] == 0.4
     assert payload["robot"]["motor_mode"] == "enabled"
-    assert payload["app"]["info"]["name"] == "reachy_chat"
+    assert payload["app"]["info"]["name"] == "reachy_mini_radio"
     assert payload["audio"]["speaker_volume"] == 80
     assert payload["audio"]["microphone_volume"] == 60
     assert payload["host"]["hostname"]
