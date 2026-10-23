@@ -11,6 +11,10 @@ dependencies = [
     # 3.2.x throws `unrecognized attribute: site1` on the Reachy model (see CLAUDE.md).
     "mujoco==3.3.7",
     "numpy",
+    # JPEG encoding for the daemon's /api/camera/stream.mjpg route
+    # (tools/reachy_mini_daemon_media.py). reachy-mini only ships OpenCV as an
+    # extra; <5 matches that extra's bound.
+    "opencv-python-headless<5",
 ]
 
 [dependency-groups]

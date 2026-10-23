@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, Request
 from reachy_controller.daemon_apps import APP_CONTROL_TIMEOUT_S, DaemonApps
 from reachy_controller.daemon_proxy import DaemonProxy
 from reachy_controller.paths import state_dir
-from reachy_controller.routes.daemon import ensure_awake
+from reachy_controller.routes.daemon import ensure_awake, power_lock
 
 router = APIRouter(prefix="/api", tags=["apps"])
 
@@ -116,24 +116,25 @@ async def start_app(name: str, request: Request) -> dict[str, Any]:
     if name not in await _installed_names(request):
         raise HTTPException(status_code=404, detail="Unknown app")
     proxy: DaemonProxy = request.app.state.daemon_proxy
-    # The daemon keeps a crashed app in its slot (state "error") and refuses
-    # every start until it is cleared, so clear it first.
-    try:
-        current = await _apps(request).current()
-    except (httpx.HTTPError, ValueError):
-        current = None
-    if current is not None and current.get("state") == "error":
-        with contextlib.suppress(httpx.RequestError):
-            await proxy.request(
-                "POST", "apps/stop-current-app", timeout=APP_CONTROL_TIMEOUT_S
+    async with power_lock(request):
+        # The daemon keeps a crashed app in its slot (state "error") and refuses
+        # every start until it is cleared, so clear it first.
+        try:
+            current = await _apps(request).current()
+        except (httpx.HTTPError, ValueError):
+            current = None
+        if current is not None and current.get("state") == "error":
+            with contextlib.suppress(httpx.RequestError):
+                await proxy.request(
+                    "POST", "apps/stop-current-app", timeout=APP_CONTROL_TIMEOUT_S
+                )
+        await ensure_awake(request)
+        try:
+            response = await proxy.request(
+                "POST", f"apps/start-app/{name}", timeout=APP_CONTROL_TIMEOUT_S
             )
-    await ensure_awake(request)
-    try:
-        response = await proxy.request(
-            "POST", f"apps/start-app/{name}", timeout=APP_CONTROL_TIMEOUT_S
-        )
-    except httpx.RequestError as exc:
-        raise HTTPException(status_code=503, detail="Reachy daemon unavailable") from exc
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=503, detail="Reachy daemon unavailable") from exc
     if response.status_code >= 400:
         try:
             detail = response.json().get("detail")

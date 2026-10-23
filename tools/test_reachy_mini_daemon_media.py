@@ -426,14 +426,10 @@ def test_jetson_wrapper_sets_volume_before_asoundrc_and_daemon(monkeypatch) -> N
 
     calls: list[str] = []
     monkeypatch.setattr(jetson, "_is_jetson", lambda: True)
-    monkeypatch.setattr(jetson, "_apply_nvidia_unixfd_patch", lambda: calls.append("unixfd"))
-    monkeypatch.setattr(jetson, "_apply_webrtcsink_compat_patch", lambda: calls.append("webrtc"))
-    monkeypatch.setattr(jetson, "_apply_camera_ipc_patch", lambda: calls.append("camera"))
     monkeypatch.setattr(jetson, "_set_reachy_audio_output_volume", lambda: calls.append("volume"))
     monkeypatch.setattr(jetson, "_ensure_reachymini_asoundrc", lambda: calls.append("asoundrc"))
     for name in (
         "apply_jetson_audio_spectrum_patch",
-        "apply_jetson_camera_consumer_patch",
         "install_camera_stream_route",
         "install_audio_levels_route",
     ):

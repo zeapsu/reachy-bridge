@@ -62,25 +62,30 @@ async def _wait_until(check, timeout: float, interval: float = 0.25) -> bool:
     return False
 
 
+def power_lock(request: Request) -> asyncio.Lock:
+    """Lock held by every action that powers, wakes or sleeps the robot."""
+    return request.app.state.power_lock
+
+
 async def ensure_awake(request: Request, *, timeout: float = 20.0) -> None:
     """Make sure the robot is on, motors enabled and the wake-up move finished.
 
     The daemon does not wake the robot when it starts an app, and it puts the
     robot to sleep when an app stops, so apps started from the controller
-    would otherwise run against a limp robot.
+    would otherwise run against a limp robot. Call it with ``power_lock`` held.
     """
     proxy: DaemonProxy = request.app.state.daemon_proxy
     status = await proxy.get_daemon_status()
     if status is None:
         return  # unknown: let the daemon decide and report
     state = _robot_state(status)
-    if state == "running":
-        return
     if state == "asleep":
         await _post(request, "motors/set_mode/enabled", {})
         await _post(request, "move/play/wake_up", {})
-    else:
-        await _post(request, "daemon/start", {"wake_up": "true"})
+    elif state != "running":
+        # A power-on already in flight is still "starting": wait for it.
+        if state != "starting":
+            await _post(request, "daemon/start", {"wake_up": "true"})
 
         async def running() -> bool:
             current = await proxy.get_daemon_status()
@@ -125,12 +130,16 @@ async def start_robot(request: Request) -> dict[str, Any]:
     starting it again.
     """
     proxy: DaemonProxy = request.app.state.daemon_proxy
-    status = await proxy.get_daemon_status()
-    if status is not None and _robot_state(status) == "asleep":
-        await _post(request, "motors/set_mode/enabled", {})
-        result = await _post(request, "move/play/wake_up", {})
-    else:
-        result = await _post(request, "daemon/start", {"wake_up": "true"})
+    async with power_lock(request):
+        status = await proxy.get_daemon_status()
+        state = _robot_state(status) if status is not None else None
+        if state in ("running", "starting"):
+            return {"status": state}
+        if state == "asleep":
+            await _post(request, "motors/set_mode/enabled", {})
+            result = await _post(request, "move/play/wake_up", {})
+        else:
+            result = await _post(request, "daemon/start", {"wake_up": "true"})
     # The wake-up move ends at the home pose, so expressions may run once the
     # daemon reports running (its state gates them until then).
     request.app.state.expression_player.needs_home = False
@@ -141,15 +150,18 @@ async def start_robot(request: Request) -> dict[str, Any]:
 async def stop_robot(request: Request) -> dict[str, Any]:
     """Stop any app, play the sleep move and release torque."""
     proxy: DaemonProxy = request.app.state.daemon_proxy
-    if await request.app.state.daemon_apps.refresh_active():
-        with contextlib.suppress(httpx.RequestError):
-            await proxy.request(
-                "POST", "apps/stop-current-app", timeout=APP_CONTROL_TIMEOUT_S
-            )
-    # Already asleep: skip the sleep move. It re-enables the motors and lifts
-    # the head first, so the robot would appear to wake before sleeping.
-    status = await proxy.get_daemon_status()
-    asleep = status is not None and _robot_state(status) == "asleep"
-    result = await _post(request, "daemon/stop", {"goto_sleep": "false" if asleep else "true"})
+    async with power_lock(request):
+        if await request.app.state.daemon_apps.refresh_active():
+            with contextlib.suppress(httpx.RequestError):
+                await proxy.request(
+                    "POST", "apps/stop-current-app", timeout=APP_CONTROL_TIMEOUT_S
+                )
+        # Already asleep: skip the sleep move. It re-enables the motors and lifts
+        # the head first, so the robot would appear to wake before sleeping.
+        status = await proxy.get_daemon_status()
+        asleep = status is not None and _robot_state(status) == "asleep"
+        result = await _post(
+            request, "daemon/stop", {"goto_sleep": "false" if asleep else "true"}
+        )
     request.app.state.expression_player.needs_home = True
     return result

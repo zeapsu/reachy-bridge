@@ -40,6 +40,8 @@ def _apps_handler(current=None, start_posts=None, fallback=None):
                 start_posts.append(path)
             name = path.rsplit("/", 1)[1]
             return httpx.Response(200, json={"info": {"name": name}, "state": "starting"})
+        if path == "/api/move/running" and fallback is None:
+            return httpx.Response(200, json=[])
         if fallback is not None:
             return fallback(request)
         return httpx.Response(404)
