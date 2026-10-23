@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from pathlib import Path
 
@@ -294,3 +295,43 @@ async def test_app_start_clears_crashed_app_first() -> None:
     assert body["status"] == "loading"
     posts = [path for method, path in daemon.calls if method == "POST"]
     assert posts == ["/api/apps/stop-current-app", "/api/apps/start-app/reachy_mini_radio"]
+
+
+class SlowFakeDaemon(FakeDaemon):
+    """Yields on every request and finishes a power-on later, like the daemon's job."""
+
+    async def __call__(self, request: httpx.Request) -> httpx.Response:  # type: ignore[override]
+        await asyncio.sleep(0.01)
+        if request.url.path == "/api/daemon/start" and self.state == "stopped":
+            self.state = "starting"
+
+            async def finish() -> None:
+                await asyncio.sleep(0.1)
+                self.state = "running"
+
+            asyncio.get_running_loop().create_task(finish())
+        return super().__call__(request)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_power_on_from_asleep_wakes_once() -> None:
+    daemon = SlowFakeDaemon(state="running", motors="disabled")
+    app, client = await _client(daemon)  # type: ignore[arg-type]
+    async with client:
+        await asyncio.gather(client.post("/api/daemon/start"), client.post("/api/daemon/start"))
+    posts = [path for method, path in daemon.calls if method == "POST"]
+    assert posts == ["/api/motors/set_mode/enabled", "/api/move/play/wake_up"]
+
+
+@pytest.mark.asyncio
+async def test_app_start_during_power_on_waits_instead_of_starting_again() -> None:
+    daemon = SlowFakeDaemon(state="stopped")
+    app, client = await _client(daemon)  # type: ignore[arg-type]
+    async with client:
+        _, started = await asyncio.gather(
+            client.post("/api/daemon/start"),
+            client.post("/api/apps/start/reachy_mini_radio"),
+        )
+    assert started.json()["status"] == "loading"
+    posts = [path for method, path in daemon.calls if method == "POST"]
+    assert posts == ["/api/daemon/start?wake_up=true", "/api/apps/start-app/reachy_mini_radio"]

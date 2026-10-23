@@ -91,6 +91,11 @@ Backend: `daemon/backend/abstract.py`; endpoints:
 - `POST /api/move/goto` and the play endpoints return a move UUID;
   `GET /api/move/running` lists the UUIDs still running, and
   `POST /api/move/stop` cancels one.
+- **REST moves are not serialized.** `play_move`'s guard (`_play_move_lock`)
+  is a re-entrant `threading.RLock`, and every REST move runs on the same
+  event-loop thread, so two `move/play/wake_up` calls both run and write
+  targets at the same time. The controller serializes its own power and wake
+  actions (#148).
 
 ## Robot slot (`robot_app_lock`)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator, Callable
@@ -126,6 +127,9 @@ def create_app(proxy: DaemonProxy | None = None) -> FastAPI:
     app.state.journal = journal
     app.state.camera_leases = camera_leases
     app.state.expression_player = expression_player
+    # Serializes power on/off and wake-before-app so two requests can't both
+    # act on the same observed robot state (#148).
+    app.state.power_lock = asyncio.Lock()
     app.state.log_broker = broker
     app.state.controller_log_handler = None
     app.add_middleware(NoCacheMiddleware)
