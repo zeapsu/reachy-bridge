@@ -17,7 +17,7 @@ Source paths below are relative to the installed `reachy_mini` package.
   daemon venv, outside anything `uv sync` manages.
 - WebRTC signalling runs inside webrtcsink on `:8443`
   (`run-signalling-server`). It needs gst-plugins-rs 0.14 on GStreamer 1.24;
-  0.10 and 0.13 don't have that property.
+  the 0.10 and 0.13 builds tried on the Jetson didn't have that property.
 - Local camera sharing: the daemon publishes BGR frames at 10 fps through
   `unixfdsink` on `/tmp/reachymini_camera_socket`, and apps read them with
   `unixfdsrc` (`media/media_server.py`, `media/camera_gstreamer.py`). The
@@ -30,15 +30,25 @@ Endpoints: `daemon/app/routers/daemon.py`; implementation:
 
 | Call | Effect |
 |---|---|
-| `POST /api/daemon/start?wake_up=false` | Starts the backend with the **motors disabled** (limp). No motion. |
+| `POST /api/daemon/start?wake_up=false` | Starts the backend without touching the motors. No motion. |
 | `POST /api/daemon/start?wake_up=true` | Starts the backend, sets motor mode `enabled`, then runs `wake_up()`. |
 | `POST /api/daemon/stop?goto_sleep=true` | Runs `reset_to_sleep()` (see below), then stops the backend. |
-| `POST /api/daemon/stop?goto_sleep=false` | Stops the backend where it is. Motors lose torque. |
+| `POST /api/daemon/stop?goto_sleep=false` | Stops the backend where it is. |
 
+- On the real robot the reported motor mode is read from the motors
+  (`_infer_control_mode` in `daemon/backend/robot/backend.py`): `disabled`
+  when torque is off. After a cold start torque is off, so a start without
+  wake-up reports `disabled` (limp). The MuJoCo backend always reports
+  `enabled` and the mockup starts `enabled`, so in sim the same start shows
+  as on.
+- Stop without the sleep move runs no Python code that disables torque; it
+  closes the Rust motor controller. Whether torque stays on afterwards is not
+  verified, and if it does, the next start reports `enabled`.
 - `wake_up` and `goto_sleep` are required query parameters.
 - Start and stop return `{"job_id": ...}` immediately and run as background
-  jobs. A second start/stop/restart while one runs returns `409 Daemon is
-  busy.`
+  jobs. A start/stop/restart sent while a job holds the lock returns `409
+  Daemon is busy.` The check happens before the job takes the lock, so two
+  requests sent close together can both be accepted.
 - The `start` job waits up to 2 s for the backend to be ready, otherwise the
   state becomes `error`.
 - `stop` skips the sleep move when the state is already `stopping` or `error`,
@@ -49,13 +59,14 @@ Endpoints: `daemon/app/routers/daemon.py`; implementation:
   `disabled`, `gravity_compensation`); `backend_status` is `null` when the
   backend is stopped.
 
-The bridge derives its power states from these two fields:
+The controller derives its robot state from these two fields
+(`_robot_state` in `routes/daemon.py`):
 
-| `state` | `motor_control_mode` | Bridge shows |
+| `state` | `motor_control_mode` | Controller reports |
 |---|---|---|
-| `stopped` / `not_initialized` | — | off |
-| `running` | `enabled` or `gravity_compensation` | on |
-| `running` | `disabled` | asleep |
+| `running` | `enabled` or `gravity_compensation` | `running` (on) |
+| `running` | `disabled` | `asleep` |
+| anything else | — | the daemon state as is (`stopped`, `starting`, `stopping`, `error`, …) |
 
 ## Moves
 
@@ -109,11 +120,14 @@ Source: `request_idle_reset` and `_async_idle_reset` in
   (`IDLE_RESET_HANDOFF_GRACE_S`) when a remote client released the slot for a
   successor.
 - **Cancelled by:** a local app start (`AppManager.start_app` calls
-  `cancel_idle_reset`) or a remote session acquiring the slot, during the grace
-  period or mid-move.
+  `cancel_idle_reset`), a remote session acquiring the slot, or any WebRTC
+  data-channel command (`_handle_webrtc_message`), during the grace period or
+  mid-move.
 - **Skipped when:** the motors are already `disabled` *and* the head is at the
-  sleep pose, or the backend is shutting down.
-- **Action:** `reset_to_sleep()`, which ends with the motors disabled.
+  sleep pose, or the backend is not ready or is shutting down.
+- **Action:** `reset_to_sleep()`, which ends with the motors disabled. Counting
+  the grace, the lift, the move to the sleep pose and its final wait, the robot
+  goes limp about 5–8 s after the slot frees.
   The daemon state stays `running`, so the bridge shows asleep.
 - **Needs the backend's event loop**, which only exists with media enabled. A
   daemon started with `--no-media` never runs the idle reset. Sim tests that
@@ -140,13 +154,15 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   - Non-zero exit → `error`, with the last 10 stderr lines in `error`.
   - In every case the slot is released, which triggers the idle reset.
 - **A crashed app blocks every start** until `POST
-  /api/apps/stop-current-app` clears it. On an `error` or `done` app that
-  call does not signal a process (it has already exited). It still runs the
-  return-to-home step below, so it can move the robot.
+  /api/apps/stop-current-app` clears it. On an `error` app that call does not
+  signal a process (it has already exited). It still runs the return-to-home
+  step below, so it can move the robot. On a `done` or `stopping` app it
+  returns `400 No app is currently running`.
 - **Requested stop** (`stop-current-app`): SIGINT, then SIGKILL of the process
   tree after 20 s. Then:
   - Head within the sleep-pose radius: sets the motors to `disabled`.
-  - Otherwise: enables the motors and moves to the init pose over 1 s.
+  - Otherwise: enables the motors (real robot backend only) and moves to the
+    init pose over 1 s.
 - The app's UI address is `extra.custom_app_url` in the app metadata (for
   example `0.0.0.0:8042` for radio, `:7860` for conversation). The UI server
   comes up 1–3 s after the process starts, so the bridge polls it before
@@ -168,7 +184,8 @@ These follow from the sections above. The first four are the bugs found in
 4. Open an app's UI only after its `custom_app_url` answers.
 5. Power off while asleep: `daemon/stop?goto_sleep=false`. The robot is
    already limp at the sleep pose, and `goto_sleep=true` would lift it first.
-6. After any app exit other than a requested stop, expect the robot to go to
-   sleep within about 1.5 s while the daemon stays `running`.
+6. After any app exit other than a requested stop, expect the sleep move to
+   start about 1.5 s later and the robot to be limp about 5–8 s after the exit,
+   while the daemon stays `running`.
 7. Don't send expressions, gotos or manual control while an app is running:
    the slot lock doesn't stop them.
