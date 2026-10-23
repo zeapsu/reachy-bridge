@@ -8,6 +8,10 @@ upgrades. Each one was checked against the 1.12.0 source:
   leaves the robot awake at the home pose instead of triggering the daemon's
   idle-reset sleep. Bridge policy, not a platform fix; see
   ``docs/daemon-contract.md``.
+- ``_install_kinematics_route`` and ``_apply_saved_kinematics_engine`` (all
+  platforms): ``/api/bridge/kinematics`` switches the kinematics engine the next
+  power-on uses, and the choice survives restarts. The daemon only picks the
+  engine from its startup args, and gravity compensation needs Placo.
 - ``_set_reachy_audio_output_volume`` (Jetson): the Lite speaker's ALSA
   control ``PCM,1`` can start attenuated, which makes the daemon's sounds
   inaudible.
@@ -29,11 +33,18 @@ Usage (from the repo root, uses the root venv that has reachy-mini installed):
     uv run python tools/reachy_mini_daemon_jetson.py --sim --headless
 """
 
+import functools
+import json
 import logging
+import os
 import platform
 import sys
+from pathlib import Path
 
 logger = logging.getLogger("reachy_mini_daemon_jetson")
+
+DEFAULT_KINEMATICS = "AnalyticalKinematics"
+KINEMATICS_ENGINES = (DEFAULT_KINEMATICS, "Placo")
 
 
 def _is_jetson() -> bool:
@@ -86,6 +97,115 @@ def _apply_keep_awake_on_app_stop_patch() -> None:
 
     AppManager.stop_current_app = stop_current_app
     logger.info("Patched AppManager.stop_current_app to keep the robot awake on stop")
+
+
+def _state_dir() -> Path:
+    """Same location as the controller's state (``reachy_controller.paths``)."""
+    if override := os.getenv("REACHY_BRIDGE_STATE_DIR"):
+        return Path(override)
+    base = os.getenv("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(base) / "reachy-bridge"
+
+
+def _kinematics_file() -> Path:
+    return _state_dir() / "kinematics.json"
+
+
+@functools.cache
+def _placo_available() -> bool:
+    # Import, not just find: the placo wheel links system libraries (urdfdom)
+    # that can be missing even when the package is installed.
+    try:
+        import placo  # noqa: F401
+    except Exception:  # ImportError, or OSError from a missing shared library
+        return False
+    return True
+
+
+def _saved_kinematics_engine() -> str:
+    try:
+        engine = json.loads(_kinematics_file().read_text())["engine"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return DEFAULT_KINEMATICS
+    return engine if engine in KINEMATICS_ENGINES else DEFAULT_KINEMATICS
+
+
+def _apply_saved_kinematics_engine() -> None:
+    """Start with the last chosen engine unless the command line names one."""
+    if any(arg.startswith("--kinematics-engine") for arg in sys.argv[1:]):
+        return
+    engine = _saved_kinematics_engine()
+    if engine == "Placo" and not _placo_available():
+        logger.warning("Saved kinematics engine Placo is not installed; using %s", DEFAULT_KINEMATICS)
+        return
+    if engine != DEFAULT_KINEMATICS:
+        sys.argv += ["--kinematics-engine", engine]
+        logger.info("Using saved kinematics engine %s", engine)
+
+
+def _install_kinematics_route() -> None:
+    """Add ``GET``/``PUT /api/bridge/kinematics`` to the daemon app.
+
+    ``daemon/start`` builds the backend with ``app.state.args.kinematics_engine``,
+    so changing that arg while the backend is down switches the engine for the
+    next power-on. Changing it under a running backend would need a restart,
+    which moves the robot, so that is refused; the controller sequences power
+    off, switch and power on itself.
+    """
+    from fastapi import HTTPException, Request
+
+    from reachy_mini.daemon.app import main as daemon_main
+
+    original = daemon_main.create_app
+    if getattr(original, "_reachy_kinematics_route_patch", False):
+        return
+
+    def payload(app) -> dict:
+        backend = getattr(app.state.daemon, "backend", None)
+        return {
+            "engine": app.state.args.kinematics_engine,
+            "active": getattr(backend, "kinematics_engine", None),
+            "available": [
+                engine for engine in KINEMATICS_ENGINES
+                if engine != "Placo" or _placo_available()
+            ],
+        }
+
+    def create_app(*args, **kwargs):
+        app = original(*args, **kwargs)
+
+        @app.get("/api/bridge/kinematics", include_in_schema=False)
+        async def get_kinematics(request: Request) -> dict:
+            return payload(request.app)
+
+        @app.put("/api/bridge/kinematics", include_in_schema=False)
+        async def set_kinematics(request: Request) -> dict:
+            try:
+                engine = (await request.json())["engine"]
+            except (ValueError, KeyError, TypeError):
+                raise HTTPException(status_code=422, detail='Body must be {"engine": ...}')
+            if engine not in KINEMATICS_ENGINES:
+                raise HTTPException(status_code=400, detail=f"Unknown kinematics engine: {engine}")
+            if engine == "Placo" and not _placo_available():
+                raise HTTPException(status_code=400, detail="Placo kinematics is not installed")
+            if request.app.state.daemon.backend is not None:
+                raise HTTPException(
+                    status_code=409, detail="Turn the robot off to change kinematics"
+                )
+            request.app.state.args.kinematics_engine = engine
+            path = _kinematics_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"engine": engine}))
+            tmp.replace(path)
+            logger.info("Kinematics engine for the next power-on: %s", engine)
+            return payload(request.app)
+
+        return app
+
+    create_app._reachy_kinematics_route_patch = True
+    daemon_main.create_app = create_app
+    logger.info("Installed kinematics engine route")
 
 
 def _find_reachy_audio_card() -> int | None:
@@ -193,6 +313,8 @@ def _ensure_reachymini_asoundrc() -> None:
 def main() -> int:
     logging.basicConfig(level=logging.INFO)
     _apply_keep_awake_on_app_stop_patch()
+    _apply_saved_kinematics_engine()
+    _install_kinematics_route()
     if _is_jetson():
         # Importing the extension is lazy so this wrapper remains a transparent
         # daemon pass-through on non-Jetson development machines.

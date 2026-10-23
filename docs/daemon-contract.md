@@ -68,6 +68,25 @@ The controller derives its robot state from these two fields
 | `running` | `disabled` | `asleep` |
 | anything else | — | the daemon state as is (`stopped`, `starting`, `stopping`, `error`, …) |
 
+## Kinematics engine
+
+- The backend's kinematics engine comes from `--kinematics-engine`
+  (`AnalyticalKinematics` by default, or `Placo`). `daemon/start` reads it from
+  `app.state.args` each time, so it can only change while the backend is down.
+- Gravity compensation needs Placo. Under any other engine,
+  `motors/set_mode/gravity_compensation` raises and the daemon answers a bare
+  HTTP 500.
+- Bridge route (`_install_kinematics_route` in the wrapper):
+  - `GET /api/bridge/kinematics` returns `engine` (what the next power-on
+    uses), `active` (the running backend's engine, `null` when off) and
+    `available` (what imports).
+  - `PUT` with `{"engine": ...}` switches the engine and saves it to
+    `kinematics.json` in the bridge state dir. It returns 409 while the
+    backend runs. The controller sequences power off → switch → power on
+    (#150).
+- Placo 0.9.14 needs `cmeel-urdfdom<5` and `cmeel-tinyxml2<11`. Newer builds
+  resolve by default, and `import placo` then fails on a missing shared library.
+
 ## Moves
 
 Backend: `daemon/backend/abstract.py`; endpoints:

@@ -426,6 +426,8 @@ def test_jetson_wrapper_sets_volume_before_asoundrc_and_daemon(monkeypatch) -> N
 
     calls: list[str] = []
     monkeypatch.setattr(jetson, "_is_jetson", lambda: True)
+    monkeypatch.setattr(jetson, "_apply_saved_kinematics_engine", lambda: calls.append("engine"))
+    monkeypatch.setattr(jetson, "_install_kinematics_route", lambda: calls.append("kinematics"))
     monkeypatch.setattr(jetson, "_set_reachy_audio_output_volume", lambda: calls.append("volume"))
     monkeypatch.setattr(jetson, "_ensure_reachymini_asoundrc", lambda: calls.append("asoundrc"))
     for name in (

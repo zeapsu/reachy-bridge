@@ -7,7 +7,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from reachy_controller.daemon_proxy import DaemonProxy
+from reachy_controller.daemon_proxy import DaemonProxy, DaemonRefused
+from reachy_controller.routes.daemon import get_kinematics
 
 router = APIRouter(prefix="/api", tags=["controls"])
 
@@ -72,7 +73,20 @@ async def set_motor_mode(mode: str, request: Request) -> dict[str, Any]:
     if mode not in VALID_MOTOR_MODES:
         raise HTTPException(status_code=400, detail="Invalid motor mode")
     proxy: DaemonProxy = request.app.state.daemon_proxy
-    result = _result_or_unavailable(await proxy.set_motor_mode(mode))
+    if mode == "gravity_compensation":
+        # The daemon refuses it under any other engine, with a bare 500.
+        kinematics = await get_kinematics(request)
+        if kinematics.get("active") != "Placo":
+            raise HTTPException(
+                status_code=409, detail="Gravity compensation needs Placo kinematics"
+            )
+    try:
+        result = _result_or_unavailable(await proxy.set_motor_mode(mode))
+    except DaemonRefused as exc:
+        raise HTTPException(
+            status_code=502 if exc.status_code >= 500 else exc.status_code,
+            detail=exc.detail or f"Daemon refused the motor mode (HTTP {exc.status_code})",
+        ) from exc
     # #67: any torque change invalidates the trusted pose (a limp head droops).
     # Enabling kicks the graceful return-home session; expressions refuse until
     # a goto-home verifiably completes. If a session is already active,
