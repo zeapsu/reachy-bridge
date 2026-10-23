@@ -36,7 +36,13 @@ class FakeDaemon:
         if path in ("/api/daemon/start", "/api/daemon/stop"):
             return httpx.Response(200, json={"job_id": "j1"})
         if path in ("/api/motors/set_mode/enabled", "/api/move/play/wake_up"):
+            if path.endswith("wake_up"):
+                self.motors = "enabled"
             return httpx.Response(200, json={"uuid": "u"})
+        if path == "/api/move/running":
+            return httpx.Response(200, json=[])
+        if path.startswith("/api/apps/start-app/"):
+            return httpx.Response(200, json={"state": "starting"})
         if path == "/api/apps/list-available/installed":
             return httpx.Response(200, json=INSTALLED)
         if path == "/api/apps/current-app-status":
@@ -170,3 +176,37 @@ async def test_power_off_while_asleep_skips_sleep_move() -> None:
         await client.post("/api/daemon/stop")
     posts = [path for method, path in daemon.calls if method == "POST"]
     assert posts == ["/api/daemon/stop?goto_sleep=false"]
+
+
+@pytest.mark.asyncio
+async def test_app_start_wakes_asleep_robot_first() -> None:
+    daemon = FakeDaemon(state="running", motors="disabled")
+    app, client = await _client(daemon)
+    async with client:
+        body = (await client.post("/api/apps/start/reachy_mini_radio")).json()
+    assert body["status"] == "loading"
+    posts = [path for method, path in daemon.calls if method == "POST"]
+    assert posts == [
+        "/api/motors/set_mode/enabled",
+        "/api/move/play/wake_up",
+        "/api/apps/start-app/reachy_mini_radio",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_app_start_on_awake_robot_does_not_move_it() -> None:
+    daemon = FakeDaemon(state="running", motors="enabled")
+    app, client = await _client(daemon)
+    async with client:
+        await client.post("/api/apps/start/reachy_mini_radio")
+    posts = [path for method, path in daemon.calls if method == "POST"]
+    assert posts == ["/api/apps/start-app/reachy_mini_radio"]
+
+
+@pytest.mark.asyncio
+async def test_app_ui_reports_not_ready_when_port_closed() -> None:
+    app, client = await _client(FakeDaemon())
+    async with client:
+        body = (await client.get("/api/apps/reachy_mini_radio/ui")).json()
+    assert body["port"] == 8042
+    assert body["ready"] is False

@@ -31,6 +31,10 @@ def _apps_handler(current=None, start_posts=None, fallback=None):
             return httpx.Response(200, json=current)
         if path == "/api/apps/list-available/installed":
             return httpx.Response(200, json=INSTALLED)
+        if path == "/api/daemon/status":
+            return httpx.Response(
+                200, json={"state": "running", "backend_status": {"motor_control_mode": "enabled"}}
+            )
         if path.startswith("/api/apps/start-app/"):
             if start_posts is not None:
                 start_posts.append(path)

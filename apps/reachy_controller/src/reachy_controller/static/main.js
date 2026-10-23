@@ -1100,6 +1100,17 @@
   }
 
   async function performAppAction(name, action) {
+    // Open the tab inside the click (popup blockers) and point it at the app
+    // once its server answers.
+    let pendingWindow = null;
+    if (action === "start" && appState.get(name)?.has_ui) {
+      pendingWindow = window.open("", "_blank");
+      if (pendingWindow) {
+        pendingWindow.opener = null;
+        pendingWindow.document.title = `Starting ${name}…`;
+        pendingWindow.document.body.textContent = `Starting ${name}… waking the robot and the app.`;
+      }
+    }
     state.appBusy = true;
     $("apps-message").textContent = `${action === "start" ? "starting" : "stopping"} ${name}`;
     $("apps-message").className = "panel-hint";
@@ -1110,11 +1121,13 @@
       if (result && (result.status === "refused" || result.error)) {
         throw new Error(result.error || "Request refused");
       }
-      if (action === "start" && result && result.ui_port) openAppUi(result.ui_port);
+      if (action === "start" && result && result.ui_port) void waitAndOpenAppUi(name, pendingWindow);
+      else if (pendingWindow) pendingWindow.close();
       await pollAppsStatus();
       $("apps-message").textContent = result && result.status ? `${name} ${result.status}` : "";
       $("apps-message").className = "panel-hint ok";
     } catch (error) {
+      if (pendingWindow) pendingWindow.close();
       $("apps-message").textContent = error.message || "App request failed";
       $("apps-message").className = "panel-hint error";
       await pollAppsStatus();
@@ -1129,6 +1142,26 @@
   function openAppUi(port) {
     const url = `http://${window.location.hostname}:${encodeURIComponent(port)}/`;
     window.open(url, "_blank", "noopener");
+  }
+
+  async function waitAndOpenAppUi(name, targetWindow) {
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      try {
+        const payload = await apiJson(`/api/apps/${encodeURIComponent(name)}/ui`);
+        if (payload && payload.port && payload.ready) {
+          const url = `http://${window.location.hostname}:${encodeURIComponent(payload.port)}/`;
+          if (targetWindow && !targetWindow.closed) targetWindow.location.href = url;
+          else openAppUi(payload.port);
+          return;
+        }
+      } catch (_) {
+        // keep waiting
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    if (targetWindow && !targetWindow.closed) {
+      targetWindow.document.body.textContent = `${name} did not open its interface within 30 s.`;
+    }
   }
 
   async function openInstalledAppUi(name) {

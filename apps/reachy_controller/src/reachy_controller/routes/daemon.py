@@ -8,6 +8,7 @@ move and releases torque.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from typing import Any
 
@@ -50,6 +51,54 @@ def _robot_state(status: dict[str, Any]) -> str:
     if backend.get("motor_control_mode") == "disabled":
         return "asleep"
     return "running"
+
+
+async def _wait_until(check, timeout: float, interval: float = 0.25) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if await check():
+            return True
+        await asyncio.sleep(interval)
+    return False
+
+
+async def ensure_awake(request: Request, *, timeout: float = 20.0) -> None:
+    """Make sure the robot is on, motors enabled and the wake-up move finished.
+
+    The daemon does not wake the robot when it starts an app, and it puts the
+    robot to sleep when an app stops, so apps started from the controller
+    would otherwise run against a limp robot.
+    """
+    proxy: DaemonProxy = request.app.state.daemon_proxy
+    status = await proxy.get_daemon_status()
+    if status is None:
+        return  # unknown: let the daemon decide and report
+    state = _robot_state(status)
+    if state == "running":
+        return
+    if state == "asleep":
+        await _post(request, "motors/set_mode/enabled", {})
+        await _post(request, "move/play/wake_up", {})
+    else:
+        await _post(request, "daemon/start", {"wake_up": "true"})
+
+        async def running() -> bool:
+            current = await proxy.get_daemon_status()
+            return current is not None and _robot_state(current) == "running"
+
+        if not await _wait_until(running, timeout):
+            raise HTTPException(status_code=504, detail="Robot did not wake up in time")
+
+    async def move_done() -> bool:
+        try:
+            moves = await proxy.get_json("move/running")
+        except (httpx.HTTPError, ValueError):
+            return False
+        return not moves
+
+    await _wait_until(move_done, timeout)
+    request.app.state.expression_player.needs_home = False
 
 
 @router.get("/status")
