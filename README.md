@@ -14,7 +14,6 @@ apps from Hugging Face Spaces.
 ```
 controller/               controller: Rust (axum) binary that embeds the dashboard (#144)
 web/                      dashboard: React + TypeScript, built with Vite and Bun
-apps/reachy_controller/   previous FastAPI controller (stopgap, removed once the new one reaches parity)
 tools/                    Jetson daemon wrapper, media extensions, webrtcsink build, udev rule
 hello.py                  SDK smoke test (antenna wiggle)
 ```
@@ -26,7 +25,7 @@ and starts or stops installed Hugging Face apps. A running app is opened in its 
 ## Development quick start
 
 ```bash
-uv sync --all-packages
+uv sync
 uv run python -m reachy_mini.daemon.app.main --sim --headless   # simulator daemon
 (cd web && bun install && bun run build)                        # dashboard into web/dist
 (cd controller && cargo run --release)                           # controller on :7861

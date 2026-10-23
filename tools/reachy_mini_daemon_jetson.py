@@ -102,7 +102,7 @@ def _apply_keep_awake_on_app_stop_patch() -> None:
 
 
 def _state_dir() -> Path:
-    """Same location as the controller's state (``reachy_controller.paths``)."""
+    """Same location as the controller's state (``state_dir`` in ``controller/src/state.rs``)."""
     if override := os.getenv("REACHY_BRIDGE_STATE_DIR"):
         return Path(override)
     base = os.getenv("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
