@@ -128,8 +128,12 @@ async def get_daemon_status(request: Request) -> dict[str, Any]:
     }
 
 
-async def _power_on_locked(request: Request) -> dict[str, Any]:
-    """Power on; call with ``power_lock`` held."""
+async def _power_on_locked(request: Request, *, wake: bool = True) -> dict[str, Any]:
+    """Power on; call with ``power_lock`` held.
+
+    ``wake=False`` starts the backend without the wake move, so the motors stay
+    limp: the robot comes back asleep.
+    """
     proxy: DaemonProxy = request.app.state.daemon_proxy
     status = await proxy.get_daemon_status()
     state = _robot_state(status) if status is not None else None
@@ -139,10 +143,10 @@ async def _power_on_locked(request: Request) -> dict[str, Any]:
         await _post(request, "motors/set_mode/enabled", {})
         result = await _post(request, "move/play/wake_up", {})
     else:
-        result = await _post(request, "daemon/start", {"wake_up": "true"})
+        result = await _post(request, "daemon/start", {"wake_up": "true" if wake else "false"})
     # The wake-up move ends at the home pose, so expressions may run once the
     # daemon reports running (its state gates them until then).
-    request.app.state.expression_player.needs_home = False
+    request.app.state.expression_player.needs_home = not wake
     return result
 
 
@@ -191,7 +195,8 @@ async def _kinematics(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="Reachy daemon unavailable") from exc
     if response.status_code == 404:
         raise HTTPException(status_code=501, detail="This daemon can't switch kinematics")
-    response.raise_for_status()
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail="Daemon couldn't report kinematics")
     return response.json()
 
 
@@ -224,14 +229,22 @@ async def set_kinematics(request: Request) -> dict[str, Any]:
         state = _robot_state(status) if status is not None else None
         if state in ("starting", "stopping"):
             raise HTTPException(status_code=409, detail=f"Robot is {state}; try again shortly")
-        was_on = state in ("running", "asleep")
+        # A failed start can leave "error" with the backend still up; that is on.
+        backend_up = status is not None and status.get("backend_status") is not None
+        was_on = state in ("running", "asleep") or (state == "error" and backend_up)
+        # Come back as the user had it: asleep stays asleep (no wake move).
+        wake = state != "asleep"
         if was_on:
             await _power_off_locked(request)
 
             async def off() -> bool:
+                # The daemon reports stopped (or error) slightly before it drops
+                # the backend, and the switch is refused until it has.
                 current = await proxy.get_daemon_status()
-                return current is not None and _robot_state(current) in (
-                    "stopped", "not_initialized", "error"
+                return (
+                    current is not None
+                    and current.get("backend_status") is None
+                    and _robot_state(current) in ("stopped", "not_initialized", "error")
                 )
 
             if not await _wait_until(off, POWER_OFF_TIMEOUT_S):
@@ -242,16 +255,19 @@ async def set_kinematics(request: Request) -> dict[str, Any]:
                 headers={"content-type": "application/json"},
             )
         except httpx.RequestError as exc:
+            if was_on:
+                with contextlib.suppress(HTTPException):
+                    await _power_on_locked(request, wake=wake)
             raise HTTPException(status_code=503, detail="Reachy daemon unavailable") from exc
         if response.status_code >= 400:
             # Leave the robot as the user had it, on the old engine.
             if was_on:
-                await _power_on_locked(request)
+                await _power_on_locked(request, wake=wake)
             try:
                 detail = response.json().get("detail")
             except ValueError:
                 detail = None
             raise HTTPException(status_code=response.status_code, detail=detail or "Daemon refused")
         if was_on:
-            await _power_on_locked(request)
+            await _power_on_locked(request, wake=wake)
         return {**response.json(), "restarted": was_on}

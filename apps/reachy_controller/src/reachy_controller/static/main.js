@@ -1149,9 +1149,15 @@
   }
 
   // Drive the loading tab (static/app-loading.html) through its steps.
-  function setLoadingStep(targetWindow, step) {
+  function setLoadingStep(targetWindow, step, attempt = 0) {
     if (!targetWindow || targetWindow.closed) return;
     try {
+      // Until the loading page has replaced the initial about:blank, a hash
+      // change could cancel that navigation; wait for it instead.
+      if (targetWindow.location.pathname !== "/static/app-loading.html") {
+        if (attempt < 50) setTimeout(() => setLoadingStep(targetWindow, step, attempt + 1), 100);
+        return;
+      }
       targetWindow.location.hash = encodeURIComponent(step);
     } catch (_) {
       // The tab already navigated to the app's own origin.
@@ -2132,18 +2138,21 @@
     const button = event.target.closest("button[data-engine]");
     if (!button || button.disabled || !state.kinematics) return;
     const engine = button.dataset.engine;
-    if (engine === state.kinematics.engine) return;
-    const robotOn = state.kinematics.active !== null;
-    if (robotOn && !window.confirm(`Switch to ${button.textContent} kinematics? Reachy will go to sleep, then wake up on the new engine.`)) return;
-    state.kinematicsSwitching = true;
-    $("kin-hint").hidden = false;
-    $("kin-hint").className = "panel-hint";
-    $("kin-hint").textContent = robotOn ? "Restarting Reachy on the new engine…" : "Switching…";
-    if (robotOn) {
-      state.daemonStopping = true;
-      state.stoppingSince = Date.now();
-    }
+    const { engine: next, active } = state.kinematics;
+    // Nothing to do only if both the saved and the running engine match.
+    if (engine === next && (active === null || active === engine)) return;
+    const robotOn = active !== null;
+    if (robotOn && !window.confirm(`Switch to ${button.textContent} kinematics? Reachy will power off and back on with the new engine.`)) return;
     void performControl("kinematics", async () => {
+      // Set inside the operation so the finally below always clears them.
+      state.kinematicsSwitching = true;
+      $("kin-hint").hidden = false;
+      $("kin-hint").className = "panel-hint";
+      $("kin-hint").textContent = robotOn ? "Restarting Reachy on the new engine…" : "Switching…";
+      if (robotOn) {
+        state.daemonStopping = true;
+        state.stoppingSince = Date.now();
+      }
       try {
         state.kinematics = await apiJson("/api/daemon/kinematics", {
           method: "PUT",

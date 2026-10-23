@@ -94,3 +94,27 @@ def test_command_line_engine_wins_over_the_saved_one(
     monkeypatch.setattr(sys, "argv", ["wrapper", "--kinematics-engine", "AnalyticalKinematics"])
     jetson._apply_saved_kinematics_engine()
     assert sys.argv == ["wrapper", "--kinematics-engine", "AnalyticalKinematics"]
+
+
+@pytest.mark.asyncio
+async def test_restart_keeps_the_engine_of_the_last_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+
+    class FakeDaemon:
+        async def start(self, **kwargs) -> str:
+            calls.append(kwargs)
+            return "running"
+
+        async def restart(self) -> str:
+            # Like Daemon.restart in 1.12.0: start() without kinematics_engine.
+            return await self.start(sim=False)
+
+    daemon_module = types.ModuleType("reachy_mini.daemon.daemon")
+    daemon_module.Daemon = FakeDaemon  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "reachy_mini.daemon.daemon", daemon_module)
+    jetson._apply_restart_keeps_kinematics_patch()
+
+    daemon = FakeDaemon()
+    await daemon.start(sim=False, kinematics_engine="Placo")
+    await daemon.restart()
+    assert [call.get("kinematics_engine") for call in calls] == ["Placo", "Placo"]

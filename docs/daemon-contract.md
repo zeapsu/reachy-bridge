@@ -76,6 +76,12 @@ The controller derives its robot state from these two fields
 - Gravity compensation needs Placo. Under any other engine,
   `motors/set_mode/gravity_compensation` raises and the daemon answers a bare
   HTTP 500.
+- `Daemon.restart` (REST `daemon/restart` and the WebRTC restart command)
+  calls `start` without the engine, so upstream falls back to the default.
+  The wrapper's `_apply_restart_keeps_kinematics_patch` reuses the engine of
+  the last explicit start.
+- The daemon reports `stopped` (or `error`) slightly before it drops the
+  backend, so "fully off" means `backend_status` is `null` too.
 - Bridge route (`_install_kinematics_route` in the wrapper):
   - `GET /api/bridge/kinematics` returns `engine` (what the next power-on
     uses), `active` (the running backend's engine, `null` when off) and

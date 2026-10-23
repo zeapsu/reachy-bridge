@@ -8,10 +8,12 @@ upgrades. Each one was checked against the 1.12.0 source:
   leaves the robot awake at the home pose instead of triggering the daemon's
   idle-reset sleep. Bridge policy, not a platform fix; see
   ``docs/daemon-contract.md``.
-- ``_install_kinematics_route`` and ``_apply_saved_kinematics_engine`` (all
-  platforms): ``/api/bridge/kinematics`` switches the kinematics engine the next
-  power-on uses, and the choice survives restarts. The daemon only picks the
-  engine from its startup args, and gravity compensation needs Placo.
+- ``_install_kinematics_route``, ``_apply_saved_kinematics_engine`` and
+  ``_apply_restart_keeps_kinematics_patch`` (all platforms):
+  ``/api/bridge/kinematics`` switches the kinematics engine the next power-on
+  uses, and the choice survives restarts. The daemon only picks the engine
+  from its startup args, ``Daemon.restart`` drops it, and gravity compensation
+  needs Placo.
 - ``_set_reachy_audio_output_volume`` (Jetson): the Lite speaker's ALSA
   control ``PCM,1`` can start attenuated, which makes the daemon's sounds
   inaudible.
@@ -141,6 +143,36 @@ def _apply_saved_kinematics_engine() -> None:
     if engine != DEFAULT_KINEMATICS:
         sys.argv += ["--kinematics-engine", engine]
         logger.info("Using saved kinematics engine %s", engine)
+
+
+def _apply_restart_keeps_kinematics_patch() -> None:
+    """Make ``Daemon.restart`` keep the kinematics engine.
+
+    REST start and autostart pass ``kinematics_engine`` explicitly, but
+    ``restart`` (REST and the WebRTC restart command) calls ``start`` without
+    it, which falls back to the default engine. Remember the engine of the
+    last explicit start and reuse it when none is given.
+    """
+    try:
+        from reachy_mini.daemon.daemon import Daemon
+    except ImportError as e:
+        logger.warning("Could not import Daemon for the kinematics restart patch: %s", e)
+        return
+
+    original = Daemon.start
+    if getattr(original, "_reachy_kinematics_restart_patch", False):
+        return
+
+    async def start(self, *args, **kwargs):
+        if "kinematics_engine" in kwargs:
+            self._reachy_kinematics_engine = kwargs["kinematics_engine"]
+        elif getattr(self, "_reachy_kinematics_engine", None) is not None:
+            kwargs["kinematics_engine"] = self._reachy_kinematics_engine
+        return await original(self, *args, **kwargs)
+
+    start._reachy_kinematics_restart_patch = True
+    Daemon.start = start
+    logger.info("Patched Daemon.start so a restart keeps the kinematics engine")
 
 
 def _install_kinematics_route() -> None:
@@ -314,7 +346,11 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO)
     _apply_keep_awake_on_app_stop_patch()
     _apply_saved_kinematics_engine()
+    _apply_restart_keeps_kinematics_patch()
     _install_kinematics_route()
+    # Import placo now, at startup, rather than on the first kinematics request,
+    # where the import would block the daemon's event loop.
+    _placo_available()
     if _is_jetson():
         # Importing the extension is lazy so this wrapper remains a transparent
         # daemon pass-through on non-Jetson development machines.

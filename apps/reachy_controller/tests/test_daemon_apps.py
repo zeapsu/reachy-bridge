@@ -341,15 +341,25 @@ async def test_app_start_during_power_on_waits_instead_of_starting_again() -> No
 class KinematicsFakeDaemon(FakeDaemon):
     """Power on/off take effect at once; the bridge route behaves like the wrapper's."""
 
-    def __init__(self, *, engine: str = "AnalyticalKinematics", refuse: bool = False, **kwargs):
+    def __init__(
+        self,
+        *,
+        engine: str = "AnalyticalKinematics",
+        refuse: bool = False,
+        unreachable_on_put: bool = False,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.engine = engine
         self.refuse = refuse
+        self.unreachable_on_put = unreachable_on_put
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path == "/api/bridge/kinematics":
             self.calls.append((request.method, path))
+            if self.unreachable_on_put and request.method == "PUT":
+                raise httpx.ConnectError("refused", request=request)
             if request.method == "PUT":
                 if self.state == "running":
                     return httpx.Response(409, json={"detail": "Turn the robot off"})
@@ -364,7 +374,8 @@ class KinematicsFakeDaemon(FakeDaemon):
         if path == "/api/daemon/stop":
             self.state = "stopped"
         elif path == "/api/daemon/start":
-            self.state, self.motors = "running", "enabled"
+            woke = request.url.params.get("wake_up") == "true"
+            self.state, self.motors = "running", "enabled" if woke else "disabled"
         return response
 
 
@@ -419,3 +430,50 @@ async def test_failed_kinematics_switch_powers_the_robot_back_on() -> None:
     assert response.status_code == 400
     assert daemon.state == "running"
     assert daemon.engine == "AnalyticalKinematics"
+
+
+@pytest.mark.asyncio
+async def test_kinematics_switch_while_asleep_leaves_the_robot_asleep() -> None:
+    daemon = KinematicsFakeDaemon(state="running", motors="disabled")
+    app, client = await _client(daemon)
+    async with client:
+        body = (await client.put("/api/daemon/kinematics", json={"engine": "Placo"})).json()
+    assert body["restarted"] is True
+    assert _power_and_switch_calls(daemon) == [
+        "/api/daemon/stop?goto_sleep=false",
+        "/api/bridge/kinematics",
+        "/api/daemon/start?wake_up=false",
+    ]
+    assert (daemon.state, daemon.motors) == ("running", "disabled")
+
+
+@pytest.mark.asyncio
+async def test_kinematics_switch_powers_off_an_errored_robot_whose_backend_is_up() -> None:
+    class ErroredDaemon(KinematicsFakeDaemon):
+        def __call__(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/daemon/status" and self.state == "error":
+                self.calls.append(("GET", "/api/daemon/status"))
+                return httpx.Response(200, json={
+                    "state": "error", "error": "wake failed",
+                    "backend_status": {"motor_control_mode": "enabled"},
+                })
+            return super().__call__(request)
+
+    daemon = ErroredDaemon(state="error")
+    app, client = await _client(daemon)
+    async with client:
+        response = await client.put("/api/daemon/kinematics", json={"engine": "Placo"})
+    assert response.status_code == 200
+    assert _power_and_switch_calls(daemon)[:2] == [
+        "/api/daemon/stop?goto_sleep=true", "/api/bridge/kinematics"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unreachable_daemon_during_switch_still_powers_back_on() -> None:
+    daemon = KinematicsFakeDaemon(state="running", motors="enabled", unreachable_on_put=True)
+    app, client = await _client(daemon)
+    async with client:
+        response = await client.put("/api/daemon/kinematics", json={"engine": "Placo"})
+    assert response.status_code == 503
+    assert _power_and_switch_calls(daemon)[-1] == "/api/daemon/start?wake_up=true"
