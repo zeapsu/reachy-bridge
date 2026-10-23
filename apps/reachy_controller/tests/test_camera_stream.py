@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -59,97 +59,6 @@ class FakeDaemon:
         self.ready = True
         self._media_server = object()
         self.media_released = False
-
-
-def test_jetson_consumer_patch_builds_nvmm_conversion_pipeline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeElement:
-        def __init__(self, factory_name: str) -> None:
-            self.factory_name = factory_name
-            self.properties: dict[str, object] = {}
-            self.links: list["FakeElement"] = []
-
-        def set_property(self, name: str, value: object) -> None:
-            self.properties[name] = value
-
-        def link(self, downstream: "FakeElement") -> bool:
-            self.links.append(downstream)
-            return True
-
-    class FakeFactory:
-        calls: list[str] = []
-        elements: list[FakeElement] = []
-
-        @classmethod
-        def make(cls, factory_name: str, *_args: object) -> FakeElement:
-            cls.calls.append(factory_name)
-            element = FakeElement(factory_name)
-            cls.elements.append(element)
-            return element
-
-    class FakeCaps:
-        @staticmethod
-        def from_string(value: str) -> str:
-            return value
-
-    class FakeGst:
-        ElementFactory = FakeFactory
-        Caps = FakeCaps
-
-    class FakePipeline:
-        def __init__(self) -> None:
-            self.elements: list[FakeElement] = []
-
-        def add(self, element: FakeElement) -> None:
-            self.elements.append(element)
-
-    class FakeCamera:
-        def __init__(self) -> None:
-            self.pipeline = FakePipeline()
-            self._appsink_video = FakeElement("appsink")
-
-    gi_module = ModuleType("gi")
-    gi_repository = ModuleType("gi.repository")
-    gi_repository.Gst = FakeGst  # type: ignore[attr-defined]
-    gi_module.repository = gi_repository  # type: ignore[attr-defined]
-    gi_module.require_version = lambda *_args: None  # type: ignore[attr-defined]
-    camera_module = ModuleType("reachy_mini.media.camera_gstreamer")
-    camera_module.GStreamerCamera = FakeCamera  # type: ignore[attr-defined]
-    utils_module = ModuleType("reachy_mini.daemon.utils")
-    utils_module.CAMERA_SOCKET_PATH = "/tmp/reachymini_camera_socket"  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "gi", gi_module)
-    monkeypatch.setitem(sys.modules, "gi.repository", gi_repository)
-    monkeypatch.setitem(sys.modules, "reachy_mini.media.camera_gstreamer", camera_module)
-    monkeypatch.setitem(sys.modules, "reachy_mini.daemon.utils", utils_module)
-    monkeypatch.setattr(_media, "_is_jetson", lambda: True)
-
-    _media.apply_jetson_camera_consumer_patch()
-    camera = FakeCamera()
-    camera._build_ipc_source()
-
-    assert [element.factory_name for element in camera.pipeline.elements] == [
-        "nvunixfdsrc",
-        "queue",
-        "nvvidconv",
-        "capsfilter",
-        "videoconvert",
-    ]
-    assert camera.pipeline.elements[0].properties["socket-path"] == (
-        "/tmp/reachymini_camera_socket"
-    )
-    assert camera.pipeline.elements[3].properties["caps"] == "video/x-raw,format=BGRx"
-    assert [element.factory_name for element in camera.pipeline.elements[0].links] == ["queue"]
-    assert [element.factory_name for element in camera.pipeline.elements[1].links] == ["nvvidconv"]
-    assert [element.factory_name for element in camera.pipeline.elements[2].links] == ["capsfilter"]
-    assert [element.factory_name for element in camera.pipeline.elements[3].links] == [
-        "videoconvert"
-    ]
-    assert [element.factory_name for element in camera.pipeline.elements[4].links] == ["appsink"]
-
-    calls = list(FakeFactory.calls)
-    _media.apply_jetson_camera_consumer_patch()
-    assert FakeFactory.calls == calls
 
 
 @pytest.mark.asyncio

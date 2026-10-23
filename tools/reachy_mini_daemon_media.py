@@ -435,64 +435,6 @@ def _is_jetson() -> bool:
     return "Tegra" in model or "NVIDIA" in model
 
 
-def apply_jetson_camera_consumer_patch() -> None:
-    """Install the NVMM-to-system-memory consumer pipeline on Jetson.
-
-    The daemon's IPC producer sends NVMM buffers through ``nvunixfdsink``.
-    Stock ``GStreamerCamera`` builds ``unixfdsrc -> queue -> videoconvert``,
-    which cannot negotiate those buffers.  Rebuild only that consumer branch
-    as ``nvunixfdsrc -> queue -> nvvidconv -> BGRx -> videoconvert`` before
-    the streamer can construct a camera.  This is runtime-only and
-    reinstall-proof; non-Jetson processes retain the SDK implementation.
-    """
-    if not _is_jetson():
-        return
-    try:
-        import gi
-
-        gi.require_version("Gst", "1.0")
-        from gi.repository import Gst
-    except (ImportError, ValueError) as exc:
-        logger.warning("GStreamer unavailable; skipping Jetson camera consumer patch: %s", exc)
-        return
-    try:
-        from reachy_mini.media.camera_gstreamer import GStreamerCamera
-        from reachy_mini.daemon.utils import CAMERA_SOCKET_PATH
-    except ImportError as exc:
-        logger.warning("Reachy Mini camera consumer unavailable: %s", exc)
-        return
-
-    if getattr(GStreamerCamera, "_reachy_jetson_camera_consumer_patched", False):
-        return
-
-    def _build_ipc_source(self) -> None:
-        camsrc = Gst.ElementFactory.make("nvunixfdsrc")
-        if camsrc is None:
-            raise RuntimeError("Failed to create nvunixfdsrc (NVIDIA Jetson unixfd plugin)")
-        camsrc.set_property("socket-path", CAMERA_SOCKET_PATH)
-
-        queue = Gst.ElementFactory.make("queue")
-        nvconv = Gst.ElementFactory.make("nvvidconv")
-        capsfilter = Gst.ElementFactory.make("capsfilter")
-        videoconvert = Gst.ElementFactory.make("videoconvert")
-        if None in (queue, nvconv, capsfilter, videoconvert):
-            raise RuntimeError("Failed to create Jetson camera IPC consumer elements")
-        capsfilter.set_property("caps", Gst.Caps.from_string("video/x-raw,format=BGRx"))
-
-        for element in (camsrc, queue, nvconv, capsfilter, videoconvert):
-            self.pipeline.add(element)
-        camsrc.link(queue)
-        queue.link(nvconv)
-        nvconv.link(capsfilter)
-        capsfilter.link(videoconvert)
-        videoconvert.link(self._appsink_video)
-
-    _build_ipc_source._reachy_jetson_camera_consumer_patched = True  # type: ignore[attr-defined]
-    GStreamerCamera._build_ipc_source = _build_ipc_source
-    GStreamerCamera._reachy_jetson_camera_consumer_patched = True
-    logger.info("Installed Jetson NVMM camera consumer pipeline")
-
-
 class CameraStreamUnavailable(RuntimeError):
     """Raised when the daemon cannot currently provide local camera media."""
 
@@ -897,7 +839,6 @@ class CameraMJPEGStreamer:
 
 def install_camera_stream_route() -> None:
     """Wrap daemon ``create_app`` so every daemon app has the MJPEG route."""
-    apply_jetson_camera_consumer_patch()
     from reachy_mini.daemon.app import main as daemon_main
 
     original = daemon_main.create_app
