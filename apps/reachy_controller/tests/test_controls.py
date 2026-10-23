@@ -96,11 +96,16 @@ class ControlProxy:
         self.play_sound = AsyncMock(return_value=self.result)
         self.play_test_sound = AsyncMock(return_value=self.result)
         self.kinematics = {"engine": "Placo", "active": "Placo", "available": ["Placo"]}
+        self.current_app: dict[str, object] | None = None
 
     async def request(self, method: str, path: str, **_kwargs: object) -> httpx.Response:
-        assert (method, path) == ("GET", "bridge/kinematics")
+        payloads = {
+            ("GET", "bridge/kinematics"): self.kinematics,
+            ("GET", "apps/current-app-status"): self.current_app,
+        }
+        assert (method, path) in payloads
         return httpx.Response(
-            200, json=self.kinematics, request=httpx.Request(method, f"http://d/api/{path}")
+            200, json=payloads[(method, path)], request=httpx.Request(method, f"http://d/api/{path}")
         )
 
     async def close(self) -> None:
@@ -293,3 +298,21 @@ async def test_daemon_proxy_set_motor_mode_raises_on_refusal() -> None:
     finally:
         await proxy.close()
     assert (refused.value.status_code, refused.value.detail) == (409, "busy")
+
+
+@pytest.mark.asyncio
+async def test_gravity_compensation_is_refused_while_an_app_runs() -> None:
+    # The motors ignore move targets under gravity compensation, so an app's
+    # expressions would silently do nothing.
+    proxy = ControlProxy()
+    proxy.current_app = {"info": {"name": "conversation"}, "state": "running", "error": None}
+    app = create_app(proxy=proxy)  # type: ignore[arg-type]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/motors/set_mode/gravity_compensation")
+
+    assert response.status_code == 409
+    assert "app" in response.json()["detail"]
+    proxy.set_motor_mode.assert_not_awaited()

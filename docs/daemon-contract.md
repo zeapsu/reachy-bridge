@@ -73,6 +73,11 @@ The controller derives its robot state from these two fields
 - The backend's kinematics engine comes from `--kinematics-engine`
   (`AnalyticalKinematics` by default, or `Placo`). `daemon/start` reads it from
   `app.state.args` each time, so it can only change while the backend is down.
+- Under gravity compensation the head and antenna motors run in current
+  control and **ignore every move target**: gotos, expressions and an app's
+  moves are accepted and do nothing, while audio carries on. The controller
+  refuses it while an app runs and switches back to `enabled` before starting
+  one (#150).
 - Gravity compensation needs Placo. Under any other engine,
   `motors/set_mode/gravity_compensation` raises and the daemon answers a bare
   HTTP 500.

@@ -1777,7 +1777,8 @@
     });
     const gravity = $("gravity");
     const placoActive = Boolean(kin && kin.active === "Placo");
-    const gravityOff = controlsDisabled || !placoActive;
+    // Under gravity compensation the motors ignore moves, so not during an app.
+    const gravityOff = controlsDisabled || !placoActive || (state.appActive && !gravity?.checked);
     if (gravity && state.sliderActive !== "gravity" && gravity.disabled !== gravityOff) {
       gravity.disabled = gravityOff;
     }
@@ -1787,6 +1788,7 @@
       if (!kin) text = "Kinematics unavailable.";
       else if (kin.active && kin.active !== kin.engine) text = "Takes effect at the next power-on.";
       else if (!placoActive) text = "Gravity compensation needs Placo kinematics.";
+      else if (state.appActive) text = "Gravity compensation is off while an app runs.";
       if (hint.textContent !== text) hint.textContent = text;
       hint.hidden = text === "";
       hint.className = "panel-hint";

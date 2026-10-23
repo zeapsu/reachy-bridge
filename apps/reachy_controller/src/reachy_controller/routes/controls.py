@@ -74,6 +74,13 @@ async def set_motor_mode(mode: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Invalid motor mode")
     proxy: DaemonProxy = request.app.state.daemon_proxy
     if mode == "gravity_compensation":
+        # The motors ignore move targets in this mode, so an app's moves would
+        # silently do nothing (its speech keeps going).
+        if await request.app.state.daemon_apps.refresh_active():
+            raise HTTPException(
+                status_code=409,
+                detail="Stop the app first: the robot ignores moves under gravity compensation",
+            )
         # The daemon refuses it under any other engine, with a bare 500.
         kinematics = await get_kinematics(request)
         if kinematics.get("active") != "Placo":

@@ -220,7 +220,7 @@ async def test_motor_disable_route_sets_needs_home() -> None:
             await client.post("/api/motors/set_mode/disabled")
             response = await client.post("/api/expressions/play/dataset1/move1")
             assert response.status_code == 409
-            assert "enabled" in response.json()["detail"]
+            assert "enabled" in response.json()["detail"].lower()
 
 
 @pytest.mark.asyncio

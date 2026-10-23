@@ -83,9 +83,15 @@ async def ensure_awake(request: Request, *, timeout: float = 20.0) -> None:
     if status is None:
         return  # unknown: let the daemon decide and report
     state = _robot_state(status)
+    motors = (status.get("backend_status") or {}).get("motor_control_mode")
     if state == "asleep":
         await _post(request, "motors/set_mode/enabled", {})
         await _post(request, "move/play/wake_up", {})
+    elif state == "running" and motors == "gravity_compensation":
+        # Under gravity compensation the motors ignore every move target, so
+        # an app would run on a robot that can't move. Return to position
+        # control; the head stays where it was guided.
+        await _post(request, "motors/set_mode/enabled", {})
     elif state != "running":
         # A power-on already in flight is still "starting": wait for it.
         if state != "starting":

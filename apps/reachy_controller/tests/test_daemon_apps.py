@@ -477,3 +477,14 @@ async def test_unreachable_daemon_during_switch_still_powers_back_on() -> None:
         response = await client.put("/api/daemon/kinematics", json={"engine": "Placo"})
     assert response.status_code == 503
     assert _power_and_switch_calls(daemon)[-1] == "/api/daemon/start?wake_up=true"
+
+
+@pytest.mark.asyncio
+async def test_app_start_leaves_gravity_compensation_first() -> None:
+    daemon = FakeDaemon(state="running", motors="gravity_compensation")
+    app, client = await _client(daemon)
+    async with client:
+        body = (await client.post("/api/apps/start/reachy_mini_radio")).json()
+    assert body["status"] == "loading"
+    posts = [path for method, path in daemon.calls if method == "POST"]
+    assert posts == ["/api/motors/set_mode/enabled", "/api/apps/start-app/reachy_mini_radio"]

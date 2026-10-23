@@ -552,7 +552,7 @@ async def test_needs_home_blocks_play_with_actionable_detail() -> None:
 
     result = await player.play("dataset1", "move1")
     assert result["status"] == "busy"
-    assert "enabled" in result["detail"]  # detail names the recovery action
+    assert "enabled" in result["detail"].lower()  # detail names the recovery action
     proxy.play_recorded_move.assert_not_called()
     await player.aclose()
 
