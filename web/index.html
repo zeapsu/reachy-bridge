@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en" data-scheme="amber">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#070810">
+  <title>reachy-bridge</title>
+  <script>
+    // Restore the saved colour theme before first paint (no flash of default
+    // amber). The selector UI itself is the React ThemePicker.
+    try { document.documentElement.dataset.scheme = localStorage.getItem("reachy-theme") || "amber"; } catch (e) {}
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"><span class="blob a"></span><span class="blob b"></span><span class="blob c"></span></div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <!-- Liquid Glass refraction filter. Applied ONLY to the panel *backdrop*
+       (via `backdrop-filter: url(#lg-refract)` behind an @supports guard, see
+       style.css), never to live content. It bends the drifting atmosphere
+       glows behind the glass like a thick refractive pane, with a subtle
+       chromatic split at high-contrast edges. Chromium-only; other engines
+       fall back to the CSS-only glass material. -->
+  <svg width="0" height="0" class="liquid-filter" aria-hidden="true">
+    <filter id="lg-refract" x="-12%" y="-12%" width="124%" height="124%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.006 0.009" numOctaves="2" seed="11" result="noise">
+        <animate attributeName="baseFrequency" dur="26s" values="0.006 0.009;0.009 0.006;0.006 0.009" repeatCount="indefinite"></animate>
+      </feTurbulence>
+      <feGaussianBlur in="noise" stdDeviation="1.1" result="smoothNoise"></feGaussianBlur>
+      <!-- Green channel carries the vertical (base) displacement. -->
+      <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale="12" xChannelSelector="R" yChannelSelector="G" result="disp"></feDisplacementMap>
+      <feColorMatrix in="disp" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="gChan"></feColorMatrix>
+      <!-- Red displaced a touch further, blue a touch less => chromatic fringe. -->
+      <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale="16" xChannelSelector="R" yChannelSelector="G" result="dispR"></feDisplacementMap>
+      <feColorMatrix in="dispR" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="rChan"></feColorMatrix>
+      <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale="8" xChannelSelector="R" yChannelSelector="G" result="dispB"></feDisplacementMap>
+      <feColorMatrix in="dispB" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="bChan"></feColorMatrix>
+      <feBlend in="rChan" in2="gChan" mode="screen" result="rg"></feBlend>
+      <feBlend in="rg" in2="bChan" mode="screen"></feBlend>
+    </filter>
+  </svg>
+
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

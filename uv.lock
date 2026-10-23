@@ -6,12 +6,6 @@ resolution-markers = [
     "sys_platform != 'win32'",
 ]
 
-[manifest]
-members = [
-    "reachy-bridge",
-    "reachy-controller",
-]
-
 [[package]]
 name = "absl-py"
 version = "2.4.0"
@@ -1535,41 +1529,6 @@ requires-dist = [
     { name = "opencv-python-headless", specifier = "<5" },
     { name = "placo", specifier = "==0.9.14" },
     { name = "reachy-mini", specifier = "==1.8.3" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.3,<9" },
-    { name = "pytest-asyncio", specifier = ">=0.25,<1" },
-    { name = "ruff", specifier = ">=0.12,<1" },
-]
-
-[[package]]
-name = "reachy-controller"
-version = "0.1.0"
-source = { editable = "apps/reachy_controller" }
-dependencies = [
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "psutil" },
-    { name = "python-dotenv" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = ">=0.115,<1" },
-    { name = "httpx", specifier = ">=0.28,<1" },
-    { name = "psutil", specifier = ">=6.0,<7" },
-    { name = "python-dotenv", specifier = ">=1.0,<2" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34,<1" },
 ]
 
 [package.metadata.requires-dev]
