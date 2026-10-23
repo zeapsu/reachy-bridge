@@ -36,27 +36,53 @@ async def _post(request: Request, path: str, params: dict[str, str]) -> dict[str
     return response.json()
 
 
+def _robot_state(status: dict[str, Any]) -> str:
+    """Daemon state, refined by motor mode.
+
+    The daemon stays ``running`` after it puts the robot to sleep on its own
+    (for example the idle reset after an app exits), so a running backend with
+    motors disabled is reported as ``asleep`` rather than on.
+    """
+    state = str(status.get("state", "unknown"))
+    if state != "running":
+        return _TRANSITIONS.get(state, state)
+    backend = status.get("backend_status") or {}
+    if backend.get("motor_control_mode") == "disabled":
+        return "asleep"
+    return "running"
+
+
 @router.get("/status")
 async def get_daemon_status(request: Request) -> dict[str, Any]:
-    """Robot backend state, in the shape the dashboard power button expects."""
+    """Robot state, in the shape the dashboard power button expects."""
     proxy: DaemonProxy = request.app.state.daemon_proxy
     status = await proxy.get_daemon_status()
     if status is None:
         return {"reachable": False, "running": False, "manageable": False, "status": "offline"}
-    state = str(status.get("state", "unknown"))
+    state = _robot_state(status)
     return {
         "reachable": True,
         "running": state == "running",
         "manageable": True,
-        "status": _TRANSITIONS.get(state, state),
+        "status": state,
         "error": status.get("error"),
     }
 
 
 @router.post("/start")
 async def start_robot(request: Request) -> dict[str, Any]:
-    """Switch the robot on: enable motors and play the wake-up move."""
-    result = await _post(request, "daemon/start", {"wake_up": "true"})
+    """Switch the robot on: enable motors and play the wake-up move.
+
+    If the backend is already up but asleep, wake it in place instead of
+    starting it again.
+    """
+    proxy: DaemonProxy = request.app.state.daemon_proxy
+    status = await proxy.get_daemon_status()
+    if status is not None and _robot_state(status) == "asleep":
+        await _post(request, "motors/set_mode/enabled", {})
+        result = await _post(request, "move/play/wake_up", {})
+    else:
+        result = await _post(request, "daemon/start", {"wake_up": "true"})
     # The wake-up move ends at the home pose, so expressions may run once the
     # daemon reports running (its state gates them until then).
     request.app.state.expression_player.needs_home = False
@@ -66,11 +92,14 @@ async def start_robot(request: Request) -> dict[str, Any]:
 @router.post("/stop")
 async def stop_robot(request: Request) -> dict[str, Any]:
     """Stop any app, play the sleep move and release torque."""
-    apps = request.app.state.daemon_apps
-    if await apps.refresh_active():
-        proxy: DaemonProxy = request.app.state.daemon_proxy
+    proxy: DaemonProxy = request.app.state.daemon_proxy
+    if await request.app.state.daemon_apps.refresh_active():
         with contextlib.suppress(httpx.RequestError):
             await proxy.request("POST", "apps/stop-current-app")
-    result = await _post(request, "daemon/stop", {"goto_sleep": "true"})
+    # Already asleep: skip the sleep move. It re-enables the motors and lifts
+    # the head first, so the robot would appear to wake before sleeping.
+    status = await proxy.get_daemon_status()
+    asleep = status is not None and _robot_state(status) == "asleep"
+    result = await _post(request, "daemon/stop", {"goto_sleep": "false" if asleep else "true"})
     request.app.state.expression_player.needs_home = True
     return result

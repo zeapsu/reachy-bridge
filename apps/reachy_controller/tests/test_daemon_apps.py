@@ -17,8 +17,11 @@ INSTALLED = [
 
 
 class FakeDaemon:
-    def __init__(self, *, state: str = "stopped", current: dict | None = None) -> None:
+    def __init__(
+        self, *, state: str = "stopped", current: dict | None = None, motors: str = "enabled"
+    ) -> None:
         self.state = state
+        self.motors = motors
         self.current = current
         self.calls: list[tuple[str, str]] = []
 
@@ -26,9 +29,14 @@ class FakeDaemon:
         path = request.url.path
         self.calls.append((request.method, f"{path}?{request.url.query.decode()}".rstrip("?")))
         if path == "/api/daemon/status":
-            return httpx.Response(200, json={"state": self.state, "error": None})
+            backend = {"motor_control_mode": self.motors} if self.state == "running" else None
+            return httpx.Response(
+                200, json={"state": self.state, "error": None, "backend_status": backend}
+            )
         if path in ("/api/daemon/start", "/api/daemon/stop"):
             return httpx.Response(200, json={"job_id": "j1"})
+        if path in ("/api/motors/set_mode/enabled", "/api/move/play/wake_up"):
+            return httpx.Response(200, json={"uuid": "u"})
         if path == "/api/apps/list-available/installed":
             return httpx.Response(200, json=INSTALLED)
         if path == "/api/apps/current-app-status":
@@ -53,11 +61,14 @@ def _state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("state", "running", "status"),
-    [("running", True, "running"), ("stopped", False, "stopped"),
+    [("running", True, "running"), ("stopped", False, "stopped"), ("asleep", False, "asleep"),
      ("not_initialized", False, "not_initialized"), ("starting", False, "starting")],
 )
 async def test_status_maps_daemon_state(state: str, running: bool, status: str) -> None:
-    app, client = await _client(FakeDaemon(state=state))
+    daemon = FakeDaemon(state="running", motors="disabled") if state == "asleep" else FakeDaemon(
+        state=state
+    )
+    app, client = await _client(daemon)
     async with client:
         body = (await client.get("/api/daemon/status")).json()
     assert body["reachable"] is True
@@ -139,3 +150,23 @@ async def test_favorites_default_persist_and_validate(tmp_path: Path) -> None:
         too_many = await client.put("/api/apps/favorites", json={"favorites": ["a", "b", "c", "d"]})
         assert too_many.status_code == 422
     assert (tmp_path / "favorites.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_power_on_while_asleep_wakes_in_place() -> None:
+    daemon = FakeDaemon(state="running", motors="disabled")
+    app, client = await _client(daemon)
+    async with client:
+        await client.post("/api/daemon/start")
+    posts = [path for method, path in daemon.calls if method == "POST"]
+    assert posts == ["/api/motors/set_mode/enabled", "/api/move/play/wake_up"]
+
+
+@pytest.mark.asyncio
+async def test_power_off_while_asleep_skips_sleep_move() -> None:
+    daemon = FakeDaemon(state="running", motors="disabled")
+    app, client = await _client(daemon)
+    async with client:
+        await client.post("/api/daemon/stop")
+    posts = [path for method, path in daemon.calls if method == "POST"]
+    assert posts == ["/api/daemon/stop?goto_sleep=false"]

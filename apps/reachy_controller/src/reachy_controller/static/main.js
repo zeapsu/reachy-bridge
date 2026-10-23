@@ -2095,6 +2095,11 @@
           powerClass = "running";
           title = "Switch robot off";
           disabled = false;
+        } else if (status.status === "asleep") {
+          // Backend up, motors released (e.g. the daemon slept after an app exited).
+          powerClass = "stopping";
+          title = "Robot asleep — wake up";
+          disabled = false;
         } else if (status.status === "starting") {
           powerClass = "starting";
           title = "Robot starting…";
