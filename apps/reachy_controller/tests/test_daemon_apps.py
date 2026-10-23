@@ -210,3 +210,15 @@ async def test_app_ui_reports_not_ready_when_port_closed() -> None:
         body = (await client.get("/api/apps/reachy_mini_radio/ui")).json()
     assert body["port"] == 8042
     assert body["ready"] is False
+
+
+@pytest.mark.asyncio
+async def test_app_start_clears_crashed_app_first() -> None:
+    crashed = {"info": {"name": "hello_world"}, "state": "error", "error": "exit 1"}
+    daemon = FakeDaemon(state="running", motors="enabled", current=crashed)
+    app, client = await _client(daemon)
+    async with client:
+        body = (await client.post("/api/apps/start/reachy_mini_radio")).json()
+    assert body["status"] == "loading"
+    posts = [path for method, path in daemon.calls if method == "POST"]
+    assert posts == ["/api/apps/stop-current-app", "/api/apps/start-app/reachy_mini_radio"]

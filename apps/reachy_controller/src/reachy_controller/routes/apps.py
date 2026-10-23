@@ -7,6 +7,7 @@ persist up to three favorites for the dashboard panel.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -114,8 +115,17 @@ async def start_app(name: str, request: Request) -> dict[str, Any]:
         }
     if name not in await _installed_names(request):
         raise HTTPException(status_code=404, detail="Unknown app")
-    await ensure_awake(request)
     proxy: DaemonProxy = request.app.state.daemon_proxy
+    # The daemon keeps a crashed app in its slot (state "error") and refuses
+    # every start until it is cleared, so clear it first.
+    try:
+        current = await _apps(request).current()
+    except (httpx.HTTPError, ValueError):
+        current = None
+    if current is not None and current.get("state") == "error":
+        with contextlib.suppress(httpx.RequestError):
+            await proxy.request("POST", "apps/stop-current-app")
+    await ensure_awake(request)
     try:
         response = await proxy.request("POST", f"apps/start-app/{name}")
     except httpx.RequestError as exc:
