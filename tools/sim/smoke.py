@@ -120,9 +120,9 @@ else:
     ok = wait(lambda: daemon_state() == ("running", "enabled"), 30)
     check("power on from asleep -> awake", ok, str(daemon_state()))
 
-# 8. a crashed app doesn't block the next start
-
-# 9. app UI readiness: starting an app with a UI eventually reports ready
+# 8. app UI readiness: starting an app with a UI eventually reports ready.
+# The crashed app from step 7 is still in the daemon's slot, so this start
+# also covers clearing it first.
 r = c.post(f"/api/apps/start/{APP}").json()
 port = r.get("ui_port")
 ready = port is not None and wait(

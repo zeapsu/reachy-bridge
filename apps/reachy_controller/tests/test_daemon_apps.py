@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 
 import httpx
 import pytest
 
+from reachy_controller.daemon_apps import APP_CONTROL_TIMEOUT_S, DaemonApps
 from reachy_controller.daemon_proxy import DaemonProxy
 from reachy_controller.main import create_app
 
@@ -24,10 +26,12 @@ class FakeDaemon:
         self.motors = motors
         self.current = current
         self.calls: list[tuple[str, str]] = []
+        self.timeouts: dict[str, float | None] = {}
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         self.calls.append((request.method, f"{path}?{request.url.query.decode()}".rstrip("?")))
+        self.timeouts[path] = request.extensions.get("timeout", {}).get("read")
         if path == "/api/daemon/status":
             backend = {"motor_control_mode": self.motors} if self.state == "running" else None
             return httpx.Response(
@@ -57,11 +61,6 @@ async def _client(daemon: FakeDaemon):
     proxy = DaemonProxy("http://daemon.local:8000", transport=httpx.MockTransport(daemon))
     app = create_app(proxy)
     return app, httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
-
-
-@pytest.fixture(autouse=True)
-def _state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("REACHY_BRIDGE_STATE_DIR", str(tmp_path))
 
 
 @pytest.mark.asyncio
@@ -203,13 +202,86 @@ async def test_app_start_on_awake_robot_does_not_move_it() -> None:
     assert posts == ["/api/apps/start-app/reachy_mini_radio"]
 
 
+def _closed_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
 @pytest.mark.asyncio
-async def test_app_ui_reports_not_ready_when_port_closed() -> None:
+async def test_app_ui_reports_not_ready_when_port_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    port = _closed_port()
+    monkeypatch.setitem(INSTALLED[0], "extra", {"custom_app_url": f"http://0.0.0.0:{port}"})
     app, client = await _client(FakeDaemon())
     async with client:
         body = (await client.get("/api/apps/reachy_mini_radio/ui")).json()
-    assert body["port"] == 8042
+    assert body["port"] == port
     assert body["ready"] is False
+
+
+@pytest.mark.asyncio
+async def test_app_ui_is_503_when_daemon_down() -> None:
+    def down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    app, client = await _client(down)  # type: ignore[arg-type]
+    async with client:
+        response = await client.get("/api/apps/reachy_mini_radio/ui")
+    assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_slow_app_calls_get_a_longer_timeout() -> None:
+    # The daemon answers these only after the app spawns or exits, which takes
+    # longer than the default 2 s request timeout.
+    crashed = {"info": {"name": "hello_world"}, "state": "error", "error": "exit 1"}
+    daemon = FakeDaemon(state="running", motors="enabled", current=crashed)
+    app, client = await _client(daemon)
+    async with client:
+        await client.post("/api/apps/start/reachy_mini_radio")
+        assert daemon.timeouts["/api/apps/stop-current-app"] == APP_CONTROL_TIMEOUT_S
+        assert daemon.timeouts["/api/apps/start-app/reachy_mini_radio"] == APP_CONTROL_TIMEOUT_S
+        del daemon.timeouts["/api/apps/stop-current-app"]
+        await client.post("/api/apps/stop/reachy_mini_radio")
+        assert daemon.timeouts["/api/apps/stop-current-app"] == APP_CONTROL_TIMEOUT_S
+        assert daemon.timeouts["/api/daemon/status"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_power_off_waits_for_the_app_stop() -> None:
+    running = {"info": {"name": "reachy_mini_radio"}, "state": "running", "error": None}
+    daemon = FakeDaemon(state="running", motors="enabled", current=running)
+    app, client = await _client(daemon)
+    async with client:
+        await client.post("/api/daemon/stop")
+    assert daemon.timeouts["/api/apps/stop-current-app"] == APP_CONTROL_TIMEOUT_S
+
+
+@pytest.mark.asyncio
+async def test_uptime_restarts_when_the_same_app_starts_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import reachy_controller.daemon_apps as daemon_apps
+
+    clock = [100.0]
+    monkeypatch.setattr(daemon_apps.time, "time", lambda: clock[0])
+    daemon = FakeDaemon(state="running", motors="enabled")
+    proxy = DaemonProxy("http://daemon.local:8000", transport=httpx.MockTransport(daemon))
+    apps = DaemonApps(proxy)
+
+    def app_state(state: str) -> dict:
+        return {"info": {"name": "reachy_mini_radio"}, "state": state, "error": None}
+
+    daemon.current = app_state("running")
+    await apps.current()
+    clock[0] = 200.0
+    daemon.current = app_state("done")
+    await apps.current()
+    daemon.current = app_state("running")
+    await apps.current()
+    radio = next(s for s in await apps.statuses() if s["name"] == "reachy_mini_radio")
+    assert radio["start_time"] == 200.0
+    await proxy.close()
 
 
 @pytest.mark.asyncio
