@@ -843,6 +843,8 @@
     const seen = new Set();
     return values.filter((name) => {
       if (typeof name !== "string" || seen.has(name) || seen.size >= 3) return false;
+      // Drop favorites for apps that are no longer installed (once the list is known).
+      if (APP_NAMES.length && !APP_NAMES.includes(name)) return false;
       seen.add(name);
       return true;
     });
@@ -1076,6 +1078,13 @@
       const statuses = await apiJson("/api/apps/status");
       if (Array.isArray(statuses)) {
         APP_NAMES = statuses.map((app) => app.name);
+        // An app uninstalled since favorites loaded must not keep a favorite
+        // slot: it would count toward the limit but never render.
+        const pruned = normalizeFavorites(state.library.favorites);
+        if (pruned.length !== state.library.favorites.length) {
+          state.library.favorites = pruned;
+          state.library.lastSig = null;
+        }
         appState.clear();
         statuses.forEach((app) => appState.set(app.name, app));
         renderApps(Array.from(appState.values()));
