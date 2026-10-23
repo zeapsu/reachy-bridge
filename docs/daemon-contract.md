@@ -118,6 +118,11 @@ Backend: `daemon/backend/abstract.py`; endpoints:
   reset): turns the torque on, lifts to the init pose (0.3–1.5 s), then
   `goto_sleep()`. From a limp robot this looks like a wake followed by a
   sleep.
+- **The dataset routes block the daemon's event loop.**
+  - `GET /api/move/recorded-move-datasets/list/{dataset}` and `POST /api/move/play/recorded-move-dataset/...` are `async def` routes. They build `RecordedMoves(...)` synchronously: they resolve the Hugging Face snapshot and load every move file.
+  - A cold list of the emotions library took about 5 s on the Jetson.
+  - Moves run on that same loop, so a list fetched during the wake-up move froze the head mid-way, then the trajectory jumped ahead to catch up.
+  - The controller caches the lists, keeping them on disk as well, and fetches them only while the robot is off (`controller/src/datasets.rs`).
 - `POST /api/move/goto` and the play endpoints return a move UUID;
   `GET /api/move/running` lists the UUIDs still running, and
   `POST /api/move/stop` cancels one.

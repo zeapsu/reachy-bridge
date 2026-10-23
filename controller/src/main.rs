@@ -40,6 +40,7 @@ async fn main() -> std::io::Result<()> {
     let timeout = env_or("DAEMON_TIMEOUT", "2.0").parse::<f64>().unwrap_or(2.0);
     let daemon = Daemon::new(&env_or("DAEMON_URL", "http://127.0.0.1:8000"), Duration::from_secs_f64(timeout));
     let state = AppState::new(daemon, logs.clone(), state_dir, Duration::from_millis(300));
+    tokio::spawn(reachy_controller::datasets::prefetch(state.clone()));
     tokio::spawn(follow_journal(logs, env_or("REACHY_DAEMON_UNIT", "reachy-bridge.service")));
 
     let address = format!("{}:{}", env_or("CONTROLLER_HOST", "127.0.0.1"), env_or("CONTROLLER_PORT", "7861"));

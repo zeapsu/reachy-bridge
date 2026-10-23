@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::apps::DaemonApps;
 use crate::daemon::Daemon;
+use crate::datasets::DatasetCache;
 use crate::expressions::ExpressionPlayer;
 use crate::logs::LogBroker;
 use crate::routes::telemetry::Streams;
@@ -22,7 +23,8 @@ pub struct AppState {
     pub logs: Arc<LogBroker>,
     /// Probes app UIs on loopback.
     pub probe: reqwest::Client,
-    /// Where favorites and the controller log live.
+    pub datasets: DatasetCache,
+    /// Where favorites, the dataset cache and the controller log live.
     pub state_dir: PathBuf,
 }
 
@@ -36,6 +38,7 @@ impl AppState {
             streams: Streams::default(),
             logs,
             probe: reqwest::Client::new(),
+            datasets: DatasetCache::new(state_dir.join("datasets.json")),
             state_dir,
         })
     }

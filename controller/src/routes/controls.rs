@@ -71,6 +71,13 @@ async fn set_motor_mode(State(state): State<Shared>, Path(mode): Path<String>) -
         if engines.get("active").and_then(Value::as_str) != Some("Placo") {
             return Err(ApiError::new(409, "Gravity compensation needs Placo kinematics"));
         }
+        // Same for an expression: it would stop mid-move and skip its return home.
+        if state.player.active() {
+            return Err(ApiError::new(
+                409,
+                "Wait for the expression to finish: the robot ignores moves under gravity compensation",
+            ));
+        }
     }
     let outcome = state.daemon.post(&format!("motors/set_mode/{mode}"), &[]).await;
     // #67: any torque change invalidates the trusted pose (a limp head droops).
@@ -112,12 +119,11 @@ async fn play_sound(State(state): State<Shared>, body: Bytes) -> ApiResult<Json<
     or_unavailable(state.daemon.post_json("media/play_sound", &json!({"file": file})).await)
 }
 
-/// Move names in a recorded-move dataset; the daemon's answer passes through.
+/// Move names in a recorded-move dataset, cached (see `datasets.rs`).
 async fn list_dataset(State(state): State<Shared>, Path(dataset): Path<String>) -> ApiResult<Json<Value>> {
     let dataset = dataset.trim_end_matches('/');
     if !safe_dataset(dataset) {
         return Err(ApiError::new(404, "Unknown dataset"));
     }
-    let path = format!("move/recorded-move-datasets/list/{dataset}");
-    Ok(Json(state.daemon.get(&path).await?))
+    Ok(Json(state.datasets.list(&state, dataset).await?))
 }

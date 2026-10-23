@@ -1,5 +1,6 @@
 pub mod apps;
 pub mod daemon;
+pub mod datasets;
 pub mod error;
 pub mod expressions;
 pub mod host;

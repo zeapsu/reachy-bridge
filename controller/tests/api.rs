@@ -111,6 +111,13 @@ async fn fake_daemon(fake: FakeState) -> String {
             }),
         )
         .route(
+            "/api/move/recorded-move-datasets/list/{*dataset}",
+            get(|State(f): State<FakeState>, Path(dataset): Path<String>| async move {
+                record(&f, format!("list {dataset}"));
+                Json(json!(["cheerful1", "sad1"]))
+            }),
+        )
+        .route(
             "/api/move/goto",
             post(|State(f): State<FakeState>| async move {
                 record(&f, "goto");
@@ -529,6 +536,54 @@ async fn a_failed_mode_change_still_distrusts_the_pose() {
     let (status, _) = h.call("POST", "/api/motors/set_mode/disabled", None).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert!(h.state.player.needs_home());
+}
+
+#[tokio::test]
+async fn dataset_lists_are_fetched_once_and_kept_on_disk() {
+    let h = harness(|_| {}).await;
+    let uri = "/api/move/recorded-move-datasets/list/pollen-robotics/reachy-mini-emotions-library";
+    let (a, b) = tokio::join!(h.call("GET", uri, None), h.call("GET", uri, None));
+    assert_eq!(a.1, json!(["cheerful1", "sad1"]));
+    assert_eq!(b.1, a.1);
+    assert_eq!(h.calls(), vec!["list pollen-robotics/reachy-mini-emotions-library"]);
+    // A restarted controller reads the cache file instead of the daemon.
+    let reloaded = reachy_controller::datasets::DatasetCache::new(h.state.state_dir.join("datasets.json"));
+    assert_eq!(reloaded.get("pollen-robotics/reachy-mini-emotions-library"), Some(json!(["cheerful1", "sad1"])));
+}
+
+#[tokio::test]
+async fn prefetch_runs_only_while_the_robot_is_off() {
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+    })
+    .await;
+    let task = tokio::spawn(reachy_controller::datasets::prefetch(h.state.clone()));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(h.calls().is_empty(), "{:?}", h.calls());
+    task.abort();
+
+    let h = harness(|_| {}).await;
+    tokio::time::timeout(Duration::from_secs(5), reachy_controller::datasets::prefetch(h.state.clone()))
+        .await
+        .unwrap();
+    assert_eq!(h.calls().len(), 2, "{:?}", h.calls());
+}
+
+#[tokio::test]
+async fn gravity_compensation_waits_for_an_expression() {
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.active_engine = Some("Placo".into());
+    })
+    .await;
+    let (status, _) =
+        h.call("POST", "/api/expressions/play/pollen-robotics/reachy-mini-emotions-library/cheerful1", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = h.call("POST", "/api/motors/set_mode/gravity_compensation", None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["detail"].as_str().unwrap().contains("expression"));
 }
 
 #[tokio::test]
