@@ -30,10 +30,14 @@
     appActive: false,
     mode: "schematic",
     robotControlMode: null,
+    kinematics: null,
+    kinematicsSwitching: false,
+    lastPowerStatus: null,
     daemonStatusTimer: null,
     daemonStatusInflight: false,
     appsStatusInflight: false,
     daemonStopping: false,
+    stoppingSince: 0,
     sliderActive: null,
     simLoop: null,
     live: { streams: [], timers: [], active: false, statsStream: null },
@@ -426,6 +430,7 @@
     document.querySelectorAll("#motor-seg button").forEach((button) => {
       if (button.disabled !== disabled) button.disabled = disabled;
     });
+    renderKinematics(disabled);
     // Expression chips gate on the daemon too — but never fight an in-progress
     // move (exprBusy disables the whole strip until the POST resolves). They
     // also pause while an app owns the robot (#66).
@@ -1104,12 +1109,9 @@
     // once its server answers.
     let pendingWindow = null;
     if (action === "start" && appState.get(name)?.has_ui) {
-      pendingWindow = window.open("", "_blank");
-      if (pendingWindow) {
-        pendingWindow.opener = null;
-        pendingWindow.document.title = `Starting ${name}…`;
-        pendingWindow.document.body.textContent = `Starting ${name}… waking the robot and the app.`;
-      }
+      const display = appState.get(name)?.display || name;
+      pendingWindow = window.open(`/static/app-loading.html?app=${encodeURIComponent(display)}#waking`, "_blank");
+      if (pendingWindow) pendingWindow.opener = null;
     }
     state.appBusy = true;
     $("apps-message").textContent = `${action === "start" ? "starting" : "stopping"} ${name}`;
@@ -1121,13 +1123,15 @@
       if (result && (result.status === "refused" || result.error)) {
         throw new Error(result.error || "Request refused");
       }
-      if (action === "start" && result && result.ui_port) void waitAndOpenAppUi(name, pendingWindow);
-      else if (pendingWindow) pendingWindow.close();
+      if (action === "start" && result && result.ui_port) {
+        setLoadingStep(pendingWindow, "starting");
+        void waitAndOpenAppUi(name, pendingWindow);
+      } else if (pendingWindow) pendingWindow.close();
       await pollAppsStatus();
       $("apps-message").textContent = result && result.status ? `${name} ${result.status}` : "";
       $("apps-message").className = "panel-hint ok";
     } catch (error) {
-      if (pendingWindow) pendingWindow.close();
+      setLoadingStep(pendingWindow, `failed:${error.message || "App request failed"}`);
       $("apps-message").textContent = error.message || "App request failed";
       $("apps-message").className = "panel-hint error";
       await pollAppsStatus();
@@ -1144,11 +1148,22 @@
     window.open(url, "_blank", "noopener");
   }
 
+  // Drive the loading tab (static/app-loading.html) through its steps.
+  function setLoadingStep(targetWindow, step) {
+    if (!targetWindow || targetWindow.closed) return;
+    try {
+      targetWindow.location.hash = encodeURIComponent(step);
+    } catch (_) {
+      // The tab already navigated to the app's own origin.
+    }
+  }
+
   async function waitAndOpenAppUi(name, targetWindow) {
     for (let attempt = 0; attempt < 60; attempt += 1) {
       try {
         const payload = await apiJson(`/api/apps/${encodeURIComponent(name)}/ui`);
         if (payload && payload.port && payload.ready) {
+          setLoadingStep(targetWindow, "opening");
           const url = `http://${window.location.hostname}:${encodeURIComponent(payload.port)}/`;
           if (targetWindow && !targetWindow.closed) targetWindow.location.href = url;
           else openAppUi(payload.port);
@@ -1159,9 +1174,7 @@
       }
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    if (targetWindow && !targetWindow.closed) {
-      targetWindow.document.body.textContent = `${name} did not open its interface within 30 s.`;
-    }
+    setLoadingStep(targetWindow, `failed:${name} did not open its interface within 30 s.`);
   }
 
   async function openInstalledAppUi(name) {
@@ -1727,15 +1740,60 @@
     if (speaker.status === "fulfilled") syncSlider("vol-spk", speaker.value && speaker.value.volume);
     if (microphone.status === "fulfilled") syncSlider("vol-mic", microphone.value && microphone.value.volume);
     if (motors.status === "fulfilled") selectMotorMode(motors.value && motors.value.mode);
+    await loadKinematics();
     state.controlsLoaded = true;
     setControlsEnabled(state.daemonOnline && !state.controlBusy);
   }
 
   function selectMotorMode(mode) {
     state.robotControlMode = typeof mode === "string" ? mode : null;
+    // Gravity compensation is its own switch; the segment shows enabled/disabled.
     document.querySelectorAll("#motor-seg button").forEach((button) => {
       button.classList.toggle("active", button.dataset.mode === mode);
     });
+    const gravity = $("gravity");
+    if (gravity && gravity.checked !== (mode === "gravity_compensation")) {
+      gravity.checked = mode === "gravity_compensation";
+    }
+  }
+
+  // Kinematics engine (Analytical default, Placo optional). Gravity
+  // compensation only works on Placo, so its switch follows the running engine.
+  function renderKinematics(controlsDisabled) {
+    const kin = state.kinematics;
+    const available = new Set((kin && kin.available) || []);
+    const engine = kin ? kin.engine : null;
+    document.querySelectorAll("#kin-seg button").forEach((button) => {
+      button.classList.toggle("active", button.dataset.engine === engine);
+      const off = controlsDisabled || !kin || !available.has(button.dataset.engine);
+      if (button.disabled !== off) button.disabled = off;
+      button.title = available.has(button.dataset.engine) ? "" : "Not installed on the robot";
+    });
+    const gravity = $("gravity");
+    const placoActive = Boolean(kin && kin.active === "Placo");
+    const gravityOff = controlsDisabled || !placoActive;
+    if (gravity && state.sliderActive !== "gravity" && gravity.disabled !== gravityOff) {
+      gravity.disabled = gravityOff;
+    }
+    const hint = $("kin-hint");
+    if (hint && !state.kinematicsSwitching) {
+      let text = "";
+      if (!kin) text = "Kinematics unavailable.";
+      else if (kin.active && kin.active !== kin.engine) text = "Takes effect at the next power-on.";
+      else if (!placoActive) text = "Gravity compensation needs Placo kinematics.";
+      if (hint.textContent !== text) hint.textContent = text;
+      hint.hidden = text === "";
+      hint.className = "panel-hint";
+    }
+  }
+
+  async function loadKinematics() {
+    try {
+      state.kinematics = await apiJson("/api/daemon/kinematics");
+    } catch (_) {
+      state.kinematics = null;
+    }
+    renderKinematics(!(state.daemonOnline && !state.controlBusy));
   }
 
 
@@ -2070,6 +2128,50 @@
     });
   });
 
+  $("kin-seg").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-engine]");
+    if (!button || button.disabled || !state.kinematics) return;
+    const engine = button.dataset.engine;
+    if (engine === state.kinematics.engine) return;
+    const robotOn = state.kinematics.active !== null;
+    if (robotOn && !window.confirm(`Switch to ${button.textContent} kinematics? Reachy will go to sleep, then wake up on the new engine.`)) return;
+    state.kinematicsSwitching = true;
+    $("kin-hint").hidden = false;
+    $("kin-hint").className = "panel-hint";
+    $("kin-hint").textContent = robotOn ? "Restarting Reachy on the new engine…" : "Switching…";
+    if (robotOn) {
+      state.daemonStopping = true;
+      state.stoppingSince = Date.now();
+    }
+    void performControl("kinematics", async () => {
+      try {
+        state.kinematics = await apiJson("/api/daemon/kinematics", {
+          method: "PUT",
+          body: JSON.stringify({ engine }),
+        });
+      } finally {
+        state.kinematicsSwitching = false;
+        state.daemonStopping = false;
+        void pollDaemonStatus();
+        void loadKinematics();
+      }
+    });
+  });
+
+  $("gravity").addEventListener("change", (event) => {
+    const mode = event.target.checked ? "gravity_compensation" : "enabled";
+    void performControl("motor", async () => {
+      try {
+        const result = await apiJson(`/api/motors/set_mode/${mode}`, { method: "POST" });
+        selectMotorMode(mode);
+        return result;
+      } catch (error) {
+        selectMotorMode(state.robotControlMode);
+        throw error;
+      }
+    });
+  });
+
   $("wobble").addEventListener("change", (event) => {
     const checked = event.target.checked;
     void performControl("wobble", async () => {
@@ -2111,6 +2213,13 @@
     if (button.disabled !== disabled) button.disabled = disabled;
   }
 
+  function setPowerLabel(text) {
+    const label = $("vp-power-label");
+    if (!label) return;
+    if (label.textContent !== text) label.textContent = text;
+    if (label.hidden !== !text) label.hidden = !text;
+  }
+
   async function pollDaemonStatus() {
     if (state.daemonStatusInflight) return;
     state.daemonStatusInflight = true;
@@ -2120,14 +2229,21 @@
       let powerClass = "";
       let title = "Switch robot on";
       let disabled = false;
+      let label = "";
 
-      if (state.daemonStopping && status.running) {
-        // Still shutting down — hold the OFF state and keep the button inert.
+      // A daemon that stays unreachable for a minute is offline, not powering off.
+      if (state.daemonStopping && Date.now() - state.stoppingSince > 60000) state.daemonStopping = false;
+      if (state.daemonStopping && !["stopped", "not_initialized", "error"].includes(status.status)) {
+        // Power-off in progress. The daemon plays the sleep move (motors on),
+        // then releases torque and tears the backend down; that teardown blocks
+        // the daemon for a few seconds, so an unreachable daemon here still
+        // means "powering off", not "offline".
+        const sleeping = status.running || (status.status === "stopping" && status.motors === "enabled");
         powerClass = "stopping";
-        title = "Daemon stopping…";
+        label = sleeping ? "Shutting down…" : "Powering off…";
+        title = label;
         disabled = true;
       } else {
-        // Daemon is down — clear the transitional state, fall through to red default.
         if (state.daemonStopping) state.daemonStopping = false;
         if (!status.reachable) {
           powerClass = "disabled";
@@ -2144,12 +2260,25 @@
           disabled = false;
         } else if (status.status === "starting") {
           powerClass = "starting";
+          label = "Starting…";
           title = "Robot starting…";
           disabled = true;
+        } else if (status.status === "stopping") {
+          // Stopped from elsewhere (another tab, the kinematics switch).
+          powerClass = "stopping";
+          label = "Powering off…";
+          title = label;
+          disabled = true;
         }
-        // else: defaults above (no power class, "Start daemon", enabled).
+        // else: defaults above (no power class, "Switch robot on", enabled).
       }
 
+      setPowerLabel(label);
+      // The running engine changes with power, so refresh the kinematics panel.
+      if (status.status !== state.lastPowerStatus) {
+        state.lastPowerStatus = status.status;
+        void loadKinematics();
+      }
       applyDaemonPower(powerClass, title, disabled);
     } catch (_) {
       // Silent fail — let the daemon online/offline mechanism handle it
@@ -2168,16 +2297,19 @@
     if (isRunning) {
       state.controlBusy = true;
       state.daemonStopping = true;
+      state.stoppingSince = Date.now();
       vpPower.classList.remove("running", "starting");
       vpPower.classList.add("stopping");
       button.disabled = true;
-      button.title = "Daemon stopping…";
-      button.setAttribute("aria-label", "Daemon stopping…");
+      button.title = "Shutting down…";
+      button.setAttribute("aria-label", "Shutting down…");
+      setPowerLabel("Shutting down…");
       $("control-status").textContent = "stopping";
       try {
         await apiJson("/api/daemon/stop", { method: "POST" });
       } catch (error) {
         state.daemonStopping = false;
+        setPowerLabel("");
         vpPower.classList.remove("stopping");
         $("control-status").textContent = "error";
         $("control-hint").textContent = error.message || "Failed to stop daemon";
@@ -2190,6 +2322,7 @@
       state.controlBusy = true;
       $("control-status").textContent = "starting";
       vpPower.classList.add("starting");
+      setPowerLabel("Starting…");
       button.disabled = true;
       try {
         await apiJson("/api/daemon/start", { method: "POST" });
@@ -2197,6 +2330,7 @@
         $("control-status").textContent = "error";
         $("control-hint").textContent = error.message || "Failed to start daemon";
         $("control-hint").className = "panel-hint error";
+        setPowerLabel("");
         vpPower.classList.remove("starting");
         button.disabled = false;
       } finally {

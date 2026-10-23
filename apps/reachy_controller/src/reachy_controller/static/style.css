@@ -607,6 +607,18 @@ input:focus-visible {
   animation: pulse 1s var(--ease) infinite;
 }
 
+.vp-power-label {
+  align-self: center;
+  padding: 0 10px 0 2px;
+  font: 500 11px/1 "JetBrains Mono", monospace;
+  letter-spacing: 0.06em;
+  color: var(--text);
+  white-space: nowrap;
+}
+.vp-power-label[hidden] { display: none; }
+.vp-power.stopping .vp-power-label { color: var(--coral); }
+.vp-power.starting .vp-power-label { color: var(--mint); }
+
 .vp-power.disabled button {
   color: var(--muted);
   cursor: not-allowed;
