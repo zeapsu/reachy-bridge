@@ -52,7 +52,9 @@ class DaemonProxy:
         params: Mapping[str, str] | None = None,
         content: bytes | None = None,
         headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
+        """Send one request; ``timeout`` overrides the client default for slow calls."""
         await self.start()
         assert self._client is not None
         daemon_path = "/api/" + path.removeprefix("/api/").lstrip("/")
@@ -62,6 +64,7 @@ class DaemonProxy:
             params=params,
             content=content,
             headers=headers,
+            timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout,
         )
 
     @asynccontextmanager

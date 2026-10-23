@@ -15,11 +15,10 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 
+from reachy_controller.daemon_apps import APP_CONTROL_TIMEOUT_S
 from reachy_controller.daemon_proxy import DaemonProxy
 
 router = APIRouter(prefix="/api/daemon", tags=["daemon"])
-
-_TRANSITIONS = {"starting": "starting", "stopping": "stopping"}
 
 
 async def _post(request: Request, path: str, params: dict[str, str]) -> dict[str, Any]:
@@ -46,7 +45,7 @@ def _robot_state(status: dict[str, Any]) -> str:
     """
     state = str(status.get("state", "unknown"))
     if state != "running":
-        return _TRANSITIONS.get(state, state)
+        return state
     backend = status.get("backend_status") or {}
     if backend.get("motor_control_mode") == "disabled":
         return "asleep"
@@ -144,7 +143,9 @@ async def stop_robot(request: Request) -> dict[str, Any]:
     proxy: DaemonProxy = request.app.state.daemon_proxy
     if await request.app.state.daemon_apps.refresh_active():
         with contextlib.suppress(httpx.RequestError):
-            await proxy.request("POST", "apps/stop-current-app")
+            await proxy.request(
+                "POST", "apps/stop-current-app", timeout=APP_CONTROL_TIMEOUT_S
+            )
     # Already asleep: skip the sleep move. It re-enables the motors and lifts
     # the head first, so the robot would appear to wake before sleeping.
     status = await proxy.get_daemon_status()

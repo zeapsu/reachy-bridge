@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 
-from reachy_controller.daemon_apps import DaemonApps
+from reachy_controller.daemon_apps import APP_CONTROL_TIMEOUT_S, DaemonApps
 from reachy_controller.daemon_proxy import DaemonProxy
 from reachy_controller.paths import state_dir
 from reachy_controller.routes.daemon import ensure_awake
@@ -124,10 +124,14 @@ async def start_app(name: str, request: Request) -> dict[str, Any]:
         current = None
     if current is not None and current.get("state") == "error":
         with contextlib.suppress(httpx.RequestError):
-            await proxy.request("POST", "apps/stop-current-app")
+            await proxy.request(
+                "POST", "apps/stop-current-app", timeout=APP_CONTROL_TIMEOUT_S
+            )
     await ensure_awake(request)
     try:
-        response = await proxy.request("POST", f"apps/start-app/{name}")
+        response = await proxy.request(
+            "POST", f"apps/start-app/{name}", timeout=APP_CONTROL_TIMEOUT_S
+        )
     except httpx.RequestError as exc:
         raise HTTPException(status_code=503, detail="Reachy daemon unavailable") from exc
     if response.status_code >= 400:
@@ -145,7 +149,9 @@ async def stop_app(name: str, request: Request) -> dict[str, Any]:
     """Stop the daemon's current app (the daemon runs one at a time)."""
     proxy: DaemonProxy = request.app.state.daemon_proxy
     try:
-        response = await proxy.request("POST", "apps/stop-current-app")
+        response = await proxy.request(
+            "POST", "apps/stop-current-app", timeout=APP_CONTROL_TIMEOUT_S
+        )
     except httpx.RequestError as exc:
         raise HTTPException(status_code=503, detail="Reachy daemon unavailable") from exc
     if response.status_code >= 400:
@@ -162,7 +168,10 @@ async def app_ui(name: str, request: Request) -> dict[str, Any]:
     the browser waits for ``ready`` before navigating so it never lands on a
     connection-refused page.
     """
-    port = await _apps(request).ui_port(name)
+    try:
+        port = await _apps(request).ui_port(name)
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Reachy daemon unavailable") from exc
     ready = False
     if port is not None:
         try:

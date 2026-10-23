@@ -26,6 +26,13 @@ _STATE_MAP = {
 
 _INSTALLED_TTL_S = 5.0
 
+# The daemon answers start-app and stop-current-app only once the app process
+# has been spawned or has exited (it waits up to 20 s for an exit, then returns
+# the robot home over 1 s), which is longer than the default request timeout.
+APP_CONTROL_TIMEOUT_S = 25.0
+
+_ACTIVE_STATES = ("starting", "running")
+
 
 def _display_name(name: str) -> str:
     words = name.replace("-", "_").split("_")
@@ -66,7 +73,10 @@ class DaemonApps:
         payload = await self._get("apps/current-app-status")
         current = payload if isinstance(payload, dict) else None
         name = (current or {}).get("info", {}).get("name")
-        if name != self._current_name:
+        active = (current or {}).get("state") in _ACTIVE_STATES
+        was_active = (self._current or {}).get("state") in _ACTIVE_STATES
+        # A new app, or the same app started again after it stopped.
+        if name != self._current_name or (active and not was_active):
             self._current_name = name
             self._current_since = time.time() if name else None
         self._current = current
@@ -76,7 +86,7 @@ class DaemonApps:
         """True when the last observed daemon app is starting or running."""
         if not self._current:
             return False
-        return self._current.get("state") in ("starting", "running")
+        return self._current.get("state") in _ACTIVE_STATES
 
     async def refresh_active(self) -> bool:
         """Re-read the daemon before an actuation decision; fail closed."""

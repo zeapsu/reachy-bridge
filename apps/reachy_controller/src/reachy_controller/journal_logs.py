@@ -46,7 +46,7 @@ class JournalFollower:
                 # when the user journal isn't persistent (the Jetson default).
                 journalctl, f"--user-unit={self.unit}", "-f", "-n", "200", "-o", "cat",
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
                 limit=MAX_LINE_BYTES,
             )
         except OSError as exc:
@@ -54,19 +54,42 @@ class JournalFollower:
             self.broker.set_status(SOURCE, "unavailable")
             return
         self.broker.set_status(SOURCE, "live")
-        assert self._process.stdout is not None
+        assert self._process.stdout is not None and self._process.stderr is not None
+        status = "stopped"
         try:
-            while True:
-                try:
-                    raw = await self._process.stdout.readline()
-                except ValueError:
-                    # Line longer than the stream limit: skip it, keep following.
-                    continue
-                if not raw:
-                    break
-                self.broker.publish(SOURCE, raw.decode("utf-8", "replace").rstrip("\r\n"))
+            # journalctl reports problems such as missing journal permissions
+            # on stderr while it keeps following, so show those lines too.
+            await asyncio.gather(
+                self._pump(self._process.stdout, ""),
+                self._pump(self._process.stderr, "journalctl: "),
+            )
+            if await self._process.wait() != 0:
+                status = "unavailable"
         finally:
-            self.broker.set_status(SOURCE, "stopped")
+            self.broker.set_status(SOURCE, status)
+
+    async def _pump(self, stream: asyncio.StreamReader, prefix: str) -> None:
+        skipping = False
+        while True:
+            try:
+                raw = await stream.readuntil(b"\n")
+            except asyncio.LimitOverrunError as exc:
+                # Line longer than the stream limit: drop all of it, including
+                # the part still to arrive, and keep following.
+                await stream.readexactly(exc.consumed)
+                if not skipping:
+                    notice = f"[line over {MAX_LINE_BYTES} bytes dropped]"
+                    self.broker.publish(SOURCE, prefix + notice)
+                skipping = True
+                continue
+            except asyncio.IncompleteReadError as exc:
+                if exc.partial and not skipping:
+                    self.broker.publish(SOURCE, prefix + exc.partial.decode("utf-8", "replace"))
+                return
+            if skipping:
+                skipping = False
+                continue
+            self.broker.publish(SOURCE, prefix + raw.decode("utf-8", "replace").rstrip("\r\n"))
 
     async def aclose(self) -> None:
         if self._process is not None and self._process.returncode is None:
