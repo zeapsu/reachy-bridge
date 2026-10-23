@@ -1401,6 +1401,10 @@ input:disabled,
   border-radius: 8px;
   padding: 6px 8px;
 }
+/* The open list is native chrome: give it the panel's dark surface, or the
+   light text lands on a light system background. */
+#log-source { color-scheme: dark; }
+#log-source option { background: #0b0d16; color: var(--text); }
 
 .log-body { position: relative; }
 .log-scroll {
