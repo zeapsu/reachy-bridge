@@ -1,0 +1,238 @@
+//! Expression playback: one at a time, then a silent return to the home pose.
+//!
+//! The daemon doesn't serialize REST moves (daemon-contract.md, "Moves"), so
+//! two plays would run interleaved target loops. The player allows one session
+//! at a time. A watcher task owns every session transition: playing →
+//! returning_home → cleared. `stop` only asks the daemon to stop the move; the
+//! watcher sees it vanish and carries on.
+
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use serde_json::{json, Value};
+
+use crate::daemon::{Daemon, DaemonError};
+
+const BUSY: &str = "Robot is busy with another move.";
+const NOT_HOMED: &str =
+    "Robot pose is not homed — set Motors to Enabled, or turn off gravity compensation, to return home.";
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Phase {
+    Playing,
+    ReturningHome,
+}
+
+#[derive(Clone, Debug)]
+struct Session {
+    uuid: Option<String>,
+    dataset: Option<String>,
+    name: Option<String>,
+    phase: Phase,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum PlayError {
+    Busy(&'static str),
+    Unavailable,
+    NotFound,
+}
+
+pub struct ExpressionPlayer {
+    daemon: Daemon,
+    poll: Duration,
+    session: Mutex<Option<Session>>,
+    /// Held across check-and-start so two plays can't both pass the checks.
+    start_lock: tokio::sync::Mutex<()>,
+    /// Set on any torque change (#67): the pose is unknown, so plays are
+    /// refused until a return home verifiably completes.
+    needs_home: AtomicBool,
+    /// Bumped on every motor-mode change. A return home only clears
+    /// `needs_home` if no mode change happened while it ran: daemon moves
+    /// finish on schedule whether or not the motors had torque.
+    mode_epoch: AtomicU64,
+}
+
+impl ExpressionPlayer {
+    pub fn new(daemon: Daemon, poll: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            daemon,
+            poll,
+            session: Mutex::new(None),
+            start_lock: tokio::sync::Mutex::new(()),
+            needs_home: AtomicBool::new(false),
+            mode_epoch: AtomicU64::new(0),
+        })
+    }
+
+    pub fn active(&self) -> bool {
+        self.session.lock().unwrap().is_some()
+    }
+
+    pub fn set_needs_home(&self, value: bool) {
+        self.needs_home.store(value, Ordering::SeqCst);
+    }
+
+    pub fn needs_home(&self) -> bool {
+        self.needs_home.load(Ordering::SeqCst)
+    }
+
+    /// Record a motor-mode change: the pose is no longer trusted.
+    pub fn mode_changed(&self) {
+        self.needs_home.store(true, Ordering::SeqCst);
+        self.mode_epoch.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub async fn play(self: &Arc<Self>, dataset: &str, name: &str) -> Result<Value, PlayError> {
+        let _guard = self.start_lock.lock().await;
+        if self.active() {
+            return Err(PlayError::Busy(BUSY));
+        }
+        if self.needs_home() {
+            return Err(PlayError::Busy(NOT_HOMED));
+        }
+        match self.daemon.running_moves().await {
+            None => return Err(PlayError::Unavailable),
+            Some(moves) if !moves.is_empty() => return Err(PlayError::Busy(BUSY)),
+            Some(_) => {}
+        }
+        let path = format!("move/play/recorded-move-dataset/{dataset}/{name}");
+        let result = match self.daemon.post(&path, &[]).await {
+            Ok(result) => result,
+            Err(DaemonError::Refused { status: 404, .. }) => return Err(PlayError::NotFound),
+            Err(DaemonError::Refused { status, detail }) => {
+                tracing::warn!(status, ?detail, "daemon refused expression {dataset}/{name}");
+                return Err(PlayError::Unavailable);
+            }
+            Err(DaemonError::Unavailable) => return Err(PlayError::Unavailable),
+        };
+        // A 200 without a uuid would leave the robot moving untracked.
+        let Some(uuid) = result.get("uuid").and_then(Value::as_str).map(str::to_string) else {
+            return Err(PlayError::Unavailable);
+        };
+        *self.session.lock().unwrap() = Some(Session {
+            uuid: Some(uuid.clone()),
+            dataset: Some(dataset.to_string()),
+            name: Some(name.to_string()),
+            phase: Phase::Playing,
+        });
+        let player = Arc::clone(self);
+        let watched = uuid.clone();
+        tokio::spawn(async move { player.watch(watched).await });
+        Ok(json!({"status": "playing", "uuid": uuid, "dataset": dataset, "move": name}))
+    }
+
+    /// Standalone return home (after the motors are re-enabled, #67). It uses
+    /// the session machinery, so plays and app starts are blocked meanwhile.
+    pub async fn return_home(self: &Arc<Self>) -> Value {
+        let _guard = self.start_lock.lock().await;
+        {
+            let mut session = self.session.lock().unwrap();
+            if session.is_some() {
+                return json!({"status": "busy", "detail": BUSY});
+            }
+            *session = Some(Session { uuid: None, dataset: None, name: None, phase: Phase::ReturningHome });
+        }
+        let player = Arc::clone(self);
+        tokio::spawn(async move { player.goto_home_and_clear().await });
+        json!({"status": "returning_home"})
+    }
+
+    pub async fn stop(&self) -> Value {
+        let session = self.session.lock().unwrap().clone();
+        match session {
+            None => json!({"status": "idle"}),
+            Some(Session { phase: Phase::ReturningHome, .. }) => json!({"status": "returning_home"}),
+            Some(Session { uuid, .. }) => {
+                if let Some(uuid) = uuid {
+                    // Best effort: the daemon answers 500 for a move that already ended.
+                    let _ = self.daemon.post_json("move/stop", &json!({"uuid": uuid})).await;
+                }
+                json!({"status": "stopping"})
+            }
+        }
+    }
+
+    pub fn current(&self) -> Value {
+        match &*self.session.lock().unwrap() {
+            None => json!({"active": false}),
+            Some(s) => json!({
+                "active": true,
+                "phase": match s.phase { Phase::Playing => "playing", Phase::ReturningHome => "returning_home" },
+                "dataset": s.dataset,
+                "move": s.name,
+                "uuid": s.uuid,
+            }),
+        }
+    }
+
+    fn clear(&self) {
+        *self.session.lock().unwrap() = None;
+    }
+
+    /// Wait until `uuid` leaves the daemon's running moves. Two failed polls
+    /// in a row mean the daemon is gone (returns false); one is tolerated.
+    async fn wait_until_gone(&self, uuid: &str) -> bool {
+        let mut failures = 0;
+        loop {
+            tokio::time::sleep(self.poll).await;
+            match self.daemon.running_moves().await {
+                None => {
+                    failures += 1;
+                    if failures >= 2 {
+                        return false;
+                    }
+                }
+                Some(moves) => {
+                    failures = 0;
+                    if !moves.iter().any(|m| m == uuid) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn watch(self: Arc<Self>, uuid: String) {
+        if !self.wait_until_gone(&uuid).await {
+            self.clear();
+            return;
+        }
+        {
+            let mut session = self.session.lock().unwrap();
+            match session.as_mut() {
+                Some(s) => s.phase = Phase::ReturningHome,
+                None => return,
+            }
+        }
+        self.goto_home_and_clear().await;
+    }
+
+    /// Silent goto to the wake-up home pose (no head roll, no sound): head at
+    /// identity, antennas at the ±10° park offset, body yaw 0, over 1.5 s.
+    async fn goto_home_and_clear(&self) {
+        let epoch = self.mode_epoch.load(Ordering::SeqCst);
+        let home = json!({
+            "head_pose": {"x": 0.0, "y": 0.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
+            "antennas": [-0.1745, 0.1745],
+            "body_yaw": 0.0,
+            "duration": 1.5,
+        });
+        let mut result = self.daemon.post_json("move/goto", &home).await;
+        if result.is_err() {
+            // One transient failure must not cost the return home.
+            tokio::time::sleep(self.poll).await;
+            result = self.daemon.post_json("move/goto", &home).await;
+        }
+        let uuid = result.ok().and_then(|r| r.get("uuid").and_then(Value::as_str).map(str::to_string));
+        let Some(uuid) = uuid else {
+            self.clear();
+            return;
+        };
+        if self.wait_until_gone(&uuid).await && self.mode_epoch.load(Ordering::SeqCst) == epoch {
+            self.needs_home.store(false, Ordering::SeqCst);
+        }
+        self.clear();
+    }
+}
