@@ -1,0 +1,16 @@
+[Unit]
+Description=reachy-bridge controller (dashboard and API on loopback)
+After=reachy-bridge.service
+Wants=reachy-bridge.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/reachy-bridge/bin/reachy-controller
+Environment=CONTROLLER_HOST=127.0.0.1
+Environment=CONTROLLER_PORT=7861
+# The controller never moves the robot on its own, so restarting it is safe.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

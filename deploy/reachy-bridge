@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# reachy-bridge: manage the bridge's user services and its tailnet mappings.
+# Replaces the old reachy-up / reachy-down shell functions (#130).
+#
+#   reachy-bridge status
+#   reachy-bridge start | stop | restart [daemon|controller]   (default: both)
+#   reachy-bridge logs [daemon|controller]
+#   reachy-bridge serve [on|off|status]
+#
+# Stopping the daemon sends SIGINT, which puts the robot to sleep and releases
+# torque. Restarting the daemon is refused while the robot is on, unless
+# --force is given: the restart would put it to sleep mid-whatever.
+set -euo pipefail
+
+DAEMON=reachy-bridge.service
+CONTROLLER=reachy-bridge-controller.service
+DAEMON_URL=${DAEMON_URL:-http://127.0.0.1:8000}
+
+# tailscale serve: dedicated HTTPS ports only. Never the root mapping, never
+# `tailscale serve reset` (other services share this node's serve config).
+SERVE_CONTROLLER_PORT=${REACHY_BRIDGE_SERVE_PORT:-10000}
+SERVE_MAPPINGS=(
+    "$SERVE_CONTROLLER_PORT http://127.0.0.1:${CONTROLLER_PORT:-7861}"  # dashboard
+    "8443 http://127.0.0.1:8443"  # WebRTC signalling, as wss:// for HTTPS pages
+    "8042 http://127.0.0.1:8042"  # community app UIs
+)
+
+die() { echo "reachy-bridge: $*" >&2; exit 1; }
+
+# Sets UNITS to the units a service name stands for.
+units_for() {
+    case "${1:-all}" in
+        all) UNITS=("$DAEMON" "$CONTROLLER") ;;
+        daemon) UNITS=("$DAEMON") ;;
+        controller) UNITS=("$CONTROLLER") ;;
+        *) die "unknown service '$1' (daemon, controller)" ;;
+    esac
+}
+
+# Exit 0 when the robot is off or the daemon doesn't answer (nothing to stop).
+robot_off() {
+    local status
+    status=$(curl -s -m 2 "$DAEMON_URL/api/daemon/status") || return 0
+    [[ $status == *'"backend_status":null'* ]]
+}
+
+robot_state() {
+    local status
+    status=$(curl -s -m 2 "$DAEMON_URL/api/daemon/status") || { echo "daemon not answering"; return; }
+    local state=${status#*\"state\":\"}
+    state=${state%%\"*}
+    local mode=""
+    [[ $status == *'"motor_control_mode":"'* ]] && { mode=${status#*\"motor_control_mode\":\"}; mode=" (motors ${mode%%\"*})"; }
+    echo "$state$mode"
+}
+
+tailscale_serve() {
+    # Without an operator set, tailscale serve needs root.
+    if tailscale serve "$@" 2>/dev/null; then return 0; fi
+    sudo tailscale serve "$@"
+}
+
+cmd=${1:-status}
+shift || true
+force=0
+args=()
+for arg in "$@"; do
+    if [[ $arg == --force ]]; then force=1; else args+=("$arg"); fi
+done
+
+case "$cmd" in
+    status)
+        systemctl --user --no-pager --lines=0 status $DAEMON $CONTROLLER || true
+        echo "robot: $(robot_state)"
+        ;;
+    start)
+        units_for "${args[0]:-all}"
+        systemctl --user start "${UNITS[@]}"
+        ;;
+    stop)
+        units_for "${args[0]:-all}"
+        systemctl --user stop "${UNITS[@]}"
+        ;;
+    restart)
+        units_for "${args[0]:-all}"
+        if [[ " ${UNITS[*]} " == *" $DAEMON "* ]] && (( ! force )) && ! robot_off; then
+            die "the robot is on ($(robot_state)); turn it off first, or pass --force"
+        fi
+        systemctl --user restart "${UNITS[@]}"
+        ;;
+    logs)
+        case "${args[0]:-daemon}" in
+            daemon) unit=$DAEMON ;;
+            controller) unit=$CONTROLLER ;;
+            *) die "unknown service '${args[0]}'" ;;
+        esac
+        # --user-unit reads the system journal, where user services log when
+        # the user journal isn't persistent (the Jetson default).
+        exec journalctl --user-unit="$unit" -f -n 200
+        ;;
+    serve)
+        command -v tailscale >/dev/null || die "tailscale is not installed"
+        case "${args[0]:-on}" in
+            on)
+                for mapping in "${SERVE_MAPPINGS[@]}"; do
+                    read -r port target <<<"$mapping"
+                    tailscale_serve --bg --https="$port" "$target"
+                done
+                tailscale serve status
+                ;;
+            off)
+                for mapping in "${SERVE_MAPPINGS[@]}"; do
+                    read -r port _ <<<"$mapping"
+                    tailscale_serve --https="$port" off || true
+                done
+                ;;
+            status) tailscale serve status ;;
+            *) die "serve takes on, off or status" ;;
+        esac
+        ;;
+    -h|--help|help)
+        sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    *)
+        die "unknown command '$cmd' (try: reachy-bridge help)"
+        ;;
+esac
