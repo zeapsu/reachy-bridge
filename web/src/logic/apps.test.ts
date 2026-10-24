@@ -115,7 +115,6 @@ describe("uptime", () => {
   });
 });
 
-test("app UI URL pairs the dashboard host and scheme with the app port", () => {
-  expect(appUiUrl("http:", "192.168.1.20", 8042)).toBe("http://192.168.1.20:8042/");
-  expect(appUiUrl("https:", "reachy.tailnet", 8042)).toBe("https://reachy.tailnet:8042/");
+test("app UI URL pairs the dashboard host with the app port", () => {
+  expect(appUiUrl("reachy.tailnet", 8042)).toBe("http://reachy.tailnet:8042/");
 });

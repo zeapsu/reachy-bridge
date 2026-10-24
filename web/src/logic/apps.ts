@@ -133,14 +133,9 @@ export function actionResultMessage(name: string, status: string | undefined): s
   return status ? `${name} ${status}` : "";
 }
 
-/**
- * The app's own UI, on the robot host the dashboard was loaded from, with the
- * dashboard's scheme: over the tailnet `reachy-bridge serve` publishes app UIs
- * as HTTPS on the same port, so the page keeps a secure context (mic, camera).
- */
-export function appUiUrl(protocol: string, hostname: string, port: number | string): string {
-  const scheme = protocol === "https:" ? "https" : "http";
-  return `${scheme}://${hostname}:${encodeURIComponent(String(port))}/`;
+/** The app's own UI, on the robot host the dashboard was loaded from. */
+export function appUiUrl(hostname: string, port: number | string): string {
+  return `http://${hostname}:${encodeURIComponent(String(port))}/`;
 }
 
 export const APP_UI_WAIT_ATTEMPTS = 60;

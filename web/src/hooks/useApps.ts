@@ -54,7 +54,7 @@ function setLoadingStep(target: Window | null, step: string, attempt = 0): void 
 }
 
 function openAppUiTab(port: number | string): void {
-  window.open(appUiUrl(window.location.protocol, window.location.hostname, port), "_blank", "noopener");
+  window.open(appUiUrl(window.location.hostname, port), "_blank", "noopener");
 }
 
 async function waitAndOpenAppUi(name: string, target: Window | null): Promise<void> {
@@ -63,7 +63,7 @@ async function waitAndOpenAppUi(name: string, target: Window | null): Promise<vo
       const payload = await apiJson<AppUi>(paths.appUi(name));
       if (payload && payload.port && payload.ready) {
         setLoadingStep(target, "opening");
-        if (target && !target.closed) target.location.href = appUiUrl(window.location.protocol, window.location.hostname, payload.port);
+        if (target && !target.closed) target.location.href = appUiUrl(window.location.hostname, payload.port);
         else openAppUiTab(payload.port);
         return;
       }

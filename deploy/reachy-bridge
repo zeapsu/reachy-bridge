@@ -18,11 +18,12 @@ DAEMON_URL=${DAEMON_URL:-http://127.0.0.1:8000}
 
 # tailscale serve: dedicated HTTPS ports only. Never the root mapping, never
 # `tailscale serve reset` (other services share this node's serve config).
+# Only the dashboard: WebRTC signalling (:8443) and app UIs (:8042, ...) bind
+# 0.0.0.0 themselves, so a serve listener on the same port would make their
+# bind fail at power-on. Exposing them over HTTPS needs other external ports.
 SERVE_CONTROLLER_PORT=${REACHY_BRIDGE_SERVE_PORT:-10000}
 SERVE_MAPPINGS=(
     "$SERVE_CONTROLLER_PORT http://127.0.0.1:${CONTROLLER_PORT:-7861}"  # dashboard
-    "8443 http://127.0.0.1:8443"  # WebRTC signalling, as wss:// for HTTPS pages
-    "8042 http://127.0.0.1:8042"  # community app UIs
 )
 
 die() { echo "reachy-bridge: $*" >&2; exit 1; }
