@@ -6,9 +6,8 @@ import sys
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(__file__).rsplit("/", 1)[0])
-
-from reachy_mini_daemon_media import AudioSpectrumTap
+from reachy_bridge_runtime.features import media
+from reachy_bridge_runtime.features.media import AudioSpectrumTap
 
 
 SAMPLE_RATE = 16_000
@@ -129,7 +128,6 @@ def test_db_mapping_is_documented_and_bounded() -> None:
 def test_gstreamer_patch_preserves_webrtc_and_adds_one_analysis_branch(monkeypatch) -> None:
     import types
 
-    import reachy_mini_daemon_media as media
 
     created: list[tuple[str, str | None]] = []
 
@@ -211,12 +209,11 @@ def test_gstreamer_patch_preserves_webrtc_and_adds_one_analysis_branch(monkeypat
     fake_media = types.ModuleType("reachy_mini.media.media_server")
     fake_media.GstMediaServer = GstMediaServer
 
-    monkeypatch.setattr(media, "_is_jetson", lambda: True)
     monkeypatch.setitem(sys.modules, "gi", fake_gi)
     monkeypatch.setitem(sys.modules, "gi.repository", fake_repository)
     monkeypatch.setitem(sys.modules, "reachy_mini.media.media_server", fake_media)
-    media.apply_jetson_audio_spectrum_patch()
-    media.apply_jetson_audio_spectrum_patch()
+    media.install_audio_spectrum_tap()
+    media.install_audio_spectrum_tap()
 
     pipeline = Pipeline()
     sink = Element("webrtcsink", "webrtcsink")
@@ -251,7 +248,6 @@ def test_gstreamer_patch_preserves_webrtc_and_adds_one_analysis_branch(monkeypat
 def test_gstreamer_patch_rolls_back_false_link_and_restores_webrtc(monkeypatch) -> None:
     import types
 
-    import reachy_mini_daemon_media as media
 
     class Element:
         def __init__(self, factory: str, name: str | None = None) -> None:
@@ -323,12 +319,11 @@ def test_gstreamer_patch_rolls_back_false_link_and_restores_webrtc(monkeypatch) 
     fake_repository.Gst = fake_gst
     fake_media = types.ModuleType("reachy_mini.media.media_server")
     fake_media.GstMediaServer = GstMediaServer
-    monkeypatch.setattr(media, "_is_jetson", lambda: True)
     monkeypatch.setitem(sys.modules, "gi", fake_gi)
     monkeypatch.setitem(sys.modules, "gi.repository", fake_repository)
     monkeypatch.setitem(sys.modules, "reachy_mini.media.media_server", fake_media)
 
-    media.apply_jetson_audio_spectrum_patch()
+    media.install_audio_spectrum_tap()
     pipeline = Pipeline()
     sink = Element("webrtcsink", "webrtcsink")
     server = GstMediaServer()
@@ -347,7 +342,6 @@ def test_gstreamer_patch_rolls_back_false_link_and_restores_webrtc(monkeypatch) 
 def test_gstreamer_patch_keeps_audio_when_optional_tap_element_missing(monkeypatch) -> None:
     import types
 
-    import reachy_mini_daemon_media as media
 
     class Element:
         def __init__(self, name: str) -> None:
@@ -403,12 +397,11 @@ def test_gstreamer_patch_keeps_audio_when_optional_tap_element_missing(monkeypat
     fake_repository.Gst = fake_gst
     fake_media = types.ModuleType("reachy_mini.media.media_server")
     fake_media.GstMediaServer = GstMediaServer
-    monkeypatch.setattr(media, "_is_jetson", lambda: True)
     monkeypatch.setitem(sys.modules, "gi", fake_gi)
     monkeypatch.setitem(sys.modules, "gi.repository", fake_repository)
     monkeypatch.setitem(sys.modules, "reachy_mini.media.media_server", fake_media)
 
-    media.apply_jetson_audio_spectrum_patch()
+    media.install_audio_spectrum_tap()
     pipeline = Pipeline()
     sink = Element("webrtcsink")
     server = GstMediaServer()
@@ -418,40 +411,30 @@ def test_gstreamer_patch_keeps_audio_when_optional_tap_element_missing(monkeypat
     assert getattr(server, "_reachy_audio_spectrum_tap", None) is None
 
 
-def test_jetson_wrapper_sets_volume_before_asoundrc_and_daemon(monkeypatch) -> None:
-    import types
-
-    import reachy_mini_daemon_jetson as jetson
-    import reachy_mini_daemon_media as media
+def test_runtime_runs_host_setup_then_features_then_the_daemon(monkeypatch) -> None:
+    from reachy_bridge_runtime import main as runtime_main
+    from reachy_bridge_runtime import platforms, upstream
 
     calls: list[str] = []
-    monkeypatch.setattr(jetson, "_is_jetson", lambda: True)
-    monkeypatch.setattr(jetson, "_apply_saved_kinematics_engine", lambda: calls.append("engine"))
-    monkeypatch.setattr(jetson, "_install_kinematics_route", lambda: calls.append("kinematics"))
-    monkeypatch.setattr(jetson, "_apply_restart_keeps_kinematics_patch", lambda: None)
-    monkeypatch.setattr(jetson, "_placo_available", lambda: False)
-    monkeypatch.setattr(jetson, "_set_reachy_audio_output_volume", lambda: calls.append("volume"))
-    monkeypatch.setattr(jetson, "_ensure_reachymini_asoundrc", lambda: calls.append("asoundrc"))
-    for name in (
-        "apply_jetson_audio_spectrum_patch",
-        "install_camera_stream_route",
-        "install_audio_levels_route",
-    ):
-        monkeypatch.setattr(media, name, lambda name=name: calls.append(name))
+    platform = platforms.Platform(
+        name="test",
+        tier="tested",
+        host_setup=(lambda: calls.append("volume"), lambda: calls.append("asoundrc")),
+    )
+    monkeypatch.setattr(platforms, "detect", lambda: platform)
+    monkeypatch.setattr(runtime_main, "apply", lambda _platform: calls.append("features") or [])
+    monkeypatch.setattr(upstream, "run_daemon", lambda: calls.append("daemon") or 23)
+    monkeypatch.setattr(upstream, "installed_version", lambda: "test")
+    monkeypatch.setattr(sys, "argv", ["reachy-bridge-runtime"])
 
-    daemon_main = types.ModuleType("reachy_mini.daemon.app.main")
-    daemon_main.main = lambda: calls.append("daemon") or 23
-    monkeypatch.setitem(sys.modules, "reachy_mini.daemon.app.main", daemon_main)
+    assert runtime_main.main() == 23
+    assert calls == ["volume", "asoundrc", "features", "daemon"]
 
-    assert jetson.main() == 23
-    assert calls.index("volume") < calls.index("asoundrc") < calls.index("daemon")
 
 @pytest.mark.asyncio
 async def test_audio_levels_route_requires_media_and_fresh_tap_then_reacquires(monkeypatch) -> None:
     import httpx
     import types
-    import reachy_mini.daemon.app as daemon_app
-    import reachy_mini_daemon_media as media
 
     from fastapi import FastAPI
 
@@ -462,17 +445,9 @@ async def test_audio_levels_route_requires_media_and_fresh_tap_then_reacquires(m
         media_released=False,
         _media_server=types.SimpleNamespace(_reachy_audio_spectrum_tap=tap),
     )
-    fake_main = types.SimpleNamespace()
-
-    def base_create_app(*_args, **_kwargs):
-        app = FastAPI()
-        app.state.daemon = daemon
-        return app
-
-    fake_main.create_app = base_create_app
-    monkeypatch.setattr(daemon_app, "main", fake_main, raising=False)
-    media.install_audio_levels_route()
-    app = fake_main.create_app()
+    app = FastAPI()
+    app.state.daemon = daemon
+    media.install_audio_levels_route(app)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

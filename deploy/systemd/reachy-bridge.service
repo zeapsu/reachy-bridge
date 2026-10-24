@@ -1,0 +1,27 @@
+[Unit]
+Description=Reachy Mini daemon with the bridge runtime (robot starts off; switch on from the controller)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The daemon puts community apps in apps_venv next to its own venv, and its
+# app metadata in the working directory.
+WorkingDirectory=%h/.local/share/reachy-bridge
+# uv must be on PATH: the daemon shells out to it to install apps, and app
+# dependencies built from source may need cargo.
+Environment=PATH=@UV_DIR@:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+# Loopback only: the daemon has no authentication. Only the controller is
+# exposed, and only through tailscale serve.
+ExecStart=%h/.local/share/reachy-bridge/.venv/bin/reachy-bridge-runtime \
+    --desktop-app-daemon --headless --no-autostart --no-wake-up-on-start \
+    --fastapi-host 127.0.0.1 --fastapi-port 8000
+# SIGINT lets the daemon put the robot to sleep and release torque.
+KillSignal=SIGINT
+TimeoutStopSec=25
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

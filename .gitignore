@@ -16,6 +16,9 @@ node_modules/
 .venv/
 venv/
 env/
+# Community apps the daemon installs next to its venv (a dev daemon run from
+# the checkout puts them here).
+/apps_venv/
 
 # --- Secrets & local config (keep the examples) ---
 .env

@@ -5,7 +5,10 @@ found in its source and confirmed on a Reachy Mini Lite. The controller is
 built against this document, not against assumptions. When the pinned daemon
 version changes, re-check every section against the new source.
 
-Source paths below are relative to the installed `reachy_mini` package.
+Source paths below are relative to the installed `reachy_mini` package. The
+bridge touches daemon internals only through
+`runtime/src/reachy_bridge_runtime/upstream.py`, whose `REQUIREMENTS` list
+every symbol it relies on; `reachy-bridge-runtime --check` verifies them.
 
 ## Process and ports
 
@@ -83,11 +86,11 @@ The controller derives its robot state from these two fields
   HTTP 500.
 - `Daemon.restart` (REST `daemon/restart` and the WebRTC restart command)
   calls `start` without the engine, so upstream falls back to the default.
-  The wrapper's `_apply_restart_keeps_kinematics_patch` reuses the engine of
-  the last explicit start.
+  The runtime's kinematics feature (`runtime/.../features/kinematics.py`)
+  reuses the engine of the last explicit start.
 - The daemon reports `stopped` (or `error`) slightly before it drops the
   backend, so "fully off" means `backend_status` is `null` too.
-- Bridge route (`_install_kinematics_route` in the wrapper):
+- Bridge route (`features/kinematics.py` in the runtime):
   - `GET /api/bridge/kinematics` returns `engine` (what the next power-on
     uses), `active` (the running backend's engine, `null` when off) and
     `available` (what imports).
@@ -172,8 +175,8 @@ Source: `request_idle_reset` and `_async_idle_reset` in
 - **Needs the backend's event loop**, which only exists with media enabled. A
   daemon started with `--no-media` never runs the idle reset. Sim tests that
   need it can't use `--no-media`.
-- **Bridge patch:** `_apply_keep_awake_on_app_stop_patch` in
-  `tools/reachy_mini_daemon_jetson.py` detaches the trigger during
+- **Bridge patch:** the runtime's keep-awake feature
+  (`runtime/.../features/keep_awake.py`) detaches the trigger during
   `stop-current-app`. A requested stop then leaves the robot awake at the
   home pose; crashes and remote drops still put it to sleep.
 
