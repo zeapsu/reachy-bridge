@@ -12,9 +12,11 @@ apps from Hugging Face Spaces.
 ## What's here today
 
 ```
+runtime/                  Pollen's daemon plus the bridge's features and platform adapters
 controller/               controller: Rust (axum) binary that embeds the dashboard (#144)
 web/                      dashboard: React + TypeScript, built with Vite and Bun
-tools/                    Jetson daemon wrapper, media extensions, webrtcsink build, udev rule
+deploy/                   installer, user units, and the reachy-bridge command
+tools/                    sim smoke test, webrtcsink build for Jetson, udev rule
 hello.py                  SDK smoke test (antenna wiggle)
 ```
 
@@ -22,18 +24,34 @@ The controller talks to the daemon at `127.0.0.1:8000`. It switches the robot on
 plays expressions, shows telemetry, camera, audio and logs,
 and starts or stops installed Hugging Face apps. A running app is opened in its own UI.
 
+The daemon is Pollen's `reachy-mini`, tracked rather than pinned: `uv.lock` holds the tested
+version and is bumped as Pollen releases (#155). Everything the bridge patches in the daemon
+goes through `runtime/src/reachy_bridge_runtime/upstream.py`, and
+`reachy-bridge-runtime --check` verifies those hooks against the installed version.
+
+## Install on the device
+
+```bash
+deploy/install.sh        # runtime venv, controller, user units, the reachy-bridge command
+reachy-bridge serve      # publish on the tailnet (dashboard on HTTPS :10000)
+reachy-bridge status
+```
+
+The robot starts off; switch it on from the dashboard. `install.sh` is safe to re-run after a
+pull, and never restarts the daemon while the robot is on.
+
 ## Development quick start
 
 ```bash
 uv sync
-uv run python -m reachy_mini.daemon.app.main --sim --headless   # simulator daemon
-(cd web && bun install && bun run build)                        # dashboard into web/dist
-(cd controller && cargo run --release)                           # controller on :7861
+uv run reachy-bridge-runtime --sim --headless --fastapi-port 8000   # simulator daemon
+(cd web && bun install && bun run build)                             # dashboard into web/dist
+(cd controller && cargo run --release)                                # controller on :7861
 ```
 
 Then open <http://127.0.0.1:7861/>. For UI work, `bun run dev` in `web/` serves the dashboard
 with hot reload and proxies the API to the controller. Tests: `cargo test` in `controller/`,
-`bun test` in `web/`, `uv run pytest tools`, and `tools/sim/smoke.py` against a sim daemon.
+`bun test` in `web/`, `uv run pytest` (runtime), and `tools/sim/smoke.py` against a sim daemon.
 
 A user-facing install guide, `CONTRIBUTING.md` and the license arrive with the public release
 (#135, #136, #60).
