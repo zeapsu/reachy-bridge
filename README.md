@@ -53,7 +53,8 @@ Then open <http://127.0.0.1:7861/>. For UI work, `bun run dev` in `web/` serves 
 with hot reload and proxies the API to the controller. Tests: `cargo test` in `controller/`,
 `bun test` in `web/`, `uv run pytest` (runtime), and `tools/sim/smoke.py` against a sim daemon.
 CI runs everything but the sim smoke test on each PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2,
-as on JetPack 7).
+as on JetPack 7). Pushing a `vX.Y.Z` tag runs CI and then publishes a GitHub Release with the
+source archive, `uv.lock`, `SHA256SUMS` and a build attestation; `-rc` tags are prereleases.
 
 A user-facing install guide, `CONTRIBUTING.md` and the license arrive with the public release
 (#135, #136, #60).
