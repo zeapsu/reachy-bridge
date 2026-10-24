@@ -16,7 +16,7 @@ runtime/                  Pollen's daemon plus the bridge's features and platfor
 controller/               controller: Rust (axum) binary that embeds the dashboard (#144)
 web/                      dashboard: React + TypeScript, built with Vite and Bun
 deploy/                   installer, user units, and the reachy-bridge command
-tools/                    sim smoke test, webrtcsink build for Jetson, udev rule
+tools/                    sim integration tests, webrtcsink build for Jetson, udev rule
 hello.py                  SDK smoke test (antenna wiggle)
 ```
 
@@ -51,9 +51,13 @@ uv run reachy-bridge-runtime --sim --headless --fastapi-port 8000   # simulator 
 
 Then open <http://127.0.0.1:7861/>. For UI work, `bun run dev` in `web/` serves the dashboard
 with hot reload and proxies the API to the controller. Tests: `cargo test` in `controller/`,
-`bun test` in `web/`, `uv run pytest` (runtime), and `tools/sim/smoke.py` against a sim daemon.
-CI runs everything but the sim smoke test on each PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2,
-as on JetPack 7). Pushing a `vX.Y.Z` tag runs CI and then publishes a GitHub Release with the
+`bun test` in `web/`, `uv run pytest` (runtime), and the sim integration tests,
+`uv run python tools/sim/run.py` (after the release build; see `tools/sim/README.md`).
+CI runs all of them on each PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPack 7).
+
+What the controller may assume about the daemon (power, motor modes, the idle reset, app
+lifecycle) is in [`docs/daemon-contract.md`](docs/daemon-contract.md). Read it before changing
+how the controller drives the daemon, and re-check it when the locked `reachy-mini` changes. Pushing a `vX.Y.Z` tag runs CI and then publishes a GitHub Release with the
 source archive, `uv.lock`, `SHA256SUMS` and a build attestation; `-rc` tags are prereleases.
 
 A user-facing install guide, `CONTRIBUTING.md` and the license arrive with the public release
