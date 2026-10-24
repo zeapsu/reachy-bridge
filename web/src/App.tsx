@@ -3,7 +3,9 @@ import { apiJson, paths, type Kinematics, type RobotState } from "./api.ts";
 import { AppsPanel } from "./components/AppsPanel.tsx";
 import { AudioPanel } from "./components/AudioPanel.tsx";
 import { ControlsPanel, type ControlHint } from "./components/ControlsPanel.tsx";
+import { DevicesPanel } from "./components/DevicesPanel.tsx";
 import { ExpressionsPanel } from "./components/ExpressionsPanel.tsx";
+import { AuthGate } from "./components/Login.tsx";
 import { StatusBar } from "./components/StatusBar.tsx";
 import { SystemPanel } from "./components/SystemPanel.tsx";
 import { ThemePopover } from "./components/ThemePicker.tsx";
@@ -19,13 +21,22 @@ import { CONTROL_HINT_OFFLINE } from "./logic/controls.ts";
 
 const POLL_MS = 1000;
 
+/** The login screen when LAN access needs it (#141), else the dashboard. */
+export function App() {
+  return (
+    <AuthGate>
+      <Dashboard />
+    </AuthGate>
+  );
+}
+
 /**
  * Dashboard root. Owns the cross-panel state main.js kept in one object:
  * daemon online (telemetry stream), the active app, control busy/status,
  * motor mode, kinematics, and the expression session. Live connections run
  * only while the tab is visible.
  */
-export function App() {
+function Dashboard() {
   const visible = usePageVisible();
   const [daemonOnline, setDaemonOnline] = useState(false);
   const [controlBusy, setControlBusy] = useState(false);
@@ -94,6 +105,7 @@ export function App() {
             />
             <AudioPanel daemonOnline={daemonOnline} live={visible} />
             <SystemPanel daemonOnline={daemonOnline} live={visible} />
+            <DevicesPanel />
           </div>
           <div className="col">
             <AppsPanel apps={apps} daemonOnline={daemonOnline} exprBusy={expr.busy !== null} />
