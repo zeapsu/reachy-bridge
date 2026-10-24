@@ -53,11 +53,20 @@ function setLoadingStep(target: Window | null, step: string, attempt = 0): void 
   }
 }
 
-function openAppUiTab(port: number | string): void {
-  window.open(appUiUrl(window.location.hostname, port), "_blank", "noopener");
+/** Phones and tablets hide their tabs, so there an app's UI replaces the
+ *  dashboard in the same tab and Back returns to it (#159). */
+function opensInSameTab(): boolean {
+  return window.matchMedia?.("(hover: none) and (pointer: coarse)").matches === true;
 }
 
-async function waitAndOpenAppUi(name: string, target: Window | null): Promise<void> {
+function openAppUiTab(port: number | string): void {
+  const url = appUiUrl(window.location.hostname, port);
+  if (opensInSameTab()) window.location.assign(url);
+  else window.open(url, "_blank", "noopener");
+}
+
+/** Wait for the app's server, then open it; false if it never answered. */
+async function waitAndOpenAppUi(name: string, target: Window | null): Promise<boolean> {
   for (let attempt = 0; attempt < APP_UI_WAIT_ATTEMPTS; attempt += 1) {
     try {
       const payload = await apiJson<AppUi>(paths.appUi(name));
@@ -65,7 +74,7 @@ async function waitAndOpenAppUi(name: string, target: Window | null): Promise<vo
         setLoadingStep(target, "opening");
         if (target && !target.closed) target.location.href = appUiUrl(window.location.hostname, payload.port);
         else openAppUiTab(payload.port);
-        return;
+        return true;
       }
     } catch {
       // keep waiting
@@ -73,6 +82,7 @@ async function waitAndOpenAppUi(name: string, target: Window | null): Promise<vo
     await sleep(APP_UI_WAIT_INTERVAL_MS);
   }
   setLoadingStep(target, `failed:${name} did not open its interface within 30 s.`);
+  return false;
 }
 
 export function useApps(): AppsState {
@@ -181,9 +191,10 @@ export function useApps(): AppsState {
       if (appBusyRef.current) return;
       const app = statusesRef.current.find((item) => item.name === name);
       // Open the tab inside the click (popup blockers), then point it at the
-      // app once its server answers.
+      // app once its server answers. In the same-tab flow the dashboard shows
+      // the progress itself.
       let pending: Window | null = null;
-      if (action === "start" && app?.has_ui) {
+      if (action === "start" && app?.has_ui && !opensInSameTab()) {
         pending = window.open(loadingPageUrl(paths.loadingPage, app.display || name), "_blank");
         if (pending) pending.opener = null;
       }
@@ -201,7 +212,11 @@ export function useApps(): AppsState {
           }
           if (action === "start" && result && result.ui_port) {
             setLoadingStep(pending, "starting");
-            void waitAndOpenAppUi(name, pending);
+            void waitAndOpenAppUi(name, pending).then((opened) => {
+              if (!opened && !pending) {
+                setMessage({ text: `${name} did not open its interface within 30 s.`, kind: "error" });
+              }
+            });
           } else if (pending) pending.close();
           await poll();
           setMessage({ text: actionResultMessage(name, result?.status), kind: "ok" });
