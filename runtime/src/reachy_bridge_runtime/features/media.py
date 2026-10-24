@@ -1,8 +1,12 @@
-"""Lazy shared MJPEG endpoint for the Reachy Mini daemon's camera IPC feed.
+"""Media extras the controller uses: the mic spectrum and the camera preview.
 
-This module is intentionally separate from the Jetson compatibility wrapper.  It
-only consumes the daemon's already-published local IPC stream; it never opens a
-camera device or constructs a second media server.
+- ``apply_audio_spectrum`` tees the daemon-owned mic capture into one bounded
+  analysis branch, served at ``GET /api/audio/levels``.
+- ``GET /api/camera/stream.mjpg`` shares one reader of the daemon's published
+  camera feed between HTTP clients. It never opens the camera device or
+  builds a second media server.
+
+Daemon access goes through ``reachy_bridge_runtime.upstream``.
 """
 
 from __future__ import annotations
@@ -11,7 +15,6 @@ import asyncio
 import contextlib
 import logging
 import math
-import platform
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable
@@ -24,7 +27,11 @@ import numpy as np
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from reachy_bridge_runtime import upstream
+
 logger = logging.getLogger(__name__)
+
+FEATURES = ("audio_levels", "camera")
 
 MJPEG_CONTENT_TYPE = "multipart/x-mixed-replace; boundary=frame"
 _FRAME_CLOSE = object()
@@ -291,10 +298,14 @@ class AudioSpectrumTap:
         return dict(snapshot)
 
 
-def apply_jetson_audio_spectrum_patch() -> None:
+def apply_audio_spectrum() -> None:
+    install_audio_spectrum_tap()
+    upstream.on_create_app(install_audio_levels_route)
+    logger.info("Audio levels: on")
+
+
+def install_audio_spectrum_tap() -> None:
     """Tee the daemon-owned mic capture into one bounded analysis appsink."""
-    if not _is_jetson():
-        return
     try:
         import gi
 
@@ -303,20 +314,11 @@ def apply_jetson_audio_spectrum_patch() -> None:
     except (ImportError, ValueError) as exc:
         logger.warning("GStreamer unavailable; skipping audio spectrum tap: %s", exc)
         return
-    try:
-        from reachy_mini.media.media_server import GstMediaServer
-    except ImportError as exc:
-        logger.warning("Reachy Mini media server unavailable: %s", exc)
-        return
 
-    if getattr(GstMediaServer, "_reachy_audio_spectrum_patched", False):
-        return
-    original_configure_audio = GstMediaServer._configure_audio
-
-    def _configure_audio(self: Any, pipeline: Any, webrtcsink: Any) -> None:
+    def _configure_audio(original: Any, self: Any, pipeline: Any, webrtcsink: Any) -> None:
         self._reachy_audio_spectrum_tap = None
-        original_configure_audio(self, pipeline, webrtcsink)
-        queue_audiosrc = pipeline.get_by_name("queue_audiosrc")
+        original(self, pipeline, webrtcsink)
+        queue_audiosrc = pipeline.get_by_name(upstream.AUDIO_QUEUE_ELEMENT)
         if queue_audiosrc is None:
             return
 
@@ -418,21 +420,8 @@ def apply_jetson_audio_spectrum_patch() -> None:
         appsink.connect("new-sample", _on_new_sample)
         self._reachy_audio_spectrum_tap = tap
 
-    GstMediaServer._configure_audio = _configure_audio
-    GstMediaServer._reachy_audio_spectrum_patched = True
-    logger.info("Installed shared daemon audio spectrum tap")
+    upstream.wrap_configure_audio(_configure_audio)
 
-
-def _is_jetson() -> bool:
-    """Return whether this process is running on an NVIDIA Jetson board."""
-    if platform.system() != "Linux":
-        return False
-    try:
-        with open("/proc/device-tree/model", "r") as model_file:
-            model = model_file.read()
-    except OSError:
-        return False
-    return "Tegra" in model or "NVIDIA" in model
 
 
 class CameraStreamUnavailable(RuntimeError):
@@ -482,9 +471,7 @@ class CameraMJPEGStreamer:
 
     @staticmethod
     def _default_camera_factory() -> Any:
-        from reachy_mini.media.camera_gstreamer import GStreamerCamera
-
-        return GStreamerCamera(log_level="WARNING")
+        return upstream.open_camera()
 
     @staticmethod
     def _default_encoder(frame: Any) -> bytes:
@@ -497,17 +484,12 @@ class CameraMJPEGStreamer:
 
     @staticmethod
     def _default_media_ready(daemon: Any) -> bool:
-        if daemon is None or getattr(daemon, "_media_server", None) is None:
+        if daemon is None or upstream.media_server(daemon) is None:
             return False
-        released = getattr(daemon, "media_released", False)
-        if callable(released):
-            released = released()
-        if released:
+        if upstream.media_released(daemon):
             return False
         try:
-            from reachy_mini.daemon.utils import is_local_camera_available
-
-            return bool(is_local_camera_available())
+            return upstream.local_camera_available()
         except Exception:
             return False
 
@@ -809,7 +791,7 @@ class CameraMJPEGStreamer:
             await self.unsubscribe(subscriber)
 
     async def response(self, request: Request) -> StreamingResponse:
-        daemon = getattr(request.app.state, "daemon", None)
+        daemon = upstream.app_daemon(request.app)
         stream = self.frames(daemon)
         try:
             # Wait for one frame before sending headers so missing optional
@@ -837,61 +819,35 @@ class CameraMJPEGStreamer:
         return StreamingResponse(body(), headers={"content-type": MJPEG_CONTENT_TYPE})
 
 
-def install_camera_stream_route() -> None:
-    """Wrap daemon ``create_app`` so every daemon app has the MJPEG route."""
-    from reachy_mini.daemon.app import main as daemon_main
+def install_camera_stream_route(app: Any) -> None:
+    """``GET /api/camera/stream.mjpg`` on a daemon app."""
+    streamer = CameraMJPEGStreamer()
+    app.state.camera_mjpeg_streamer = streamer
 
-    original = daemon_main.create_app
-    if getattr(original, "_reachy_camera_stream_patch", False):
-        return
+    @app.get("/api/camera/stream.mjpg", include_in_schema=False)
+    async def camera_stream(request: Request) -> StreamingResponse:
+        return await streamer.response(request)
 
-    def create_app(*args: Any, **kwargs: Any) -> Any:
-        app = original(*args, **kwargs)
-        streamer = CameraMJPEGStreamer()
-        app.state.camera_mjpeg_streamer = streamer
 
-        @app.get("/api/camera/stream.mjpg", include_in_schema=False)
-        async def camera_stream(request: Request) -> StreamingResponse:
-            return await streamer.response(request)
+def install_audio_levels_route(app: Any) -> None:
+    """``GET /api/audio/levels``: the latest fresh mic spectrum."""
 
-        return app
+    @app.get("/api/audio/levels", include_in_schema=False)
+    async def audio_levels(request: Request) -> dict[str, Any]:
+        daemon = upstream.app_daemon(request.app)
+        if daemon is None:
+            raise HTTPException(status_code=503, detail="Audio media unavailable")
+        if upstream.media_released(daemon):
+            raise HTTPException(status_code=503, detail="Audio media released")
+        tap = getattr(upstream.media_server(daemon), "_reachy_audio_spectrum_tap", None)
+        if tap is None:
+            raise HTTPException(status_code=503, detail="Audio spectrum unavailable")
+        levels = tap.latest_if_fresh(max_age=1.0)
+        if levels is None:
+            raise HTTPException(status_code=503, detail="Audio spectrum is stale")
+        return levels
 
-    create_app._reachy_camera_stream_patch = True  # type: ignore[attr-defined]
-    daemon_main.create_app = create_app
-    logger.info("Installed shared daemon camera MJPEG route")
- 
-def install_audio_levels_route() -> None:
-    """Wrap daemon ``create_app`` with the fresh mic-level endpoint."""
-    from reachy_mini.daemon.app import main as daemon_main
 
-    original = daemon_main.create_app
-    if getattr(original, "_reachy_audio_levels_route_patch", False):
-        return
-
-    def create_app(*args: Any, **kwargs: Any) -> Any:
-        app = original(*args, **kwargs)
-
-        @app.get("/api/audio/levels", include_in_schema=False)
-        async def audio_levels(request: Request) -> dict[str, Any]:
-            daemon = getattr(request.app.state, "daemon", None)
-            if daemon is None:
-                raise HTTPException(status_code=503, detail="Audio media unavailable")
-            released = getattr(daemon, "media_released", False)
-            if callable(released):
-                released = released()
-            if released:
-                raise HTTPException(status_code=503, detail="Audio media released")
-            media_server = getattr(daemon, "_media_server", None)
-            tap = getattr(media_server, "_reachy_audio_spectrum_tap", None)
-            if tap is None:
-                raise HTTPException(status_code=503, detail="Audio spectrum unavailable")
-            levels = tap.latest_if_fresh(max_age=1.0)
-            if levels is None:
-                raise HTTPException(status_code=503, detail="Audio spectrum is stale")
-            return levels
-
-        return app
-
-    create_app._reachy_audio_levels_route_patch = True  # type: ignore[attr-defined]
-    daemon_main.create_app = create_app
-    logger.info("Installed daemon audio levels route")
+def apply_camera_stream() -> None:
+    upstream.on_create_app(install_camera_stream_route)
+    logger.info("Camera preview: on")

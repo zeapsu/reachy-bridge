@@ -1,4 +1,4 @@
-"""Kinematics engine route and saved-engine startup in the daemon wrapper."""
+"""Kinematics engine route, saved-engine startup and the restart patch."""
 
 from __future__ import annotations
 
@@ -11,15 +11,15 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-import reachy_mini_daemon_jetson as jetson  # noqa: E402
+from reachy_bridge_runtime import upstream
+from reachy_bridge_runtime.features import kinematics
 
 
 @pytest.fixture(autouse=True)
 def _state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("REACHY_BRIDGE_STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(jetson, "_placo_available", lambda: True)
+    monkeypatch.setattr(kinematics, "placo_available", lambda: True)
+    monkeypatch.setattr(upstream, "_app_installers", [])
     return tmp_path
 
 
@@ -37,7 +37,7 @@ def _app(monkeypatch: pytest.MonkeyPatch, *, backend: object | None = None) -> F
     package.main = daemon_main  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "reachy_mini.daemon.app", package)
     monkeypatch.setitem(sys.modules, "reachy_mini.daemon.app.main", daemon_main)
-    jetson._install_kinematics_route()
+    upstream.on_create_app(kinematics.install_route)
     return daemon_main.create_app()
 
 
@@ -71,7 +71,7 @@ async def test_switch_is_refused_while_the_backend_runs(monkeypatch: pytest.Monk
 
 @pytest.mark.asyncio
 async def test_unknown_or_missing_engine_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(jetson, "_placo_available", lambda: False)
+    monkeypatch.setattr(kinematics, "placo_available", lambda: False)
     app = _app(monkeypatch)
     async with _client(app) as client:
         assert (await client.put("/api/bridge/kinematics", json={"engine": "NN"})).status_code == 400
@@ -82,18 +82,18 @@ async def test_unknown_or_missing_engine_is_rejected(monkeypatch: pytest.MonkeyP
 
 def test_saved_engine_is_passed_to_the_daemon(monkeypatch: pytest.MonkeyPatch, _state: Path) -> None:
     (_state / "kinematics.json").write_text(json.dumps({"engine": "Placo"}))
-    monkeypatch.setattr(sys, "argv", ["wrapper", "--headless"])
-    jetson._apply_saved_kinematics_engine()
-    assert sys.argv == ["wrapper", "--headless", "--kinematics-engine", "Placo"]
+    argv = ["runtime", "--headless"]
+    kinematics.apply_saved_engine(argv)
+    assert argv == ["runtime", "--headless", "--kinematics-engine", "Placo"]
 
 
 def test_command_line_engine_wins_over_the_saved_one(
     monkeypatch: pytest.MonkeyPatch, _state: Path
 ) -> None:
     (_state / "kinematics.json").write_text(json.dumps({"engine": "Placo"}))
-    monkeypatch.setattr(sys, "argv", ["wrapper", "--kinematics-engine", "AnalyticalKinematics"])
-    jetson._apply_saved_kinematics_engine()
-    assert sys.argv == ["wrapper", "--kinematics-engine", "AnalyticalKinematics"]
+    argv = ["runtime", "--kinematics-engine", "AnalyticalKinematics"]
+    kinematics.apply_saved_engine(argv)
+    assert argv == ["runtime", "--kinematics-engine", "AnalyticalKinematics"]
 
 
 @pytest.mark.asyncio
@@ -112,7 +112,7 @@ async def test_restart_keeps_the_engine_of_the_last_start(monkeypatch: pytest.Mo
     daemon_module = types.ModuleType("reachy_mini.daemon.daemon")
     daemon_module.Daemon = FakeDaemon  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "reachy_mini.daemon.daemon", daemon_module)
-    jetson._apply_restart_keeps_kinematics_patch()
+    upstream.wrap_daemon_start(kinematics._start)
 
     daemon = FakeDaemon()
     await daemon.start(sim=False, kinematics_engine="Placo")

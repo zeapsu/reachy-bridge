@@ -1,0 +1,380 @@
+"""The seam between the bridge and Pollen's daemon (``reachy-mini``).
+
+This is the only runtime module that imports ``reachy_mini`` or reads its
+private attributes. The features (``features/``) and platform adapters
+(``platforms/``) call the functions here and never reach into the daemon
+themselves. When an upstream release renames or reshapes something, the fix
+belongs in this file, which is the surface the SDK update agent may change
+(#155). If a fix needs a different hook rather than a renamed one, it isn't a
+seam fix: flag it.
+
+Every upstream symbol used here is listed in ``REQUIREMENTS`` with the
+feature that needs it. ``check()`` verifies them without starting anything;
+``python -m reachy_bridge_runtime --check`` runs it in CI and fails on any
+mismatch. At service startup a feature whose requirements fail is skipped
+with an error instead of half-applying a patch to code it doesn't match.
+"""
+
+from __future__ import annotations
+
+import importlib
+import inspect
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
+
+# --- Requirements ------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Requirement:
+    feature: str
+    description: str
+    check: Callable[[], None]
+
+
+class UpstreamMismatch(RuntimeError):
+    """An upstream symbol a feature relies on is missing or has changed."""
+
+
+def _attr(module: str, path: str) -> Any:
+    try:
+        target: Any = importlib.import_module(module)
+    except ImportError as exc:
+        raise UpstreamMismatch(f"cannot import {module}: {exc}") from exc
+    for name in path.split(".") if path else ():
+        if not hasattr(target, name):
+            raise UpstreamMismatch(f"{module}.{path}: no attribute {name!r}")
+        target = getattr(target, name)
+    return target
+
+
+def _coroutine(module: str, path: str, *params: str) -> Callable[[], None]:
+    def check() -> None:
+        function = _attr(module, path)
+        if not inspect.iscoroutinefunction(function):
+            raise UpstreamMismatch(f"{module}.{path} is no longer a coroutine function")
+        _has_params(function, f"{module}.{path}", params)
+
+    return check
+
+
+def _function(module: str, path: str, *params: str) -> Callable[[], None]:
+    def check() -> None:
+        function = _attr(module, path)
+        if not callable(function):
+            raise UpstreamMismatch(f"{module}.{path} is not callable")
+        _has_params(function, f"{module}.{path}", params)
+
+    return check
+
+
+def _has_params(function: Any, name: str, params: tuple[str, ...]) -> None:
+    signature = inspect.signature(function)
+    missing = [p for p in params if p not in signature.parameters]
+    if missing:
+        raise UpstreamMismatch(f"{name}{signature} lacks parameter(s) {', '.join(missing)}")
+
+
+def _source_mentions(module: str, path: str, *names: str) -> Callable[[], None]:
+    """For private attributes that only exist on instances."""
+
+    def check() -> None:
+        source = inspect.getsource(_attr(module, path))
+        missing = [n for n in names if n not in source]
+        if missing:
+            raise UpstreamMismatch(f"{module}.{path} no longer uses {', '.join(missing)}")
+
+    return check
+
+
+_MANAGER = "reachy_mini.apps.manager"
+_DAEMON = "reachy_mini.daemon.daemon"
+_APP_MAIN = "reachy_mini.daemon.app.main"
+_LOCK = "reachy_mini.daemon.robot_app_lock"
+_BACKEND = "reachy_mini.daemon.backend.abstract"
+_MEDIA_SERVER = "reachy_mini.media.media_server"
+
+REQUIREMENTS: tuple[Requirement, ...] = (
+    Requirement("daemon", "daemon entry point", _function(_APP_MAIN, "main")),
+    Requirement("routes", "create_app builds the FastAPI app", _function(_APP_MAIN, "create_app", "args")),
+    Requirement(
+        "routes",
+        "app.state holds the daemon and its args",
+        _source_mentions(_APP_MAIN, "create_app", "app.state.daemon", "app.state.args"),
+    ),
+    Requirement(
+        "keep_awake",
+        "AppManager.stop_current_app",
+        _coroutine(_MANAGER, "AppManager.stop_current_app"),
+    ),
+    Requirement(
+        "keep_awake",
+        "the robot slot's became-free hook",
+        _function(_LOCK, "RobotAppLock.set_on_became_free_handler"),
+    ),
+    Requirement(
+        "keep_awake",
+        "RobotAppLock stores the hook in _on_became_free",
+        _source_mentions(_LOCK, "RobotAppLock", "_on_became_free"),
+    ),
+    Requirement(
+        "keep_awake",
+        "Daemon owns robot_app_lock and backend",
+        _source_mentions(_DAEMON, "Daemon", "self.robot_app_lock", "self.backend"),
+    ),
+    Requirement(
+        "keep_awake",
+        "Backend.is_shutting_down",
+        _source_mentions(_BACKEND, "Backend", "is_shutting_down"),
+    ),
+    Requirement(
+        "kinematics",
+        "Daemon.start takes kinematics_engine",
+        _coroutine(_DAEMON, "Daemon.start", "kinematics_engine"),
+    ),
+    Requirement(
+        "kinematics",
+        "the backend records its kinematics engine",
+        _source_mentions(_BACKEND, "Backend", "kinematics_engine"),
+    ),
+    Requirement(
+        "kinematics",
+        "daemon/start reads the engine from app.state.args",
+        _source_mentions("reachy_mini.daemon.app.routers.daemon", "", "kinematics_engine"),
+    ),
+    Requirement(
+        "audio_levels",
+        "GstMediaServer._configure_audio(pipeline, webrtcsink)",
+        _function(_MEDIA_SERVER, "GstMediaServer._configure_audio", "pipeline", "webrtcsink"),
+    ),
+    Requirement(
+        "audio_levels",
+        f"the mic branch ends in a queue named {'queue_audiosrc'!r}",
+        _source_mentions(_MEDIA_SERVER, "GstMediaServer", "queue_audiosrc"),
+    ),
+    Requirement(
+        "audio_levels",
+        "Daemon keeps the media server in _media_server and has media_released",
+        _source_mentions(_DAEMON, "Daemon", "_media_server", "media_released"),
+    ),
+    Requirement(
+        "camera",
+        "GStreamerCamera reads the daemon's shared camera feed",
+        _function("reachy_mini.media.camera_gstreamer", "GStreamerCamera", "log_level"),
+    ),
+    Requirement(
+        "camera",
+        "is_local_camera_available",
+        _function("reachy_mini.daemon.utils", "is_local_camera_available"),
+    ),
+    Requirement(
+        "asoundrc",
+        "the Reachy Mini ~/.asoundrc helpers",
+        lambda: (
+            _function("reachy_mini.media.audio_utils", "check_reachymini_asoundrc")(),
+            _function("reachy_mini.media.audio_utils", "write_asoundrc_to_home")(),
+        ),
+    ),
+)
+
+
+def check(features: set[str] | None = None) -> dict[str, list[str]]:
+    """Problems per feature (an empty dict when everything matches)."""
+    problems: dict[str, list[str]] = {}
+    for requirement in REQUIREMENTS:
+        if features is not None and requirement.feature not in features:
+            continue
+        try:
+            requirement.check()
+        except Exception as exc:  # UpstreamMismatch, or anything the import raised
+            problems.setdefault(requirement.feature, []).append(f"{requirement.description}: {exc}")
+    return problems
+
+
+def installed_version() -> str:
+    from importlib.metadata import version
+
+    return version("reachy-mini")
+
+
+# --- Daemon ------------------------------------------------------------------
+
+KINEMATICS_ENGINES = ("AnalyticalKinematics", "Placo")
+DEFAULT_KINEMATICS = KINEMATICS_ENGINES[0]
+KINEMATICS_FLAG = "--kinematics-engine"
+
+
+def run_daemon() -> int:
+    """Run the stock daemon entry point with the current ``sys.argv``."""
+    from reachy_mini.daemon.app.main import main
+
+    return main()
+
+
+def wrap_daemon_start(wrapper: Callable[..., Awaitable[Any]]) -> None:
+    """Replace ``Daemon.start`` with ``wrapper(original, daemon, *args, **kwargs)``.
+
+    Like every ``wrap_*`` here, wrapping twice with the same function (by
+    qualified name) is a no-op.
+    """
+    from reachy_mini.daemon.daemon import Daemon
+
+    _wrap(Daemon, "start", wrapper)
+
+
+def start_kinematics(kwargs: dict[str, Any]) -> str | None:
+    """The kinematics engine an explicit ``Daemon.start`` call names."""
+    return kwargs.get("kinematics_engine")
+
+
+def with_kinematics(kwargs: dict[str, Any], engine: str) -> dict[str, Any]:
+    return {**kwargs, "kinematics_engine": engine}
+
+
+def _wrap(owner: Any, name: str, wrapper: Callable[..., Any]) -> None:
+    original = getattr(owner, name)
+    key = f"{wrapper.__module__}.{wrapper.__qualname__}"
+    if getattr(original, "_bridge_wrapper", None) == key:
+        return
+
+    if inspect.iscoroutinefunction(original):
+
+        async def patched(self: Any, *args: Any, **kwargs: Any) -> Any:
+            return await wrapper(original, self, *args, **kwargs)
+
+    else:
+
+        def patched(self: Any, *args: Any, **kwargs: Any) -> Any:  # type: ignore[misc]
+            return wrapper(original, self, *args, **kwargs)
+
+    patched._bridge_wrapper = key  # type: ignore[attr-defined]
+    patched.__wrapped__ = original  # type: ignore[attr-defined]
+    setattr(owner, name, patched)
+
+
+# --- Apps and the robot slot -------------------------------------------------
+
+
+def wrap_stop_current_app(wrapper: Callable[..., Awaitable[Any]]) -> None:
+    """Replace ``AppManager.stop_current_app`` with ``wrapper(original, manager, ...)``."""
+    from reachy_mini.apps.manager import AppManager
+
+    _wrap(AppManager, "stop_current_app", wrapper)
+
+
+def manager_daemon(manager: Any) -> Any | None:
+    return getattr(manager, "daemon", None)
+
+
+def slot_free_handler(daemon: Any) -> Callable[..., Any] | None:
+    """The hook the robot slot calls when it becomes free (the idle reset)."""
+    lock = getattr(daemon, "robot_app_lock", None)
+    return getattr(lock, "_on_became_free", None)
+
+
+def set_slot_free_handler(daemon: Any, handler: Callable[..., Any] | None) -> bool:
+    lock = getattr(daemon, "robot_app_lock", None)
+    if lock is None:
+        return False
+    lock.set_on_became_free_handler(handler)
+    return True
+
+
+def daemon_backend(daemon: Any) -> Any | None:
+    return getattr(daemon, "backend", None)
+
+
+def backend_shutting_down(backend: Any) -> bool:
+    return bool(getattr(backend, "is_shutting_down", False))
+
+
+# --- The daemon's FastAPI app --------------------------------------------------
+
+_app_installers: list[Callable[[Any], None]] = []
+
+
+def on_create_app(installer: Callable[[Any], None]) -> None:
+    """Run ``installer(app)`` on every daemon app ``create_app`` builds.
+
+    Installers run in registration order; registering the same one twice is a
+    no-op.
+    """
+    from reachy_mini.daemon.app import main as app_main
+
+    if installer not in _app_installers:
+        _app_installers.append(installer)
+    if getattr(app_main.create_app, "_bridge_installers", None) is _app_installers:
+        return
+    original = app_main.create_app
+
+    def create_app(*args: Any, **kwargs: Any) -> Any:
+        app = original(*args, **kwargs)
+        for install in _app_installers:
+            install(app)
+        return app
+
+    create_app._bridge_installers = _app_installers  # type: ignore[attr-defined]
+    app_main.create_app = create_app
+
+
+def app_daemon(app: Any) -> Any | None:
+    return getattr(app.state, "daemon", None)
+
+
+def app_kinematics(app: Any) -> str:
+    """The engine ``daemon/start`` will use for the next backend."""
+    return app.state.args.kinematics_engine
+
+
+def set_app_kinematics(app: Any, engine: str) -> None:
+    app.state.args.kinematics_engine = engine
+
+
+def backend_kinematics(backend: Any) -> str | None:
+    return getattr(backend, "kinematics_engine", None)
+
+
+# --- Media -------------------------------------------------------------------
+
+AUDIO_QUEUE_ELEMENT = "queue_audiosrc"
+
+
+def wrap_configure_audio(wrapper: Callable[..., None]) -> None:
+    """Replace ``GstMediaServer._configure_audio`` with
+    ``wrapper(original, media_server, pipeline, webrtcsink)``."""
+    from reachy_mini.media.media_server import GstMediaServer
+
+    _wrap(GstMediaServer, "_configure_audio", wrapper)
+
+
+def media_server(daemon: Any) -> Any | None:
+    return getattr(daemon, "_media_server", None)
+
+
+def media_released(daemon: Any) -> bool:
+    released = getattr(daemon, "media_released", False)
+    return bool(released() if callable(released) else released)
+
+
+def local_camera_available() -> bool:
+    from reachy_mini.daemon.utils import is_local_camera_available
+
+    return bool(is_local_camera_available())
+
+
+def open_camera() -> Any:
+    """A reader of the daemon's shared camera feed (never the device itself)."""
+    from reachy_mini.media.camera_gstreamer import GStreamerCamera
+
+    return GStreamerCamera(log_level="WARNING")
+
+
+def ensure_reachymini_asoundrc() -> bool:
+    """Write upstream's ``~/.asoundrc`` for Reachy Mini Audio; False if already set."""
+    from reachy_mini.media.audio_utils import check_reachymini_asoundrc, write_asoundrc_to_home
+
+    if check_reachymini_asoundrc():
+        return False
+    write_asoundrc_to_home()
+    return True
