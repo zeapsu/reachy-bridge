@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Install or update reachy-bridge from this checkout as user services (#128).
-# Safe to re-run: it rebuilds what changed and never restarts the daemon while
-# the robot is on.
+# Safe to re-run after a pull.
 #
 #   deploy/install.sh
 #
@@ -12,14 +11,21 @@
 # and the reachy-bridge and reachy-bridge-controller user units, plus the
 # reachy-bridge command in ~/.local/bin.
 #
+# It changes nothing on the device until the robot is confirmed off and the
+# locked reachy-mini has passed the runtime's --check in a throwaway venv.
+# The daemon is stopped while its venv is replaced, then started again (the
+# robot starts off).
+#
 # Needs uv, cargo and bun until releases ship prebuilt binaries (#131).
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-DEST=${REACHY_BRIDGE_HOME:-$HOME/.local/share/reachy-bridge}
+DEST=$HOME/.local/share/reachy-bridge
 UNIT_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 BIN_DIR=$HOME/.local/bin
-DAEMON_URL=http://127.0.0.1:8000
+CLI=$REPO/deploy/reachy-bridge
+DAEMON=reachy-bridge.service
+CONTROLLER=reachy-bridge-controller.service
 
 step() { printf '\n== %s\n' "$*"; }
 die() { echo "install: $*" >&2; exit 1; }
@@ -27,50 +33,60 @@ die() { echo "install: $*" >&2; exit 1; }
 for tool in uv cargo bun systemctl curl; do
     command -v "$tool" >/dev/null || die "$tool is not on PATH"
 done
-[[ $DEST == "$HOME/.local/share/reachy-bridge" ]] ||
-    die "the units expect ~/.local/share/reachy-bridge; unset REACHY_BRIDGE_HOME"
+uv_dir=$(dirname "$(command -v uv)")
+# The daemon unit's PATH points here for app installs; a version-specific
+# directory would break when that version is pruned.
+[[ $uv_dir != */installs/* ]] || die "uv resolves to $uv_dir; put a stable uv on PATH (e.g. ~/.local/bin/uv)"
 
-step "Runtime venv ($DEST/.venv)"
-mkdir -p "$DEST"
-# The lock decides the daemon version; --no-editable so the service doesn't
-# depend on this checkout staying put.
-UV_PROJECT_ENVIRONMENT="$DEST/.venv" uv sync --project "$REPO" --frozen --no-dev \
-    --no-editable --package reachy-bridge-runtime
-"$DEST/.venv/bin/reachy-bridge-runtime" --check >/dev/null ||
-    die "the installed reachy-mini doesn't match the runtime's upstream seam (run: $DEST/.venv/bin/reachy-bridge-runtime --check)"
+require_robot_off() {
+    systemctl --user is-active --quiet "$DAEMON" || return 0
+    local power
+    power=$("$CLI" robot-power)
+    [[ $power == off ]] ||
+        die "the robot isn't confirmed off (${power}); turn it off from the dashboard and re-run. Nothing was changed."
+}
 
-step "Controller ($DEST/bin/reachy-controller)"
+step "Preflight"
+require_robot_off
+if [[ -d $UNIT_DIR/$DAEMON.d || -d $UNIT_DIR/$CONTROLLER.d ]]; then
+    echo "warning: drop-ins in $UNIT_DIR/*.service.d override the installed units"
+fi
+staging=$(mktemp -d)
+trap 'rm -rf "$staging"' EXIT
+# The lock decides the daemon version. Check it against the runtime's
+# upstream seam before touching the live venv.
+UV_PROJECT_ENVIRONMENT="$staging/venv" uv sync --project "$REPO" --frozen --no-dev \
+    --no-editable --package reachy-bridge-runtime --quiet
+"$staging/venv/bin/reachy-bridge-runtime" --check ||
+    die "the locked reachy-mini doesn't match the runtime's upstream seam (see above). Nothing was changed."
+
+step "Build the controller"
 (cd "$REPO/web" && bun install --frozen-lockfile && bun run build)
 (cd "$REPO/controller" && cargo build --release --locked)
-install -D -m 755 "$REPO/controller/target/release/reachy-controller" "$DEST/bin/reachy-controller.new"
+
+step "Install"
+# The build takes minutes; the robot may have been switched on meanwhile.
+require_robot_off
+systemctl --user stop "$DAEMON" 2>/dev/null || true
+mkdir -p "$DEST/bin"
+# --no-editable, so the service doesn't depend on this checkout.
+UV_PROJECT_ENVIRONMENT="$DEST/.venv" uv sync --project "$REPO" --frozen --no-dev \
+    --no-editable --package reachy-bridge-runtime
+install -m 755 "$REPO/controller/target/release/reachy-controller" "$DEST/bin/reachy-controller.new"
 mv -f "$DEST/bin/reachy-controller.new" "$DEST/bin/reachy-controller"
-
-step "Command ($BIN_DIR/reachy-bridge)"
-install -D -m 755 "$REPO/deploy/reachy-bridge" "$BIN_DIR/reachy-bridge"
-
-step "User units ($UNIT_DIR)"
+install -D -m 755 "$CLI" "$BIN_DIR/reachy-bridge"
 mkdir -p "$UNIT_DIR"
-uv_dir=$(dirname "$(command -v uv)")
-sed "s|@UV_DIR@|$uv_dir|" "$REPO/deploy/systemd/reachy-bridge.service" >"$UNIT_DIR/reachy-bridge.service"
-install -m 644 "$REPO/deploy/systemd/reachy-bridge-controller.service" "$UNIT_DIR/"
+# rm first: never write through a symlinked unit file to its target.
+rm -f "$UNIT_DIR/$DAEMON" "$UNIT_DIR/$CONTROLLER"
+sed "s|@UV_DIR@|$uv_dir|" "$REPO/deploy/systemd/$DAEMON" >"$UNIT_DIR/$DAEMON"
+install -m 644 "$REPO/deploy/systemd/$CONTROLLER" "$UNIT_DIR/$CONTROLLER"
 systemctl --user daemon-reload
-systemctl --user enable reachy-bridge.service reachy-bridge-controller.service
+systemctl --user enable "$DAEMON" "$CONTROLLER"
 
-step "Services"
-if systemctl --user is-active --quiet reachy-bridge.service; then
-    status=$(curl -s -m 2 "$DAEMON_URL/api/daemon/status" || true)
-    if [[ -z $status || $status == *'"backend_status":null'* ]]; then
-        systemctl --user restart reachy-bridge.service
-        echo "daemon restarted"
-    else
-        echo "daemon NOT restarted: the robot is on. Turn it off, then run: reachy-bridge restart daemon"
-    fi
-else
-    systemctl --user start reachy-bridge.service
-    echo "daemon started (robot off)"
-fi
-systemctl --user restart reachy-bridge-controller.service
-echo "controller restarted on 127.0.0.1:7861"
+step "Start"
+systemctl --user start "$DAEMON"
+systemctl --user restart "$CONTROLLER"
+echo "daemon started (robot off); controller on 127.0.0.1:7861"
 
 if [[ $(loginctl show-user "$USER" -p Linger --value 2>/dev/null) != yes ]]; then
     echo

@@ -37,11 +37,22 @@ units_for() {
     esac
 }
 
-# Exit 0 when the robot is off or the daemon doesn't answer (nothing to stop).
-robot_off() {
-    local status
-    status=$(curl -s -m 2 "$DAEMON_URL/api/daemon/status") || return 0
-    [[ $status == *'"backend_status":null'* ]]
+# Prints off, on or unknown. Fails closed: only a refused connection (no
+# daemon listening) or a daemon reporting no backend counts as off. A slow or
+# busy daemon is unknown, never off, so nothing restarts it mid-motion.
+robot_power() {
+    local status rc=0
+    status=$(curl -s -m 5 "$DAEMON_URL/api/daemon/status") || rc=$?
+    if (( rc == 7 )); then echo off; return; fi
+    if (( rc != 0 )); then echo unknown; return; fi
+    if [[ $status == *'"backend_status":null'* ]] &&
+        [[ $status == *'"state":"stopped"'* || $status == *'"state":"not_initialized"'* || $status == *'"state":"error"'* ]]; then
+        echo off
+    elif [[ $status == *'"state":"'* ]]; then
+        echo on
+    else
+        echo unknown
+    fi
 }
 
 robot_state() {
@@ -83,8 +94,8 @@ case "$cmd" in
         ;;
     restart)
         units_for "${args[0]:-all}"
-        if [[ " ${UNITS[*]} " == *" $DAEMON "* ]] && (( ! force )) && ! robot_off; then
-            die "the robot is on ($(robot_state)); turn it off first, or pass --force"
+        if [[ " ${UNITS[*]} " == *" $DAEMON "* ]] && (( ! force )) && [[ $(robot_power) != off ]]; then
+            die "the robot isn't confirmed off ($(robot_state)); turn it off first, or pass --force"
         fi
         systemctl --user restart "${UNITS[@]}"
         ;;
@@ -118,8 +129,12 @@ case "$cmd" in
             *) die "serve takes on, off or status" ;;
         esac
         ;;
+    robot-power)
+        # For install.sh: off, on or unknown (see robot_power).
+        robot_power
+        ;;
     -h|--help|help)
-        sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         die "unknown command '$cmd' (try: reachy-bridge help)"

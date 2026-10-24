@@ -120,9 +120,11 @@ def install_route(app: Any) -> None:
 
 
 def apply(argv: list[str] = sys.argv) -> None:
-    apply_saved_engine(argv)
+    # Hooks first: a saved engine without the restart patch would be lost on
+    # the first restart.
     upstream.wrap_daemon_start(_start)
     upstream.on_create_app(install_route)
+    apply_saved_engine(argv)
     # Import placo now rather than on the first request, where the import
     # would block the daemon's event loop.
     placo_available()

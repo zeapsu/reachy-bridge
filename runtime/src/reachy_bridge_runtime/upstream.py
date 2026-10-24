@@ -88,6 +88,10 @@ def _source_mentions(module: str, path: str, *names: str) -> Callable[[], None]:
     return check
 
 
+KINEMATICS_ENGINES = ("AnalyticalKinematics", "Placo")
+DEFAULT_KINEMATICS = KINEMATICS_ENGINES[0]
+KINEMATICS_FLAG = "--kinematics-engine"
+
 _MANAGER = "reachy_mini.apps.manager"
 _DAEMON = "reachy_mini.daemon.daemon"
 _APP_MAIN = "reachy_mini.daemon.app.main"
@@ -97,6 +101,21 @@ _MEDIA_SERVER = "reachy_mini.media.media_server"
 
 REQUIREMENTS: tuple[Requirement, ...] = (
     Requirement("daemon", "daemon entry point", _function(_APP_MAIN, "main")),
+    Requirement(
+        "daemon",
+        "the command-line flags the service unit passes",
+        _source_mentions(
+            _APP_MAIN,
+            "",
+            "--desktop-app-daemon",
+            "--headless",
+            "--no-autostart",
+            "--no-wake-up-on-start",
+            "--fastapi-host",
+            "--fastapi-port",
+            KINEMATICS_FLAG,
+        ),
+    ),
     Requirement("routes", "create_app builds the FastAPI app", _function(_APP_MAIN, "create_app", "args")),
     Requirement(
         "routes",
@@ -141,7 +160,7 @@ REQUIREMENTS: tuple[Requirement, ...] = (
     Requirement(
         "kinematics",
         "daemon/start reads the engine from app.state.args",
-        _source_mentions("reachy_mini.daemon.app.routers.daemon", "", "kinematics_engine"),
+        _source_mentions("reachy_mini.daemon.app.routers.daemon", "", "args.kinematics_engine"),
     ),
     Requirement(
         "audio_levels",
@@ -199,10 +218,6 @@ def installed_version() -> str:
 
 
 # --- Daemon ------------------------------------------------------------------
-
-KINEMATICS_ENGINES = ("AnalyticalKinematics", "Placo")
-DEFAULT_KINEMATICS = KINEMATICS_ENGINES[0]
-KINEMATICS_FLAG = "--kinematics-engine"
 
 
 def run_daemon() -> int:

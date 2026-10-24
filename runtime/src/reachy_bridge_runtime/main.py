@@ -30,6 +30,8 @@ FEATURES = {
 }
 # On every platform; the rest only where the platform adapter enables them.
 CORE_FEATURES = frozenset({keep_awake.FEATURE, kinematics.FEATURE})
+# Features that add routes to the daemon app, so need the "routes" hooks.
+ROUTE_FEATURES = frozenset({kinematics.FEATURE, "audio_levels", "camera"})
 
 
 def check() -> int:
@@ -50,7 +52,7 @@ def apply(platform: platforms.Platform) -> list[str]:
     for name, apply_feature in FEATURES.items():
         if name not in wanted:
             continue
-        blocked = problems.get(name, []) + problems.get("routes", [])
+        blocked = problems.get(name, []) + (problems.get("routes", []) if name in ROUTE_FEATURES else [])
         if blocked:
             logger.error(
                 "Skipping %s: reachy-mini %s doesn't match what it patches: %s",
@@ -60,7 +62,12 @@ def apply(platform: platforms.Platform) -> list[str]:
             )
             skipped.append(name)
             continue
-        apply_feature()
+        try:
+            apply_feature()
+        except Exception:
+            # One broken feature mustn't keep the daemon (and the robot) down.
+            logger.exception("Skipping %s: it failed to apply", name)
+            skipped.append(name)
     return skipped
 
 

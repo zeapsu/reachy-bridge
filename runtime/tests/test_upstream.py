@@ -82,3 +82,28 @@ def test_platform_detection() -> None:
 
     assert jetson.matches("NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super")
     assert not jetson.matches("Raspberry Pi 5 Model B Rev 1.0")
+
+
+def test_a_feature_that_fails_to_apply_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(upstream, "check", lambda features=None: {})
+
+    def broken() -> None:
+        raise RuntimeError("boom")
+
+    features = {name: (lambda: None) for name in runtime_main.FEATURES}
+    features["kinematics"] = broken
+    monkeypatch.setattr(runtime_main, "FEATURES", features)
+    assert runtime_main.apply(platforms.Platform(name="test", tier="tested")) == ["kinematics"]
+
+
+def test_a_routes_mismatch_spares_features_without_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    applied: list[str] = []
+    monkeypatch.setattr(upstream, "check", lambda features=None: {"routes": ["create_app: gone"]})
+    monkeypatch.setattr(upstream, "installed_version", lambda: "9.9.9")
+    monkeypatch.setattr(
+        runtime_main,
+        "FEATURES",
+        {name: (lambda name=name: applied.append(name)) for name in runtime_main.FEATURES},
+    )
+    assert runtime_main.apply(platforms.Platform(name="test", tier="tested")) == ["kinematics"]
+    assert applied == ["keep_awake"]
