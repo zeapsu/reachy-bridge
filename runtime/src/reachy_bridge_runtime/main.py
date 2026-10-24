@@ -16,7 +16,7 @@ import logging
 import sys
 
 from reachy_bridge_runtime import platforms, upstream
-from reachy_bridge_runtime.features import keep_awake, kinematics, media
+from reachy_bridge_runtime.features import keep_awake, kinematics, media, platform_info
 
 logger = logging.getLogger("reachy_bridge_runtime")
 
@@ -71,6 +71,21 @@ def apply(platform: platforms.Platform) -> list[str]:
     return skipped
 
 
+def report_platform(platform: platforms.Platform, skipped: list[str], routes_ok: bool) -> None:
+    """Serve what startup did at ``/api/bridge/platform`` (#140). It adds a
+    route, so it needs the "routes" hooks; without them it's left out.
+    ``routes_ok`` must be checked before ``apply``: once a feature has wrapped
+    the app factory, the wrapper's signature no longer matches the seam."""
+    if not routes_ok:
+        logger.error("Not reporting the platform: reachy-mini's app factory doesn't match")
+        return
+    active = [name for name in FEATURES if name in CORE_FEATURES | platform.features and name not in skipped]
+    try:
+        platform_info.apply(platform, active, skipped)
+    except Exception:
+        logger.exception("Not reporting the platform: it failed to apply")
+
+
 def main() -> int:
     if "--check" in sys.argv[1:]:
         return check()
@@ -84,7 +99,9 @@ def main() -> int:
     )
     for setup in platform.host_setup:
         setup()
-    apply(platform)
+    routes_ok = not upstream.check({"routes"})
+    skipped = apply(platform)
+    report_platform(platform, skipped, routes_ok)
     return upstream.run_daemon()
 
 
