@@ -3,8 +3,9 @@
 //!
 //! Environment: `DAEMON_URL` (default `http://127.0.0.1:8000`),
 //! `DAEMON_TIMEOUT` seconds (2), `CONTROLLER_HOST` (127.0.0.1),
-//! `CONTROLLER_PORT` (7861), `REACHY_DAEMON_UNIT` (`reachy-bridge.service`),
-//! `REACHY_BRIDGE_STATE_DIR`, `RUST_LOG` (info).
+//! `CONTROLLER_PORT` (7861), `CONTROLLER_APP_PORT` (7863: the running app's
+//! UI proxy, always on loopback), `REACHY_DAEMON_UNIT`
+//! (`reachy-bridge.service`), `REACHY_BRIDGE_STATE_DIR`, `RUST_LOG` (info).
 
 use std::time::Duration;
 
@@ -46,19 +47,32 @@ async fn main() -> std::io::Result<()> {
     let address = format!("{}:{}", env_or("CONTROLLER_HOST", "127.0.0.1"), env_or("CONTROLLER_PORT", "7861"));
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!("controller listening on http://{address}");
+    // The app UI proxy (#158) binds loopback only, whatever CONTROLLER_HOST says.
+    let app_address = format!("127.0.0.1:{}", env_or("CONTROLLER_APP_PORT", "7863"));
+    let app_listener = tokio::net::TcpListener::bind(&app_address).await?;
+    tracing::info!("app UI proxy listening on http://{app_address}");
     // Graceful shutdown waits for every connection, and the dashboard's SSE
-    // and camera streams never end on their own: give them 3 s, then return.
-    let stopping = std::sync::Arc::new(tokio::sync::Notify::new());
-    let signalled = stopping.clone();
-    let server = axum::serve(listener, reachy_controller::app(state)).with_graceful_shutdown(async move {
+    // and camera streams (and app UI streams) never end on their own: give
+    // both listeners 3 s, then return.
+    let own_ports = [listener.local_addr()?.port(), app_listener.local_addr()?.port()];
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
+        let _ = rx.wait_for(|stop| *stop).await;
+    };
+    let server = axum::serve(listener, reachy_controller::app(state.clone()))
+        .with_graceful_shutdown(stopped(stop_rx.clone()));
+    let app_proxy = reachy_controller::app_proxy::router(state, &own_ports)
+        .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let app_server = axum::serve(app_listener, app_proxy).with_graceful_shutdown(stopped(stop_rx.clone()));
+    tokio::spawn(async move {
         shutdown_signal().await;
         tracing::info!("shutting down");
-        signalled.notify_one();
+        let _ = stop_tx.send(true);
     });
     tokio::select! {
-        result = server => result,
+        result = async { tokio::try_join!(server.into_future(), app_server.into_future()).map(|_| ()) } => result,
         () = async {
-            stopping.notified().await;
+            stopped(stop_rx).await;
             tokio::time::sleep(Duration::from_secs(3)).await;
         } => Ok(()),
     }
