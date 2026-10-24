@@ -48,6 +48,13 @@ const MAX_ATTEMPTS: u32 = 5;
 const PER_PEER_LIMIT: usize = 5;
 const PER_PEER_WINDOW: Duration = Duration::from_secs(600);
 const MAX_PENDING: usize = 20;
+/// Loopback visitors (tailscale serve with CONTROLLER_TRUST_TAILNET=0) share
+/// one address, so they get a larger bucket and aren't counted in `MAX_PENDING`.
+const LOOPBACK_PEER_LIMIT: usize = 20;
+/// Cookie values checked per request.
+const MAX_COOKIE_VALUES: usize = 2;
+/// A device unseen this long is logged out (limits a sniffed or leaked token).
+const DEVICE_IDLE_EXPIRY: u64 = 30 * 86_400;
 /// An approved request stays collectable at least this long.
 const APPROVED_GRACE: Duration = Duration::from_secs(60);
 /// Expired requests answer "expired" this long before they are forgotten.
@@ -150,8 +157,9 @@ impl Pending {
         });
     }
 
+    /// Open requests from LAN peers (loopback has its own bucket).
     fn live(&self, now: Instant) -> usize {
-        self.requests.iter().filter(|r| now < r.expires).count()
+        self.requests.iter().filter(|r| now < r.expires && !r.peer.is_loopback()).count()
     }
 }
 
@@ -265,7 +273,13 @@ impl Auth {
             Ok(bytes) => match serde_json::from_slice::<DevicesFile>(&bytes) {
                 Ok(file) => file.devices,
                 Err(error) => {
-                    tracing::error!("auth: {} is unreadable ({error}); starting with no paired devices", devices_path.display());
+                    let aside = devices_path.with_extension("json.bad");
+                    let _ = std::fs::rename(&devices_path, &aside);
+                    tracing::error!(
+                        "auth: {} is unreadable ({error}); moved it to {} and starting with no paired devices",
+                        devices_path.display(),
+                        aside.display()
+                    );
                     Vec::new()
                 }
             },
@@ -311,9 +325,18 @@ impl Auth {
                 found = Some(index);
             }
         }
-        let device = &mut devices[found?];
-        let id = device.id.clone();
+        let index = found?;
         let now = now_unix();
+        if now.saturating_sub(devices[index].last_seen) >= DEVICE_IDLE_EXPIRY {
+            let device = devices.remove(index);
+            tracing::info!("auth: device {} ({}) expired after 30 days unused", device.id, device.name);
+            if let Err(error) = self.save(&devices) {
+                tracing::warn!("auth: cannot save {DEVICES_FILE} ({error})");
+            }
+            return None;
+        }
+        let device = &mut devices[index];
+        let id = device.id.clone();
         if now.saturating_sub(device.last_seen) >= LAST_SEEN_STEP {
             device.last_seen = now;
             if let Some(peer) = peer {
@@ -357,6 +380,30 @@ fn cross_site(headers: &HeaderMap, loopback: bool) -> bool {
     ![host, forwarded].into_iter().flatten().any(|h| h.eq_ignore_ascii_case(authority))
 }
 
+/// Loopback trust needs a Host a DNS-rebinding page can't produce: a
+/// loopback address, `localhost`, or a tailnet (`*.ts.net`) name.
+fn loopback_host(headers: &HeaderMap) -> bool {
+    let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else {
+        return false;
+    };
+    let name = match host.rsplit_once(':') {
+        Some((name, port)) if !name.ends_with(':') && port.bytes().all(|b| b.is_ascii_digit()) => name,
+        _ => host,
+    };
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    name == "localhost"
+        || name.ends_with(".ts.net")
+        || name.trim_matches(['[', ']']).parse::<IpAddr>().is_ok_and(|ip| ip.to_canonical().is_loopback())
+}
+
+/// The rate-limit key: the address, or its /64 for IPv6.
+fn rate_key(peer: IpAddr) -> IpAddr {
+    match peer {
+        IpAddr::V6(v6) => IpAddr::V6((u128::from(v6) & !((1u128 << 64) - 1)).into()),
+        v4 => v4,
+    }
+}
+
 fn is_api(path: &str) -> bool {
     path == "/api" || path.starts_with("/api/") || path == "/telemetry" || path.starts_with("/telemetry/")
 }
@@ -384,9 +431,9 @@ pub async fn guard(State(state): State<Shared>, mut request: Request, next: Next
         return next.run(request).await;
     }
 
-    let device = cookies(headers, DEVICE_COOKIE).find_map(|token| auth.device_for(token, peer));
+    let device = cookies(headers, DEVICE_COOKIE).take(MAX_COOKIE_VALUES).find_map(|token| auth.device_for(token, peer));
     let local = loopback && auth.local_key_matches(headers);
-    let authenticated = (loopback && auth.config.trust_loopback) || local || device.is_some();
+    let authenticated = (loopback && auth.config.trust_loopback && loopback_host(headers)) || local || device.is_some();
     let upgrade = headers.contains_key(header::UPGRADE);
     if (!request.method().is_safe() || upgrade) && cross_site(headers, loopback) {
         return forbidden(&path, peer);
@@ -395,7 +442,11 @@ pub async fn guard(State(state): State<Shared>, mut request: Request, next: Next
         return ApiError::new(401, "login required").into_response();
     }
     request.extensions_mut().insert(AuthContext { peer, authenticated, device: device.clone(), https });
-    let response = next.run(request).await;
+    let mut response = next.run(request).await;
+    // Other ports on this host (app UIs) are same-site: don't let them frame the dashboard.
+    let headers = response.headers_mut();
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("frame-ancestors 'none'"));
     match device {
         Some(id) if is_stream(&response) => end_on_revoke(state.clone(), id, response),
         _ => response,
@@ -411,12 +462,10 @@ fn peer_text(peer: Option<IpAddr>) -> String {
     peer.map_or_else(|| "unknown peer".to_string(), |p| p.to_string())
 }
 
+/// A body of unknown length: SSE, the camera stream (whatever its type).
 fn is_stream(response: &Response) -> bool {
-    response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|t| t.starts_with("text/event-stream") || t.starts_with("multipart/"))
+    use axum::body::HttpBody;
+    response.body().size_hint().exact().is_none()
 }
 
 /// End a device's SSE or camera stream as soon as the device is revoked.
@@ -453,14 +502,16 @@ async fn pair(State(state): State<Shared>, Extension(ctx): Extension<AuthContext
         return Err(ApiError::new(409, "LAN access is off"));
     }
     let peer = ctx.peer.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    let loopback = peer.is_loopback();
+    let limit = if loopback { LOOPBACK_PEER_LIMIT } else { PER_PEER_LIMIT };
     let now = Instant::now();
     let mut pending = auth.pending.lock().unwrap();
     pending.prune(now);
-    if pending.recent.get(&peer).is_some_and(|t| t.len() >= PER_PEER_LIMIT) {
-        tracing::warn!("auth: pair request from {peer} refused: {PER_PEER_LIMIT} in the last 10 minutes");
+    if pending.recent.get(&rate_key(peer)).is_some_and(|t| t.len() >= limit) {
+        tracing::warn!("auth: pair request from {peer} refused: {limit} in the last 10 minutes");
         return Err(ApiError::new(429, "too many pairing requests; try again later"));
     }
-    if pending.live(now) >= MAX_PENDING {
+    if !loopback && pending.live(now) >= MAX_PENDING {
         tracing::warn!("auth: pair request from {peer} refused: {MAX_PENDING} requests pending");
         return Err(ApiError::new(429, "too many pairing requests pending; try again later"));
     }
@@ -481,7 +532,7 @@ async fn pair(State(state): State<Shared>, Extension(ctx): Extension<AuthContext
         attempts: 0,
         approved: None,
     });
-    pending.recent.entry(peer).or_default().push_back(now);
+    pending.recent.entry(rate_key(peer)).or_default().push_back(now);
     drop(pending);
     tracing::info!("auth: pair request {id} from {peer}");
     let ttl = auth.config.pair_ttl.as_secs();
@@ -510,9 +561,9 @@ async fn poll(
     if status != "approved" {
         return Ok(Json(json!({"status": status})).into_response());
     }
-    // First poll after approval: issue the device token to this browser.
-    let request = pending.requests.remove(index);
-    drop(pending);
+    // First poll after approval: issue the device token to this browser. The
+    // pending lock is held until the device is saved, so one token at most.
+    let request = &pending.requests[index];
     let token = random_token::<32>();
     let created = now_unix();
     let mut devices = auth.devices.lock().unwrap();
@@ -524,7 +575,7 @@ async fn poll(
     };
     devices.push(Device {
         id: device_id.clone(),
-        name: request.approved.unwrap_or_default(),
+        name: request.approved.clone().unwrap_or_default(),
         token_sha256: hex(&sha256(token.as_bytes())),
         created,
         last_seen: created,
@@ -536,6 +587,8 @@ async fn poll(
         return Err(ApiError::new(500, "could not save the paired device"));
     }
     drop(devices);
+    let request = pending.requests.remove(index);
+    drop(pending);
     tracing::info!("auth: device {device_id} paired from {}", request.peer);
     let mut response = Json(json!({"status": "approved", "device": device_id})).into_response();
     let cookies = response.headers_mut();
@@ -588,7 +641,7 @@ async fn approve(
     request.approved = Some(name.clone());
     request.expires = request.expires.max(now + APPROVED_GRACE);
     tracing::info!("auth: pair request {} from {} approved by {by} as {name:?}", request.id, request.peer);
-    Ok(Json(json!({"status": "approved", "name": name})))
+    Ok(Json(json!({"status": "approved", "name": name, "peer": request.peer.to_string()})))
 }
 
 async fn list_devices(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>) -> Json<Value> {

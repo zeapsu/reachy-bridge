@@ -5,8 +5,7 @@
 //! `DAEMON_TIMEOUT` seconds (2), `CONTROLLER_HOST` (127.0.0.1),
 //! `CONTROLLER_PORT` (7861), `REACHY_DAEMON_UNIT` (`reachy-bridge.service`),
 //! `REACHY_BRIDGE_STATE_DIR`, `RUST_LOG` (info). `CONTROLLER_LAN=1` serves
-//! the dashboard on the LAN behind a device login (`0.0.0.0`, or a
-//! non-loopback `CONTROLLER_HOST`); `CONTROLLER_TRUST_TAILNET=0` makes
+//! the dashboard on every interface behind a device login; `CONTROLLER_TRUST_TAILNET=0` makes
 //! loopback peers log in too (#141).
 
 use std::time::Duration;
@@ -27,13 +26,20 @@ fn is_loopback_host(host: &str) -> bool {
     host == "localhost" || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.to_canonical().is_loopback())
 }
 
-/// The dashboard's bind address: `CONTROLLER_HOST` (default loopback); in
-/// LAN mode a non-loopback `CONTROLLER_HOST`, else every IPv4 interface.
-fn bind_host(lan: bool, host: Option<String>) -> String {
+/// The dashboard's bind address: `CONTROLLER_HOST` (default loopback). In
+/// LAN mode every interface (`0.0.0.0`, or `::` if set): loopback must stay
+/// bound for `tailscale serve` and `reachy-bridge pair`, so a single LAN
+/// address is refused.
+fn bind_host(lan: bool, host: Option<String>) -> Result<String, String> {
     match host {
-        Some(host) if !lan || !is_loopback_host(&host) => host,
-        _ if lan => "0.0.0.0".to_string(),
-        _ => "127.0.0.1".to_string(),
+        Some(host) if !lan => Ok(host),
+        None => Ok(if lan { "0.0.0.0" } else { "127.0.0.1" }.to_string()),
+        Some(host) if is_loopback_host(&host) || host == "0.0.0.0" => Ok("0.0.0.0".to_string()),
+        Some(host) if host == "::" || host == "[::]" => Ok("[::]".to_string()),
+        Some(host) => Err(format!(
+            "CONTROLLER_LAN=1 with CONTROLLER_HOST={host} would leave loopback unbound (tailscale serve, \
+             reachy-bridge pair); unset CONTROLLER_HOST or use 0.0.0.0"
+        )),
     }
 }
 
@@ -63,7 +69,8 @@ async fn main() -> std::io::Result<()> {
     tokio::spawn(reachy_controller::datasets::prefetch(state.clone()));
     tokio::spawn(follow_journal(logs, env_or("REACHY_DAEMON_UNIT", "reachy-bridge.service")));
 
-    let host = bind_host(lan, std::env::var("CONTROLLER_HOST").ok().filter(|h| !h.is_empty()));
+    let host = bind_host(lan, std::env::var("CONTROLLER_HOST").ok().filter(|h| !h.is_empty()))
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
     let address = format!("{host}:{}", env_or("CONTROLLER_PORT", "7861"));
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!("controller listening on http://{address}");
@@ -88,5 +95,20 @@ async fn main() -> std::io::Result<()> {
             stopping.notified().await;
             tokio::time::sleep(Duration::from_secs(3)).await;
         } => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bind_host;
+
+    #[test]
+    fn lan_mode_keeps_loopback_bound() {
+        assert_eq!(bind_host(false, None).unwrap(), "127.0.0.1");
+        assert_eq!(bind_host(false, Some("0.0.0.0".into())).unwrap(), "0.0.0.0");
+        assert_eq!(bind_host(true, None).unwrap(), "0.0.0.0");
+        assert_eq!(bind_host(true, Some("127.0.0.1".into())).unwrap(), "0.0.0.0");
+        assert_eq!(bind_host(true, Some("::".into())).unwrap(), "[::]");
+        assert!(bind_host(true, Some("192.168.1.10".into())).is_err());
     }
 }

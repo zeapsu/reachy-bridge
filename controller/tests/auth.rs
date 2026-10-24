@@ -86,7 +86,12 @@ fn lan() -> AuthConfig {
 }
 
 fn request(method: &str, uri: &str, peer: &str, headers: &[(&str, &str)], body: Option<Value>) -> Request<Body> {
-    let mut builder = Request::builder().method(method).uri(uri).header("host", "10.0.0.2:7861");
+    let peer_addr = peer.parse::<SocketAddr>().unwrap();
+    let mut builder = Request::builder().method(method).uri(uri);
+    if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
+        // Local tools use 127.0.0.1; LAN browsers the robot's LAN address.
+        builder = builder.header("host", if peer_addr.ip().to_canonical().is_loopback() { "127.0.0.1:7861" } else { "10.0.0.2:7861" });
+    }
     for (k, v) in headers {
         builder = builder.header(*k, *v);
     }
@@ -94,7 +99,7 @@ fn request(method: &str, uri: &str, peer: &str, headers: &[(&str, &str)], body: 
         builder = builder.header("content-type", "application/json");
     }
     let mut request = builder.body(body.map_or_else(Body::empty, |b| Body::from(b.to_string()))).unwrap();
-    request.extensions_mut().insert(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
+    request.extensions_mut().insert(ConnectInfo(peer_addr));
     request
 }
 
@@ -397,4 +402,64 @@ async fn cross_site_state_changes_are_refused() {
     let off = harness(AuthConfig::default()).await;
     assert_eq!(off.call("DELETE", "/api/auth/devices/x", LOOPBACK, &evil, None).await.status, StatusCode::FORBIDDEN);
     assert_ne!(off.call("POST", "/api/expressions/stop", LOOPBACK, &evil, None).await.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn loopback_trust_needs_a_local_or_tailnet_host() {
+    let h = harness(lan()).await;
+    for host in ["127.0.0.1:7861", "localhost:7861", "[::1]:7861", "robot.tail1234.ts.net", "robot.tail1234.ts.net:10000"] {
+        let r = h.call("GET", "/api/logs/sources", LOOPBACK, &[("host", host)], None).await;
+        assert_eq!(r.status, StatusCode::OK, "{host}");
+    }
+    // A DNS-rebinding page reaches loopback with its own name as Host.
+    for host in ["evil.example:7861", "127.0.0.1.evil.example", "ts.net.evil.example"] {
+        let r = h.call("GET", "/api/logs/sources", LOOPBACK, &[("host", host)], None).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{host}");
+    }
+    let (_, code, _) = h.pair(LAN).await;
+    assert_eq!(h.approve(&code, LOOPBACK, &[("host", "evil.example:7861")]).await.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn ipv6_peers_are_limited_per_64_and_loopback_is_not_starved() {
+    let h = harness(lan()).await;
+    for n in 1..=5 {
+        h.pair(&format!("[2001:db8::{n}]:1")).await;
+    }
+    let r = h.call("POST", "/api/auth/pair", "[2001:db8::ffff]:1", &[], None).await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+    // Fill the LAN pool; loopback (tailscale serve with TRUST_TAILNET=0) can still pair.
+    for n in 0..15 {
+        h.pair(&format!("192.168.2.{}:1", n / 5 + 1)).await;
+    }
+    assert_eq!(h.call("POST", "/api/auth/pair", "192.168.9.9:1", &[], None).await.status, StatusCode::TOO_MANY_REQUESTS);
+    h.pair(LOOPBACK).await;
+}
+
+#[tokio::test]
+async fn idle_devices_expire_and_a_bad_file_is_kept_aside() {
+    let h = harness(lan()).await;
+    let device = h.paired(LAN).await;
+    let file = h.devices_file();
+    let mut parsed: Value = serde_json::from_str(&file).unwrap();
+    parsed["devices"][0]["last_seen"] = json!(1);
+    std::fs::write(h.dir.0.join("devices.json"), parsed.to_string()).unwrap();
+    let restart = || AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), lan());
+    let restarted = Harness { state: restart(), dir: TempDir(std::env::temp_dir().join("rc-auth-unused")) };
+    assert_eq!(restarted.call("GET", "/api/logs/sources", LAN, &[("cookie", &device)], None).await.status, StatusCode::UNAUTHORIZED);
+    assert!(h.devices_file().contains("[]"), "expired device removed: {}", h.devices_file());
+
+    std::fs::write(h.dir.0.join("devices.json"), "{not json").unwrap();
+    let _ = restart();
+    assert_eq!(std::fs::read_to_string(h.dir.0.join("devices.json.bad")).unwrap(), "{not json");
+}
+
+#[tokio::test]
+async fn lan_mode_forbids_framing() {
+    let h = harness(lan()).await;
+    let r = h.call("GET", "/api/auth/status", LAN, &[], None).await;
+    assert_eq!(r.headers["x-frame-options"], "DENY");
+    assert_eq!(r.headers["content-security-policy"], "frame-ancestors 'none'");
+    let off = harness(AuthConfig::default()).await;
+    assert!(!off.call("GET", "/api/auth/status", LAN, &[], None).await.headers.contains_key("x-frame-options"));
 }
