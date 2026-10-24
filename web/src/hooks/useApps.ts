@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson, errorText, paths, type AppActionResult, type AppStatus, type AppUi, type Favorites } from "../api.ts";
 import {
   APP_UI_WAIT_ATTEMPTS,
@@ -13,6 +13,13 @@ import { loadingHash, loadingPageUrl } from "../logic/loading.ts";
 export interface PanelMessage {
   text: string;
   kind: "" | "ok" | "error";
+}
+
+/** An app's UI shown inside the dashboard (phones and tablets, #159). */
+export interface AppView {
+  name: string;
+  display: string;
+  url: string;
 }
 
 export interface AppsState {
@@ -33,6 +40,9 @@ export interface AppsState {
   /** Must be called synchronously from the click (it may open a tab). */
   perform: (name: string, action: "start" | "stop") => void;
   openUi: (name: string) => void;
+  /** The app UI open inside the dashboard, if any. */
+  appView: AppView | null;
+  closeAppView: () => void;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -53,27 +63,28 @@ function setLoadingStep(target: Window | null, step: string, attempt = 0): void 
   }
 }
 
-/** Phones and tablets hide their tabs, so there an app's UI replaces the
- *  dashboard in the same tab and Back returns to it (#159). */
-function opensInSameTab(): boolean {
+/** Phones and tablets hide their tabs (and a home-screen web app has no back
+ *  button), so there an app's UI opens inside the dashboard, under a bar with
+ *  a one-tap way back (#159). */
+function opensInAppView(): boolean {
   return window.matchMedia?.("(hover: none) and (pointer: coarse)").matches === true;
 }
 
-function openAppUiTab(port: number | string): void {
-  const url = appUiUrl(window.location.hostname, port);
-  if (opensInSameTab()) window.location.assign(url);
-  else window.open(url, "_blank", "noopener");
-}
+const APP_VIEW_STATE = "reachyBridgeAppView";
 
 /** Wait for the app's server, then open it; false if it never answered. */
-async function waitAndOpenAppUi(name: string, target: Window | null): Promise<boolean> {
+async function waitAndOpenAppUi(
+  name: string,
+  target: Window | null,
+  show: (name: string, port: number | string) => void,
+): Promise<boolean> {
   for (let attempt = 0; attempt < APP_UI_WAIT_ATTEMPTS; attempt += 1) {
     try {
       const payload = await apiJson<AppUi>(paths.appUi(name));
       if (payload && payload.port && payload.ready) {
         setLoadingStep(target, "opening");
         if (target && !target.closed) target.location.href = appUiUrl(window.location.hostname, payload.port);
-        else openAppUiTab(payload.port);
+        else show(name, payload.port);
         return true;
       }
     } catch {
@@ -186,15 +197,52 @@ export function useApps(): AppsState {
     [loadFavorites],
   );
 
+  const [appView, setAppView] = useState<AppView | null>(null);
+
+  /** Open an app's UI: inside the dashboard on touch devices, else a new tab. */
+  const show = useCallback((name: string, port: number | string) => {
+    const url = appUiUrl(window.location.hostname, port);
+    if (!opensInAppView()) {
+      window.open(url, "_blank", "noopener");
+      return;
+    }
+    const app = statusesRef.current.find((item) => item.name === name);
+    // A history entry, so swipe-back or Android's back button closes the view.
+    if (window.history.state?.[APP_VIEW_STATE] !== name) {
+      window.history.pushState({ [APP_VIEW_STATE]: name }, "");
+    }
+    setAppView({ name, display: app?.display || name, url });
+  }, []);
+
+  const closeAppView = useCallback(() => {
+    if (window.history.state?.[APP_VIEW_STATE]) window.history.back();
+    else setAppView(null);
+  }, []);
+
+  useEffect(() => {
+    const onPop = () => {
+      if (!window.history.state?.[APP_VIEW_STATE]) setAppView(null);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Close the view once its app is no longer running (stopped or crashed).
+  useEffect(() => {
+    if (!appView) return;
+    const app = statuses.find((item) => item.name === appView.name);
+    if (app && app.status !== "running" && app.status !== "starting") closeAppView();
+  }, [statuses, appView, closeAppView]);
+
   const perform = useCallback(
     (name: string, action: "start" | "stop") => {
       if (appBusyRef.current) return;
       const app = statusesRef.current.find((item) => item.name === name);
       // Open the tab inside the click (popup blockers), then point it at the
-      // app once its server answers. In the same-tab flow the dashboard shows
+      // app once its server answers. In the in-dashboard view the panel shows
       // the progress itself.
       let pending: Window | null = null;
-      if (action === "start" && app?.has_ui && !opensInSameTab()) {
+      if (action === "start" && app?.has_ui && !opensInAppView()) {
         pending = window.open(loadingPageUrl(paths.loadingPage, app.display || name), "_blank");
         if (pending) pending.opener = null;
       }
@@ -212,7 +260,7 @@ export function useApps(): AppsState {
           }
           if (action === "start" && result && result.ui_port) {
             setLoadingStep(pending, "starting");
-            void waitAndOpenAppUi(name, pending).then((opened) => {
+            void waitAndOpenAppUi(name, pending, show).then((opened) => {
               if (!opened && !pending) {
                 setMessage({ text: `${name} did not open its interface within 30 s.`, kind: "error" });
               }
@@ -231,21 +279,23 @@ export function useApps(): AppsState {
         }
       })();
     },
-    [poll],
+    [poll, show],
   );
 
   const openUi = useCallback((name: string) => {
     void (async () => {
       try {
         const payload = await apiJson<AppUi>(paths.appUi(name));
-        if (payload && payload.port) openAppUiTab(payload.port);
+        if (payload && payload.port) show(name, payload.port);
       } catch (err) {
         setMessage({ text: errorText(err, "App UI unavailable"), kind: "error" });
       }
     })();
-  }, []);
+  }, [show]);
 
   return {
+    appView,
+    closeAppView,
     statuses,
     names: statuses.map((app) => app.name),
     favorites,

@@ -1,0 +1,53 @@
+/* An app's UI inside the dashboard (phones and tablets, #159): a slim bar
+   with a one-tap way back, then the app filling the rest of the screen. */
+.app-view {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-0);
+}
+
+.app-view-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: calc(env(safe-area-inset-top, 0px) + 8px) calc(env(safe-area-inset-right, 0px) + 12px) 8px
+    calc(env(safe-area-inset-left, 0px) + 12px);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--glass-edge);
+  color: var(--text);
+}
+
+.app-view-bar button {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--r-sm);
+  background: var(--glass-fill-2);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+}
+
+.app-view-bar .app-view-stop {
+  color: var(--coral);
+}
+
+.app-view-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  color: var(--muted);
+}
+
+.app-view-frame {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
