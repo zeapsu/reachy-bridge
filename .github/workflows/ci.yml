@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # The release workflow runs these jobs before it publishes.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to a PR cancels its superseded run; main and tags run to completion.
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# ubuntu-24.04-arm ships GStreamer 1.24.2, the same version as JetPack 7.
+jobs:
+  python:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # PyGObject and pycairo have no Linux wheels, so uv builds them from
+      # source against the girepository and cairo headers. reachy_mini's media
+      # modules load the Gst and GstApp typelibs at import, which --check does.
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgirepository1.0-dev libcairo2-dev \
+            gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.11.24"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff check runtime tools
+      - run: uv run pytest
+      - name: Check the upstream seam
+        run: uv run reachy-bridge-runtime --check
+
+  rust-web:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.3"
+      - name: Install Rust 1.96.0
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component clippy
+          rustup default 1.96.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: controller
+      - name: Web
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun test
+          bun run build
+      # The controller embeds web/dist, so it builds after the web step.
+      - name: Controller
+        working-directory: controller
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
+  shell:
+    runs-on: ubuntu-24.04-arm
+    env:
+      SHELLCHECK_VERSION: "0.11.0"
+      # sha256 of shellcheck-v0.11.0.linux.aarch64.tar.xz from the GitHub release.
+      SHELLCHECK_SHA256: 12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The runner's apt shellcheck is older than the version the scripts are
+      # kept clean with, so fetch the pinned release binary.
+      - name: Install shellcheck
+        run: |
+          tarball="shellcheck-v${SHELLCHECK_VERSION}.linux.aarch64.tar.xz"
+          curl -sSfL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/$tarball"
+          echo "$SHELLCHECK_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
+      - run: shellcheck --version
+      - run: shellcheck deploy/install.sh deploy/reachy-bridge tools/build_webrtcsink_jetson.sh
