@@ -126,6 +126,7 @@ export function App() {
       {apps.appView ? (
         <AppView
           view={apps.appView}
+          busy={apps.appBusy}
           onClose={apps.closeAppView}
           onStop={() => apps.perform(apps.appView!.name, "stop")}
         />

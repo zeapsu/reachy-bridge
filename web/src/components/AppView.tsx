@@ -1,39 +1,80 @@
 import type { AppView as AppViewState } from "../hooks/useApps.ts";
+import { LOADING_PROGRESS, LOADING_STEPS } from "../logic/loading.ts";
 import "./AppView.css";
 
 /**
- * A running app's own UI inside the dashboard, for phones and tablets where
- * tabs are hidden and a home-screen web app has no back button (#159). The bar
+ * A launched app's own UI inside the dashboard, on every device (#159): no
+ * stray tabs, and a home-screen web app (no back button) gets a one-tap way
+ * back. Until the app's server answers it shows the start steps. The bar
  * stays on top: "Controller" closes the view (the app keeps running), "Stop"
- * stops the app. Over HTTPS the frame loads the app through the controller's
- * proxy on :8043 (#158), so it's a secure context like the dashboard.
+ * stops the app; the view also closes by itself when the app stops or
+ * crashes. Over HTTPS the frame loads the app through the controller's proxy
+ * on :8043 (#158), so it's a secure context like the dashboard.
  */
 export function AppView({
   view,
+  busy,
   onClose,
   onStop,
 }: {
   view: AppViewState;
+  busy: boolean;
   onClose: () => void;
   onStop: () => void;
 }) {
   return (
     <div className="app-view" role="dialog" aria-label={`${view.display} interface`}>
-      <div className="app-view-bar">
-        <button type="button" onClick={onClose}>
-          ← Controller
-        </button>
-        <span className="app-view-title">{view.display}</span>
-        <button type="button" className="app-view-stop" onClick={onStop}>
-          Stop
-        </button>
+      <div className="app-view-panel">
+        <div className="app-view-bar">
+          <button type="button" className="app-view-back" onClick={onClose}>
+            ← Controller
+          </button>
+          <span className="app-view-title">{view.display}</span>
+          {view.url ? (
+            <a className="app-view-tab" href={view.url} target="_blank" rel="noopener" title="Open in a new tab">
+              ↗
+            </a>
+          ) : null}
+          <button type="button" className="app-view-stop" onClick={onStop} disabled={busy}>
+            Stop
+          </button>
+        </div>
+        {view.url && !view.error ? (
+          <iframe
+            className="app-view-frame"
+            src={view.url}
+            title={view.display}
+            allow="microphone; camera; autoplay; fullscreen; clipboard-read; clipboard-write; display-capture"
+          />
+        ) : (
+          <Starting view={view} />
+        )}
       </div>
-      <iframe
-        className="app-view-frame"
-        src={view.url}
-        title={view.display}
-        allow="microphone; camera; autoplay; fullscreen; clipboard-read; clipboard-write; display-capture"
-      />
+    </div>
+  );
+}
+
+const STEP_LABELS = { waking: "Waking Reachy", starting: "Starting the app", opening: "Opening its interface" };
+
+function Starting({ view }: { view: AppViewState }) {
+  const at = LOADING_STEPS.indexOf(view.step);
+  return (
+    <div className="app-view-body">
+      <section className={`app-view-card${view.error ? " failed" : ""}`} aria-live="polite">
+        <h2>{view.error ? `${view.display} didn't start` : `Starting ${view.display}`}</h2>
+        <ol className="app-view-steps">
+          {LOADING_STEPS.map((step, index) => (
+            <li key={step} className={view.error ? "" : index < at ? "done" : index === at ? "active" : ""}>
+              <span className="mark" />
+              {STEP_LABELS[step]}
+            </li>
+          ))}
+        </ol>
+        <div className="app-view-progress">
+          <span style={{ width: `${view.error ? 100 : LOADING_PROGRESS[view.step]}%` }} />
+        </div>
+        <p>{view.error || "The app opens here when it's ready."}</p>
+      </section>
     </div>
   );
 }
