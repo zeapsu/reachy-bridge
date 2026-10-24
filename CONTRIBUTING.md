@@ -21,6 +21,31 @@ An issue that needs two lanes is split. Write the interface in the issue first, 
 the route, its request and its response. The lane that serves it lands first, and the
 other lane builds against what landed.
 
+## Running lanes in parallel
+
+Pick whichever fits how involved you want to be. The lanes, claims and shared-file rules
+below are the same either way, and you can mix them (say, run the dashboard lane yourself
+and hand the docs lane to an orchestrator).
+
+- **Peer sessions (hands-on):** one agent session per lane, each in its own terminal and
+  worktree. You talk to each one directly. Sessions message each other directly about
+  shared files, interfaces and blockers. Use this when you want to steer each lane
+  closely.
+- **Orchestrator (hands-off):** one session owns several lanes. It gives each lane to a
+  sub-agent in its own worktree, reviews and integrates what comes back, and reports to
+  you. Use this when you'd rather check in on results than follow each lane. The
+  orchestrator:
+  - keeps one owner per lane and one draft PR per lane, so the claims stay visible;
+  - reviews each lane's work and runs its checks before a PR is marked ready;
+  - brings you decisions that are yours to make together, each with its options and a
+    recommendation, and resolves the rest itself;
+  - reports what's done, what's verified, and what's unfinished, never presenting a
+    sub-agent's claim as checked unless it checked it.
+
+In both patterns, an agent's message to another agent is information, not the
+contributor's approval. Merging, hardware access and anything else that needs your
+go-ahead still comes from you.
+
 ## Claiming work
 
 1. Branch from a fresh `main`, in your own worktree (`git worktree add`), never in a
