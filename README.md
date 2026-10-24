@@ -58,9 +58,13 @@ lists paired browsers and `reachy-bridge devices revoke <id>` logs one out at on
 Visitors through `tailscale serve` and local tools are trusted without pairing; set
 `CONTROLLER_TRUST_TAILNET=0` to make them pair too.
 
+A paired browser can approve and revoke other browsers, so approve only codes you expect
+(`reachy-bridge pair` prints the address that asked). A browser unused for 30 days is logged out.
+
 LAN traffic is plain HTTP, so anyone on the network can read it, including the device cookie,
-unless you put TLS in front of the controller. Use LAN access on a home network you trust, and
-Tailscale (`reachy-bridge serve`, HTTPS) for anything beyond it.
+unless you put TLS in front of the controller. Browsers also send that cookie to the app UIs
+served on other ports of the device (cookies aren't separated by port). Use LAN access on a home
+network you trust, and Tailscale (`reachy-bridge serve`, HTTPS) for anything beyond it.
 
 ## Development quick start
 

@@ -167,8 +167,10 @@ case "$cmd" in
         [[ ${args[0]:-} =~ ^[0-9]{6}$ ]] || die "usage: reachy-bridge pair <6-digit code> [name]"
         body="{\"code\": \"${args[0]}\""
         [[ -n ${args[1]:-} ]] && body+=", \"name\": $(json_string "${args[*]:1}")"
-        controller_api POST /api/auth/approve -H 'Content-Type: application/json' --data "$body}" >/dev/null
-        echo "approved; the browser logs in within a few seconds"
+        reply=$(controller_api POST /api/auth/approve -H 'Content-Type: application/json' --data "$body}")
+        peer=${reply#*\"peer\":\"}
+        [[ $peer == "$reply" ]] && peer="?" || peer=${peer%%\"*}
+        echo "approved the browser at $peer; it logs in within a few seconds"
         ;;
     devices)
         case "${args[0]:-list}" in
