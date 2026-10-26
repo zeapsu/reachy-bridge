@@ -1,28 +1,73 @@
-# Sim smoke test
+# Sim integration tests
 
-Exercises the controller <-> daemon flows against the real daemon in MuJoCo
-sim mode, so behaviour bugs show up before a hardware QA pass. Only the
-simulated robot moves.
+Drives the controller against Pollen's daemon in MuJoCo sim mode, so the
+controller <-> daemon bugs show up before a hardware QA pass. Only the
+simulated robot moves. CI runs this as the `sim` job.
 
 ```bash
-uv sync   # the runtime, at the locked reachy-mini, with MuJoCo
-uv run reachy-bridge-runtime --sim --headless --no-media \
-    --desktop-app-daemon --no-autostart --no-wake-up-on-start --fastapi-port 8100 &
-# install the test apps once
-for spec in pollen-robotics/reachy_mini_radio panny247/hello_world; do
-  curl -X POST localhost:8100/api/apps/install -H 'Content-Type: application/json' \
-    -d "{\"name\":\"${spec#*/}\",\"source_kind\":\"hf_space\",\"url\":\"https://huggingface.co/spaces/$spec\"}"
-done
-(cd web && bun install && bun run build) && (cd controller && cargo build --release)
-DAEMON_URL=http://127.0.0.1:8100 CONTROLLER_PORT=7862 REACHY_BRIDGE_STATE_DIR=/tmp/rb-sim \
-    controller/target/release/reachy-controller &
-uv run python tools/sim/smoke.py
+uv sync
+(cd web && bun install --frozen-lockfile && bun run build)   # the controller embeds web/dist
+(cd controller && cargo build --release --locked)
+uv run python tools/sim/run.py
 ```
 
-The daemon puts community apps in `apps_venv/` next to the venv it runs from
-(the repo root here, gitignored), so the test apps install once per checkout.
+`run.py` starts its own sim daemon and controller on free ports, installs the
+test apps into a fresh apps venv, waits for both servers, runs `smoke.py`
+and stops everything. It doesn't touch a daemon or controller you already
+run, or the checkout's `apps_venv`. A run takes about 40 s. Logs, state and
+the apps venv go in a temporary directory that is kept (and printed) when a
+check fails; `--work-dir DIR` puts them in `DIR` and always keeps them. Set
+`SIM_CONTROLLER_BIN` to test another controller binary.
 
-`hello_world` exits on start in a clean apps venv (missing `scipy`), which
-the test uses as the crash case. With `--no-media` the daemon's idle reset
-(sleep after a crash) never runs, so that check is skipped and stays a
-hardware check. Becomes CI integration tests under #146 / #131.
+## What it checks
+
+`smoke.py` holds the checks. Those tagged `[bug N]` cover the bugs from #146,
+where the controller assumed daemon behaviour that isn't true (see
+`docs/daemon-contract.md`):
+
+| Bug | Checks |
+|---|---|
+| 1. `daemon/start?wake_up=false` leaves the motors limp | power on (from off, and from asleep) ends `running` with motors `enabled` |
+| 2. The daemon sleeps the robot ~1.5 s after an app exits and stays `running` | after the crash app exits, the daemon reports `running`/`disabled` and the controller `asleep` |
+| 3. Starting an app doesn't wake the robot | an app started while off, and while asleep, runs with motors `enabled` |
+| 4. An app's web server isn't up when its process starts | the controller reports the UI not ready while the server is down, then ready, and the UI answers |
+
+It also checks power off, expressions refused while an app runs, a requested
+stop keeping the robot awake (the runtime's keep-awake feature), and a second
+app start.
+
+## How the sim is made to behave like the robot
+
+`sim_daemon.py` runs `reachy-bridge-runtime` with two sim-only patches,
+because stock MuJoCo sim hides bugs 1 and 2:
+
+- The MuJoCo backend always reports motors `enabled`. The patch keeps the
+  mode it is set to and starts `disabled`, like the real robot after a cold
+  start.
+- The daemon's idle reset runs on an event loop only the media server
+  creates, so a `--no-media` daemon never sleeps the robot after an app
+  exits. The patch gives the backend that loop; the idle reset itself is the
+  daemon's own code.
+
+`SIM_APPS_ROOT` points the daemon's `apps_venv` at the test run's directory.
+
+## Test apps
+
+`apps/` holds two local apps, so the tests need no Hugging Face Space:
+
+- `sim_ui_app`: serves a page on `127.0.0.1:18742`, starting the server
+  `SIM_UI_DELAY` seconds (default 3) after the process, as real app UIs come
+  up late.
+- `sim_crash_app`: no UI; exits with code 1 after a second.
+
+`run.py` installs them with `uv pip install` into the apps venv rather than
+through the daemon's install API, which would also install the latest
+`reachy-mini` from PyPI into it.
+
+## Against servers you started yourself
+
+`smoke.py` alone runs against `SIM_DAEMON` and `SIM_CONTROLLER` (default
+`http://127.0.0.1:8100` and `:7862`). Start the daemon through
+`sim_daemon.py` (same arguments as `reachy-bridge-runtime`) with the test
+apps installed in its apps venv. Against a stock sim daemon the bug 2 checks
+fail, and the bug 1 and 3 checks pass whatever the controller does.

@@ -107,3 +107,16 @@ def test_a_routes_mismatch_spares_features_without_routes(monkeypatch: pytest.Mo
     )
     assert runtime_main.apply(platforms.Platform(name="test", tier="tested")) == ["kinematics"]
     assert applied == ["keep_awake"]
+
+
+def test_a_wrapped_app_factory_no_longer_matches_the_routes_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Why main checks "routes" before apply(): once a feature has wrapped
+    # create_app, the wrapper's (*args, **kwargs) signature fails the check.
+    from reachy_mini.daemon.app import main as app_main
+
+    monkeypatch.setattr(app_main, "create_app", app_main.create_app)
+    monkeypatch.setattr(upstream, "_app_installers", [])
+    assert upstream.check({"routes"}) == {}
+    upstream.on_create_app(lambda app: None)
+    assert upstream.check({"routes"}) != {}
+

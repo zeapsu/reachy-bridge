@@ -72,6 +72,58 @@ jobs:
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
 
+  # The controller against a real daemon in MuJoCo sim (tools/sim/README.md).
+  # --headless runs MuJoCo without a viewer or offscreen rendering, so the
+  # runner needs no GL.
+  sim:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # As in the python job: PyGObject and pycairo build from source.
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgirepository1.0-dev libcairo2-dev \
+            gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.11.24"
+          enable-cache: true
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.3"
+      - name: Install Rust 1.96.0
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup default 1.96.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: controller
+      - run: uv sync --frozen
+      - name: Web
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+      - name: Controller
+        working-directory: controller
+        run: cargo build --release --locked
+      - name: Sim tests
+        run: uv run python tools/sim/run.py --work-dir "$RUNNER_TEMP/sim"
+      - name: Upload sim logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sim-logs
+          path: |
+            ${{ runner.temp }}/sim/*.log
+            ${{ runner.temp }}/sim/controller-state/logs/
+          if-no-files-found: ignore
+
   shell:
     runs-on: ubuntu-24.04-arm
     env:

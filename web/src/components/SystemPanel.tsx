@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
-import { apiJson, paths, type SystemStats } from "../api.ts";
+import { apiJson, paths, type PlatformInfo, type SystemStats } from "../api.ts";
 import { readEventPayload, useEventSource } from "../hooks/useEventSource.ts";
 import { reduceMotion } from "../hooks/reduceMotion.ts";
 import {
@@ -13,7 +13,14 @@ import {
   type LogLine,
   type LogStatus,
 } from "../logic/logs.ts";
-import { STATS_IDLE, gaugeOffset, statsDisplay, type GaugeValue, type StatsDisplay } from "../logic/stats.ts";
+import {
+  STATS_IDLE,
+  gaugeOffset,
+  platformLabel,
+  statsDisplay,
+  type GaugeValue,
+  type StatsDisplay,
+} from "../logic/stats.ts";
 
 type View = "stats" | "logs";
 
@@ -47,6 +54,24 @@ function Gauge({ id, label, value }: { id: string; label: string; value: GaugeVa
       <span className="gl">{label}</span>
     </div>
   );
+}
+
+/** The detected board, read once each time the daemon comes up (#140). */
+function usePlatform(daemonOnline: boolean): PlatformInfo | null {
+  const [info, setInfo] = useState<PlatformInfo | null>(null);
+  useEffect(() => {
+    if (!daemonOnline) return;
+    let cancelled = false;
+    apiJson<PlatformInfo>(paths.platform)
+      .then((payload) => {
+        if (!cancelled) setInfo(payload);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [daemonOnline]);
+  return info;
 }
 
 function useStats(daemonOnline: boolean, live: boolean): StatsDisplay {
@@ -264,6 +289,7 @@ function LogsView({ log, onSource }: { log: LogState; onSource: (source: string)
 export function SystemPanel({ daemonOnline, live }: { daemonOnline: boolean; live: boolean }) {
   const [view, setView] = useState<View>("stats");
   const stats = useStats(daemonOnline, live && view === "stats");
+  const board = platformLabel(usePlatform(daemonOnline));
   const { log, selectSource } = useLogs(live && view === "logs");
   const statsTab = useRef<HTMLButtonElement>(null);
   const logsTab = useRef<HTMLButtonElement>(null);
@@ -303,7 +329,9 @@ export function SystemPanel({ daemonOnline, live }: { daemonOnline: boolean; liv
         </div>
         <span className="pill" id="stats-pill" hidden={view !== "stats"}>
           <span className={`dot ${daemonOnline ? "ok" : "error"}`} id="stats-dot"></span>
-          <span id="v-host">{stats.host}</span>
+          <span id="v-host" title={board?.title}>
+            {daemonOnline && board ? board.text : stats.host}
+          </span>
         </span>
         <span className="pill" id="logs-pill" hidden={view !== "logs"}>
           <span className={`dot ${logDisplay.dot}`} id="log-dot"></span>
