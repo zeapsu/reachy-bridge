@@ -454,7 +454,7 @@ input:focus-visible {
   overflow: hidden;
   background: #05060c;
   /* NOTE: do not apply `filter: url(#...)` here — it warps the live camera/
-     sim/schematic content. Refraction lives on the glass rim (.vp-stage::after)
+     3D content. Refraction lives on the glass rim (.vp-stage::after)
      and panel backdrop, never on the content layers. */
 }
 
@@ -518,13 +518,7 @@ input:focus-visible {
 }
 
 
-.sim-label {
-  align-content: end;
-  padding-bottom: 32px;
-  background: linear-gradient(180deg, transparent 58%, rgba(5, 6, 12, 0.72));
-}
-
-/* Offline note: quieter chrome — the sleeping creature already tells the story;
+/* Offline note: quieter chrome — the dimmed robot already tells the story;
    the note just names the cause. Coral stays as the semantic dot. */
 .rig-note {
   position: absolute;
@@ -761,60 +755,16 @@ input:focus-visible {
 
 .vp-foot .v { color: var(--text); }
 
-#rig.offline {
+#robot-3d {
+  transition: opacity 0.4s var(--ease), filter 0.4s var(--ease);
+}
+
+#robot-3d.offline {
   opacity: 0.55;
   filter: saturate(0.45);
 }
 
-#doaArc,
-#doaTick {
-  opacity: 0.35;
-  transition: opacity 0.25s var(--ease);
-}
-
-#rig.speaking #doaArc,
-#rig.speaking #doaTick {
-  opacity: 1;
-}
-
-/* The creature. Breathing rides a wrapper <g class="breath"> so CSS never
-   fights the transform ATTRIBUTES main.js writes on #head/#body/#antL/#antR
-   (pivots preserved: head 160,104 · body 160,152 · antennas 132,70 / 188,70).
-   Sleep + listening states ride the existing .offline/.speaking classes. */
-.breath {
-  animation: breathe 4.6s ease-in-out infinite;
-}
-
-@keyframes breathe {
-  50% { transform: translateY(-1.8px); }
-}
-
-#rig.offline .breath { animation-duration: 8s; }
-
-#rig .halo {
-  opacity: 0.75;
-  transition: opacity 0.4s var(--ease);
-}
-
-#rig.speaking .halo { opacity: 1; }
-
-#rig.speaking #doaArc { filter: drop-shadow(0 0 7px var(--amber)); }
-#rig.speaking #doaTick { filter: drop-shadow(0 0 6px var(--amber)); }
-
-#rig .lid,
-#rig .iris,
-#rig .pupil,
-#rig .glint {
-  transition: opacity 0.35s var(--ease);
-}
-
-/* Asleep when the daemon is offline: eyes close, floor glow dims. */
-#rig .lid { opacity: 0; }
-#rig.offline .lid { opacity: 1; }
-#rig.offline .iris,
-#rig.offline .pupil,
-#rig.offline .glint { opacity: 0; }
-#rig.offline .floor { opacity: 0.4; }
+.hud.speaking .v.amber { text-shadow: 0 0 8px var(--amber); }
 
 .apps {
   display: grid;
@@ -1727,7 +1677,7 @@ input[type=range]::-moz-range-thumb {
     align-items: flex-start;
     flex-direction: column;
   }
-  /* The enlarged DOA readout would crowd the (now smaller) creature. */
+  /* The enlarged DOA readout would crowd the (now smaller) robot. */
   .hud-readout {
     font-size: 10px;
     padding: 8px 10px;
@@ -1788,7 +1738,7 @@ input[type=range]::-moz-range-thumb {
     -webkit-backdrop-filter: none;
     background: rgba(18, 21, 32, 0.97);
   }
-  /* The viewport overlays sit ON TOP of the live schematic (the default vp-stage
+  /* The viewport overlays sit ON TOP of the live 3D view (the default vp-stage
      layer, updated ~10 Hz), so their backdrop-filter blurs recomposite on the GPU
      every frame the pose changes — the per-frame cost #43's .glass fix missed.
      Drop the blur on touch and lift the background opacity so the chips stay
@@ -1806,8 +1756,7 @@ input[type=range]::-moz-range-thumb {
   .dot.ok,
   .dot.loading,
   .dot.stopping,
-  .vp-badge .rec,
-  .breath {
+  .vp-badge .rec {
     animation: none;
   }
 }
@@ -1821,7 +1770,6 @@ input[type=range]::-moz-range-thumb {
   .dot.stopping,
   .spinner-glyph,
   .vp-badge .rec,
-  .breath,
   .chip.playing::before {
     animation: none;
   }

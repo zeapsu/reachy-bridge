@@ -70,7 +70,8 @@ impl LazyStream {
 /// backend runs, so while the robot is off this polls `daemon/status` instead
 /// and connects only once the daemon reports `running` (#160).
 pub async fn run_state(daemon: Daemon, tx: watch::Sender<Sample>) {
-    let url = daemon.ws_url("state/ws/full?with_doa=true");
+    // Head joints pose the dashboard's 3D view (#149).
+    let url = daemon.ws_url("state/ws/full?with_doa=true&with_head_joints=true");
     loop {
         let running = daemon
             .status()
