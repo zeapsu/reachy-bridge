@@ -15,7 +15,6 @@ export default defineConfig({
     rolldownOptions: {
       input: {
         index: page("./index.html"),
-        "app-loading": page("./app-loading.html"),
       },
     },
   },

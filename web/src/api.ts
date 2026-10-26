@@ -175,5 +175,4 @@ export const paths = {
   statsStream: "/api/system/stats-stream",
   audioStream: "/api/audio/levels-stream",
   stateStream: "/telemetry/state-stream",
-  loadingPage: "/app-loading.html",
 } as const;
