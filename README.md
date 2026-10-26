@@ -32,9 +32,16 @@ goes through `runtime/src/reachy_bridge_runtime/upstream.py`, and
 
 ```bash
 deploy/install.sh        # runtime venv, controller, user units, the reachy-bridge command
-reachy-bridge serve      # publish on the tailnet (dashboard on HTTPS :10000)
+reachy-bridge serve      # publish on the tailnet (dashboard on HTTPS :10000, app UIs on :8043)
 reachy-bridge status
 ```
+
+`reachy-bridge serve` adds two HTTPS ports with `tailscale serve`: :10000 for the dashboard and
+:8043 for the running app's own UI. App UIs listen on plain http (`:8042`, `:7860`, ...), where
+browsers block the microphone and camera; the controller proxies whichever app is running on
+`127.0.0.1:7863`, and a dashboard opened over HTTPS sends you to `https://<host>:8043/`. Over
+plain http the dashboard still opens the app's own port. Run `reachy-bridge serve` again after an
+update that adds a mapping.
 
 The robot starts off; switch it on from the dashboard. `install.sh` is safe to re-run after a
 pull, and never restarts the daemon while the robot is on.

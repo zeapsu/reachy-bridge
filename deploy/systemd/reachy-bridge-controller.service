@@ -8,6 +8,8 @@ Type=simple
 ExecStart=%h/.local/share/reachy-bridge/bin/reachy-controller
 Environment=CONTROLLER_HOST=127.0.0.1
 Environment=CONTROLLER_PORT=7861
+# The running app's UI, proxied (always loopback); `reachy-bridge serve` maps HTTPS :8043 to it.
+Environment=CONTROLLER_APP_PORT=7863
 # The controller never moves the robot on its own, so restarting it is safe.
 Restart=on-failure
 RestartSec=2
