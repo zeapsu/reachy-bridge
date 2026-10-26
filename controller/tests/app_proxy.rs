@@ -13,6 +13,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use reachy_controller::app_proxy::PORT_TTL;
+use reachy_controller::auth::AuthConfig;
 use reachy_controller::daemon::Daemon;
 use reachy_controller::logs::LogBroker;
 use reachy_controller::state::AppState;
@@ -42,6 +43,7 @@ async fn fake_app(label: &'static str) -> u16 {
             "forwarded_host": header("x-forwarded-host"),
             "forwarded_for": header("x-forwarded-for"),
             "cookie": header("cookie"),
+            "key": header("x-reachy-bridge-key"),
             "private": header("x-private"),
             "body": String::from_utf8_lossy(&body),
         }))
@@ -104,19 +106,24 @@ struct Harness {
     current: Current,
     proxy: String,
     proxy_port: u16,
+    dir: std::path::PathBuf,
 }
 
 impl Harness {
     async fn new(app: Value) -> Self {
+        Self::with_auth(app, AuthConfig::default()).await
+    }
+
+    async fn with_auth(app: Value, auth: AuthConfig) -> Self {
         let closed = || std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let own = fake_app("controller").await;
         let ports = [fake_app("app A").await, fake_app("app B").await, closed(), own];
         let current = Arc::new(Mutex::new(app));
         let daemon = fake_daemon(ports, current.clone()).await;
         let dir = std::env::temp_dir().join(format!("rc-proxy-test-{}-{}", std::process::id(), ports[0]));
-        let state = AppState::new(Daemon::new(&daemon, Duration::from_secs(2)), LogBroker::new(), dir, Duration::from_millis(10));
+        let state = AppState::with_auth(Daemon::new(&daemon, Duration::from_secs(2)), LogBroker::new(), dir.clone(), Duration::from_millis(10), auth);
         let proxy_port = serve(reachy_controller::app_proxy::router(state, &[own])).await;
-        Self { current, proxy: format!("http://127.0.0.1:{proxy_port}"), proxy_port }
+        Self { current, proxy: format!("http://127.0.0.1:{proxy_port}"), proxy_port, dir }
     }
 
     async fn switch(&self, app: Value) {
@@ -138,7 +145,7 @@ async fn forwards_method_path_query_headers_and_body() {
         .post(format!("{}/echo?x=1&y=two", h.proxy))
         .header("host", "robot.example:8043")
         .header("x-forwarded-proto", "https")
-        .header("cookie", "session=1")
+        .header("cookie", "session=1; rb_device=secret; rb_pair=pending")
         .header("connection", "x-private")
         .header("x-private", "hop")
         .body("hello")
@@ -153,7 +160,7 @@ async fn forwards_method_path_query_headers_and_body() {
     assert_eq!(echoed["proto"], "https");
     assert_eq!(echoed["forwarded_host"], "robot.example:8043");
     assert_eq!(echoed["forwarded_for"], "127.0.0.1");
-    assert_eq!(echoed["cookie"], "session=1");
+    assert_eq!(echoed["cookie"], "session=1", "the dashboard's login cookies stay with the controller");
     assert_eq!(echoed["private"], Value::Null);
     assert_eq!(echoed["body"], "hello");
 
@@ -248,4 +255,27 @@ async fn follows_an_app_switch() {
     assert_eq!(h.get("/").await.0, StatusCode::SERVICE_UNAVAILABLE);
     h.switch(json!({"info": {"name": "app_a"}, "state": "starting"})).await;
     assert_eq!(h.get("/").await, (StatusCode::OK, "app A".into()));
+}
+
+#[tokio::test]
+async fn untrusted_tailnet_needs_a_login_and_the_key_never_reaches_the_app() {
+    let auth = AuthConfig { lan: true, trust_loopback: false, ..AuthConfig::default() };
+    let h = Harness::with_auth(running("app_a"), auth).await;
+    let (status, page) = h.get("/").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(page.contains("Pair this device"));
+
+    let key = std::fs::read_to_string(h.dir.join("controller.key")).unwrap();
+    let client = reqwest::Client::new();
+    let response = client.get(format!("{}/echo", h.proxy)).header("x-reachy-bridge-key", key.trim()).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let echoed: Value = response.json().await.unwrap();
+    assert_eq!(echoed["key"], Value::Null);
+}
+
+#[tokio::test]
+async fn trusted_tailnet_needs_no_login() {
+    let auth = AuthConfig { lan: true, ..AuthConfig::default() };
+    let h = Harness::with_auth(running("app_a"), auth).await;
+    assert_eq!(h.get("/").await, (StatusCode::OK, "app A".to_string()));
 }

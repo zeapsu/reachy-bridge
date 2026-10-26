@@ -402,10 +402,14 @@ async fn cross_site_state_changes_are_refused() {
     let same = [("origin", "http://10.0.0.2:7861"), ("sec-fetch-site", "same-origin"), ("cookie", device.as_str())];
     assert_eq!(h.approve(&code, LAN, &same).await.status, StatusCode::OK);
 
-    // With LAN off only the new auth routes are checked.
+    // With LAN off there is no login, but another site still can't act on
+    // the robot through a tailnet browser; reads and the CLI are untouched.
     let off = harness(AuthConfig::default()).await;
     assert_eq!(off.call("DELETE", "/api/auth/devices/x", LOOPBACK, &evil, None).await.status, StatusCode::FORBIDDEN);
-    assert_ne!(off.call("POST", "/api/expressions/stop", LOOPBACK, &evil, None).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(off.call("POST", "/api/expressions/stop", LOOPBACK, &evil, None).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(off.call("POST", "/api/daemon/start", LOOPBACK, &[("sec-fetch-site", "cross-site")], None).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(off.call("GET", "/api/daemon/status", LOOPBACK, &evil, None).await.status, StatusCode::OK);
+    assert_ne!(off.call("POST", "/api/expressions/stop", LOOPBACK, &[], None).await.status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

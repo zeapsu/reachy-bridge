@@ -63,7 +63,8 @@ async fn main() -> std::io::Result<()> {
         .init();
 
     let timeout = env_or("DAEMON_TIMEOUT", "2.0").parse::<f64>().unwrap_or(2.0);
-    let daemon = Daemon::new(&env_or("DAEMON_URL", "http://127.0.0.1:8000"), Duration::from_secs_f64(timeout));
+    let daemon_url = env_or("DAEMON_URL", "http://127.0.0.1:8000");
+    let daemon = Daemon::new(&daemon_url, Duration::from_secs_f64(timeout));
     let auth = AuthConfig::from_env();
     let lan = auth.lan;
     let state = AppState::with_auth(daemon, logs.clone(), state_dir, Duration::from_millis(300), auth);
@@ -87,7 +88,10 @@ async fn main() -> std::io::Result<()> {
     // Graceful shutdown waits for every connection, and the dashboard's SSE
     // and camera streams (and app UI streams) never end on their own: give
     // both listeners 3 s, then return.
-    let own_ports = [listener.local_addr()?.port(), app_listener.local_addr()?.port()];
+    // Ports the app proxy never forwards to, whatever an app's URL says: the
+    // controller's own and the daemon's.
+    let mut own_ports = vec![listener.local_addr()?.port(), app_listener.local_addr()?.port()];
+    own_ports.extend(reqwest::Url::parse(&daemon_url).ok().and_then(|url| url.port_or_known_default()));
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
         let _ = rx.wait_for(|stop| *stop).await;

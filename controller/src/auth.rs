@@ -1,7 +1,7 @@
 //! Controller login for LAN access (#141).
 //!
-//! Off by default: with `CONTROLLER_LAN` unset the guard lets every request
-//! through, as before. In LAN mode a request is authenticated when its TCP
+//! Off by default: with `CONTROLLER_LAN` unset there is no login, and the
+//! guard only refuses cross-site state changes. In LAN mode a request is authenticated when its TCP
 //! peer is loopback (`tailscale serve` and local tools; `CONTROLLER_TRUST_TAILNET=0`
 //! turns that off), when it carries a paired device's `rb_device` cookie, or
 //! when a loopback peer sends the local key the controller writes to
@@ -10,6 +10,10 @@
 //! served so the dashboard can show its login screen.
 //!
 //! The peer is always the socket address from `ConnectInfo`, never a header.
+//!
+//! The app UI proxy (:8043) applies the same rule through
+//! [`Auth::app_proxy_allowed`] and strips these credentials before a request
+//! reaches the app.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
@@ -260,6 +264,31 @@ fn cookies<'a>(headers: &'a HeaderMap, name: &'a str) -> impl Iterator<Item = &'
         })
 }
 
+/// Drop the controller's credentials from a request bound for an app (the
+/// app UI proxy): browsers scope cookies by host, not port, so `rb_device`
+/// set on the dashboard also comes with every request to :8043.
+pub fn strip_credentials(headers: &mut HeaderMap) {
+    headers.remove(LOCAL_KEY_HEADER);
+    let kept: Vec<String> = headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .map(str::trim)
+        .filter(|pair| {
+            let name = pair.split_once('=').map_or(*pair, |(name, _)| name).trim();
+            !pair.is_empty() && name != DEVICE_COOKIE && name != PAIR_COOKIE
+        })
+        .map(str::to_string)
+        .collect();
+    headers.remove(header::COOKIE);
+    if let Ok(value) = HeaderValue::from_str(&kept.join("; "))
+        && !kept.is_empty()
+    {
+        headers.insert(header::COOKIE, value);
+    }
+}
+
 fn cookie_header(name: &str, value: &str, path: &str, max_age: u64, https: bool) -> HeaderValue {
     let secure = if https { "; Secure" } else { "" };
     HeaderValue::from_str(&format!("{name}={value}; HttpOnly; SameSite=Strict; Path={path}; Max-Age={max_age}{secure}"))
@@ -359,6 +388,18 @@ impl Auth {
         };
         ct_eq(key.as_bytes(), sent.as_bytes())
     }
+
+    /// Whether the app UI proxy may serve a request. Its listener is loopback
+    /// only, so visitors come through tailscale serve: trusted, unless LAN
+    /// mode runs with `CONTROLLER_TRUST_TAILNET=0`, when they need a paired
+    /// device (or the local key) as on the dashboard.
+    pub fn app_proxy_allowed(&self, headers: &HeaderMap, peer: Option<IpAddr>) -> bool {
+        if !self.config.lan || self.config.trust_loopback {
+            return true;
+        }
+        self.local_key_matches(headers)
+            || cookies(headers, DEVICE_COOKIE).take(MAX_COOKIE_VALUES).any(|token| self.device_for(token, peer).is_some())
+    }
 }
 
 /// A browser-sent request from another origin (or another port of the same
@@ -423,8 +464,9 @@ pub async fn guard(State(state): State<Shared>, mut request: Request, next: Next
     let path = request.uri().path().to_string();
 
     if !auth.config.lan {
-        // As before #141: no checks, except on the new auth routes.
-        if path.starts_with("/api/auth/") && !request.method().is_safe() && cross_site(headers, loopback) {
+        // No login, but another site still can't make a tailnet browser act
+        // on the robot (a plain form POST to /api/daemon/start).
+        if (!request.method().is_safe() || headers.contains_key(header::UPGRADE)) && cross_site(headers, loopback) {
             return forbidden(&path, peer);
         }
         request.extensions_mut().insert(AuthContext { peer, authenticated: true, device: None, https });
@@ -696,6 +738,21 @@ mod tests {
             assert_eq!(code.len(), 6);
             assert!(code.bytes().all(|b| b.is_ascii_digit()));
         }
+    }
+
+    #[test]
+    fn credentials_are_stripped_for_apps() {
+        let mut h = HeaderMap::new();
+        h.append(header::COOKIE, "a=1; rb_device=t; b=2".parse().unwrap());
+        h.append(header::COOKIE, "rb_pair=p".parse().unwrap());
+        h.insert(LOCAL_KEY_HEADER, "k".parse().unwrap());
+        strip_credentials(&mut h);
+        assert_eq!(h.get_all(header::COOKIE).iter().collect::<Vec<_>>(), ["a=1; b=2"]);
+        assert!(!h.contains_key(LOCAL_KEY_HEADER));
+        let mut only = HeaderMap::new();
+        only.insert(header::COOKIE, "rb_device=t".parse().unwrap());
+        strip_credentials(&mut only);
+        assert!(!only.contains_key(header::COOKIE));
     }
 
     #[test]

@@ -62,7 +62,9 @@ on the device with `reachy-bridge pair <code> [name]`, or from an already-paired
 (devices panel). The browser then keeps a device cookie for a year. `reachy-bridge devices`
 lists paired browsers and `reachy-bridge devices revoke <id>` logs one out at once.
 Visitors through `tailscale serve` and local tools are trusted without pairing; set
-`CONTROLLER_TRUST_TAILNET=0` to make them pair too.
+`CONTROLLER_TRUST_TAILNET=0` to make them pair too (that covers the app UIs on :8043 as well).
+The login protects the dashboard and :8043 only: app UIs also listen on plain http on their own
+ports (`:8042`, `:7860`, ...), where any LAN device can reach them without pairing.
 
 A paired browser can approve and revoke other browsers, so approve only codes you expect
 (`reachy-bridge pair` prints the address that asked). A browser unused for 30 days is logged out.
