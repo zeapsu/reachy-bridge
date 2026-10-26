@@ -21,6 +21,8 @@ const NOT_HOMED: &str =
 #[derive(Clone, Debug, PartialEq)]
 pub enum Phase {
     Playing,
+    /// A manual drive session (#152) holds the robot; see [`ExpressionPlayer::start_drive`].
+    Driving,
     ReturningHome,
 }
 
@@ -139,10 +141,55 @@ impl ExpressionPlayer {
         json!({"status": "returning_home"})
     }
 
+    /// Claim the robot for a manual drive session (#152), under the same
+    /// checks as a play. Returns the motor-mode epoch the session started in:
+    /// [`Self::driving`] turns false once the mode changes.
+    pub async fn start_drive(&self) -> Result<u64, PlayError> {
+        let _guard = self.start_lock.lock().await;
+        let mut session = self.session.lock().unwrap();
+        if session.is_some() {
+            return Err(PlayError::Busy(BUSY));
+        }
+        if self.needs_home() {
+            return Err(PlayError::Busy(NOT_HOMED));
+        }
+        *session = Some(Session { uuid: None, dataset: None, name: None, phase: Phase::Driving });
+        Ok(self.mode_epoch.load(Ordering::SeqCst))
+    }
+
+    /// True while the drive session started in `epoch` may keep moving the robot.
+    pub fn driving(&self, epoch: u64) -> bool {
+        self.mode_epoch.load(Ordering::SeqCst) == epoch
+            && matches!(&*self.session.lock().unwrap(), Some(Session { phase: Phase::Driving, .. }))
+    }
+
+    /// End the drive session started in `epoch` with the silent return home.
+    /// After a motor-mode change it only clears the session: the motors may
+    /// have no torque, so a goto that "completes" proves nothing, and
+    /// `needs_home` stays set until Motors → Enabled runs its own return home.
+    pub fn end_drive(self: &Arc<Self>, epoch: u64) {
+        {
+            let mut session = self.session.lock().unwrap();
+            match session.as_mut() {
+                Some(s) if s.phase == Phase::Driving => {
+                    if self.mode_epoch.load(Ordering::SeqCst) != epoch {
+                        *session = None;
+                        return;
+                    }
+                    s.phase = Phase::ReturningHome;
+                }
+                _ => return,
+            }
+        }
+        let player = Arc::clone(self);
+        tokio::spawn(async move { player.goto_home_and_clear().await });
+    }
+
     pub async fn stop(&self) -> Value {
         let session = self.session.lock().unwrap().clone();
         match session {
             None => json!({"status": "idle"}),
+            Some(Session { phase: Phase::Driving, .. }) => json!({"status": "driving"}),
             Some(Session { phase: Phase::ReturningHome, .. }) => json!({"status": "returning_home"}),
             Some(Session { uuid, .. }) => {
                 if let Some(uuid) = uuid {
@@ -159,7 +206,7 @@ impl ExpressionPlayer {
             None => json!({"active": false}),
             Some(s) => json!({
                 "active": true,
-                "phase": match s.phase { Phase::Playing => "playing", Phase::ReturningHome => "returning_home" },
+                "phase": match s.phase { Phase::Playing => "playing", Phase::Driving => "driving", Phase::ReturningHome => "returning_home" },
                 "dataset": s.dataset,
                 "move": s.name,
                 "uuid": s.uuid,

@@ -39,6 +39,7 @@ pub fn app(state: Shared) -> Router {
         .merge(routes::telemetry::router())
         .merge(routes::camera::router())
         .merge(routes::logs::router())
+        .merge(routes::drive::router())
         .fallback(routes::assets::serve)
         .layer(middleware::from_fn(log_actions))
         .with_state(state)
