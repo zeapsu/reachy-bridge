@@ -2,7 +2,7 @@
 
 React + TypeScript dashboard for the reachy-bridge controller, built with Vite and
 managed with Bun. The Rust controller (`../controller`) embeds `dist/` and serves
-`/` (dashboard), `/app-loading.html` (app launch tab) and `/assets/*`.
+`/` (dashboard) and `/assets/*`.
 
 ## Commands
 
@@ -30,12 +30,12 @@ The dev server listens on `localhost` only.
 
 ## Layout
 
-- `index.html`, `app-loading.html`: the two Vite entries (multi-page build).
+- `index.html`: the Vite entry.
 - `src/style.css`: shared stylesheet, carried over from the Python controller.
 - `src/api.ts`: typed fetch helper, response types, and every API path.
 - `src/logic/`: pure functions (power state, app cards and gates, expression
-  gating, log capping, pose, audio meter model, stats, kinematics, loading-tab
-  hash), each tested by a `*.test.ts` file next to it.
+  gating, log capping, pose, audio meter model, stats, kinematics, app-view
+  start steps), each tested by a `*.test.ts` file next to it.
 - `src/hooks/`: SSE with reconnect, polling, page visibility, and the stateful
   domain hooks (apps, power, expressions).
 - `src/components/`: one component per panel (StatusBar, ThemePicker, Viewport

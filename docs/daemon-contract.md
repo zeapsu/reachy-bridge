@@ -43,7 +43,8 @@ Endpoints: `daemon/app/routers/daemon.py`; implementation:
   when torque is off. After a cold start torque is off, so a start without
   wake-up reports `disabled` (limp). The MuJoCo backend always reports
   `enabled` and the mockup starts `enabled`, so in sim the same start shows
-  as on.
+  as on. The sim tests patch the MuJoCo backend to start `disabled` and keep
+  the mode it is set to (`tools/sim/sim_daemon.py`).
 - Stop without the sleep move runs no Python code that disables torque; it
   closes the Rust motor controller. Whether torque stays on afterwards is not
   verified, and if it does, the next start reports `enabled`.
@@ -173,8 +174,8 @@ Source: `request_idle_reset` and `_async_idle_reset` in
   goes limp about 5–8 s after the slot frees.
   The daemon state stays `running`, so the bridge shows asleep.
 - **Needs the backend's event loop**, which only exists with media enabled. A
-  daemon started with `--no-media` never runs the idle reset. Sim tests that
-  need it can't use `--no-media`.
+  daemon started with `--no-media` never runs the idle reset. The sim tests
+  (`tools/sim/sim_daemon.py`) give a `--no-media` backend that loop.
 - **Bridge patch:** the runtime's keep-awake feature
   (`runtime/.../features/keep_awake.py`) detaches the trigger during
   `stop-current-app`. A requested stop then leaves the robot awake at the

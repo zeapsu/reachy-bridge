@@ -65,10 +65,18 @@ impl LazyStream {
 
 /// The daemon's full-state WebSocket, reconnecting after a 1 s pause. A
 /// dropped connection publishes `{"error": "daemon_unavailable"}`.
+///
+/// The daemon refuses the socket (503, logged as two error lines) until its
+/// backend runs, so while the robot is off this polls `daemon/status` instead
+/// and connects only once the daemon reports `running` (#160).
 pub async fn run_state(daemon: Daemon, tx: watch::Sender<Sample>) {
     let url = daemon.ws_url("state/ws/full?with_doa=true");
     loop {
-        if let Ok((mut ws, _)) = tokio_tungstenite::connect_async(url.as_str()).await {
+        let running = daemon
+            .status()
+            .await
+            .is_some_and(|s| s.get("state").and_then(Value::as_str) == Some("running"));
+        if running && let Ok((mut ws, _)) = tokio_tungstenite::connect_async(url.as_str()).await {
             while let Some(Ok(message)) = ws.next().await {
                 if let Ok(text) = message.to_text()
                     && let Ok(value) = serde_json::from_str::<Value>(text)

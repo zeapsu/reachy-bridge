@@ -186,5 +186,4 @@ export const paths = {
   platform: "/api/system/platform",
   audioStream: "/api/audio/levels-stream",
   stateStream: "/telemetry/state-stream",
-  loadingPage: "/app-loading.html",
 } as const;
