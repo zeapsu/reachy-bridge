@@ -5,6 +5,7 @@
 //! puts the real socket address in production.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -69,8 +70,11 @@ impl Reply {
 
 async fn harness(config: AuthConfig) -> Harness {
     let url = fake_daemon().await;
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let dir = std::env::temp_dir().join(format!("rc-auth-{}-{nanos}", std::process::id()));
+    // A counter, not the clock: macOS clocks tick in microseconds, so tests
+    // starting together got the same directory and deleted each other's.
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("rc-auth-{}-{n}", std::process::id()));
     let state = AppState::with_auth(
         Daemon::new(&url, Duration::from_secs(2)),
         LogBroker::new(),
