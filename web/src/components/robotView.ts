@@ -4,6 +4,7 @@ import {
   DirectionalLight,
   Group,
   HemisphereLight,
+  type Material,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -12,6 +13,7 @@ import {
   PlaneGeometry,
   Scene,
   SRGBColorSpace,
+  Texture,
   WebGLRenderer,
 } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
@@ -23,6 +25,10 @@ import { RIG, partMatrices } from "../logic/rig.ts";
 
 /** Easing rate (1/s) toward the latest sample: the stream is 10 Hz, frames are 60. */
 const SMOOTH = 12;
+/** Closer than this to the target counts as there (radians, metres). Above
+ * encoder noise, so a robot holding still lets the view go idle. */
+const SETTLED_RAD = 2e-3;
+const SETTLED_M = 1e-4;
 
 interface Shown {
   head_pose: Record<string, number>;
@@ -37,6 +43,13 @@ const NEUTRAL: Shown = {
   body_yaw: 0,
   antennas_position: [RIG.antennas.right.neutral, RIG.antennas.left.neutral],
 };
+
+function disposeMaterial(material: Material | Material[]): void {
+  for (const m of Array.isArray(material) ? material : [material]) {
+    for (const value of Object.values(m)) if (value instanceof Texture) value.dispose();
+    m.dispose();
+  }
+}
 
 /** `value` as `length` finite numbers, or null. */
 function numbers(value: unknown, length: number): number[] | null {
@@ -59,6 +72,7 @@ export class RobotView {
   private frame = 0;
   private last = 0;
   private running = false;
+  private disposed = false;
   private resize: ResizeObserver;
 
   constructor(private canvas: HTMLCanvasElement) {
@@ -76,17 +90,24 @@ export class RobotView {
     const robot = new Group();
     robot.rotation.x = -Math.PI / 2;
     this.scene.add(robot);
-    new GLTFLoader().load(modelUrl, (gltf) => {
-      gltf.scene.traverse((o) => {
-        if (!(o instanceof Mesh)) return;
-        o.material = new MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.05 });
-        o.matrixAutoUpdate = false;
-        this.parts.set(o.name, o);
-      });
-      for (const mesh of this.parts.values()) robot.add(mesh);
-      this.apply(this.shown);
-      this.draw();
-    });
+    new GLTFLoader().load(
+      modelUrl,
+      (gltf) => {
+        if (this.disposed) return;
+        gltf.scene.traverse((o) => {
+          if (!(o instanceof Mesh)) return;
+          disposeMaterial(o.material);
+          o.material = new MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.05 });
+          o.matrixAutoUpdate = false;
+          this.parts.set(o.name, o);
+        });
+        for (const mesh of this.parts.values()) robot.add(mesh);
+        this.apply(this.shown);
+        this.draw();
+      },
+      undefined,
+      (error) => console.error("3D view: model failed to load", error),
+    );
 
     // Frames the robot from the base to the antenna tips (about 0.5 m).
     this.camera.position.set(1.27, 0.36, 0.43);
@@ -95,7 +116,8 @@ export class RobotView {
     this.resize.observe(canvas);
   }
 
-  /** Latest daemon state; missing fields keep their last value. */
+  /** Latest daemon state; missing fields keep their last value. The stream
+   * sends head_pose as x/y/z/roll/pitch/yaw; the matrix form is ignored. */
   setState(state: RobotState): void {
     const t = this.target;
     const pose = state.head_pose;
@@ -128,36 +150,52 @@ export class RobotView {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.setRunning(false);
     this.resize.disconnect();
+    this.scene.traverse((o) => {
+      if (!(o instanceof Mesh)) return;
+      o.geometry.dispose();
+      disposeMaterial(o.material);
+    });
     this.renderer.dispose();
   }
 
+  /** Start the frame loop if it is idle. */
   private wake(): void {
-    if (!this.running || this.frame) return;
+    if (!this.running || this.frame || this.disposed) return;
     this.last = performance.now();
+    this.schedule();
+  }
+
+  private schedule(): void {
     this.frame = requestAnimationFrame((now) => this.tick(now));
   }
 
   private tick(now: number): void {
     this.frame = 0;
-    const k = reduceMotion ? 1 : 1 - Math.exp(-Math.min(0.1, (now - this.last) / 1000) * SMOOTH);
+    const dt = Math.min(0.1, Math.max(0, (now - this.last) / 1000));
+    const k = reduceMotion ? 1 : 1 - Math.exp(-dt * SMOOTH);
     this.last = now;
     const s = this.shown;
     const t = this.target;
     let moving = false;
-    const ease = (a: number, b: number) => {
+    const ease = (a: number, b: number, settled = SETTLED_RAD) => {
       const next = a + (b - a) * k;
-      if (Math.abs(b - next) > 1e-5) moving = true;
-      return Math.abs(b - next) > 1e-5 ? next : b;
+      if (Math.abs(b - next) <= settled) return b;
+      moving = true;
+      return next;
     };
-    for (const key of Object.keys(s.head_pose)) s.head_pose[key] = ease(s.head_pose[key], t.head_pose[key] ?? 0);
+    for (const key of Object.keys(s.head_pose)) {
+      const metres = key === "x" || key === "y" || key === "z";
+      s.head_pose[key] = ease(s.head_pose[key], t.head_pose[key] ?? 0, metres ? SETTLED_M : SETTLED_RAD);
+    }
     s.head_joints = s.head_joints.map((a, i) => ease(a, t.head_joints[i]));
     s.body_yaw = ease(s.body_yaw, t.body_yaw);
     s.antennas_position = s.antennas_position.map((a, i) => ease(a, t.antennas_position[i]));
     this.apply(s);
     this.draw();
-    if (moving) this.wake();
+    if (moving && this.running) this.schedule();
   }
 
   private apply(state: Shown): void {

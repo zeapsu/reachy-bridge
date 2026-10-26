@@ -10,8 +10,8 @@ describe("pose parsing", () => {
   test("null entries stay unknown rather than reading as zero", () => {
     expect(poseValues([null, 0.5, undefined])).toEqual([null, 0.5, null]);
   });
-  test("antennas: array or left/right", () => {
-    expect(antennaValues([0.1, -0.2])).toEqual([0.1, -0.2]);
+  test("antennas: [right, left] array or left/right", () => {
+    expect(antennaValues([0.1, -0.2])).toEqual([-0.2, 0.1]);
     expect(antennaValues({ left: 1, right: 2 })).toEqual([1, 2]);
     expect(antennaValues(undefined)).toEqual([null, null]);
   });
@@ -33,7 +33,7 @@ describe("poseFrame", () => {
     });
     expect(f.rpy).toBe("0/10/-10");
     expect(f.yaw).toBe("0.50");
-    expect(f.ant).toBe("0.25/-0.25");
+    expect(f.ant).toBe("-0.25/0.25");
     expect(f.doa).toBe("90°");
     expect(f.speaking).toBe(true);
   });

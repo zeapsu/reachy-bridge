@@ -4,8 +4,8 @@ import fixture from "./rig.fixture.json";
 import { partMatrices, RIG } from "./rig.ts";
 
 // rig.fixture.json: a pose the sim daemon reached (its head_pose, head_joints,
-// body_yaw and antennas), with where MuJoCo puts the head and the rod tips at
-// that pose and at neutral. Regenerate it with tools/model/README.md.
+// body_yaw and antennas), with where MuJoCo puts the head, the rods and a point
+// on each antenna at that pose and at neutral. Regenerate it with tools/model/README.md.
 const v = (a: number[]) => new Vector3(a[0], a[1], a[2]);
 const MM = 0.001;
 
@@ -28,6 +28,10 @@ describe("3D rig", () => {
     fixture.neutral.rods.forEach((start, i) => {
       const moved = v(start).applyMatrix4(parts[`rod${i + 1}`]);
       expect(moved.distanceTo(v(fixture.posed.rods[i])), `rod${i + 1}`).toBeLessThan(0.5 * MM);
+    });
+    (["antenna_right", "antenna_left"] as const).forEach((name, i) => {
+      const moved = v(fixture.neutral.antennas[i]).applyMatrix4(parts[name]);
+      expect(moved.distanceTo(v(fixture.posed.antennas[i])), name).toBeLessThan(0.5 * MM);
     });
   });
 

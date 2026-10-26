@@ -1,7 +1,7 @@
 """Write web/src/logic/rig.fixture.json, the pose rig.test.ts checks against.
 
 Reads the pose a (sim) daemon is holding, then settles the MuJoCo model at
-neutral and at that pose and records where the head and the six rods end up.
+neutral and at that pose and records where the head, the six rods and a point on each antenna end up.
 rig.test.ts poses the 3D model with the browser's formulas and expects the
 same positions. Move the sim to an off-centre pose first (head tilted and
 turned, body yaw and antennas away from zero) so the check means something.
@@ -20,6 +20,8 @@ import reachy_mini
 
 SETTLE_STEPS = 4000
 NEUTRAL_ANTENNAS = [-0.1746, 0.1746]
+# A point on each antenna, off its hinge axis (local z), in the antenna's frame.
+ANTENNA_POINT = [0.0, -0.06, 0.0]
 
 
 def main(daemon: str, rig_path: str, out: str) -> None:
@@ -43,12 +45,22 @@ def main(daemon: str, rig_path: str, out: str) -> None:
         mujoco.mj_resetData(model, data)
         for _ in range(SETTLE_STEPS):
             data.ctrl[:7] = joints
-            data.qpos[joint("right_antenna")] = antennas[0]
-            data.qpos[joint("left_antenna")] = antennas[1]
             mujoco.mj_step(model, data)
+            # Pin the antennas after each step, or their actuators pull them
+            # off. The daemon reports them as minus their qpos (see export.py).
+            data.qpos[joint("right_antenna")] = -antennas[0]
+            data.qpos[joint("left_antenna")] = -antennas[1]
         mujoco.mj_forward(model, data)
         rods = [body("stewart_link_rod" + ("" if i == 1 else f"_{i}")) for i in range(1, 7)]
-        return {"head": data.xpos[body("xl_330")].tolist(), "rods": [data.xpos[r].tolist() for r in rods]}
+        tips = [
+            (data.xpos[b] + data.xmat[b].reshape(3, 3) @ ANTENNA_POINT).tolist()
+            for b in (model.jnt_bodyid[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"{side}_antenna")] for side in ("right", "left"))
+        ]
+        return {
+            "head": data.xpos[body("xl_330")].tolist(),
+            "rods": [data.xpos[r].tolist() for r in rods],
+            "antennas": tips,
+        }
 
     neutral = settle([0, *[h["neutral"] for h in rig["horns"]]], NEUTRAL_ANTENNAS)
     posed = settle(state["head_joints"], state["antennas_position"])

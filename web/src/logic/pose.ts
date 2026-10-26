@@ -22,8 +22,9 @@ export function poseValues(pose: unknown): [number | null, number | null, number
   return [null, null, null];
 }
 
+/** [left, right]; the daemon's array is [right, left]. */
 export function antennaValues(value: unknown): [number | null, number | null] {
-  if (Array.isArray(value)) return [finite(value[0]), finite(value[1])];
+  if (Array.isArray(value)) return [finite(value[1]), finite(value[0])];
   if (value && typeof value === "object") {
     const v = value as Record<string, unknown>;
     return [finite(v.left), finite(v.right)];

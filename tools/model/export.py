@@ -23,6 +23,10 @@ import trimesh
 # Joint angles the daemon reports at the neutral head pose (head_joints).
 NEUTRAL_STEWART = [0.6244, -0.6244, 0.6243, -0.6244, 0.6242, -0.6242]
 NEUTRAL_ANTENNAS = {"right_antenna": -0.1746, "left_antenna": 0.1746}
+# The daemon's MuJoCo backend reports and drives the antennas as minus their
+# qpos (backend.py: `return -pos`, `ctrl[-2:] = -target`), so the model holds
+# minus the daemon's angle.
+ANTENNA_SIGN = -1
 SETTLE_STEPS = 3000
 
 
@@ -38,13 +42,13 @@ def main(out: str) -> None:
         return mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, name)
 
     for name, angle in NEUTRAL_ANTENNAS.items():
-        d.qpos[m.jnt_qposadr[joint(name)]] = angle
+        d.qpos[m.jnt_qposadr[joint(name)]] = ANTENNA_SIGN * angle
     d.ctrl[: 1 + len(NEUTRAL_STEWART)] = [0.0, *NEUTRAL_STEWART]
     # The closed Stewart chains are equality constraints: let the solver close them.
     for _ in range(SETTLE_STEPS):
         mujoco.mj_step(m, d)
         for name, angle in NEUTRAL_ANTENNAS.items():
-            d.qpos[m.jnt_qposadr[joint(name)]] = angle
+            d.qpos[m.jnt_qposadr[joint(name)]] = ANTENNA_SIGN * angle
     mujoco.mj_forward(m, d)
 
     horns = [body("dc15_a01_horn_dummy" + ("" if i == 1 else f"_{i}")) for i in range(1, 7)]
@@ -90,6 +94,10 @@ def main(out: str) -> None:
         return {"anchor": d.xanchor[j].round(6).tolist(), "axis": d.xaxis[j].round(6).tolist(),
                 "neutral": round(float(d.qpos[m.jnt_qposadr[j]]), 6)}
 
+    def antenna(name: str) -> dict:
+        h = hinge(name)
+        return {**h, "axis": [ANTENNA_SIGN * a for a in h["axis"]], "neutral": NEUTRAL_ANTENNAS[name]}
+
     rig = {
         "units": "metres, z up, robot faces +x",
         "head_pivot": site("head"),
@@ -98,7 +106,8 @@ def main(out: str) -> None:
         "rods": [{"start": d.xpos[r].round(6).tolist(),
                   "end": site(f"closing_{i}_1") if i < 6 else d.xanchor[joint("passive_7")].round(6).tolist()}
                  for i, r in enumerate(rods, 1)],
-        "antennas": {"right": hinge("right_antenna"), "left": hinge("left_antenna")},
+        # In the daemon's convention: neutral as it reports it, axis flipped to match.
+        "antennas": {side: antenna(f"{side}_antenna") for side in ("right", "left")},
     }
     with open(os.path.join(out, "reachy_mini.rig.json"), "w") as f:
         json.dump(rig, f, indent=1)
