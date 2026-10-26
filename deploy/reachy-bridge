@@ -6,6 +6,8 @@
 #   reachy-bridge start | stop | restart [daemon|controller]   (default: both)
 #   reachy-bridge logs [daemon|controller]
 #   reachy-bridge serve [on|off|status]
+#   reachy-bridge pair <code> [name]     approve a browser's LAN login code
+#   reachy-bridge devices [revoke <id>]  list or revoke paired browsers
 #
 # Stopping the daemon sends SIGINT, which puts the robot to sleep and releases
 # torque. Restarting the daemon is refused while the robot is on, unless
@@ -29,6 +31,10 @@ SERVE_MAPPINGS=(
     "$SERVE_CONTROLLER_PORT http://127.0.0.1:${CONTROLLER_PORT:-7861}"  # dashboard
     "8043 http://127.0.0.1:${CONTROLLER_APP_PORT:-7863}"  # running app's UI (controller proxy)
 )
+
+# The controller's login API (#141), on loopback.
+CONTROLLER_URL=http://127.0.0.1:${CONTROLLER_PORT:-7861}
+STATE_DIR=${REACHY_BRIDGE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/reachy-bridge}
 
 die() { echo "reachy-bridge: $*" >&2; exit 1; }
 
@@ -68,6 +74,33 @@ robot_state() {
     local mode=""
     [[ $status == *'"motor_control_mode":"'* ]] && { mode=${status#*\"motor_control_mode\":\"}; mode=" (motors ${mode%%\"*})"; }
     echo "$state$mode"
+}
+
+# controller_api METHOD PATH [curl args]: prints the body; fails with the
+# controller's detail on an error status. Sends the local key from
+# controller.key (needed when CONTROLLER_TRUST_TAILNET=0) through stdin so it
+# never shows in the process list.
+controller_api() {
+    local method=$1 path=$2 key="" out code
+    shift 2
+    [[ -r $STATE_DIR/controller.key ]] && key=$(<"$STATE_DIR/controller.key")
+    out=$(if [[ -n $key ]]; then printf 'X-Reachy-Bridge-Key: %s\n' "$key"; fi |
+        curl -sS -m 5 -X "$method" -H @- "$@" -w '\n%{http_code}' "$CONTROLLER_URL$path") ||
+        die "the controller isn't answering on $CONTROLLER_URL"
+    code=${out##*$'\n'}
+    out=${out%$'\n'*}
+    if [[ $code != 2* ]]; then
+        local detail=${out#*\"detail\":\"}
+        [[ $detail == "$out" ]] && detail="HTTP $code" || detail=${detail%%\"*}
+        die "$detail"
+    fi
+    printf '%s' "$out"
+}
+
+json_string() {
+    local s=${1//\\/\\\\}
+    s=${s//\"/\\\"}
+    printf '"%s"' "${s//[[:cntrl:]]/}"
 }
 
 tailscale_serve() {
@@ -134,12 +167,47 @@ case "$cmd" in
             *) die "serve takes on, off or status" ;;
         esac
         ;;
+    pair)
+        [[ ${args[0]:-} =~ ^[0-9]{6}$ ]] || die "usage: reachy-bridge pair <6-digit code> [name]"
+        body="{\"code\": \"${args[0]}\""
+        [[ -n ${args[1]:-} ]] && body+=", \"name\": $(json_string "${args[*]:1}")"
+        reply=$(controller_api POST /api/auth/approve -H 'Content-Type: application/json' --data "$body}")
+        peer=${reply#*\"peer\":\"}
+        [[ $peer == "$reply" ]] && peer="?" || peer=${peer%%\"*}
+        echo "approved the browser at $peer; it logs in within a few seconds"
+        ;;
+    devices)
+        case "${args[0]:-list}" in
+            list)
+                list=$(controller_api GET /api/auth/devices)
+                if command -v python3 >/dev/null; then
+                    python3 -c '
+import json, sys, time
+devices = json.loads(sys.argv[1])["devices"]
+if not devices:
+    print("no paired devices")
+for d in devices:
+    seen = time.strftime("%Y-%m-%d %H:%M", time.localtime(d["last_seen"]))
+    print("%s  %s  (last seen %s from %s)" % (d["id"], d["name"], seen, d["peer"]))
+' "$list"
+                else
+                    echo "$list"
+                fi
+                ;;
+            revoke)
+                [[ ${args[1]:-} =~ ^[0-9a-f]+$ ]] || die "usage: reachy-bridge devices revoke <id> (from reachy-bridge devices)"
+                controller_api DELETE "/api/auth/devices/${args[1]}" >/dev/null
+                echo "revoked ${args[1]}"
+                ;;
+            *) die "devices takes list or revoke <id>" ;;
+        esac
+        ;;
     robot-power)
         # For install.sh: off, on or unknown (see robot_power).
         robot_power
         ;;
     -h|--help|help)
-        sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         die "unknown command '$cmd' (try: reachy-bridge help)"

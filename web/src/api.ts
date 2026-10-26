@@ -1,6 +1,8 @@
 // Typed client for the controller API. Paths and shapes match the Python
 // controller (apps/reachy_controller routes); the Rust controller serves the same.
 
+import { LOGIN_REQUIRED_EVENT } from "./logic/auth.ts";
+
 /** GET /api/daemon/status */
 export interface DaemonStatus {
   reachable: boolean;
@@ -141,6 +143,9 @@ export async function apiJson<T = unknown>(path: string, options: RequestInit = 
       payload = text;
     }
   }
+  if (response.status === 401 && typeof window !== "undefined") {
+    window.dispatchEvent(new Event(LOGIN_REQUIRED_EVENT));
+  }
   if (!response.ok) {
     const detail =
       payload && typeof payload === "object" && "detail" in payload
@@ -186,4 +191,10 @@ export const paths = {
   platform: "/api/system/platform",
   audioStream: "/api/audio/levels-stream",
   stateStream: "/telemetry/state-stream",
+  authStatus: "/api/auth/status",
+  authPair: "/api/auth/pair",
+  authPairPoll: (id: string) => `/api/auth/pair/${encodeURIComponent(id)}`,
+  authApprove: "/api/auth/approve",
+  authDevices: "/api/auth/devices",
+  authDevice: (id: string) => `/api/auth/devices/${encodeURIComponent(id)}`,
 } as const;

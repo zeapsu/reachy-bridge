@@ -34,6 +34,7 @@ use serde_json::Value;
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
+use crate::auth::strip_credentials;
 use crate::state::Shared;
 
 /// How long a resolved upstream port is reused before asking the daemon again.
@@ -126,13 +127,17 @@ impl AppProxy {
 async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
     let (mut parts, body) = request.into_parts();
     let host = forwarded_host(&parts.headers);
+    let peer = parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0);
+    if !proxy.state.auth.app_proxy_allowed(&parts.headers, peer.map(|p| p.ip().to_canonical())) {
+        return login_required(host.as_deref());
+    }
+    let mut headers = parts.headers.clone();
+    strip_hop_by_hop(&mut headers);
+    strip_credentials(&mut headers);
     let port = match proxy.port().await {
         Ok(port) => port,
         Err(why) => return unavailable(why, host.as_deref()),
     };
-    let peer = parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0);
-    let mut headers = parts.headers.clone();
-    strip_hop_by_hop(&mut headers);
     add_forwarded(&mut headers, &parts.headers, peer);
     let path = parts.uri.path_and_query().map_or("/", |pq| pq.as_str()).to_string();
 
@@ -348,6 +353,21 @@ fn forwarded_host(headers: &HeaderMap) -> Option<String> {
 }
 
 /// A small page instead of a bare error: the dashboard is the way back.
+/// LAN mode with `CONTROLLER_TRUST_TAILNET=0` and no paired device.
+fn login_required(host: Option<&str>) -> Response {
+    let link = host.map_or_else(String::new, |host| {
+        format!(r#"<p><a href="//{host}:{DASHBOARD_SERVE_PORT}/">Pair this device on the dashboard</a></p>"#)
+    });
+    let page = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\">\
+         <title>Login required</title></head><body style=\"font-family:sans-serif;margin:2rem\">\
+         <p>This device isn't paired with the robot.</p>{link}</body></html>"
+    );
+    let mut response = (StatusCode::UNAUTHORIZED, Html(page)).into_response();
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 fn unavailable(why: Unavailable, host: Option<&str>) -> Response {
     let message = match why {
         Unavailable::NoApp => "No app with a web UI is running.",

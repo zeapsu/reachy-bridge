@@ -10,6 +10,13 @@ Environment=CONTROLLER_HOST=127.0.0.1
 Environment=CONTROLLER_PORT=7861
 # The running app's UI, proxied (always loopback); `reachy-bridge serve` maps HTTPS :8043 to it.
 Environment=CONTROLLER_APP_PORT=7863
+# LAN access (#141), off by default: serve the dashboard on every interface
+# and require browsers on the LAN to pair (`reachy-bridge pair <code>`). The
+# daemon stays on loopback. LAN traffic is plain HTTP; Tailscale is
+# recommended beyond the home network. CONTROLLER_TRUST_TAILNET=0 also makes
+# loopback (tailscale serve) visitors pair.
+#Environment=CONTROLLER_LAN=1
+#Environment=CONTROLLER_TRUST_TAILNET=0
 # The controller never moves the robot on its own, so restarting it is safe.
 Restart=on-failure
 RestartSec=2

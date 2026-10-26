@@ -46,6 +46,34 @@ update that adds a mapping.
 The robot starts off; switch it on from the dashboard. `install.sh` is safe to re-run after a
 pull, and never restarts the daemon while the robot is on.
 
+## LAN access
+
+By default the dashboard listens on loopback only and is reached over Tailscale. To open it to
+the home network as well, set `CONTROLLER_LAN=1` for the controller:
+
+```bash
+systemctl --user edit reachy-bridge-controller.service   # add: [Service] Environment=CONTROLLER_LAN=1
+reachy-bridge restart controller
+```
+
+The dashboard then listens on every interface on port 7861; the daemon stays on loopback.
+A browser on the LAN gets a login screen with a 6-digit code (valid for 5 minutes). Approve it
+on the device with `reachy-bridge pair <code> [name]`, or from an already-paired dashboard
+(devices panel). The browser then keeps a device cookie for a year. `reachy-bridge devices`
+lists paired browsers and `reachy-bridge devices revoke <id>` logs one out at once.
+Visitors through `tailscale serve` and local tools are trusted without pairing; set
+`CONTROLLER_TRUST_TAILNET=0` to make them pair too (that covers the app UIs on :8043 as well).
+The login protects the dashboard and :8043 only: app UIs also listen on plain http on their own
+ports (`:8042`, `:7860`, ...), where any LAN device can reach them without pairing.
+
+A paired browser can approve and revoke other browsers, so approve only codes you expect
+(`reachy-bridge pair` prints the address that asked). A browser unused for 30 days is logged out.
+
+LAN traffic is plain HTTP, so anyone on the network can read it, including the device cookie,
+unless you put TLS in front of the controller. Browsers also send that cookie to the app UIs
+served on other ports of the device (cookies aren't separated by port). Use LAN access on a home
+network you trust, and Tailscale (`reachy-bridge serve`, HTTPS) for anything beyond it.
+
 ## Development quick start
 
 ```bash

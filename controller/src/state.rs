@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::apps::DaemonApps;
+use crate::auth::{Auth, AuthConfig};
 use crate::daemon::Daemon;
 use crate::datasets::DatasetCache;
 use crate::expressions::ExpressionPlayer;
@@ -26,11 +27,18 @@ pub struct AppState {
     pub datasets: DatasetCache,
     /// Where favorites, the dataset cache and the controller log live.
     pub state_dir: PathBuf,
+    /// LAN login (#141); off unless `CONTROLLER_LAN=1`.
+    pub auth: Auth,
 }
 
 impl AppState {
     pub fn new(daemon: Daemon, logs: Arc<LogBroker>, state_dir: PathBuf, poll: Duration) -> Shared {
+        Self::with_auth(daemon, logs, state_dir, poll, AuthConfig::default())
+    }
+
+    pub fn with_auth(daemon: Daemon, logs: Arc<LogBroker>, state_dir: PathBuf, poll: Duration, auth: AuthConfig) -> Shared {
         Arc::new(Self {
+            auth: Auth::new(auth, &state_dir),
             apps: DaemonApps::new(daemon.clone()),
             player: ExpressionPlayer::new(daemon.clone(), poll),
             daemon,

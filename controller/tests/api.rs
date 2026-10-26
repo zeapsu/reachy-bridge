@@ -1,5 +1,6 @@
 //! Controller routes against a scripted fake daemon on a loopback port.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -213,8 +214,11 @@ async fn harness(init: impl FnOnce(&mut Fake)) -> Harness {
     Harness { fake, state, _dir: TempDir(dir) }
 }
 
-fn rand_suffix() -> u128 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+/// A counter, not the clock: macOS clocks tick in microseconds, so tests
+/// starting together got the same directory and deleted each other's.
+fn rand_suffix() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 impl Harness {
