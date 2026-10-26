@@ -1,4 +1,6 @@
+pub mod app_proxy;
 pub mod apps;
+pub mod auth;
 pub mod daemon;
 pub mod datasets;
 pub mod error;
@@ -40,7 +42,9 @@ pub fn app(state: Shared) -> Router {
         .merge(routes::camera::router())
         .merge(routes::logs::router())
         .merge(routes::drive::router())
+        .merge(auth::router())
         .fallback(routes::assets::serve)
+        .layer(middleware::from_fn_with_state(state.clone(), auth::guard))
         .layer(middleware::from_fn(log_actions))
         .with_state(state)
 }

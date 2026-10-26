@@ -423,12 +423,13 @@ def test_runtime_runs_host_setup_then_features_then_the_daemon(monkeypatch) -> N
     )
     monkeypatch.setattr(platforms, "detect", lambda: platform)
     monkeypatch.setattr(runtime_main, "apply", lambda _platform: calls.append("features") or [])
+    monkeypatch.setattr(runtime_main, "report_platform", lambda *_args: calls.append("report"))
     monkeypatch.setattr(upstream, "run_daemon", lambda: calls.append("daemon") or 23)
     monkeypatch.setattr(upstream, "installed_version", lambda: "test")
     monkeypatch.setattr(sys, "argv", ["reachy-bridge-runtime"])
 
     assert runtime_main.main() == 23
-    assert calls == ["volume", "asoundrc", "features", "daemon"]
+    assert calls == ["volume", "asoundrc", "features", "report", "daemon"]
 
 
 @pytest.mark.asyncio

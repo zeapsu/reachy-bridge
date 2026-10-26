@@ -1,6 +1,8 @@
 // Typed client for the controller API. Paths and shapes match the Python
 // controller (apps/reachy_controller routes); the Rust controller serves the same.
 
+import { LOGIN_REQUIRED_EVENT } from "./logic/auth.ts";
+
 /** GET /api/daemon/status */
 export interface DaemonStatus {
   reachable: boolean;
@@ -85,6 +87,16 @@ export interface LogSources {
   sources: { id: string; status?: string }[];
 }
 
+/** GET /api/system/platform: what the runtime detected at startup (#140). */
+export interface PlatformInfo {
+  name?: string;
+  tier?: string;
+  model?: string;
+  features?: string[];
+  skipped?: string[];
+  reachy_mini?: string;
+}
+
 /** SSE `stats-update` on /api/system/stats-stream */
 export interface SystemStats {
   cpu_percent?: number | null;
@@ -131,6 +143,9 @@ export async function apiJson<T = unknown>(path: string, options: RequestInit = 
       payload = text;
     }
   }
+  if (response.status === 401 && typeof window !== "undefined") {
+    window.dispatchEvent(new Event(LOGIN_REQUIRED_EVENT));
+  }
   if (!response.ok) {
     const detail =
       payload && typeof payload === "object" && "detail" in payload
@@ -173,7 +188,13 @@ export const paths = {
   logSources: "/api/logs/sources",
   logStream: (source: string) => `/api/logs/stream?source=${encodeURIComponent(source)}`,
   statsStream: "/api/system/stats-stream",
+  platform: "/api/system/platform",
   audioStream: "/api/audio/levels-stream",
   stateStream: "/telemetry/state-stream",
-  loadingPage: "/app-loading.html",
+  authStatus: "/api/auth/status",
+  authPair: "/api/auth/pair",
+  authPairPoll: (id: string) => `/api/auth/pair/${encodeURIComponent(id)}`,
+  authApprove: "/api/auth/approve",
+  authDevices: "/api/auth/devices",
+  authDevice: (id: string) => `/api/auth/devices/${encodeURIComponent(id)}`,
 } as const;

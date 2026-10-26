@@ -133,8 +133,23 @@ export function actionResultMessage(name: string, status: string | undefined): s
   return status ? `${name} ${status}` : "";
 }
 
-/** The app's own UI, on the robot host the dashboard was loaded from. */
-export function appUiUrl(hostname: string, port: number | string): string {
+/**
+ * HTTPS port of the controller's app UI proxy (`reachy-bridge serve`): it
+ * forwards to whichever app is running.
+ */
+export const APP_UI_HTTPS_PORT = 8043;
+
+/**
+ * The app's own UI, on the robot host the dashboard was loaded from. An HTTPS
+ * dashboard opens it through the proxy on :8043, so the app's page is a secure
+ * context too (microphone, camera); plain http opens the app's port directly.
+ */
+export function appUiUrl(
+  hostname: string,
+  port: number | string,
+  protocol: string = globalThis.location?.protocol ?? "http:",
+): string {
+  if (protocol === "https:") return `https://${hostname}:${APP_UI_HTTPS_PORT}/`;
   return `http://${hostname}:${encodeURIComponent(String(port))}/`;
 }
 

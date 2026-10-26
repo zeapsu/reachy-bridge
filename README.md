@@ -16,8 +16,7 @@ runtime/                  Pollen's daemon plus the bridge's features and platfor
 controller/               controller: Rust (axum) binary that embeds the dashboard (#144)
 web/                      dashboard: React + TypeScript, built with Vite and Bun
 deploy/                   installer, user units, and the reachy-bridge command
-tools/                    sim smoke test, webrtcsink build for Jetson, udev rule
-hello.py                  SDK smoke test (antenna wiggle)
+tools/                    sim integration tests, webrtcsink build for Jetson, udev rule
 ```
 
 The controller talks to the daemon at `127.0.0.1:8000`. It switches the robot on and off,
@@ -33,12 +32,47 @@ goes through `runtime/src/reachy_bridge_runtime/upstream.py`, and
 
 ```bash
 deploy/install.sh        # runtime venv, controller, user units, the reachy-bridge command
-reachy-bridge serve      # publish on the tailnet (dashboard on HTTPS :10000)
+reachy-bridge serve      # publish on the tailnet (dashboard on HTTPS :10000, app UIs on :8043)
 reachy-bridge status
 ```
 
+`reachy-bridge serve` adds two HTTPS ports with `tailscale serve`: :10000 for the dashboard and
+:8043 for the running app's own UI. App UIs listen on plain http (`:8042`, `:7860`, ...), where
+browsers block the microphone and camera; the controller proxies whichever app is running on
+`127.0.0.1:7863`, and a dashboard opened over HTTPS sends you to `https://<host>:8043/`. Over
+plain http the dashboard still opens the app's own port. Run `reachy-bridge serve` again after an
+update that adds a mapping.
+
 The robot starts off; switch it on from the dashboard. `install.sh` is safe to re-run after a
 pull, and never restarts the daemon while the robot is on.
+
+## LAN access
+
+By default the dashboard listens on loopback only and is reached over Tailscale. To open it to
+the home network as well, set `CONTROLLER_LAN=1` for the controller:
+
+```bash
+systemctl --user edit reachy-bridge-controller.service   # add: [Service] Environment=CONTROLLER_LAN=1
+reachy-bridge restart controller
+```
+
+The dashboard then listens on every interface on port 7861; the daemon stays on loopback.
+A browser on the LAN gets a login screen with a 6-digit code (valid for 5 minutes). Approve it
+on the device with `reachy-bridge pair <code> [name]`, or from an already-paired dashboard
+(devices panel). The browser then keeps a device cookie for a year. `reachy-bridge devices`
+lists paired browsers and `reachy-bridge devices revoke <id>` logs one out at once.
+Visitors through `tailscale serve` and local tools are trusted without pairing; set
+`CONTROLLER_TRUST_TAILNET=0` to make them pair too (that covers the app UIs on :8043 as well).
+The login protects the dashboard and :8043 only: app UIs also listen on plain http on their own
+ports (`:8042`, `:7860`, ...), where any LAN device can reach them without pairing.
+
+A paired browser can approve and revoke other browsers, so approve only codes you expect
+(`reachy-bridge pair` prints the address that asked). A browser unused for 30 days is logged out.
+
+LAN traffic is plain HTTP, so anyone on the network can read it, including the device cookie,
+unless you put TLS in front of the controller. Browsers also send that cookie to the app UIs
+served on other ports of the device (cookies aren't separated by port). Use LAN access on a home
+network you trust, and Tailscale (`reachy-bridge serve`, HTTPS) for anything beyond it.
 
 ## Development quick start
 
@@ -51,9 +85,13 @@ uv run reachy-bridge-runtime --sim --headless --fastapi-port 8000   # simulator 
 
 Then open <http://127.0.0.1:7861/>. For UI work, `bun run dev` in `web/` serves the dashboard
 with hot reload and proxies the API to the controller. Tests: `cargo test` in `controller/`,
-`bun test` in `web/`, `uv run pytest` (runtime), and `tools/sim/smoke.py` against a sim daemon.
-CI runs everything but the sim smoke test on each PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2,
-as on JetPack 7). Pushing a `vX.Y.Z` tag runs CI and then publishes a GitHub Release with the
+`bun test` in `web/`, `uv run pytest` (runtime), and the sim integration tests,
+`uv run python tools/sim/run.py` (after the release build; see `tools/sim/README.md`).
+CI runs all of them on each PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPack 7).
+
+What the controller may assume about the daemon (power, motor modes, the idle reset, app
+lifecycle) is in [`docs/daemon-contract.md`](docs/daemon-contract.md). Read it before changing
+how the controller drives the daemon, and re-check it when the locked `reachy-mini` changes. Pushing a `vX.Y.Z` tag runs CI and then publishes a GitHub Release with the
 source archive, `uv.lock`, `SHA256SUMS` and a build attestation; `-rc` tags are prereleases.
 
 A user-facing install guide, `CONTRIBUTING.md` and the license arrive with the public release

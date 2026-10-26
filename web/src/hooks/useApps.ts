@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson, errorText, paths, type AppActionResult, type AppStatus, type AppUi, type Favorites } from "../api.ts";
 import {
   APP_UI_WAIT_ATTEMPTS,
@@ -8,12 +8,26 @@ import {
   normalizeFavorites,
   toggleFavoriteList,
 } from "../logic/apps.ts";
-import { loadingHash, loadingPageUrl } from "../logic/loading.ts";
+import type { LoadingStep } from "../logic/loading.ts";
 
 export interface PanelMessage {
   text: string;
   kind: "" | "ok" | "error";
 }
+
+/** An app's UI shown inside the dashboard (#159): its loading steps until the
+ *  app's server answers, then the app itself. */
+export interface AppView {
+  name: string;
+  display: string;
+  /** The app's UI, once its server answers. */
+  url: string | null;
+  step: LoadingStep;
+  error: string | null;
+}
+
+/** App states in which the view stays open. */
+const APP_VIEW_LIVE = new Set(["running", "loading"]);
 
 export interface AppsState {
   statuses: AppStatus[];
@@ -30,50 +44,17 @@ export interface AppsState {
   loadFavorites: () => Promise<void>;
   favoritesLoaded: () => boolean;
   toggleFavorite: (name: string) => Promise<void>;
-  /** Must be called synchronously from the click (it may open a tab). */
+  /** Starts or stops an app; starting one with a UI opens the app view. */
   perform: (name: string, action: "start" | "stop") => void;
   openUi: (name: string) => void;
+  /** The app UI open inside the dashboard, if any. */
+  appView: AppView | null;
+  closeAppView: () => void;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Drive the loading tab through its steps (app-loading.html reads the hash). */
-function setLoadingStep(target: Window | null, step: string, attempt = 0): void {
-  if (!target || target.closed) return;
-  try {
-    // Until the loading page has replaced the initial about:blank, a hash
-    // change could cancel that navigation; wait for it instead.
-    if (target.location.pathname !== paths.loadingPage) {
-      if (attempt < 50) setTimeout(() => setLoadingStep(target, step, attempt + 1), 100);
-      return;
-    }
-    target.location.hash = loadingHash(step);
-  } catch {
-    // The tab already navigated to the app's own origin.
-  }
-}
-
-function openAppUiTab(port: number | string): void {
-  window.open(appUiUrl(window.location.hostname, port), "_blank", "noopener");
-}
-
-async function waitAndOpenAppUi(name: string, target: Window | null): Promise<void> {
-  for (let attempt = 0; attempt < APP_UI_WAIT_ATTEMPTS; attempt += 1) {
-    try {
-      const payload = await apiJson<AppUi>(paths.appUi(name));
-      if (payload && payload.port && payload.ready) {
-        setLoadingStep(target, "opening");
-        if (target && !target.closed) target.location.href = appUiUrl(window.location.hostname, payload.port);
-        else openAppUiTab(payload.port);
-        return;
-      }
-    } catch {
-      // keep waiting
-    }
-    await sleep(APP_UI_WAIT_INTERVAL_MS);
-  }
-  setLoadingStep(target, `failed:${name} did not open its interface within 30 s.`);
-}
+const APP_VIEW_STATE = "reachyBridgeAppView";
 
 export function useApps(): AppsState {
   const [statuses, setStatuses] = useState<AppStatus[]>([]);
@@ -176,17 +157,127 @@ export function useApps(): AppsState {
     [loadFavorites],
   );
 
+  const [appView, setAppViewState] = useState<AppView | null>(null);
+  const viewRef = useRef<AppView | null>(null);
+  // Bumped whenever a view opens or closes, so a wait started for one view
+  // can't reopen or change a later one.
+  const viewSeq = useRef(0);
+  // The view's app has been seen running or loading; only then does it
+  // leaving those states close the view (a stale status can't).
+  const seenLive = useRef(false);
+  // history.back() was called and its popstate hasn't arrived yet.
+  const backPending = useRef(false);
+
+  const setView = (next: AppView | null) => {
+    viewRef.current = next;
+    setAppViewState(next);
+  };
+
+  /** Open the view of an app's UI; the view's sequence number. The view gets
+   *  its own history entry, so Back (or a swipe) returns to the dashboard. */
+  const openView = useCallback((name: string, patch: Partial<AppView>): number => {
+    const current = viewRef.current;
+    if (current?.name === name) {
+      setView({ ...current, ...patch });
+      return viewSeq.current;
+    }
+    viewSeq.current += 1;
+    seenLive.current = false;
+    const app = statusesRef.current.find((item) => item.name === name);
+    setView({ name, display: app?.display || name, url: null, step: "waking", error: null, ...patch });
+    // While a Back is in flight the entry is pushed when it lands.
+    if (!backPending.current) {
+      if (window.history.state?.[APP_VIEW_STATE]) window.history.replaceState({ [APP_VIEW_STATE]: name }, "");
+      else window.history.pushState({ [APP_VIEW_STATE]: name }, "");
+    }
+    return viewSeq.current;
+  }, []);
+
+  /** Change the view, if it's still the one numbered `seq`. */
+  const updateView = useCallback((seq: number, patch: Partial<AppView>) => {
+    if (seq === viewSeq.current && viewRef.current) setView({ ...viewRef.current, ...patch });
+  }, []);
+
+  /** Back to the dashboard. The app keeps running. */
+  const closeAppView = useCallback(() => {
+    if (!viewRef.current) return;
+    viewSeq.current += 1;
+    setView(null);
+    if (window.history.state?.[APP_VIEW_STATE] && !backPending.current) {
+      backPending.current = true;
+      window.history.back();
+    }
+  }, []);
+
+  useEffect(() => {
+    // A reload keeps the view's history entry but not the view.
+    if (window.history.state?.[APP_VIEW_STATE]) window.history.replaceState(null, "");
+    const onPop = () => {
+      const view = viewRef.current;
+      if (backPending.current) {
+        backPending.current = false;
+        // Reopened before the Back landed: give the new view its entry.
+        if (view) window.history.pushState({ [APP_VIEW_STATE]: view.name }, "");
+      } else if (!window.history.state?.[APP_VIEW_STATE]) {
+        if (view) {
+          viewSeq.current += 1;
+          setView(null);
+        }
+      } else if (!view) {
+        // Forward onto a closed view's entry: it's the dashboard now.
+        window.history.replaceState(null, "");
+      }
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Close the view once its app stops or crashes (the Apps panel says which).
+  // A view showing a start failure stays until it's dismissed.
+  useEffect(() => {
+    if (!appView || appView.error) return;
+    const app = statuses.find((item) => item.name === appView.name);
+    if (app && APP_VIEW_LIVE.has(app.status)) seenLive.current = true;
+    else if (seenLive.current) closeAppView();
+  }, [statuses, appView, closeAppView]);
+
+  /** Wait for the view's app to serve its UI, then show it. */
+  const showWhenReady = useCallback(
+    async (seq: number, name: string) => {
+      const crashed = () => statusesRef.current.find((item) => item.name === name)?.status === "error";
+      let port: number | string | null = null;
+      for (let attempt = 0; attempt < APP_UI_WAIT_ATTEMPTS; attempt += 1) {
+        if (seq !== viewSeq.current) return;
+        if (crashed()) return closeAppView();
+        try {
+          const payload = await apiJson<AppUi>(paths.appUi(name));
+          if (payload && payload.port && payload.ready) {
+            port = payload.port;
+            break;
+          }
+        } catch {
+          // keep waiting
+        }
+        await sleep(APP_UI_WAIT_INTERVAL_MS);
+      }
+      if (port == null) {
+        const display = viewRef.current?.display || name;
+        updateView(seq, { error: `${display} did not open its interface within 30 s.` });
+      } else {
+        updateView(seq, { step: "opening", url: appUiUrl(window.location.hostname, port) });
+      }
+    },
+    [closeAppView, updateView],
+  );
+
   const perform = useCallback(
     (name: string, action: "start" | "stop") => {
       if (appBusyRef.current) return;
       const app = statusesRef.current.find((item) => item.name === name);
-      // Open the tab inside the click (popup blockers), then point it at the
-      // app once its server answers.
-      let pending: Window | null = null;
-      if (action === "start" && app?.has_ui) {
-        pending = window.open(loadingPageUrl(paths.loadingPage, app.display || name), "_blank");
-        if (pending) pending.opener = null;
-      }
+      const withUi = action === "start" && Boolean(app?.has_ui);
+      const seq = withUi ? openView(name, { url: null, step: "waking", error: null }) : 0;
+      // Stopping from the view goes straight back to the dashboard.
+      if (action === "stop" && viewRef.current?.name === name) closeAppView();
       appBusyRef.current = true;
       setAppBusy(true);
       setMessage({ text: `${action === "start" ? "starting" : "stopping"} ${name}`, kind: "" });
@@ -199,15 +290,17 @@ export function useApps(): AppsState {
           if (result && (result.status === "refused" || result.error)) {
             throw new Error(result.error || "Request refused");
           }
-          if (action === "start" && result && result.ui_port) {
-            setLoadingStep(pending, "starting");
-            void waitAndOpenAppUi(name, pending);
-          } else if (pending) pending.close();
           await poll();
           setMessage({ text: actionResultMessage(name, result?.status), kind: "ok" });
+          if (withUi && result && result.ui_port) {
+            updateView(seq, { step: "starting" });
+            void showWhenReady(seq, name);
+          } else if (withUi && seq === viewSeq.current) {
+            closeAppView();
+          }
         } catch (err) {
           const text = errorText(err, "App request failed");
-          setLoadingStep(pending, `failed:${text}`);
+          if (withUi) updateView(seq, { error: text });
           setMessage({ text, kind: "error" });
           await poll();
         } finally {
@@ -216,21 +309,22 @@ export function useApps(): AppsState {
         }
       })();
     },
-    [poll],
+    [poll, openView, updateView, closeAppView, showWhenReady],
   );
 
-  const openUi = useCallback((name: string) => {
-    void (async () => {
-      try {
-        const payload = await apiJson<AppUi>(paths.appUi(name));
-        if (payload && payload.port) openAppUiTab(payload.port);
-      } catch (err) {
-        setMessage({ text: errorText(err, "App UI unavailable"), kind: "error" });
-      }
-    })();
-  }, []);
+  const openUi = useCallback(
+    (name: string) => {
+      if (viewRef.current?.name === name) return;
+      const app = statusesRef.current.find((item) => item.name === name);
+      const seq = openView(name, { step: app?.status === "running" ? "opening" : "starting" });
+      void showWhenReady(seq, name);
+    },
+    [openView, showWhenReady],
+  );
 
   return {
+    appView,
+    closeAppView,
     statuses,
     names: statuses.map((app) => app.name),
     favorites,

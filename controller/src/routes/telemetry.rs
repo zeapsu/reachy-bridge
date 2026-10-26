@@ -27,6 +27,7 @@ pub fn router() -> Router<Shared> {
         .route("/telemetry/state-stream", get(state_stream))
         .route("/api/system/stats", get(system_stats))
         .route("/api/system/stats-stream", get(stats_stream))
+        .route("/api/system/platform", get(platform))
         .route("/api/audio/levels-stream", get(audio_stream))
 }
 
@@ -64,6 +65,12 @@ async fn full_state(State(state): State<Shared>) -> ApiResult<Json<Value>> {
 
 async fn daemon_status(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     state.daemon.status().await.map(Json).ok_or_else(|| ApiError::new(503, "Daemon unavailable"))
+}
+
+/// The board the runtime detected, its support tier, and the bridge features
+/// startup applied or skipped (#140). Fixed for the daemon's lifetime.
+async fn platform(State(state): State<Shared>) -> ApiResult<Json<Value>> {
+    state.daemon.get("bridge/platform").await.map(Json).map_err(|_| ApiError::new(503, "Daemon unavailable"))
 }
 
 async fn system_stats() -> Json<Value> {
