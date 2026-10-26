@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { apiJson, paths, type PlatformInfo, type SystemStats } from "../api.ts";
+import { useLens } from "../glass.ts";
 import { readEventPayload, useEventSource } from "../hooks/useEventSource.ts";
 import { reduceMotion } from "../hooks/reduceMotion.ts";
 import {
@@ -21,8 +22,7 @@ import {
   type GaugeValue,
   type StatsDisplay,
 } from "../logic/stats.ts";
-
-type View = "stats" | "logs";
+import "./SystemPanel.css";
 
 const RADIUS = 34;
 const CIRCUMFERENCE = Math.PI * 2 * RADIUS;
@@ -31,13 +31,13 @@ function Gauge({ id, label, value }: { id: string; label: string; value: GaugeVa
   return (
     <div className="gauge" id={id} role="img" aria-label={`${label} ${value.text}${value.suffix}`.trim()}>
       <svg viewBox="0 0 84 84" aria-hidden="true">
-        <circle cx="42" cy="42" r={RADIUS} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="7"></circle>
+        <circle cx="42" cy="42" r={RADIUS} fill="none" stroke="var(--well)" strokeWidth="7"></circle>
         <circle
           cx="42"
           cy="42"
           r={RADIUS}
           fill="none"
-          stroke="var(--amber)"
+          stroke="var(--accent)"
           strokeWidth="7"
           strokeLinecap="round"
           transform="rotate(-90 42 42)"
@@ -228,7 +228,7 @@ function LogsView({ log, onSource }: { log: LogState; onSource: (source: string)
   return (
     <>
       <div className="log-bar">
-        <select id="log-source" aria-label="Log source" value={log.source} onChange={(e) => onSource(e.target.value)}>
+        <select className="field" id="log-source" aria-label="Log source" value={log.source} onChange={(e) => onSource(e.target.value)}>
           {log.sources.map((id) => (
             <option key={id} value={id}>
               {id}
@@ -262,7 +262,7 @@ function LogsView({ log, onSource }: { log: LogState; onSource: (source: string)
           </p>
         </div>
         <button
-          className="log-follow"
+          className="btn log-follow press"
           id="log-follow"
           type="button"
           hidden={follow}
@@ -286,64 +286,42 @@ function LogsView({ log, onSource }: { log: LogState; onSource: (source: string)
   );
 }
 
-export function SystemPanel({ daemonOnline, live }: { daemonOnline: boolean; live: boolean }) {
-  const [view, setView] = useState<View>("stats");
-  const stats = useStats(daemonOnline, live && view === "stats");
+/** Board stats: CPU, GPU, temperature, memory and the audio route. */
+export function StatsPanel({ daemonOnline, live }: { daemonOnline: boolean; live: boolean }) {
+  const sheet = useLens<HTMLElement>();
+  const stats = useStats(daemonOnline, live);
   const board = platformLabel(usePlatform(daemonOnline));
-  const { log, selectSource } = useLogs(live && view === "logs");
-  const statsTab = useRef<HTMLButtonElement>(null);
-  const logsTab = useRef<HTMLButtonElement>(null);
-  const logDisplay = logStatusDisplay(log.status);
-
-  const onTabKey = (event: KeyboardEvent) => {
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-    event.preventDefault();
-    // Two tabs: either arrow moves to the other one.
-    const next = view === "stats" ? "logs" : "stats";
-    (next === "stats" ? statsTab : logsTab).current?.focus();
-    setView(next);
-  };
-
   return (
-    <section className="glass pad instrument" id="system-panel">
-      <div className="head">
-        <h2>system</h2>
-        <div className="rule"></div>
-        <div className="viewtabs" id="sys-tabs" role="tablist" aria-label="System panel view" onKeyDown={onTabKey}>
-          {(["stats", "logs"] as const).map((tab) => (
-            <button
-              key={tab}
-              ref={tab === "stats" ? statsTab : logsTab}
-              type="button"
-              role="tab"
-              id={`sys-tab-${tab}`}
-              aria-selected={view === tab}
-              aria-controls={`sys-view-${tab}`}
-              tabIndex={view === tab ? 0 : -1}
-              data-view={tab}
-              onClick={() => setView(tab)}
-            >
-              {tab}
-            </button>
-          ))}
-        </div>
-        <span className="pill" id="stats-pill" hidden={view !== "stats"}>
+    <section className="glass sheet" data-lens ref={sheet} id="system-panel" aria-labelledby="stats-title">
+      <header>
+        <h2 id="stats-title">Board</h2>
+        <span className="chip" id="stats-pill">
           <span className={`dot ${daemonOnline ? "ok" : "error"}`} id="stats-dot"></span>
           <span id="v-host" title={board?.title}>
             {daemonOnline && board ? board.text : stats.host}
           </span>
         </span>
-        <span className="pill" id="logs-pill" hidden={view !== "logs"}>
+      </header>
+      <StatsView stats={stats} />
+    </section>
+  );
+}
+
+/** The live log of the daemon, the controller or an app. */
+export function LogsPanel({ live }: { live: boolean }) {
+  const sheet = useLens<HTMLElement>();
+  const { log, selectSource } = useLogs(live);
+  const logDisplay = logStatusDisplay(log.status);
+  return (
+    <section className="glass sheet" data-lens ref={sheet} aria-labelledby="logs-title">
+      <header>
+        <h2 id="logs-title">Logs</h2>
+        <span className="chip" id="logs-pill">
           <span className={`dot ${logDisplay.dot}`} id="log-dot"></span>
           <span id="log-state">{logDisplay.text}</span>
         </span>
-      </div>
-      <div className="sys-view" id="sys-view-stats" role="tabpanel" aria-labelledby="sys-tab-stats" hidden={view !== "stats"}>
-        <StatsView stats={stats} />
-      </div>
-      <div className="sys-view" id="sys-view-logs" role="tabpanel" aria-labelledby="sys-tab-logs" hidden={view !== "logs"}>
-        <LogsView log={log} onSource={selectSource} />
-      </div>
+      </header>
+      <LogsView log={log} onSource={selectSource} />
     </section>
   );
 }

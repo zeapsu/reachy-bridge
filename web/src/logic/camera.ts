@@ -2,12 +2,10 @@ import type { CameraAvailability } from "../api.ts";
 
 export type ViewMode = "camera" | "3d";
 
-export const MODE_BADGE: Record<ViewMode, string> = { camera: "CAMERA", "3d": "3D · LIVE" };
 export const MODE_META: Record<ViewMode, string> = {
   camera: "live camera · waiting",
   "3d": "telemetry 10 hz",
 };
-export const modeName = (mode: ViewMode) => (mode === "3d" ? "3D" : mode);
 
 /** Placeholder text when the camera availability check says no. */
 export function unavailableMessage(availability: CameraAvailability | null | undefined): string {
