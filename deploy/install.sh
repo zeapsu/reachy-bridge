@@ -55,8 +55,10 @@ staging=$(mktemp -d)
 trap 'rm -rf "$staging"' EXIT
 # The lock decides the daemon version. Check it against the runtime's
 # upstream seam before touching the live venv.
+# --reinstall-package: uv caches the runtime's wheel by its pyproject.toml, so
+# without it a source change at the same version installs the old code.
 UV_PROJECT_ENVIRONMENT="$staging/venv" uv sync --project "$REPO" --frozen --no-dev \
-    --no-editable --package reachy-bridge-runtime --quiet
+    --no-editable --package reachy-bridge-runtime --reinstall-package reachy-bridge-runtime --quiet
 "$staging/venv/bin/reachy-bridge-runtime" --check ||
     die "the locked reachy-mini doesn't match the runtime's upstream seam (see above). Nothing was changed."
 
@@ -71,7 +73,7 @@ systemctl --user stop "$DAEMON" 2>/dev/null || true
 mkdir -p "$DEST/bin"
 # --no-editable, so the service doesn't depend on this checkout.
 UV_PROJECT_ENVIRONMENT="$DEST/.venv" uv sync --project "$REPO" --frozen --no-dev \
-    --no-editable --package reachy-bridge-runtime
+    --no-editable --package reachy-bridge-runtime --reinstall-package reachy-bridge-runtime
 install -m 755 "$REPO/controller/target/release/reachy-controller" "$DEST/bin/reachy-controller.new"
 mv -f "$DEST/bin/reachy-controller.new" "$DEST/bin/reachy-controller"
 install -D -m 755 "$CLI" "$BIN_DIR/reachy-bridge"
