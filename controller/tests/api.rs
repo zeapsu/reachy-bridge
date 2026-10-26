@@ -86,6 +86,19 @@ async fn fake_daemon(fake: FakeState) -> String {
 
     let app = Router::new()
         .route("/api/daemon/status", get(|State(f): State<FakeState>| async move { Json(status_body(&f.lock().unwrap())) }))
+        .route(
+            "/api/bridge/platform",
+            get(|| async {
+                Json(json!({"name": "jetson", "tier": "tested", "model": "NVIDIA Jetson", "features": ["camera"], "skipped": [], "reachy_mini": "1.12.0"}))
+            }),
+        )
+        .route(
+            "/api/state/ws/full",
+            get(|State(f): State<FakeState>| async move {
+                record(&f, "state-ws");
+                StatusCode::SERVICE_UNAVAILABLE
+            }),
+        )
         .route("/api/daemon/start", post(start))
         .route("/api/daemon/stop", post(stop))
         .route("/api/motors/set_mode/{mode}", post(set_mode))
@@ -615,4 +628,27 @@ async fn log_stream_rejects_unknown_sources_and_starts_with_a_reset() {
     let text = String::from_utf8_lossy(&first);
     assert!(text.starts_with("event: log-reset\ndata: "), "{text}");
     assert!(text.contains(r#""lines":["hello"]"#), "{text}");
+}
+
+#[tokio::test]
+async fn platform_passes_the_runtime_report_through() {
+    let h = harness(|_| {}).await;
+    let (status, body) = h.call("GET", "/api/system/platform", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "jetson");
+    assert_eq!(body["tier"], "tested");
+}
+
+#[tokio::test]
+async fn state_stream_waits_for_the_robot_instead_of_retrying_the_socket() {
+    let h = harness(|_| {}).await;
+    let attempts = |h: &Harness| h.fake.lock().unwrap().calls.iter().filter(|c| *c == "state-ws").count();
+    let (tx, _rx) = tokio::sync::watch::channel(None);
+    let task = tokio::spawn(reachy_controller::streams::run_state(h.state.daemon.clone(), tx));
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(attempts(&h), 0, "no socket attempts while the robot is off");
+    h.fake.lock().unwrap().state = "running".into();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(attempts(&h) >= 1, "connects once the daemon runs");
+    task.abort();
 }

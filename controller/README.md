@@ -19,6 +19,7 @@ Without `web/dist` the binary still builds and serves the API; `/` then says to 
 | `DAEMON_URL` | `http://127.0.0.1:8000` | daemon base URL (loopback only) |
 | `DAEMON_TIMEOUT` | `2.0` | default per-request timeout, seconds |
 | `CONTROLLER_HOST` / `CONTROLLER_PORT` | `127.0.0.1` / `7861` | listen address |
+| `CONTROLLER_APP_PORT` | `7863` | app UI proxy port, always on `127.0.0.1` |
 | `REACHY_DAEMON_UNIT` | `reachy-bridge.service` | user unit whose journal feeds the `daemon` log source |
 | `REACHY_BRIDGE_STATE_DIR` | `$XDG_STATE_HOME/reachy-bridge` | favorites and `logs/controller.log` |
 | `RUST_LOG` | `info` | log filter |
@@ -41,7 +42,10 @@ binary (see `tools/sim/README.md`).
 - `routes/controls.rs`: volume, motor mode (gravity-compensation guards), wobble, sounds
 - `expressions.rs`: one expression at a time, then a return to the home pose
 - `streams.rs`, `routes/telemetry.rs`: shared state/audio/stats upstreams and their SSE routes
+- `app_proxy.rs`: the second listener, a root-path HTTP and WebSocket proxy to the running
+  app's own UI, so it can be served over HTTPS (#158)
 - `routes/camera.rs`: MJPEG preview proxy; `logs.rs`, `routes/logs.rs`: log sources and SSE
 
 Unlike the stopgap, there is no catch-all proxy to the daemon: the controller exposes only the
-routes the dashboard uses.
+routes the dashboard uses. The app UI proxy forwards only to the current app's UI port, which it
+reads from the daemon, never from the request.

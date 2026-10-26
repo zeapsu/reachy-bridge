@@ -87,6 +87,16 @@ export interface LogSources {
   sources: { id: string; status?: string }[];
 }
 
+/** GET /api/system/platform: what the runtime detected at startup (#140). */
+export interface PlatformInfo {
+  name?: string;
+  tier?: string;
+  model?: string;
+  features?: string[];
+  skipped?: string[];
+  reachy_mini?: string;
+}
+
 /** SSE `stats-update` on /api/system/stats-stream */
 export interface SystemStats {
   cpu_percent?: number | null;
@@ -178,9 +188,9 @@ export const paths = {
   logSources: "/api/logs/sources",
   logStream: (source: string) => `/api/logs/stream?source=${encodeURIComponent(source)}`,
   statsStream: "/api/system/stats-stream",
+  platform: "/api/system/platform",
   audioStream: "/api/audio/levels-stream",
   stateStream: "/telemetry/state-stream",
-  loadingPage: "/app-loading.html",
   authStatus: "/api/auth/status",
   authPair: "/api/auth/pair",
   authPairPoll: (id: string) => `/api/auth/pair/${encodeURIComponent(id)}`,

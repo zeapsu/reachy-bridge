@@ -1,3 +1,4 @@
+pub mod app_proxy;
 pub mod apps;
 pub mod auth;
 pub mod daemon;

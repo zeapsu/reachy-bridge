@@ -21,6 +21,10 @@ every symbol it relies on; `reachy-bridge-runtime --check` verifies them.
 - WebRTC signalling runs inside webrtcsink on `:8443`
   (`run-signalling-server`). It needs gst-plugins-rs 0.14 on GStreamer 1.24;
   the 0.10 and 0.13 builds tried on the Jetson didn't have that property.
+  Browsers don't need `:8443`: remote WebRTC goes through Pollen's central
+  relay over HTTPS (`media.central_signaling_relay`). `:8443` serves the
+  daemon's local relay and LAN desktop clients only, so the bridge doesn't
+  publish it.
 - Local camera sharing: the daemon publishes BGR frames at 10 fps through
   `unixfdsink` on `/tmp/reachymini_camera_socket`, and apps read them with
   `unixfdsrc` (`media/media_server.py`, `media/camera_gstreamer.py`). The
@@ -43,7 +47,8 @@ Endpoints: `daemon/app/routers/daemon.py`; implementation:
   when torque is off. After a cold start torque is off, so a start without
   wake-up reports `disabled` (limp). The MuJoCo backend always reports
   `enabled` and the mockup starts `enabled`, so in sim the same start shows
-  as on.
+  as on. The sim tests patch the MuJoCo backend to start `disabled` and keep
+  the mode it is set to (`tools/sim/sim_daemon.py`).
 - Stop without the sleep move runs no Python code that disables torque; it
   closes the Rust motor controller. Whether torque stays on afterwards is not
   verified, and if it does, the next start reports `enabled`.
@@ -173,8 +178,8 @@ Source: `request_idle_reset` and `_async_idle_reset` in
   goes limp about 5–8 s after the slot frees.
   The daemon state stays `running`, so the bridge shows asleep.
 - **Needs the backend's event loop**, which only exists with media enabled. A
-  daemon started with `--no-media` never runs the idle reset. Sim tests that
-  need it can't use `--no-media`.
+  daemon started with `--no-media` never runs the idle reset. The sim tests
+  (`tools/sim/sim_daemon.py`) give a `--no-media` backend that loop.
 - **Bridge patch:** the runtime's keep-awake feature
   (`runtime/.../features/keep_awake.py`) detaches the trigger during
   `stop-current-app`. A requested stop then leaves the robot awake at the
@@ -209,7 +214,9 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
 - The app's UI address is `extra.custom_app_url` in the app metadata (for
   example `0.0.0.0:8042` for radio, `:7860` for conversation). The UI server
   comes up 1–3 s after the process starts, so the bridge polls it before
-  sending the user there.
+  sending the user there. The app binds `0.0.0.0` on that port itself, so
+  nothing else may listen on it; over HTTPS the controller proxies the
+  current app's UI from `127.0.0.1:7863`, published as :8043 (#158).
 - App processes get a scrubbed environment (`GST_*`, `PYTHONPATH`, `GI_*`,
   `XDG_*` removed) and import their own `reachy_mini` from `apps_venv`.
 

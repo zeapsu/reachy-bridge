@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { STATS_IDLE, gaugeOffset, statsDisplay } from "./stats.ts";
+import { STATS_IDLE, gaugeOffset, platformLabel, statsDisplay } from "./stats.ts";
 
 describe("statsDisplay", () => {
   test("full sample", () => {
@@ -41,4 +41,20 @@ test("gauge offset clamps to 0..100%", () => {
   expect(gaugeOffset(50, 100)).toBe(50);
   expect(gaugeOffset(150, 100)).toBe(0);
   expect(gaugeOffset(-5, 100)).toBe(100);
+});
+
+describe("platformLabel", () => {
+  test("board and tier, with skipped features counted and listed", () => {
+    expect(platformLabel({ name: "jetson", tier: "tested", model: "NVIDIA Jetson", skipped: [], reachy_mini: "1.12.0" })).toEqual({
+      text: "jetson · tested",
+      title: "NVIDIA Jetson\nreachy-mini 1.12.0",
+    });
+    const label = platformLabel({ name: "generic-linux", tier: "experimental", skipped: ["camera", "audio_levels"] });
+    expect(label?.text).toBe("generic-linux · experimental · 2 off");
+    expect(label?.title).toBe("skipped at startup: camera, audio_levels");
+  });
+  test("nothing to show until the runtime reports a board", () => {
+    expect(platformLabel(null)).toBeNull();
+    expect(platformLabel({})).toBeNull();
+  });
 });

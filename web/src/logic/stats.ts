@@ -1,4 +1,4 @@
-import type { SystemStats } from "../api.ts";
+import type { PlatformInfo, SystemStats } from "../api.ts";
 import { finite } from "./pose.ts";
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -67,4 +67,16 @@ export function statsDisplay(stats: SystemStats): StatsDisplay {
 export function gaugeOffset(percent: number | null, circumference: number): number {
   const normalized = percent == null ? 0 : clamp(Number(percent), 0, 100);
   return circumference * (1 - normalized / 100);
+}
+
+/** The System pill for the detected board, e.g. "jetson · tested", with the
+ *  features startup skipped in the tooltip. Null until the runtime reports. */
+export function platformLabel(info: PlatformInfo | null): { text: string; title: string } | null {
+  if (!info || typeof info.name !== "string" || !info.name) return null;
+  const skipped = Array.isArray(info.skipped) ? info.skipped.filter((f) => typeof f === "string") : [];
+  const parts = [info.name, info.tier || "untested"];
+  if (skipped.length) parts.push(`${skipped.length} off`);
+  const lines = [info.model, info.reachy_mini && `reachy-mini ${info.reachy_mini}`];
+  if (skipped.length) lines.push(`skipped at startup: ${skipped.join(", ")}`);
+  return { text: parts.join(" · "), title: lines.filter(Boolean).join("\n") };
 }

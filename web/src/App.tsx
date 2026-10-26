@@ -11,6 +11,7 @@ import { SystemPanel } from "./components/SystemPanel.tsx";
 import { ThemePopover } from "./components/ThemePicker.tsx";
 import { Viewport, type PoseSink } from "./components/Viewport.tsx";
 import { useApps } from "./hooks/useApps.ts";
+import { AppView } from "./components/AppView.tsx";
 import { readEventPayload, useEventSource } from "./hooks/useEventSource.ts";
 import { useExpressions } from "./hooks/useExpressions.ts";
 import { usePageVisible } from "./hooks/usePageVisible.ts";
@@ -134,6 +135,14 @@ function Dashboard() {
           live controller · Reachy daemon via loopback · expose safely with <b>tailscale serve 7861</b>
         </p>
       </div>
+      {apps.appView ? (
+        <AppView
+          view={apps.appView}
+          busy={apps.appBusy}
+          onClose={apps.closeAppView}
+          onStop={() => apps.perform(apps.appView!.name, "stop")}
+        />
+      ) : null}
     </>
   );
 }
