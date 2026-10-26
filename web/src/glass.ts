@@ -119,11 +119,17 @@ function attachLens(el: HTMLElement): () => void {
   filter.id = `lens${++nextId}`;
   lensDefs().appendChild(filter);
   el.style.setProperty("--lens", `url(#${filter.id})`);
+  // Building a map is a per-pixel loop: wait for a resize to settle.
+  let timer = 0;
   const observer = new ResizeObserver(() => {
-    if (el.getClientRects().length) buildLens(el, filter);
+    clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      if (el.getClientRects().length) buildLens(el, filter);
+    }, filter.dataset.size ? 150 : 0);
   });
   observer.observe(el);
   return () => {
+    clearTimeout(timer);
     observer.disconnect();
     filter.remove();
     el.style.removeProperty("--lens");

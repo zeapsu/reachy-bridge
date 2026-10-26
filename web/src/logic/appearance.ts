@@ -83,9 +83,18 @@ export function applyScheme(scheme: string): void {
   write(SCHEME_KEY, scheme);
 }
 
+/** A stored photo, only if it is the kind of data URL this page writes. */
+export function validPhoto(value: string | null): string | null {
+  return value && /^data:image\/(jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(value) ? value : null;
+}
+
+export function savedPhoto(): string | null {
+  return validPhoto(read(WALL_PHOTO_KEY));
+}
+
 export function savedWall(): WallId {
   const id = read(WALL_KEY);
-  if (id === "photo") return read(WALL_PHOTO_KEY) ? "photo" : "studio";
+  if (id === "photo") return savedPhoto() ? "photo" : "studio";
   return WALLS.some((w) => w.id === id) ? (id as WallId) : "studio";
 }
 

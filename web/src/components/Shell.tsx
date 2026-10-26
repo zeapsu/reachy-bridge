@@ -54,6 +54,7 @@ export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp }: 
           label="Sections"
           className="tabs"
           options={ORDER.map((t) => ({ value: t, label: LABELS[t] }))}
+          panelId={(t) => `view-${t}`}
           value={tab}
           onChange={onTab}
         />
@@ -85,7 +86,7 @@ export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp }: 
 export function PhoneTabs({ tab, onTab }: { tab: Tab; onTab: (tab: Tab) => void }) {
   const bar = useLens<HTMLElement>();
   return (
-    <nav className="glass phone-tabs" data-lens ref={bar} aria-label="Sections">
+    <nav className="glass phone-tabs" data-lens ref={bar}>
       <Segmented
         role="tabs"
         label="Sections"
@@ -99,6 +100,7 @@ export function PhoneTabs({ tab, onTab }: { tab: Tab; onTab: (tab: Tab) => void 
             </>
           ),
         }))}
+        panelId={(t) => `view-${t}`}
         value={tab}
         onChange={onTab}
       />

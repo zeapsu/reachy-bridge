@@ -60,6 +60,7 @@ export function carouselMoves(names: string[], kind: MoveKind): Move[] {
   const map = kind === "emotions" ? EMOTION_EMOJI : DANCE_EMOJI;
   const keys = Object.keys(map);
   const order = kind === "emotions" ? [...FEATURED, ...keys.filter((k) => !FEATURED.includes(k))] : keys;
+  names = [...new Set(names)];
   const known = names.filter((n) => n in map).sort((a, b) => order.indexOf(a) - order.indexOf(b));
   const rest = names.filter((n) => !(n in map));
   return [...known, ...rest].map((name) => ({ name, emoji: map[name] ?? FALLBACK[kind], label: moveLabel(name) }));

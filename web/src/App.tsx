@@ -119,7 +119,7 @@ function Dashboard() {
           activeApp={active ? active.display || active.name : null}
         />
 
-        <main className="view robot" hidden={tab !== "robot"} aria-label="Robot">
+        <main className="view robot" id="view-robot" role="tabpanel" hidden={tab !== "robot"} aria-label="Robot">
           <Viewport daemonOnline={daemonOnline} visible={visible && tab === "robot"} poseSink={poseSink} />
           <section className="glass sheet side" data-lens ref={side} aria-label="Robot controls">
             <Segmented
@@ -157,11 +157,11 @@ function Dashboard() {
           </section>
         </main>
 
-        <main className="view list" hidden={tab !== "apps"} aria-label="Apps">
+        <main className="view list" id="view-apps" role="tabpanel" hidden={tab !== "apps"} aria-label="Apps">
           <AppsPanel apps={apps} daemonOnline={daemonOnline} exprBusy={expr.busy !== null} />
         </main>
 
-        <main className="view list" hidden={tab !== "system"} aria-label="System">
+        <main className="view list" id="view-system" role="tabpanel" hidden={tab !== "system"} aria-label="System">
           <StatsPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
           <AudioPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
           <LogsPanel live={visible && tab === "system"} />

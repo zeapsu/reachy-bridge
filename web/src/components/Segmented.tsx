@@ -18,13 +18,28 @@ interface Props<T extends string> {
   className?: string;
   disabled?: boolean;
   id?: string;
+  /** For tabs: the id of the panel each tab controls, by value. */
+  panelId?: (value: T) => string;
+  /** Clicking the selected option calls onChange again (motors: re-enable homes). */
+  reselect?: boolean;
 }
 
 /**
  * A segmented control whose selection is a glass droplet that slides between
  * options. Also the tab bars. Nothing is highlighted while `value` is null.
  */
-export function Segmented<T extends string>({ options, value, onChange, role = "group", label, className, disabled, id }: Props<T>) {
+export function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+  role = "group",
+  label,
+  className,
+  disabled,
+  id,
+  panelId,
+  reselect,
+}: Props<T>) {
   const group = useRef<HTMLDivElement>(null);
   const droplet = useRef<HTMLSpanElement>(null);
   const tabs = role === "tabs";
@@ -77,13 +92,14 @@ export function Segmented<T extends string>({ options, value, onChange, role = "
             data-on={on}
             role={tabs ? "tab" : undefined}
             aria-selected={tabs ? on : undefined}
+            aria-controls={tabs && panelId ? panelId(o.value) : undefined}
             aria-pressed={tabs ? undefined : on}
             tabIndex={tabs && !on ? -1 : undefined}
             aria-label={o.title}
             title={o.title}
             disabled={disabled || o.disabled}
             onClick={() => {
-              if (!on) onChange(o.value);
+              if (!on || reselect) onChange(o.value);
             }}
           >
             {o.label}

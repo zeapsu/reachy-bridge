@@ -15,5 +15,6 @@ describe("moves", () => {
     expect(moves[0].emoji).toBe("🥰");
     expect(moves[3].emoji).toBe("🙂");
         expect(carouselMoves(["new_dance"], "dances")[0].emoji).toBe("🎵");
+    expect(carouselMoves(["sad1", "sad1"], "emotions")).toHaveLength(1);
   });
 });

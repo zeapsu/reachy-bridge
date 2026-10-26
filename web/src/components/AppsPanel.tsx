@@ -54,7 +54,7 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps }: RowProps) {
         <span className="spin" aria-hidden="true"></span>Stopping…
       </>
     );
-  } else if (status.kind === "error") {
+  } else if (status.kind === "error" || app.error) {
     state = (
       <span className="err">
         <span className="dot error"></span>

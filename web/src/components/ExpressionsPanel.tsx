@@ -45,7 +45,8 @@ export function ExpressionsPanel({ expr, daemonOnline, controlBusy, appActive }:
   const magnify = useCallback(() => {
     frame.current = 0;
     const el = track.current;
-    if (!el) return;
+    // Hidden (another tab): nothing to measure; the resize on show re-runs this.
+    if (!el || el.clientWidth === 0) return;
     const mid = el.scrollLeft + el.clientWidth / 2;
     let best = 0;
     let bestDistance = Infinity;
@@ -66,6 +67,17 @@ export function ExpressionsPanel({ expr, daemonOnline, controlBusy, appActive }:
     if (!frame.current) frame.current = requestAnimationFrame(magnify);
   };
   useEffect(() => () => cancelAnimationFrame(frame.current), []);
+
+  // Showing the tab (or resizing) changes the geometry without a scroll.
+  useEffect(() => {
+    const el = track.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      if (!frame.current) frame.current = requestAnimationFrame(magnify);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [magnify]);
 
   // A new list (dataset switch, first load) starts at the first item.
   useLayoutEffect(() => {
@@ -129,7 +141,9 @@ export function ExpressionsPanel({ expr, daemonOnline, controlBusy, appActive }:
               id={`move-${move.name}`}
               type="button"
               role="option"
-              className={`emo${playing?.move === move.name ? " playing" : ""}`}
+              className={`emo${
+                playing?.move === move.name && (playing.dataset === null || playing.dataset === dataset.dataset) ? " playing" : ""
+              }`}
               aria-selected={i === centred}
               aria-label={move.label}
               title={move.label}

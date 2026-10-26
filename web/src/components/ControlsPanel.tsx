@@ -289,6 +289,7 @@ export function ControlsPanel(props: Props) {
         <Segmented
           id="motor-seg"
           label="Motors"
+          reselect
           options={MOTOR_MODES.map(({ mode, label }) => ({ value: mode, label }))}
           value={robotControlMode === "enabled" || robotControlMode === "disabled" ? robotControlMode : null}
           disabled={controlsDisabled}

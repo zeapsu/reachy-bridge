@@ -7,9 +7,9 @@ import {
   applyMode,
   applyScheme,
   fitWithin,
-  read,
   savedDim,
   savedMode,
+  savedPhoto,
   savedScheme,
   savedWall,
   write,
@@ -60,7 +60,7 @@ export function useAppearance(): Appearance {
   const [mode, setModeState] = useState<Mode>(savedMode);
   const [scheme, setSchemeState] = useState(savedScheme);
   const [wall, setWallState] = useState<WallId>(savedWall);
-  const [photo, setPhoto] = useState<string | null>(() => read(WALL_PHOTO_KEY));
+  const [photo, setPhoto] = useState<string | null>(() => savedPhoto());
   const [dim, setDimState] = useState(savedDim);
   const [photoError, setPhotoError] = useState<string | null>(null);
 
