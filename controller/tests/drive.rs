@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
@@ -21,6 +21,8 @@ struct Fake {
     app: Option<Value>,
     targets: Vec<Value>,
     gotos: usize,
+    running: Vec<String>,
+    stops: usize,
 }
 
 type FakeState = Arc<Mutex<Fake>>;
@@ -46,7 +48,37 @@ async fn fake_daemon(fake: FakeState) -> String {
             "/api/apps/current-app-status",
             get(|State(f): State<FakeState>| async move { Json(f.lock().unwrap().app.clone().unwrap_or(Value::Null)) }),
         )
-        .route("/api/move/running", get(|| async { Json(json!([])) }))
+        .route(
+            "/api/move/running",
+            get(|State(f): State<FakeState>| async move {
+                let running = f.lock().unwrap().running.clone();
+                Json(Value::Array(running.into_iter().map(|uuid| json!({"uuid": uuid})).collect()))
+            }),
+        )
+        .route(
+            "/api/move/play/recorded-move-dataset/{*target}",
+            post(|State(f): State<FakeState>| async move {
+                f.lock().unwrap().running.push("expr".into());
+                Json(json!({"uuid": "expr"}))
+            }),
+        )
+        .route(
+            "/api/motors/set_mode/{mode}",
+            post(|State(f): State<FakeState>, Path(mode): Path<String>| async move {
+                f.lock().unwrap().motors = Some(mode.clone());
+                Json(json!({"status": "ok"}))
+            }),
+        )
+        .route(
+            "/api/daemon/stop",
+            post(|State(f): State<FakeState>| async move {
+                let mut f = f.lock().unwrap();
+                f.stops += 1;
+                f.motors = None;
+                Json(json!({"job_id": "stop"}))
+            }),
+        )
+        .route("/api/apps/list-available/installed", get(|| async { Json(json!([{"name": "radio", "extra": {}}])) }))
         .route(
             "/api/move/goto",
             post(|State(f): State<FakeState>| async move {
@@ -110,6 +142,11 @@ impl Harness {
         }
         panic!("drive session never ended");
     }
+}
+
+async fn call(controller: &str, path: &str) -> (u16, Value) {
+    let response = reqwest::Client::new().post(format!("http://{controller}{path}")).send().await.unwrap();
+    (response.status().as_u16(), response.json().await.unwrap_or(Value::Null))
 }
 
 async fn next_json(client: &mut Client) -> Value {
@@ -199,12 +236,72 @@ async fn a_motor_mode_change_ends_the_session() {
 }
 
 #[tokio::test]
-async fn an_app_start_ends_the_session() {
+async fn plays_and_app_starts_are_refused_while_driving() {
+    let h = harness(Some("enabled")).await;
+    let mut client = h.connect().await.unwrap();
+    next_json(&mut client).await;
+    let (status, _) = call(&h.controller, "/api/expressions/play/pollen-robotics/emotions/fear1").await;
+    assert_eq!(status, 409);
+    let (_, body) = call(&h.controller, "/api/apps/start/radio").await;
+    assert_eq!(body["status"], "refused");
+    assert!(h.fake.lock().unwrap().running.is_empty());
+}
+
+#[tokio::test]
+async fn motors_off_and_on_while_driving_still_returns_home() {
+    let h = harness(Some("enabled")).await;
+    let mut client = h.connect().await.unwrap();
+    next_json(&mut client).await;
+    assert_eq!(call(&h.controller, "/api/motors/set_mode/disabled").await.0, 200);
+    // The session ends at once, so re-enabling isn't refused as busy and runs
+    // its own return home.
+    assert!(!h.state.player.driving(0));
+    assert_eq!(call(&h.controller, "/api/motors/set_mode/enabled").await.0, 200);
+    h.wait("the return home", |f| f.gotos == 1).await;
+    h.wait_idle().await;
+    assert!(!h.state.player.needs_home());
+    assert_eq!(next_json(&mut client).await["type"], "error");
+    // Closing the old socket doesn't send a second goto.
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(h.fake.lock().unwrap().gotos, 1);
+}
+
+#[tokio::test]
+async fn power_off_ends_the_session_without_a_goto() {
+    let h = harness(Some("enabled")).await;
+    let mut client = h.connect().await.unwrap();
+    next_json(&mut client).await;
+    let _ = call(&h.controller, "/api/daemon/stop").await;
+    h.wait("the stop", |f| f.stops == 1).await;
+    assert!(!h.state.player.active());
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(h.fake.lock().unwrap().gotos, 0);
+    assert!(h.state.player.needs_home());
+}
+
+#[tokio::test]
+async fn an_app_taking_over_skips_the_return_home() {
     let h = harness(Some("enabled")).await;
     let mut client = h.connect().await.unwrap();
     next_json(&mut client).await;
     h.fake.lock().unwrap().app = Some(json!({"info": {"name": "radio"}, "state": "running"}));
-    let error = next_json(&mut client).await;
-    assert_eq!(error["type"], "error");
+    assert_eq!(next_json(&mut client).await["type"], "error");
     h.wait_idle().await;
+    assert_eq!(h.fake.lock().unwrap().gotos, 0);
+    assert!(h.state.player.needs_home());
+}
+
+#[tokio::test]
+async fn a_mode_change_mid_expression_keeps_the_pose_untrusted() {
+    let h = harness(Some("enabled")).await;
+    assert_eq!(call(&h.controller, "/api/expressions/play/pollen-robotics/emotions/fear1").await.0, 200);
+    // Motors off mid-play: the move still ends on schedule, then the watcher's
+    // goto "completes" without torque. That must not clear needs_home.
+    h.state.player.mode_changed();
+    h.fake.lock().unwrap().running.clear();
+    h.wait("the return home", |f| f.gotos == 1).await;
+    h.wait_idle().await;
+    assert!(h.state.player.needs_home());
 }

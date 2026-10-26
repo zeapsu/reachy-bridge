@@ -32,6 +32,10 @@ struct Session {
     dataset: Option<String>,
     name: Option<String>,
     phase: Phase,
+    /// The motor-mode epoch the session started in. Its return home clears
+    /// `needs_home` only if the mode never changed since: a goto "completes"
+    /// on schedule even without torque.
+    epoch: u64,
 }
 
 #[derive(Debug, PartialEq)]
@@ -88,6 +92,7 @@ impl ExpressionPlayer {
 
     pub async fn play(self: &Arc<Self>, dataset: &str, name: &str) -> Result<Value, PlayError> {
         let _guard = self.start_lock.lock().await;
+        let epoch = self.mode_epoch.load(Ordering::SeqCst);
         if self.active() {
             return Err(PlayError::Busy(BUSY));
         }
@@ -118,10 +123,11 @@ impl ExpressionPlayer {
             dataset: Some(dataset.to_string()),
             name: Some(name.to_string()),
             phase: Phase::Playing,
+            epoch,
         });
         let player = Arc::clone(self);
         let watched = uuid.clone();
-        tokio::spawn(async move { player.watch(watched).await });
+        tokio::spawn(async move { player.watch(watched, epoch).await });
         Ok(json!({"status": "playing", "uuid": uuid, "dataset": dataset, "move": name}))
     }
 
@@ -129,15 +135,16 @@ impl ExpressionPlayer {
     /// the session machinery, so plays and app starts are blocked meanwhile.
     pub async fn return_home(self: &Arc<Self>) -> Value {
         let _guard = self.start_lock.lock().await;
+        let epoch = self.mode_epoch.load(Ordering::SeqCst);
         {
             let mut session = self.session.lock().unwrap();
             if session.is_some() {
                 return json!({"status": "busy", "detail": BUSY});
             }
-            *session = Some(Session { uuid: None, dataset: None, name: None, phase: Phase::ReturningHome });
+            *session = Some(Session { uuid: None, dataset: None, name: None, phase: Phase::ReturningHome, epoch });
         }
         let player = Arc::clone(self);
-        tokio::spawn(async move { player.goto_home_and_clear().await });
+        tokio::spawn(async move { player.goto_home_and_clear(epoch).await });
         json!({"status": "returning_home"})
     }
 
@@ -153,8 +160,9 @@ impl ExpressionPlayer {
         if self.needs_home() {
             return Err(PlayError::Busy(NOT_HOMED));
         }
-        *session = Some(Session { uuid: None, dataset: None, name: None, phase: Phase::Driving });
-        Ok(self.mode_epoch.load(Ordering::SeqCst))
+        let epoch = self.mode_epoch.load(Ordering::SeqCst);
+        *session = Some(Session { uuid: None, dataset: None, name: None, phase: Phase::Driving, epoch });
+        Ok(epoch)
     }
 
     /// True while the drive session started in `epoch` may keep moving the robot.
@@ -163,17 +171,31 @@ impl ExpressionPlayer {
             && matches!(&*self.session.lock().unwrap(), Some(Session { phase: Phase::Driving, .. }))
     }
 
-    /// End the drive session started in `epoch` with the silent return home.
-    /// After a motor-mode change it only clears the session: the motors may
-    /// have no torque, so a goto that "completes" proves nothing, and
-    /// `needs_home` stays set until Motors → Enabled runs its own return home.
-    pub fn end_drive(self: &Arc<Self>, epoch: u64) {
+    /// Drop a drive session without a return home, so the motor-mode change
+    /// or power action that called it can run its own (#152). The pose is
+    /// left untrusted.
+    pub fn abort_drive(&self) {
+        let mut session = self.session.lock().unwrap();
+        if matches!(&*session, Some(Session { phase: Phase::Driving, .. })) {
+            *session = None;
+            self.needs_home.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// End the drive session started in `epoch`. With `home`, and no motor-mode
+    /// change since it started, it ends with the silent return home. Without,
+    /// it only clears the session: after a mode change the motors may have no
+    /// torque, and while an app runs the app owns the robot's moves.
+    pub fn end_drive(self: &Arc<Self>, epoch: u64, home: bool) {
+        let runtime = tokio::runtime::Handle::try_current().ok();
         {
             let mut session = self.session.lock().unwrap();
             match session.as_mut() {
-                Some(s) if s.phase == Phase::Driving => {
-                    if self.mode_epoch.load(Ordering::SeqCst) != epoch {
+                Some(s) if s.phase == Phase::Driving && s.epoch == epoch => {
+                    if !home || runtime.is_none() || self.mode_epoch.load(Ordering::SeqCst) != epoch {
+                        // The head stays where it was driven: not home.
                         *session = None;
+                        self.needs_home.store(true, Ordering::SeqCst);
                         return;
                     }
                     s.phase = Phase::ReturningHome;
@@ -182,7 +204,9 @@ impl ExpressionPlayer {
             }
         }
         let player = Arc::clone(self);
-        tokio::spawn(async move { player.goto_home_and_clear().await });
+        if let Some(runtime) = runtime {
+            runtime.spawn(async move { player.goto_home_and_clear(epoch).await });
+        }
     }
 
     pub async fn stop(&self) -> Value {
@@ -241,7 +265,7 @@ impl ExpressionPlayer {
         }
     }
 
-    async fn watch(self: Arc<Self>, uuid: String) {
+    async fn watch(self: Arc<Self>, uuid: String, epoch: u64) {
         if !self.wait_until_gone(&uuid).await {
             self.clear();
             return;
@@ -253,13 +277,12 @@ impl ExpressionPlayer {
                 None => return,
             }
         }
-        self.goto_home_and_clear().await;
+        self.goto_home_and_clear(epoch).await;
     }
 
     /// Silent goto to the wake-up home pose (no head roll, no sound): head at
     /// identity, antennas at the ±10° park offset, body yaw 0, over 1.5 s.
-    async fn goto_home_and_clear(&self) {
-        let epoch = self.mode_epoch.load(Ordering::SeqCst);
+    async fn goto_home_and_clear(&self, epoch: u64) {
         let home = json!({
             "head_pose": {"x": 0.0, "y": 0.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
             "antennas": [-0.1745, 0.1745],

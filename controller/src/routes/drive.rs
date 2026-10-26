@@ -22,8 +22,13 @@ use crate::state::Shared;
 
 /// How often a session re-checks the motors and the running app.
 const RECHECK: Duration = Duration::from_secs(1);
+/// A socket that takes longer to accept a message ends the session, so a
+/// stalled peer can't hold the robot.
+const SEND_TIMEOUT: Duration = Duration::from_millis(500);
 
-const DEG: f64 = std::f64::consts::PI / 180.0;
+use std::f64::consts::PI;
+
+const DEG: f64 = PI / 180.0;
 const HEAD_TILT: f64 = 40.0 * DEG;
 /// Head yaw relative to the body: the analytical IK's `max_relative_yaw`.
 const HEAD_YAW: f64 = 65.0 * DEG;
@@ -84,7 +89,7 @@ pub fn target(message: &Value, body_yaw: &mut f64) -> Option<Value> {
                 "z": field("z", HEAD_Z.0, HEAD_Z.1)?,
                 "roll": field("roll", -HEAD_TILT, HEAD_TILT)?,
                 "pitch": field("pitch", -HEAD_TILT, HEAD_TILT)?,
-                "yaw": field("yaw", *body_yaw - HEAD_YAW, *body_yaw + HEAD_YAW)?,
+                "yaw": field("yaw", (*body_yaw - HEAD_YAW).max(-PI), (*body_yaw + HEAD_YAW).min(PI))?,
             }),
         );
     }
@@ -96,53 +101,84 @@ pub fn target(message: &Value, body_yaw: &mut f64) -> Option<Value> {
     (!out.is_empty()).then_some(Value::Object(out))
 }
 
-/// Why the robot can't be driven now, or `None` if it can.
-async fn refusal(state: &Shared) -> Option<ApiError> {
+/// Why the robot can't be driven now. A running app is its own case: it owns
+/// the robot's moves, so a session it ends skips the return home.
+enum Refusal {
+    App(ApiError),
+    Other(ApiError),
+}
+
+impl Refusal {
+    fn error(self) -> ApiError {
+        match self {
+            Refusal::App(error) | Refusal::Other(error) => error,
+        }
+    }
+}
+
+async fn refusal(state: &Shared) -> Option<Refusal> {
     let Some(status) = state.daemon.status().await.filter(backend_up) else {
-        return Some(ApiError::new(503, "Robot is off"));
+        return Some(Refusal::Other(ApiError::new(503, "Robot is off")));
     };
     if motor_mode(&status) != Some("enabled") {
-        return Some(ApiError::new(409, "Set Motors to Enabled to drive"));
+        return Some(Refusal::Other(ApiError::new(409, "Set Motors to Enabled to drive")));
     }
     if state.apps.refresh_active().await {
-        return Some(ApiError::new(409, "Stop the app first: it is driving the robot"));
+        return Some(Refusal::App(ApiError::new(409, "Stop the app first: it is driving the robot")));
     }
     None
 }
 
 /// Ends the drive session however the socket goes away, including an upgrade
-/// that never completes.
-struct Session(Arc<ExpressionPlayer>, u64);
+/// that never completes. `home` is cleared when an app took over.
+struct Session {
+    player: Arc<ExpressionPlayer>,
+    epoch: u64,
+    home: bool,
+}
 
 impl Drop for Session {
     fn drop(&mut self) {
-        self.0.end_drive(self.1);
+        self.player.end_drive(self.epoch, self.home);
     }
 }
 
 async fn upgrade(State(state): State<Shared>, ws: WebSocketUpgrade) -> ApiResult<Response> {
-    if let Some(error) = refusal(&state).await {
-        return Err(error);
-    }
     // Connect before claiming the robot, so a failure leaves nothing to undo.
     let url = state.daemon.ws_url("move/ws/set_target");
     let Ok((upstream, _)) = tokio_tungstenite::connect_async(url.as_str()).await else {
         return Err(ApiError::unavailable());
     };
-    let epoch = match state.player.start_drive().await {
-        Ok(epoch) => epoch,
-        Err(PlayError::Busy(detail)) => return Err(ApiError::new(409, detail)),
-        Err(_) => return Err(ApiError::unavailable()),
+    // Under the power lock, so an app start or a power action can't be
+    // halfway through while the session is claimed.
+    let epoch = {
+        let _power = state.power_lock.lock().await;
+        if let Some(refusal) = refusal(&state).await {
+            return Err(refusal.error());
+        }
+        match state.player.start_drive().await {
+            Ok(epoch) => epoch,
+            Err(PlayError::Busy(detail)) => return Err(ApiError::new(409, detail)),
+            Err(_) => return Err(ApiError::unavailable()),
+        }
     };
-    let session = Session(state.player.clone(), epoch);
-    Ok(ws.on_upgrade(move |socket| drive(state, socket, upstream, epoch, session)))
+    let session = Session { player: state.player.clone(), epoch, home: true };
+    Ok(ws.on_upgrade(move |socket| drive(state, socket, upstream, session)))
 }
 
 type Upstream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-async fn drive(state: Shared, mut socket: WebSocket, mut upstream: Upstream, epoch: u64, _session: Session) {
+/// Send within [`SEND_TIMEOUT`]; false if the peer is gone or stalled.
+async fn sent<E>(send: impl std::future::Future<Output = Result<(), E>>) -> bool {
+    matches!(tokio::time::timeout(SEND_TIMEOUT, send).await, Ok(Ok(())))
+}
+
+const MODE_CHANGED: &str = "Motor mode changed: drive again once the robot is home";
+
+async fn drive(state: Shared, mut socket: WebSocket, mut upstream: Upstream, mut session: Session) {
+    let epoch = session.epoch;
     let ready = json!({"type": "ready", "limits": limits()});
-    if socket.send(Message::Text(ready.to_string().into())).await.is_err() {
+    if !sent(socket.send(Message::Text(ready.to_string().into()))).await {
         return;
     }
     let mut body_yaw = 0.0;
@@ -153,13 +189,13 @@ async fn drive(state: Shared, mut socket: WebSocket, mut upstream: Upstream, epo
             message = socket.recv() => match message {
                 Some(Ok(Message::Text(text))) => {
                     if !state.player.driving(epoch) {
-                        break "Motor mode changed: drive again once the robot is home".to_string();
+                        break MODE_CHANGED.to_string();
                     }
                     let parsed = serde_json::from_str::<Value>(&text).ok();
                     let Some(target) = parsed.as_ref().and_then(|m| target(m, &mut body_yaw)) else {
                         break "Invalid drive target".to_string();
                     };
-                    if upstream.send(tungstenite::Message::text(target.to_string())).await.is_err() {
+                    if !sent(upstream.send(tungstenite::Message::text(target.to_string()))).await {
                         break "Daemon unavailable".to_string();
                     }
                 }
@@ -174,17 +210,23 @@ async fn drive(state: Shared, mut socket: WebSocket, mut upstream: Upstream, epo
             },
             _ = recheck.tick() => {
                 if !state.player.driving(epoch) {
-                    break "Motor mode changed: drive again once the robot is home".to_string();
+                    break MODE_CHANGED.to_string();
                 }
-                if let Some(error) = refusal(&state).await {
-                    break error.detail;
+                match refusal(&state).await {
+                    None => {}
+                    Some(Refusal::App(error)) => {
+                        session.home = false;
+                        break error.detail;
+                    }
+                    Some(Refusal::Other(error)) => break error.detail,
                 }
             }
         }
     };
     let error = json!({"type": "error", "detail": detail});
-    let _ = socket.send(Message::Text(error.to_string().into())).await;
-    let _ = socket.send(Message::Close(None)).await;
+    if sent(socket.send(Message::Text(error.to_string().into()))).await {
+        let _ = sent(socket.send(Message::Close(None))).await;
+    }
 }
 
 #[cfg(test)]
