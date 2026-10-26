@@ -44,6 +44,21 @@ const NEUTRAL: Shown = {
   antennas_position: [RIG.antennas.right.neutral, RIG.antennas.left.neutral],
 };
 
+const isMetres = (key: string) => key === "x" || key === "y" || key === "z";
+
+/** Whether `shown` is within the settled thresholds of `target` everywhere. */
+function settled(shown: Shown, target: Shown): boolean {
+  const near = (a: number[], b: number[]) => a.every((v, i) => Math.abs(v - b[i]) <= SETTLED_RAD);
+  return (
+    Object.keys(shown.head_pose).every(
+      (k) => Math.abs(shown.head_pose[k] - (target.head_pose[k] ?? 0)) <= (isMetres(k) ? SETTLED_M : SETTLED_RAD),
+    ) &&
+    near(shown.head_joints, target.head_joints) &&
+    near([shown.body_yaw], [target.body_yaw]) &&
+    near(shown.antennas_position, target.antennas_position)
+  );
+}
+
 function disposeMaterial(material: Material | Material[]): void {
   for (const m of Array.isArray(material) ? material : [material]) {
     for (const value of Object.values(m)) if (value instanceof Texture) value.dispose();
@@ -133,7 +148,8 @@ export class RobotView {
     if (yaw != null) t.body_yaw = yaw;
     const antennas = numbers(state.antennas_position, 2);
     if (antennas) t.antennas_position = antennas;
-    this.wake();
+    // A robot holding still streams the same pose with encoder noise: no frame.
+    if (!settled(this.shown, t)) this.wake();
   }
 
   /** Back to the neutral pose (robot off). */
@@ -187,8 +203,7 @@ export class RobotView {
       return next;
     };
     for (const key of Object.keys(s.head_pose)) {
-      const metres = key === "x" || key === "y" || key === "z";
-      s.head_pose[key] = ease(s.head_pose[key], t.head_pose[key] ?? 0, metres ? SETTLED_M : SETTLED_RAD);
+      s.head_pose[key] = ease(s.head_pose[key], t.head_pose[key] ?? 0, isMetres(key) ? SETTLED_M : SETTLED_RAD);
     }
     s.head_joints = s.head_joints.map((a, i) => ease(a, t.head_joints[i]));
     s.body_yaw = ease(s.body_yaw, t.body_yaw);
