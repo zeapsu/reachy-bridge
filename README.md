@@ -17,7 +17,6 @@ controller/               controller: Rust (axum) binary that embeds the dashboa
 web/                      dashboard: React + TypeScript, built with Vite and Bun
 deploy/                   installer, user units, and the reachy-bridge command
 tools/                    sim integration tests, webrtcsink build for Jetson, udev rule
-hello.py                  SDK smoke test (antenna wiggle)
 ```
 
 The controller talks to the daemon at `127.0.0.1:8000`. It switches the robot on and off,
