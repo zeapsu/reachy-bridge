@@ -182,6 +182,21 @@ async fn drives_clamped_then_returns_home() {
 }
 
 #[tokio::test]
+async fn refused_from_another_site() {
+    use tungstenite::client::IntoClientRequest;
+    let h = harness(Some("enabled")).await;
+    // A page on another origin (an app UI on another port) must not drive the robot.
+    let mut request = format!("ws://{}/api/drive/ws", h.controller).into_client_request().unwrap();
+    request.headers_mut().insert("origin", "http://127.0.0.1:8042".parse().unwrap());
+    match tokio_tungstenite::connect_async(request).await {
+        Err(tungstenite::Error::Http(response)) => assert_eq!(response.status().as_u16(), 403),
+        other => panic!("expected 403, got {:?}", other.map(|_| ())),
+    }
+    assert!(!h.state.player.active());
+    assert!(h.fake.lock().unwrap().targets.is_empty());
+}
+
+#[tokio::test]
 async fn refused_unless_motors_enabled() {
     for motors in [Some("disabled"), Some("gravity_compensation")] {
         let h = harness(motors).await;
