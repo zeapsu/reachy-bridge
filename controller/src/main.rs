@@ -95,6 +95,9 @@ async fn main() -> std::io::Result<()> {
     let app_listener = match tokio::net::TcpListener::bind(&app_address).await {
         Ok(app_listener) => {
             tracing::info!("app UI proxy listening on http://{app_address}");
+            if let Ok(address) = app_listener.local_addr() {
+                reachy_controller::app_proxy::set_listening(address.port());
+            }
             Some(app_listener)
         }
         Err(error) => {
@@ -111,6 +114,9 @@ async fn main() -> std::io::Result<()> {
     let mut own_ports = vec![dashboard_port];
     own_ports.extend(app_listener.as_ref().and_then(|l| l.local_addr().ok()).map(|a| a.port()));
     own_ports.extend(reqwest::Url::parse(&daemon_url).ok().and_then(|url| url.port_or_known_default()));
+    // Nor the daemon's WebRTC signalling: it is on loopback so the LAN can't
+    // reach it, and an app's manifest mustn't re-expose it through here (#186).
+    own_ports.push(reachy_controller::app_proxy::SIGNALLING_PORT);
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
         let _ = rx.wait_for(|stop| *stop).await;

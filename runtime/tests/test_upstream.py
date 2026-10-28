@@ -59,6 +59,27 @@ def test_startup_skips_only_the_mismatched_feature(monkeypatch: pytest.MonkeyPat
     assert applied == ["app_bind", "kinematics"]
 
 
+def test_an_app_bind_mismatch_stops_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Skipping it would run apps open on the LAN (#186).
+    monkeypatch.setattr(upstream, "check", lambda features=None: {"app_bind": ["AppManager.start_app: gone"]})
+    monkeypatch.setattr(runtime_main, "FEATURES", {name: (lambda: None) for name in runtime_main.FEATURES})
+    with pytest.raises(upstream.UpstreamMismatch, match="app_bind"):
+        runtime_main.apply(platforms.Platform(name="test", tier="tested"))
+
+
+def test_a_failing_app_bind_stops_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(upstream, "check", lambda features=None: {})
+
+    def broken() -> None:
+        raise RuntimeError("boom")
+
+    features = {name: (lambda: None) for name in runtime_main.FEATURES}
+    features["app_bind"] = broken
+    monkeypatch.setattr(runtime_main, "FEATURES", features)
+    with pytest.raises(RuntimeError, match="boom"):
+        runtime_main.apply(platforms.Platform(name="test", tier="tested"))
+
+
 def test_a_daemon_mismatch_stops_startup(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(upstream, "check", lambda features=None: {"daemon": ["main: gone"]})
     with pytest.raises(upstream.UpstreamMismatch):

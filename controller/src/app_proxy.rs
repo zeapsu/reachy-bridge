@@ -42,11 +42,27 @@ use crate::state::Shared;
 /// How long a resolved upstream port is reused before asking the daemon again.
 pub const PORT_TTL: Duration = Duration::from_secs(1);
 
-/// The proxy's own port: `CONTROLLER_APP_PORT`, default 7863. The dashboard
-/// learns it from `GET /api/apps/{name}/ui` for plain-http links.
+/// The port the proxy is configured on: `CONTROLLER_APP_PORT`, default 7863.
 pub fn http_port() -> u16 {
     std::env::var("CONTROLLER_APP_PORT").ok().and_then(|p| p.trim().parse().ok()).unwrap_or(7863)
 }
+
+static LISTENING: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+/// Record that the proxy listens on `port` (main, once bound).
+pub fn set_listening(port: u16) {
+    let _ = LISTENING.set(port);
+}
+
+/// The proxy's port if it is listening. The dashboard learns it from
+/// `GET /api/apps/{name}/ui` for plain-http links; `None` when the listener
+/// couldn't bind, so it doesn't link to a dead port (or someone else's).
+pub fn listening_port() -> Option<u16> {
+    LISTENING.get().copied()
+}
+
+/// The daemon's WebRTC signalling port (webrtcsink), never an upstream.
+pub const SIGNALLING_PORT: u16 = 8443;
 
 /// The dashboard's HTTPS port under `tailscale serve` (`reachy-bridge serve`).
 /// The 503 page links tailnet visitors to `//<host>:DASHBOARD_SERVE_PORT/`.

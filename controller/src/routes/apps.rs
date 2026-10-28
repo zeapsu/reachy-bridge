@@ -161,5 +161,5 @@ async fn ui(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> ApiR
             .is_ok(),
         None => false,
     };
-    Ok(Json(json!({"name": name, "port": port, "ready": ready, "proxy_port": crate::app_proxy::http_port()})))
+    Ok(Json(json!({"name": name, "port": port, "ready": ready, "proxy_port": crate::app_proxy::listening_port()})))
 }

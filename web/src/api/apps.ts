@@ -30,8 +30,8 @@ export interface AppUi {
   name: string;
   port: number | null;
   ready: boolean;
-  /** The controller's app UI proxy over plain http. */
-  proxy_port?: number;
+  /** The controller's app UI proxy over plain http; null if it isn't listening. */
+  proxy_port?: number | null;
 }
 
 /** GET/PUT /api/apps/favorites */

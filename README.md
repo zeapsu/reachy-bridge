@@ -40,8 +40,9 @@ reachy-bridge status
 :8043 for the running app's own UI. App UIs listen on plain http (`:8042`, `:7860`, ...), where
 browsers block the microphone and camera; the controller proxies whichever app is running on
 `127.0.0.1:7863`, and a dashboard opened over HTTPS sends you to `https://<host>:8043/`. Over
-plain http the dashboard opens `http://<host>:7863/`. Apps and WebRTC signalling (`:8443`) listen
-on loopback only, so the proxy is the only way to an app from another machine. Run
+plain http the dashboard opens `http://<host>:7863/`. The bridge keeps app web servers and WebRTC
+signalling (`:8443`) on loopback, so the proxy is the way to an app from another machine (see the
+limits under LAN access). Run
 `reachy-bridge serve` again after an update that adds a mapping.
 
 The robot starts off; switch it on from the dashboard. `install.sh` is safe to re-run after a
@@ -58,7 +59,7 @@ reachy-bridge restart controller
 ```
 
 The dashboard then listens on every interface on port 7861, and the app UI proxy on port 7863;
-the daemon, the apps and WebRTC signalling stay on loopback.
+the daemon, the app UIs and WebRTC signalling stay on loopback.
 A browser on the LAN gets a login screen with a 6-digit code (valid for 5 minutes). Approve it
 on the device with `reachy-bridge pair <code> [name]`, or from an already-paired dashboard
 (devices panel). The browser then keeps a device cookie for a year. `reachy-bridge devices`
@@ -66,6 +67,11 @@ lists paired browsers and `reachy-bridge devices revoke <n>` logs one out at onc
 Visitors through `tailscale serve` and local tools are trusted without pairing; set
 `CONTROLLER_TRUST_TAILNET=0` to make them pair too. The same login covers the app UIs, on :7863
 from the LAN and on :8043 through `tailscale serve`.
+
+Apps are code you install from Hugging Face, and they run as the bridge's own user. The bridge
+moves every server an app opens through Python's `socket` module onto loopback, but not listeners
+opened by native code (a C extension, a Node or ffmpeg child process), and not a Gradio app's
+public `share` link. An app can also read the controller's local key. Install apps you trust.
 
 A paired browser can approve and revoke other browsers, so approve only codes you expect
 (`reachy-bridge pair` prints the address that asked). A browser unused for 30 days is logged out.
