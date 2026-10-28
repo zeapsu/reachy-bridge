@@ -258,9 +258,9 @@ impl ExpressionPlayer {
                 return;
             }
             for uuid in moves.unwrap_or_default() {
-                if !stopped.contains(&uuid) {
-                    // Best effort: the daemon answers 500 for a move that already ended.
-                    let _ = self.daemon.post_json("move/stop", &json!({"uuid": uuid})).await;
+                // Once per move; a stop that didn't get through (a timeout,
+                // the daemon busy) is retried on the next poll.
+                if !stopped.contains(&uuid) && self.daemon.post_json("move/stop", &json!({"uuid": uuid})).await.is_ok() {
                     stopped.push(uuid);
                 }
             }

@@ -126,6 +126,12 @@ pub async fn power_off_locked(state: &Shared) -> ApiResult<Value> {
     let asleep = daemon.status().await.is_some_and(|s| robot_state(&s) == "asleep");
     let result = daemon.post("daemon/stop", &[("goto_sleep", if asleep { "false" } else { "true" })]).await?;
     state.player.set_needs_home(true);
+    // The stop job starts in the background; hold the lock until the daemon
+    // stops reporting running, so a motor-mode change can't slip in first.
+    wait_until(MOVES_STOP_TIMEOUT, || async {
+        daemon.status().await.is_none_or(|s| s.get("state").and_then(Value::as_str) != Some("running"))
+    })
+    .await;
     Ok(result)
 }
 

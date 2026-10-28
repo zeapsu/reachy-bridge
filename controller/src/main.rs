@@ -30,10 +30,15 @@ fn is_loopback_host(host: &str) -> bool {
 /// The dashboard's bind address: `CONTROLLER_HOST` (default loopback). In
 /// LAN mode every interface (`0.0.0.0`, or `::` if set): loopback must stay
 /// bound for `tailscale serve` and `reachy-bridge pair`, so a single LAN
-/// address is refused.
+/// address is refused. Without LAN mode only loopback: anything else would
+/// let the network drive the robot with no login.
 fn bind_host(lan: bool, host: Option<String>) -> Result<String, String> {
     match host {
-        Some(host) if !lan => Ok(host),
+        Some(host) if !lan && is_loopback_host(&host) => Ok(host),
+        Some(host) if !lan => Err(format!(
+            "CONTROLLER_HOST={host} without CONTROLLER_LAN=1 would serve the dashboard with no login; \
+             set CONTROLLER_LAN=1 for LAN access"
+        )),
         None => Ok(if lan { "0.0.0.0" } else { "127.0.0.1" }.to_string()),
         Some(host) if is_loopback_host(&host) || host == "0.0.0.0" => Ok("0.0.0.0".to_string()),
         Some(host) if host == "::" || host == "[::]" => Ok("[::]".to_string()),
@@ -78,19 +83,29 @@ async fn main() -> std::io::Result<()> {
     tracing::info!("controller listening on http://{address}");
     if lan {
         tracing::info!("LAN access on: devices other than this one must pair (reachy-bridge pair <code>)");
-    } else if !is_loopback_host(&host) {
-        tracing::warn!("CONTROLLER_HOST={host} is not loopback and CONTROLLER_LAN is off: no login is required");
+    } else if std::env::var("CONTROLLER_TRUST_TAILNET").is_ok_and(|v| !v.trim().is_empty()) {
+        tracing::warn!("CONTROLLER_TRUST_TAILNET only applies with CONTROLLER_LAN=1; ignoring it");
     }
     // The app UI proxy (#158) binds loopback only, whatever CONTROLLER_HOST says.
     let app_address = format!("127.0.0.1:{}", env_or("CONTROLLER_APP_PORT", "7863"));
-    let app_listener = tokio::net::TcpListener::bind(&app_address).await?;
-    tracing::info!("app UI proxy listening on http://{app_address}");
+    // A busy port costs the app UIs over HTTPS, not the dashboard.
+    let app_listener = match tokio::net::TcpListener::bind(&app_address).await {
+        Ok(app_listener) => {
+            tracing::info!("app UI proxy listening on http://{app_address}");
+            Some(app_listener)
+        }
+        Err(error) => {
+            tracing::error!(%error, "app UI proxy not started on {app_address}: app UIs won't open over HTTPS");
+            None
+        }
+    };
     // Graceful shutdown waits for every connection, and the dashboard's SSE
     // and camera streams (and app UI streams) never end on their own: give
     // both listeners 3 s, then return.
     // Ports the app proxy never forwards to, whatever an app's URL says: the
     // controller's own and the daemon's.
-    let mut own_ports = vec![listener.local_addr()?.port(), app_listener.local_addr()?.port()];
+    let mut own_ports = vec![listener.local_addr()?.port()];
+    own_ports.extend(app_listener.as_ref().and_then(|l| l.local_addr().ok()).map(|a| a.port()));
     own_ports.extend(reqwest::Url::parse(&daemon_url).ok().and_then(|url| url.port_or_known_default()));
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
@@ -98,16 +113,23 @@ async fn main() -> std::io::Result<()> {
     };
     let app = reachy_controller::app(state.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>();
     let server = axum::serve(listener, app).with_graceful_shutdown(stopped(stop_rx.clone()));
-    let app_proxy = reachy_controller::app_proxy::router(state, &own_ports)
-        .into_make_service_with_connect_info::<std::net::SocketAddr>();
-    let app_server = axum::serve(app_listener, app_proxy).with_graceful_shutdown(stopped(stop_rx.clone()));
+    let app_server = app_listener.map(|app_listener| {
+        let app_proxy = reachy_controller::app_proxy::router(state, &own_ports)
+            .into_make_service_with_connect_info::<std::net::SocketAddr>();
+        axum::serve(app_listener, app_proxy).with_graceful_shutdown(stopped(stop_rx.clone()))
+    });
     tokio::spawn(async move {
         shutdown_signal().await;
         tracing::info!("shutting down");
         let _ = stop_tx.send(true);
     });
     tokio::select! {
-        result = async { tokio::try_join!(server.into_future(), app_server.into_future()).map(|_| ()) } => result,
+        result = async {
+            match app_server {
+                Some(app_server) => tokio::try_join!(server.into_future(), app_server.into_future()).map(|_| ()),
+                None => server.await,
+            }
+        } => result,
         () = async {
             stopped(stop_rx).await;
             tokio::time::sleep(Duration::from_secs(3)).await;
@@ -122,7 +144,9 @@ mod tests {
     #[test]
     fn lan_mode_keeps_loopback_bound() {
         assert_eq!(bind_host(false, None).unwrap(), "127.0.0.1");
-        assert_eq!(bind_host(false, Some("0.0.0.0".into())).unwrap(), "0.0.0.0");
+        assert_eq!(bind_host(false, Some("localhost".into())).unwrap(), "localhost");
+        assert!(bind_host(false, Some("0.0.0.0".into())).is_err(), "no login without LAN mode");
+        assert!(bind_host(false, Some("192.168.1.10".into())).is_err());
         assert_eq!(bind_host(true, None).unwrap(), "0.0.0.0");
         assert_eq!(bind_host(true, Some("127.0.0.1".into())).unwrap(), "0.0.0.0");
         assert_eq!(bind_host(true, Some("::".into())).unwrap(), "[::]");
