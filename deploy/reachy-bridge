@@ -7,7 +7,7 @@
 #   reachy-bridge logs [daemon|controller]
 #   reachy-bridge serve [on|off|status]
 #   reachy-bridge pair <code> [name]     approve a browser's LAN login code
-#   reachy-bridge devices [revoke <id>]  list or revoke paired browsers
+#   reachy-bridge devices [revoke <n|id>]  list or revoke paired browsers
 #
 # Stopping the daemon sends SIGINT, which puts the robot to sleep and releases
 # torque. Restarting the daemon is refused while the robot is on, unless
@@ -186,18 +186,33 @@ import json, sys, time
 devices = json.loads(sys.argv[1])["devices"]
 if not devices:
     print("no paired devices")
-for d in devices:
+for n, d in enumerate(devices, 1):
     seen = time.strftime("%Y-%m-%d %H:%M", time.localtime(d["last_seen"]))
-    print("%s  %s  (last seen %s from %s)" % (d["id"], d["name"], seen, d["peer"]))
+    print("%d  %s  %s  (last seen %s from %s)" % (n, d["id"], d["name"], seen, d["peer"]))
 ' "$list"
                 else
                     echo "$list"
                 fi
                 ;;
             revoke)
-                [[ ${args[1]:-} =~ ^[0-9a-f]+$ ]] || die "usage: reachy-bridge devices revoke <id> (from reachy-bridge devices)"
-                controller_api DELETE "/api/auth/devices/${args[1]}" >/dev/null
-                echo "revoked ${args[1]}"
+                id=${args[1]:-} name=
+                [[ $id =~ ^[0-9a-f]+$ ]] || die "usage: reachy-bridge devices revoke <n|id> (from reachy-bridge devices)"
+                # A short number is the device's line in `reachy-bridge devices`;
+                # ids are 12 hex characters.
+                if [[ $id =~ ^[0-9]{1,4}$ ]]; then
+                    command -v python3 >/dev/null || die "revoking by number needs python3; pass the id instead"
+                    id=$(python3 -c '
+import json, sys
+devices, n = json.loads(sys.argv[1])["devices"], int(sys.argv[2])
+if 1 <= n <= len(devices):
+    print(devices[n - 1]["id"], devices[n - 1]["name"], sep="\t")
+' "$(controller_api GET /api/auth/devices)" "$id")
+                    [[ -n $id ]] || die "no device ${args[1]} (see reachy-bridge devices)"
+                    name=${id#*$'\t'}
+                    id=${id%%$'\t'*}
+                fi
+                controller_api DELETE "/api/auth/devices/$id" >/dev/null
+                echo "revoked $id${name:+ ($name)}"
                 ;;
             *) die "devices takes list or revoke <id>" ;;
         esac
