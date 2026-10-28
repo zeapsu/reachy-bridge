@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Run a Reachy Mini Lite from a headless Linux edge device: daemon service, controller UI, Hugging Face apps."
 readme = "README.md"
 requires-python = "==3.12.*"
+license = "Apache-2.0"
 # The development environment: the runtime (editable) with MuJoCo for the sim
 # daemon. Its dependencies, including the reachy-mini floor, live in
 # runtime/pyproject.toml.

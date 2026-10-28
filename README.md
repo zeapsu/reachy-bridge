@@ -96,5 +96,10 @@ how the controller drives the daemon, and re-check it when the locked `reachy-mi
 source archive, `uv.lock`, `SHA256SUMS` and, once the repo is public, a build attestation; `-rc`
 tags are nightly prereleases. Notes come from `docs/releases/<tag>.md` when that file exists.
 
-A user-facing install guide, `CONTRIBUTING.md` and the license arrive with the public release
-(#135, #136, #60).
+A user-facing install guide and the full `CONTRIBUTING.md` arrive with the public release
+(#135, #136).
+
+## License
+
+Apache-2.0; see [`LICENSE`](LICENSE). [`NOTICE`](NOTICE) credits the Pollen Robotics material
+the bridge builds on.

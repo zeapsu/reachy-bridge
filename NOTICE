@@ -1,0 +1,33 @@
+reachy-bridge
+Copyright 2025-2026 the reachy-bridge contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Reachy Mini is a robot by Pollen Robotics and Hugging Face. reachy-bridge is an
+independent project and is not affiliated with or endorsed by either company.
+
+This product includes material from the following projects, both Copyright
+Pollen Robotics and licensed under the Apache License, Version 2.0:
+
+- reachy-mini (https://github.com/pollen-robotics/reachy_mini)
+  web/src/assets/reachy_mini.glb and web/src/assets/reachy_mini.rig.json are
+  derived from the MuJoCo model and meshes shipped in the reachy-mini Python
+  package (reachy_mini/descriptions/reachy_mini/mjcf/). They were re-posed,
+  merged per moving part, decimated and compressed; tools/model/ holds the
+  scripts that produce them. The reachy-mini package is licensed Apache-2.0,
+  and its README adds that Pollen's hardware design files are under Creative
+  Commons BY-NC-SA. The meshes ship inside the Apache-2.0 package without a
+  license of their own, so they are used here under Apache-2.0. Should Pollen
+  regard them as hardware design files, these two assets are CC BY-NC-SA,
+  attributed to Pollen Robotics, and not covered by this product's license.
+
+- Reachy Mini desktop app (https://github.com/pollen-robotics/reachy-mini-desktop-app)
+  The emoji for recorded moves in web/src/logic/moves.ts are adapted from
+  src/constants/choreographies.ts.
+
+reachy-bridge does not bundle the reachy-mini daemon: deploy/install.sh
+installs it from PyPI under its own license. The controller binary statically
+links Rust crates and embeds a web dashboard built with npm packages; all of
+them are under permissive licenses (MIT, Apache-2.0, BSD, Unicode-3.0,
+Unlicense, BSL-1.0), and their notices travel with their sources as listed in
+controller/Cargo.lock and web/bun.lock.
