@@ -180,8 +180,8 @@ function Dashboard() {
         </main>
 
         <main className="view list" id="view-apps" role="tabpanel" hidden={tab !== "apps"} aria-label="Apps">
-          <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} exprBusy={expr.busy !== null} />
-          <CatalogPanel catalog={catalog} daemonOnline={appsReachable} />
+          <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} reachable={appsReachable} exprBusy={expr.busy !== null} />
+          <CatalogPanel catalog={catalog} reachable={appsReachable} />
         </main>
 
         <main className="view list" id="view-system" role="tabpanel" hidden={tab !== "system"} aria-label="System">

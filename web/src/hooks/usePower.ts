@@ -55,8 +55,8 @@ export function usePower(feedback: ControlFeedback, onStatusChange: () => void):
       show(derived.view);
       setReachable(status.reachable);
     } catch {
-      // Silent: the telemetry stream owns online/offline.
-      setReachable(false);
+      // Silent: the telemetry stream owns online/offline. `reachable` keeps
+      // its last value, so one dropped poll doesn't reload the catalog.
     } finally {
       inflight.current = false;
     }

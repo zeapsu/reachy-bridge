@@ -181,11 +181,12 @@ function HfLoginRow({ catalog }: { catalog: CatalogState }) {
 
 interface Props {
   catalog: CatalogState;
-  daemonOnline: boolean;
+  /** The daemon's app API answers (the robot may be off). */
+  reachable: boolean;
 }
 
 /** Apps to install from Hugging Face Spaces, as compact rows with a search (#126). */
-export function CatalogPanel({ catalog, daemonOnline }: Props) {
+export function CatalogPanel({ catalog, reachable }: Props) {
   const sheet = useLens<HTMLElement>();
   const [query, setQuery] = useState("");
   const shown = filterCatalog(catalog.apps, query);
@@ -212,7 +213,7 @@ export function CatalogPanel({ catalog, daemonOnline }: Props) {
         value={query}
         onChange={(e) => setQuery(e.target.value)}
       />
-      {!daemonOnline ? (
+      {!reachable ? (
         <p className="note">The catalog shows up when the daemon is online.</p>
       ) : catalog.error ? (
         <p className="note error">{catalog.error}</p>
