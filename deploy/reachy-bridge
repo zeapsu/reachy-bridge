@@ -406,10 +406,10 @@ uninstall_bridge() {
     echo "== Removing files"
     for value in "${dirs[@]}"; do
         safe_path "$value" || { echo "warning: skipped $value (outside $HOME)"; continue; }
-        [[ -L $value ]] && echo "note: $value is a link; removing the link leaves $(readlink -- "$value") in place"
         if (( keep )) && [[ $value == "$dest" ]]; then
-            find "$value" -mindepth 1 -maxdepth 1 ! -name "${kept[0]}" ! -name "${kept[1]}" -exec rm -rf {} +
+            find -H "$value" -mindepth 1 -maxdepth 1 ! -name "${kept[0]}" ! -name "${kept[1]}" -exec rm -rf {} +
         else
+            [[ -L $value ]] && echo "note: $value is a link; removing the link leaves $(readlink -- "$value") in place"
             rm -rf "$value"
         fi
     done
