@@ -246,13 +246,13 @@ as_owner() {
     if [[ -w $(dirname "$path") ]]; then "$@"; else sudo "$@"; fi
 }
 
-# Only absolute paths strictly inside the home directory once '..' and '//'
-# are resolved: the manifest is only a list, not trusted blindly. Symlinks
-# are not resolved, so an install moved to another disk through a link is
-# still removed; a trailing slash is refused so rm never follows a final link.
+# Only absolute paths strictly inside the home directory, with no '..' and no
+# trailing slash: the manifest is only a list, not trusted blindly. Symlinks
+# are not resolved, so an install moved to another disk through a link still
+# counts as in the home directory.
 safe_path() {
     local real home
-    [[ $1 == /* && $1 != */ ]] || return 1
+    [[ $1 == /* && $1 != */ && /$1/ != */../* ]] || return 1
     real=$(realpath -m -s -- "$1") && home=$(realpath -m -s -- "$HOME") || return 1
     [[ $real == "$home"/?* ]]
 }
@@ -409,7 +409,9 @@ uninstall_bridge() {
         if (( keep )) && [[ $value == "$dest" ]]; then
             find -H "$value" -mindepth 1 -maxdepth 1 ! -name "${kept[0]}" ! -name "${kept[1]}" -exec rm -rf {} +
         else
-            [[ -L $value ]] && echo "note: $value is a link; removing the link leaves $(readlink -- "$value") in place"
+            # A linked dir (an install moved to another disk): empty what it
+            # points to, then remove the link.
+            [[ -L $value ]] && find -H "$value" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
             rm -rf "$value"
         fi
     done

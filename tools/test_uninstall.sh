@@ -48,7 +48,7 @@ setup() {
             unit reachy-bridge-sim.service unit reachy-bridge-update.timer \
             udev /etc/udev/rules.d/99-reachy-test.rules group dialout linger 1 \
             gst-backup "$H/.local/share/gstreamer-1.0/plugins/libgstrswebrtc.so"$'\t'"$H/.local/share/gstreamer-1.0/plugins/libgstrswebrtc.so.bak" \
-            dir /etc/reachy-bridge dir "$H//" dir "$H/.local/share/" udev /etc/passwd unit ../../evil.service group sudo >"$D/install-manifest"
+            dir /etc/reachy-bridge dir "$H//" dir "$H/.local/share/" dir "$H/x/../.." udev /etc/passwd unit ../../evil.service group sudo >"$D/install-manifest"
         mkdir -p "$D/.app_metadata" && echo meta >"$D/.app_metadata/radio.json"
     fi
     local log="echo \"\$(basename \"\$0\") \$*\" >>'$ROOT/log'"
@@ -116,7 +116,7 @@ check "undoes dialout and linger" 'grep -q "gpasswd -d tester dialout" "$ROOT/lo
 check "restores the GStreamer plugin" '[[ $(<"$H/.local/share/gstreamer-1.0/plugins/libgstrswebrtc.so") == old ]]'
 check "removes the install, apps and state" '[[ ! -e $D && ! -e $S ]]'
 check "removes the CLI" '[[ ! -e $H/.local/bin/reachy-bridge ]]'
-check "skips a manifest path outside HOME" 'grep -q "skipped /etc/reachy-bridge" "$ROOT/out" && grep -q "skipped $H//" "$ROOT/out" && grep -q "skipped $H/.local/share/ " "$ROOT/out"'
+check "skips a manifest path outside HOME" 'grep -q "skipped /etc/reachy-bridge" "$ROOT/out" && grep -q "skipped $H//" "$ROOT/out" && grep -q "skipped $H/.local/share/ " "$ROOT/out" && grep -q "skipped $H/x/../.. " "$ROOT/out"'
 check "never removes sudo membership" '! grep -q "gpasswd -d tester sudo" "$ROOT/log"'
 check "leaves unrelated files" '[[ -f $H/unrelated ]]'
 
@@ -142,7 +142,7 @@ echo "== install moved to another disk through a symlink"
 setup manifest
 mv "$D" "$ROOT/nvme-install" && ln -s "$ROOT/nvme-install" "$D"
 run --yes || { fail "symlinked exited $?"; cat "$ROOT/out"; }
-check "removes the link, leaves what it points to" '[[ ! -e $D && ! -L $D && -d $ROOT/nvme-install ]]'
+check "removes the link and empties what it pointed to" '[[ ! -e $D && ! -L $D && -z $(ls -A "$ROOT/nvme-install") ]]'
 
 echo "== state dir override"
 setup manifest
