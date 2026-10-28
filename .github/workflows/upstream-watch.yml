@@ -36,6 +36,7 @@ jobs:
     permissions:
       contents: read
       issues: read
+      pull-requests: read
     outputs:
       # current: nothing to do; seen: this version already has a branch, PR
       # or issue; new: a lock bump to test; lock-failed: uv could not lock it.
@@ -68,7 +69,8 @@ jobs:
           fi
           branch="chore/reachy-mini-$new"
           status=new
-          if [[ "$new" == "$old" ]]; then
+          # Equal, or lower than the lock (a yanked release): nothing to do.
+          if [[ "$(printf '%s\n%s\n' "$new" "$old" | sort -V | tail -n 1)" == "$old" ]]; then
             status=current
           else
             # A branch, PR or issue for this version means an earlier run (or
@@ -105,6 +107,11 @@ jobs:
             sleep $((attempt * 20))
           done
           cat "$RUNNER_TEMP/lock/lock.log"
+          # Only a resolver verdict is about the release; anything else (the
+          # network, uv itself) fails the run and is retried tomorrow.
+          if ! grep -q "No solution found" "$RUNNER_TEMP/lock/lock.log"; then
+            exit 1
+          fi
           echo "status=lock-failed" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.find.outputs.status == 'new'
@@ -221,13 +228,14 @@ jobs:
             {
               echo "The daily upstream watch could not lock reachy-mini $VERSION (locked: $OLD). uv's output:"
               echo
-              echo '```'
-              tail -n 60 "$RUNNER_TEMP/lock/lock.log"
-              echo '```'
+              # A tilde fence: the log can hold backticks from a build backend.
+              echo '~~~~~~~~~~'
+              tail -n 60 "$RUNNER_TEMP/lock/lock.log" | tr -d '~'
+              echo '~~~~~~~~~~'
             } > "$body"
           elif [[ "$PUSH" != success ]]; then
             echo "The daily upstream watch locked reachy-mini $VERSION (was $OLD) but could not push \`$BRANCH\` ([run]($RUN_URL)), so nothing was tested. This is a workflow problem, not an upstream break." > "$body"
-            echo -e "\nPart of #155." >> "$body"
+            printf '\nPart of #155.\n' >> "$body"
             gh issue create --title "reachy-mini $VERSION: upstream watch failed" --body-file "$body"
             exit 0
           else
