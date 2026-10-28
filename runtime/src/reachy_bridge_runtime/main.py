@@ -11,6 +11,7 @@ treats any mismatch as a failure (CI, and the SDK update pipeline in #155).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import sys
@@ -32,6 +33,19 @@ FEATURES = {
 CORE_FEATURES = frozenset({keep_awake.FEATURE, kinematics.FEATURE})
 # Features that add routes to the daemon app, so need the "routes" hooks.
 ROUTE_FEATURES = frozenset({kinematics.FEATURE, "audio_levels", "camera"})
+# Features that read the daemon's media; off under --no-media.
+MEDIA_FEATURES = frozenset({"audio_levels", "camera"})
+
+
+def for_daemon_args(platform: platforms.Platform, args: list[str]) -> platforms.Platform:
+    """The platform as this daemon uses it. A sim daemon (sim mode, #149)
+    runs beside the robot's, so it leaves the host's audio setup alone, and a
+    --no-media daemon has no media for the media features to read."""
+    if "--sim" in args:
+        platform = dataclasses.replace(platform, host_setup=())
+    if "--no-media" in args:
+        platform = dataclasses.replace(platform, features=platform.features - MEDIA_FEATURES)
+    return platform
 
 
 def check() -> int:
@@ -90,7 +104,7 @@ def main() -> int:
     if "--check" in sys.argv[1:]:
         return check()
     logging.basicConfig(level=logging.INFO)
-    platform = platforms.detect()
+    platform = for_daemon_args(platforms.detect(), sys.argv[1:])
     logger.info(
         "reachy-bridge runtime on %s (%s), reachy-mini %s",
         platform.name,
