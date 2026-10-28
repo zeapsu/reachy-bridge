@@ -92,7 +92,8 @@ CI runs all of them on each PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on J
 What the controller may assume about the daemon (power, motor modes, the idle reset, app
 lifecycle) is in [`docs/daemon-contract.md`](docs/daemon-contract.md). Read it before changing
 how the controller drives the daemon, and re-check it when the locked `reachy-mini` changes. Pushing a `vX.Y.Z` tag runs CI and then publishes a GitHub Release with the
-source archive, `uv.lock`, `SHA256SUMS` and a build attestation; `-rc` tags are prereleases.
+source archive, `uv.lock`, `SHA256SUMS` and a build attestation; `-rc` tags are nightly
+prereleases. Notes come from `docs/releases/<tag>.md` when that file exists.
 
 A user-facing install guide, `CONTRIBUTING.md` and the license arrive with the public release
 (#135, #136, #60).

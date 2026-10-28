@@ -15,7 +15,7 @@ jobs:
       prerelease: ${{ steps.tag.outputs.prerelease }}
     steps:
       # vX.Y.Z is a stable release; vX.Y.Z-rcN (or -rc.N) is a prerelease on the
-      # beta channel. Anything else matching the trigger glob is refused.
+      # nightly channel. Anything else matching the trigger glob is refused.
       - name: Check the tag
         id: tag
         env:
@@ -69,7 +69,14 @@ jobs:
           TAG: ${{ github.ref_name }}
           PRERELEASE: ${{ needs.tag.outputs.prerelease }}
         run: |
-          flags=(--verify-tag --generate-notes --title "$TAG")
+          # Hand-written notes in docs/releases/<tag>.md win; otherwise GitHub
+          # lists the PRs merged since the previous tag.
+          notes="docs/releases/${TAG}.md"
+          if [[ -f "$notes" ]]; then
+            flags=(--verify-tag --notes-file "$notes" --title "$TAG")
+          else
+            flags=(--verify-tag --generate-notes --title "$TAG")
+          fi
           if [[ "$PRERELEASE" == true ]]; then
             flags+=(--prerelease)
           fi
