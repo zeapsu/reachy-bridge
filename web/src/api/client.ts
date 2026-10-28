@@ -4,6 +4,19 @@ import { LOGIN_REQUIRED_EVENT } from "../logic/auth.ts";
 
 export class ApiError extends Error {}
 
+let believedTarget: string | null = null;
+
+/**
+ * The robot this page believes the controller drives ("robot" or "sim",
+ * #149). Every request names it, and the controller refuses an action from a
+ * page that missed a switch instead of carrying it out on the other robot.
+ */
+export function setBelievedTarget(target: string | null): void {
+  believedTarget = target;
+}
+
+export const getBelievedTarget = (): string | null => believedTarget;
+
 /**
  * Fetch JSON; non-2xx throws with the response's `detail` (or `HTTP <status>`),
  * matching main.js so error text shown in the panels is unchanged.
@@ -13,6 +26,9 @@ export async function apiJson<T = unknown>(path: string, options: RequestInit = 
     Accept: "application/json",
     ...((options.headers as Record<string, string> | undefined) ?? {}),
   };
+  if (believedTarget && !headers["X-Reachy-Target"]) {
+    headers["X-Reachy-Target"] = believedTarget;
+  }
   if (options.body !== undefined && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }

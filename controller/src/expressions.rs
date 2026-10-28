@@ -337,6 +337,9 @@ impl ExpressionPlayer {
             "body_yaw": 0.0,
             "duration": 1.5,
         });
+        // No await between the check and the call: a sim switch (#149) halts
+        // first and retargets after, so this goto reaches the daemon it was
+        // meant for or isn't sent.
         if halted() {
             return;
         }

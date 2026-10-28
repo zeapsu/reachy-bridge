@@ -8,6 +8,7 @@ pub mod expressions;
 pub mod host;
 pub mod logs;
 pub mod routes;
+pub mod sim;
 pub mod state;
 pub mod streams;
 
@@ -44,7 +45,9 @@ pub fn app(state: Shared) -> Router {
         .merge(routes::drive::router())
         .merge(routes::store::router())
         .merge(auth::router())
+        .merge(sim::router())
         .fallback(routes::assets::serve)
+        .layer(middleware::from_fn_with_state(state.clone(), sim::guard))
         .layer(middleware::from_fn_with_state(state.clone(), auth::guard))
         .layer(middleware::from_fn(log_actions))
         .with_state(state)
