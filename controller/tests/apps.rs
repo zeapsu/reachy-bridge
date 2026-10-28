@@ -46,6 +46,7 @@ async fn app_status_maps_daemon_states() {
     assert_eq!((&body[0]["space"], &body[0]["blurb"]), (&Value::Null, &json!("Radio")));
     assert_eq!((&body[1]["space"], &body[1]["blurb"]), (&json!("someone/hello_space"), &json!("Says hi")));
     assert_eq!(body[1]["author"], "someone");
+    assert_eq!(body[1]["display"], "Hello Space");
 }
 
 #[tokio::test]
