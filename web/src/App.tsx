@@ -87,14 +87,17 @@ function Dashboard() {
   // Installs, updates and the catalog go through the daemon's app API, which
   // works with the robot off (the state stream, daemonOnline, needs it on).
   const appsReachable = daemonOnline || power.reachable;
-  const catalog = useCatalog(visible && tab === "apps" && appsReachable, () => void apps.poll());
 
   // The power, apps and kinematics shown are the new robot's after a switch.
   const sim = useSim(power.target, () => {
+    // An app view open across a switch shows the other robot's app.
+    apps.closeAppView();
     void power.poll();
     void apps.poll();
     void reloadKinematics();
   });
+  // Sim mode has no apps (#149): no catalog until the target is the robot.
+  const catalog = useCatalog(visible && tab === "apps" && appsReachable && sim.target === "robot", () => void apps.poll());
 
   const blocked = driveBlocked({
     daemonOnline,
@@ -192,7 +195,7 @@ function Dashboard() {
         <main className="view list" id="view-apps" role="tabpanel" hidden={tab !== "apps"} aria-label="Apps">
           {sim.target === "sim" ? (
             <SimAppsNote />
-          ) : (
+          ) : sim.target === null ? null : (
             <>
               <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} reachable={appsReachable} exprBusy={expr.busy !== null} />
               <CatalogPanel catalog={catalog} reachable={appsReachable} />
