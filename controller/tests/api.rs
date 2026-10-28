@@ -24,6 +24,8 @@ struct Fake {
     active_engine: Option<String>,
     app: Option<Value>,
     running_moves: Vec<String>,
+    /// How long `move/goto` takes to answer (a slow daemon).
+    goto_delay: Duration,
     kinematics_put_status: u16,
     set_mode_status: u16,
     calls: Vec<String>,
@@ -144,6 +146,12 @@ async fn fake_daemon(fake: FakeState) -> String {
             "/api/move/goto",
             post(|State(f): State<FakeState>| async move {
                 record(&f, "goto");
+                let delay = f.lock().unwrap().goto_delay;
+                if !delay.is_zero() {
+                    // A slow goto also stays running until it's stopped.
+                    tokio::time::sleep(delay).await;
+                    f.lock().unwrap().running_moves.push("home".into());
+                }
                 Json(json!({"uuid": "home"}))
             }),
         )
@@ -330,6 +338,27 @@ async fn power_off_stops_a_playing_expression_first_and_skips_its_return_home() 
     let calls: Vec<String> = h.calls().into_iter().filter(|c| !c.starts_with("list ")).collect();
     assert_eq!(calls, vec!["play pollen-robotics/reachy-mini-emotions-library/sad1", "move-stop expr", "stop sleep=true"]);
     assert!(!h.state.player.active());
+}
+
+#[tokio::test]
+async fn a_return_home_posted_during_power_off_is_stopped() {
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.goto_delay = Duration::from_millis(300);
+    })
+    .await;
+    let (status, _) = h.call("POST", "/api/expressions/play/pollen-robotics/reachy-mini-emotions-library/sad1", None).await;
+    assert_eq!(status, StatusCode::OK);
+    // The expression ends; the watcher posts its return home, which the
+    // daemon is slow to accept. Power off lands in that window.
+    h.fake.lock().unwrap().running_moves.clear();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.call("POST", "/api/daemon/stop", None).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let calls: Vec<String> = h.calls().into_iter().filter(|c| !c.starts_with("list ")).collect();
+    assert_eq!(calls, vec!["play pollen-robotics/reachy-mini-emotions-library/sad1", "goto", "stop sleep=true", "move-stop home"]);
+    assert!(h.fake.lock().unwrap().running_moves.is_empty());
 }
 
 #[tokio::test]

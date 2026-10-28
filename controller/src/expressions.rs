@@ -52,6 +52,9 @@ pub struct ExpressionPlayer {
     /// `needs_home` if no mode change happened while it ran: daemon moves
     /// finish on schedule whether or not the motors had torque.
     mode_epoch: AtomicU64,
+    /// Bumped by `halt`. A return home captured before a halt must not post
+    /// (or keep) its goto: it would run under the sleep move.
+    halts: AtomicU64,
 }
 
 impl ExpressionPlayer {
@@ -63,6 +66,7 @@ impl ExpressionPlayer {
             start_lock: tokio::sync::Mutex::new(()),
             needs_home: AtomicBool::new(false),
             mode_epoch: AtomicU64::new(0),
+            halts: AtomicU64::new(0),
         })
     }
 
@@ -119,7 +123,8 @@ impl ExpressionPlayer {
         });
         let player = Arc::clone(self);
         let watched = uuid.clone();
-        tokio::spawn(async move { player.watch(watched).await });
+        let halts = self.halts.load(Ordering::SeqCst);
+        tokio::spawn(async move { player.watch(watched, halts).await });
         Ok(json!({"status": "playing", "uuid": uuid, "dataset": dataset, "move": name}))
     }
 
@@ -135,7 +140,8 @@ impl ExpressionPlayer {
             *session = Some(Session { uuid: None, dataset: None, name: None, phase: Phase::ReturningHome });
         }
         let player = Arc::clone(self);
-        tokio::spawn(async move { player.goto_home_and_clear().await });
+        let halts = self.halts.load(Ordering::SeqCst);
+        tokio::spawn(async move { player.goto_home_and_clear(halts).await });
         json!({"status": "returning_home"})
     }
 
@@ -159,6 +165,7 @@ impl ExpressionPlayer {
     /// none. A move left running fights the sleep move: the robot stutters
     /// and the antennas end wherever the last target loop left them.
     pub async fn halt(&self, timeout: Duration) {
+        self.halts.fetch_add(1, Ordering::SeqCst);
         self.clear();
         self.mode_changed();
         let deadline = tokio::time::Instant::now() + timeout;
@@ -225,7 +232,7 @@ impl ExpressionPlayer {
         }
     }
 
-    async fn watch(self: Arc<Self>, uuid: String) {
+    async fn watch(self: Arc<Self>, uuid: String, halts: u64) {
         if !self.wait_until_gone(&uuid).await {
             self.clear();
             return;
@@ -237,12 +244,13 @@ impl ExpressionPlayer {
                 None => return,
             }
         }
-        self.goto_home_and_clear().await;
+        self.goto_home_and_clear(halts).await;
     }
 
     /// Silent goto to the wake-up home pose (no head roll, no sound): head at
     /// identity, antennas at the ±10° park offset, body yaw 0, over 1.5 s.
-    async fn goto_home_and_clear(&self) {
+    async fn goto_home_and_clear(&self, halts: u64) {
+        let halted = || self.halts.load(Ordering::SeqCst) != halts;
         let epoch = self.mode_epoch.load(Ordering::SeqCst);
         let home = json!({
             "head_pose": {"x": 0.0, "y": 0.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
@@ -250,10 +258,16 @@ impl ExpressionPlayer {
             "body_yaw": 0.0,
             "duration": 1.5,
         });
+        if halted() {
+            return;
+        }
         let mut result = self.daemon.post_json("move/goto", &home).await;
         if result.is_err() {
             // One transient failure must not cost the return home.
             tokio::time::sleep(self.poll).await;
+            if halted() {
+                return;
+            }
             result = self.daemon.post_json("move/goto", &home).await;
         }
         let uuid = result.ok().and_then(|r| r.get("uuid").and_then(Value::as_str).map(str::to_string));
@@ -261,6 +275,11 @@ impl ExpressionPlayer {
             self.clear();
             return;
         };
+        if halted() {
+            // `halt` ran while the goto was being posted and may not have seen it.
+            let _ = self.daemon.post_json("move/stop", &json!({"uuid": uuid})).await;
+            return;
+        }
         if self.wait_until_gone(&uuid).await && self.mode_epoch.load(Ordering::SeqCst) == epoch {
             self.needs_home.store(false, Ordering::SeqCst);
         }
