@@ -4,7 +4,9 @@ The bridge copies this file into the apps venv as
 ``reachy_bridge_app_bind.py`` with a ``.pth`` that imports it, so it runs
 at the start of every Python process that venv runs: the apps and any Python
 they spawn. A TCP socket bound to anything but loopback (``0.0.0.0``, ``::``,
-``""``, ``"0"``, the LAN address, a host name) is bound to loopback instead.
+``""``, ``"0"``, the LAN address, a host name) is bound to loopback instead,
+except a specific address with port 0, which is how a client picks its
+source address.
 App UIs then reach the network only through the controller's app proxy,
 which asks for a login on the LAN.
 

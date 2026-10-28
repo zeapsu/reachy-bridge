@@ -228,8 +228,10 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   `::ffff:127.0.0.1`). An app that would run in the daemon's own venv, or
   whose venv can't take the shim, is refused, and a reachy-mini that no
   longer matches the hooks stops the runtime instead of running apps open.
-  Not covered: listeners opened by native code (C extensions, non-Python
-  child processes), Gradio `share` tunnels, and an app that undoes the shim
+  A specific address with port 0 is left alone (a client choosing its source
+  address before `connect`). Not covered: a server that binds a specific LAN
+  address or host name on port 0, listeners opened by native code (C
+  extensions, non-Python child processes), Gradio `share` tunnels, and an app that undoes the shim
   on purpose; apps run as the bridge's user and are trusted at that level. The
   controller proxies the current app's UI from `:7863` (loopback, or every
   interface behind the login in LAN mode), published over HTTPS as :8043
