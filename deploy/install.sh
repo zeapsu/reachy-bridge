@@ -11,7 +11,8 @@
 #   sim/             the sim daemon's working directory (sim mode, #149)
 # and the reachy-bridge and reachy-bridge-controller user units, the
 # reachy-bridge-sim unit (not enabled: the controller starts it on demand),
-# plus the reachy-bridge command in ~/.local/bin.
+# plus the reachy-bridge command in ~/.local/bin. Everything it adds is listed
+# in install-manifest there, which `reachy-bridge uninstall` reads (#142).
 #
 # It changes nothing on the device until the robot is confirmed off and the
 # locked reachy-mini has passed the runtime's --check in a throwaway venv.
@@ -29,6 +30,20 @@ CLI=$REPO/deploy/reachy-bridge
 DAEMON=reachy-bridge.service
 CONTROLLER=reachy-bridge-controller.service
 SIM=reachy-bridge-sim.service
+MANIFEST=$DEST/install-manifest
+
+# record KIND VALUE: note something this install added, for the uninstaller.
+# Kinds: dir, file, unit; changes outside the user's home use udev (a rules
+# file), group (dialout, if the user was added to it), linger, and gst-backup
+# (VALUE is "<plugin path><TAB><backup of the plugin it replaced>"). None of
+# those four is made by this script yet; the uninstaller undoes them when a
+# later installer records them. Record a system change only when this install
+# made it, so uninstall doesn't undo what the user had set up before.
+record() {
+    local line
+    line=$(printf '%s\t%s' "$1" "$2")
+    grep -qxF "$line" "$MANIFEST" 2>/dev/null || printf '%s\n' "$line" >>"$MANIFEST"
+}
 
 step() { printf '\n== %s\n' "$*"; }
 die() { echo "install: $*" >&2; exit 1; }
@@ -105,6 +120,9 @@ install -m 644 "$REPO/deploy/systemd/$CONTROLLER" "$UNIT_DIR/$CONTROLLER"
 install -m 644 "$REPO/deploy/systemd/$SIM" "$UNIT_DIR/$SIM"
 systemctl --user daemon-reload
 systemctl --user enable "$DAEMON" "$CONTROLLER"
+record dir "$DEST"
+record file "$BIN_DIR/reachy-bridge"
+for unit in "$DAEMON" "$CONTROLLER" "$SIM"; do record unit "$unit"; done
 
 step "Start"
 systemctl --user start "$DAEMON"

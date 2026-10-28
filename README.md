@@ -48,6 +48,12 @@ limits under LAN access). Run
 The robot starts off; switch it on from the dashboard. `install.sh` is safe to re-run after a
 pull, and never restarts the daemon while the robot is on.
 
+To remove the bridge, run `reachy-bridge uninstall` (or `deploy/uninstall.sh`). It puts the robot
+to sleep, removes the services, the install, installed apps, settings and paired devices, and the
+tailnet ports that still point at the bridge, then lists what it left (Tailscale, apt packages,
+the Hugging Face cache). `--dry-run` shows the plan; `--keep-data` keeps apps, settings and paired
+devices for a reinstall.
+
 ## LAN access
 
 By default the dashboard listens on loopback only and is reached over Tailscale. To open it to
