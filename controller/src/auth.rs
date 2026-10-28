@@ -264,6 +264,26 @@ fn cookies<'a>(headers: &'a HeaderMap, name: &'a str) -> impl Iterator<Item = &'
         })
 }
 
+/// Drop any `Set-Cookie` for the controller's own cookies from an app's
+/// response: same host means same cookie jar, so an app could otherwise log
+/// the browser out of the dashboard, or swap in a device it paired. A value
+/// that isn't text is dropped too.
+pub fn strip_credential_cookies(headers: &mut HeaderMap) {
+    let kept: Vec<HeaderValue> = headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter(|v| {
+            let name = v.to_str().ok().and_then(|v| v.split(['=', ';']).next()).map(str::trim);
+            name.is_some_and(|name| name != DEVICE_COOKIE && name != PAIR_COOKIE)
+        })
+        .cloned()
+        .collect();
+    headers.remove(header::SET_COOKIE);
+    for value in kept {
+        headers.append(header::SET_COOKIE, value);
+    }
+}
+
 /// Drop the controller's credentials from a request bound for an app (the
 /// app UI proxy): browsers scope cookies by host, not port, so `rb_device`
 /// set on the dashboard also comes with every request to :8043.
@@ -405,7 +425,7 @@ impl Auth {
 /// A browser-sent request from another origin (or another port of the same
 /// host, such as an app UI). Requests without either header (curl, the CLI)
 /// are not cross-site.
-fn cross_site(headers: &HeaderMap, loopback: bool) -> bool {
+pub fn cross_site(headers: &HeaderMap, loopback: bool) -> bool {
     if let Some(site) = headers.get("sec-fetch-site") {
         return !matches!(site.to_str(), Ok("same-origin" | "none"));
     }
@@ -738,6 +758,16 @@ mod tests {
             assert_eq!(code.len(), 6);
             assert!(code.bytes().all(|b| b.is_ascii_digit()));
         }
+    }
+
+    #[test]
+    fn apps_cannot_set_the_controllers_cookies() {
+        let mut h = HeaderMap::new();
+        h.append(header::SET_COOKIE, "theme=dark; Path=/".parse().unwrap());
+        h.append(header::SET_COOKIE, "rb_device=evil; Path=/; Max-Age=999".parse().unwrap());
+        h.append(header::SET_COOKIE, " rb_pair=x".parse().unwrap());
+        strip_credential_cookies(&mut h);
+        assert_eq!(h.get_all(header::SET_COOKIE).iter().collect::<Vec<_>>(), ["theme=dark; Path=/"]);
     }
 
     #[test]

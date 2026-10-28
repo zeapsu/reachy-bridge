@@ -34,7 +34,7 @@ use serde_json::Value;
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use crate::auth::strip_credentials;
+use crate::auth::{cross_site, strip_credential_cookies, strip_credentials};
 use crate::state::Shared;
 
 /// How long a resolved upstream port is reused before asking the daemon again.
@@ -131,6 +131,12 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
     if !proxy.state.auth.app_proxy_allowed(&parts.headers, peer.map(|p| p.ip().to_canonical())) {
         return login_required(host.as_deref());
     }
+    // Another site can't make a tailnet browser act through the app (a plain
+    // form POST); the app's own page is same-origin. Every peer is loopback.
+    if (!parts.method.is_safe() || is_upgrade(&parts.headers)) && cross_site(&parts.headers, true) {
+        tracing::warn!("app proxy: refused cross-site {} {}", parts.method, parts.uri.path());
+        return (StatusCode::FORBIDDEN, "cross-site request refused").into_response();
+    }
     let mut headers = parts.headers.clone();
     strip_hop_by_hop(&mut headers);
     strip_credentials(&mut headers);
@@ -160,6 +166,7 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
             if let Some(out_headers) = out.headers_mut() {
                 *out_headers = response.headers().clone();
                 strip_hop_by_hop(out_headers);
+                strip_credential_cookies(out_headers);
             }
             out.body(Body::from_stream(response.bytes_stream())).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
         }

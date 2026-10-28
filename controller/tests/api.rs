@@ -362,6 +362,23 @@ async fn a_return_home_posted_during_power_off_is_stopped() {
 }
 
 #[tokio::test]
+async fn a_motor_mode_change_waits_for_a_power_change() {
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("disabled".into());
+    })
+    .await;
+    let power = h.state.power_lock.lock().await;
+    let pending = h.call("POST", "/api/motors/set_mode/enabled", None);
+    tokio::pin!(pending);
+    assert!(tokio::time::timeout(Duration::from_millis(200), &mut pending).await.is_err(), "waits while power is held");
+    assert!(!h.calls().iter().any(|c| c.starts_with("set_mode")));
+    drop(power);
+    let (status, _) = pending.await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn kinematics_switch_while_on_cycles_power() {
     let h = harness(|f| {
         f.state = "running".into();

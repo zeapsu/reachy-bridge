@@ -57,6 +57,9 @@ async fn set_motor_mode(State(state): State<Shared>, Path(mode): Path<String>) -
     if !matches!(mode.as_str(), "enabled" | "disabled" | "gravity_compensation") {
         return Err(ApiError::new(400, "Invalid motor mode"));
     }
+    // Not during a power change: enabling starts a return home, which would
+    // run under the sleep move (#177).
+    let _power = state.power_lock.lock().await;
     if mode == "gravity_compensation" {
         // The motors ignore move targets in this mode, so an app's moves would
         // silently do nothing while its speech carries on (#150).

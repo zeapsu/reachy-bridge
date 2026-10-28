@@ -73,6 +73,10 @@ async fn fake_app(label: &'static str) -> u16 {
             .route("/", get(move || async move { label }))
             .route("/echo", get(echo).post(echo))
             .route("/stream", get(stream))
+            .route(
+                "/cookie",
+                get(|| async { [("set-cookie", "rb_device=evil; Path=/"), ("set-cookie", "app=1; Path=/")] }),
+            )
             .route("/redirect", get(|| async { (StatusCode::FOUND, [("location", "/elsewhere")]) }))
             .route("/ws", get(ws)),
     )
@@ -278,4 +282,26 @@ async fn trusted_tailnet_needs_no_login() {
     let auth = AuthConfig { lan: true, ..AuthConfig::default() };
     let h = Harness::with_auth(running("app_a"), auth).await;
     assert_eq!(h.get("/").await, (StatusCode::OK, "app A".to_string()));
+}
+
+#[tokio::test]
+async fn an_app_cannot_set_the_dashboard_login_cookie() {
+    let h = Harness::new(running("app_a")).await;
+    let response = reqwest::get(format!("{}/cookie", h.proxy)).await.unwrap();
+    let cookies: Vec<_> = response.headers().get_all("set-cookie").iter().map(|v| v.to_str().unwrap().to_string()).collect();
+    assert_eq!(cookies, ["app=1; Path=/"]);
+}
+
+#[tokio::test]
+async fn cross_site_writes_through_the_proxy_are_refused() {
+    let h = Harness::new(running("app_a")).await;
+    let client = reqwest::Client::new();
+    let post = |site: &'static str| client.post(format!("{}/echo", h.proxy)).header("sec-fetch-site", site).body("x").send();
+    assert_eq!(post("cross-site").await.unwrap().status(), StatusCode::FORBIDDEN);
+    assert_eq!(post("same-site").await.unwrap().status(), StatusCode::FORBIDDEN, "the dashboard's port is another origin");
+    assert_eq!(post("same-origin").await.unwrap().status(), StatusCode::OK);
+    // Reads and requests without browser headers (curl) go through.
+    let read = client.get(format!("{}/echo", h.proxy)).header("sec-fetch-site", "cross-site").send().await.unwrap();
+    assert_eq!(read.status(), StatusCode::OK);
+    assert_eq!(client.post(format!("{}/echo", h.proxy)).body("x").send().await.unwrap().status(), StatusCode::OK);
 }

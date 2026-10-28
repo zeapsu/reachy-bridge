@@ -217,6 +217,14 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   sending the user there. The app binds `0.0.0.0` on that port itself, so
   nothing else may listen on it; over HTTPS the controller proxies the
   current app's UI from `127.0.0.1:7863`, published as :8043 (#158).
+- The dashboard shows an app's UI in a frame (#159), from a different origin
+  (:8043 inside :10000, or the app's own port on the LAN). An app that sends
+  `X-Frame-Options` or a CSP `frame-ancestors` that leaves out the dashboard
+  shows a blank frame; ↗ opens it in its own tab. Checked 2026-10-28: the
+  app base class in reachy-mini 1.12.0, Radio, Conversation App and Gradio's
+  Python server send neither, and the proxy passes app headers through as
+  they are. It strips only the controller's own cookies (both ways) and
+  refuses cross-site writes.
 - App processes get a scrubbed environment (`GST_*`, `PYTHONPATH`, `GI_*`,
   `XDG_*` removed) and import their own `reachy_mini` from `apps_venv`.
 
