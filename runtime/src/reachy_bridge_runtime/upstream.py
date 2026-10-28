@@ -21,6 +21,7 @@ import importlib
 import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 # --- Requirements ------------------------------------------------------------
@@ -98,6 +99,7 @@ _APP_MAIN = "reachy_mini.daemon.app.main"
 _LOCK = "reachy_mini.daemon.robot_app_lock"
 _BACKEND = "reachy_mini.daemon.backend.abstract"
 _MEDIA_SERVER = "reachy_mini.media.media_server"
+_APPS_VENV = "reachy_mini.apps.sources.local_common_venv"
 _ROBOT_BACKEND = "reachy_mini.daemon.backend.robot.backend"
 
 REQUIREMENTS: tuple[Requirement, ...] = (
@@ -160,6 +162,34 @@ REQUIREMENTS: tuple[Requirement, ...] = (
             _function(_BACKEND, "Backend.get_motor_control_mode")(),
             _function(_BACKEND, "Backend.set_motor_control_mode", "mode")(),
             _attr(_BACKEND, "MotorControlMode.Disabled"),
+        ),
+    ),
+    Requirement(
+        "app_bind",
+        "AppManager.start_app(app_name)",
+        _coroutine(_MANAGER, "AppManager.start_app", "app_name"),
+    ),
+    Requirement(
+        "app_bind",
+        "apps run get_app_python's interpreter with a copy of the daemon's environment",
+        lambda: (
+            _function(_APPS_VENV, "get_app_python", "app_name", "wireless_version", "desktop_app_daemon")(),
+            _source_mentions(
+                _MANAGER,
+                "AppManager.start_app",
+                "get_app_python",
+                "self.wireless_version",
+                "self.desktop_app_daemon",
+                "os.environ.copy()",
+            )(),
+        ),
+    ),
+    Requirement(
+        "app_bind",
+        "GstMediaServer._configure_webrtc(pipeline) returns the webrtcsink running the signalling server",
+        lambda: (
+            _function(_MEDIA_SERVER, "GstMediaServer._configure_webrtc", "pipeline")(),
+            _source_mentions(_MEDIA_SERVER, "GstMediaServer._configure_webrtc", "run-signalling-server", "return webrtcsink")(),
         ),
     ),
     Requirement(
@@ -293,6 +323,20 @@ def wrap_stop_current_app(wrapper: Callable[..., Awaitable[Any]]) -> None:
     _wrap(AppManager, "stop_current_app", wrapper)
 
 
+def wrap_start_app(wrapper: Callable[..., Awaitable[Any]]) -> None:
+    """Replace ``AppManager.start_app`` with ``wrapper(original, manager, app_name, ...)``."""
+    from reachy_mini.apps.manager import AppManager
+
+    _wrap(AppManager, "start_app", wrapper)
+
+
+def app_python(manager: Any, app_name: str) -> Path:
+    """The interpreter ``start_app`` runs ``app_name`` with."""
+    from reachy_mini.apps.sources.local_common_venv import get_app_python
+
+    return Path(get_app_python(app_name, manager.wireless_version, manager.desktop_app_daemon))
+
+
 def manager_daemon(manager: Any) -> Any | None:
     return getattr(manager, "daemon", None)
 
@@ -395,6 +439,14 @@ def wrap_configure_audio(wrapper: Callable[..., None]) -> None:
     from reachy_mini.media.media_server import GstMediaServer
 
     _wrap(GstMediaServer, "_configure_audio", wrapper)
+
+
+def wrap_configure_webrtc(wrapper: Callable[..., Any]) -> None:
+    """Replace ``GstMediaServer._configure_webrtc`` with
+    ``wrapper(original, media_server, pipeline)``; it returns the webrtcsink."""
+    from reachy_mini.media.media_server import GstMediaServer
+
+    _wrap(GstMediaServer, "_configure_webrtc", wrapper)
 
 
 def media_server(daemon: Any) -> Any | None:

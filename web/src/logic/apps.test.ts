@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { AppStatus } from "../api.ts";
 import {
   APP_UI_HTTPS_PORT,
+  APP_UI_HTTP_PORT,
   activeApp,
   appAction,
   appHue,
@@ -119,16 +120,16 @@ describe("uptime", () => {
 });
 
 describe("appUiUrl", () => {
-  test("plain http pairs the dashboard host with the app port", () => {
-    expect(appUiUrl("reachy.tailnet", 8042, "http:")).toBe("http://reachy.tailnet:8042/");
-    expect(appUiUrl("reachy.tailnet", 7860, "http:")).toBe("http://reachy.tailnet:7860/");
+  test("plain http goes through the app proxy's http port, never the app's own", () => {
+    expect(appUiUrl("192.168.1.5", APP_UI_HTTP_PORT, "http:")).toBe("http://192.168.1.5:7863/");
+    expect(appUiUrl("127.0.0.1", 7900, "http:")).toBe("http://127.0.0.1:7900/");
   });
-  test("https goes through the app proxy port, whatever the app's port", () => {
-    expect(appUiUrl("reachy.tailnet", 8042, "https:")).toBe(`https://reachy.tailnet:${APP_UI_HTTPS_PORT}/`);
-    expect(appUiUrl("reachy.tailnet", 7860, "https:")).toBe("https://reachy.tailnet:8043/");
+  test("https goes through the app proxy's tailnet port", () => {
+    expect(appUiUrl("reachy.tailnet", 7863, "https:")).toBe(`https://reachy.tailnet:${APP_UI_HTTPS_PORT}/`);
+    expect(appUiUrl("reachy.tailnet", 7900, "https:")).toBe("https://reachy.tailnet:8043/");
   });
   test("defaults to http without a page location", () => {
-    expect(appUiUrl("reachy.tailnet", 8042)).toBe("http://reachy.tailnet:8042/");
+    expect(appUiUrl("reachy.tailnet")).toBe("http://reachy.tailnet:7863/");
   });
 });
 

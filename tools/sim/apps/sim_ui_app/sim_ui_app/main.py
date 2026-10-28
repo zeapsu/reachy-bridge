@@ -5,14 +5,15 @@ Real apps bring their web server up 1-3 s after the process starts
 UI to answer before sending the user there. This app holds its server back
 for ``SIM_UI_DELAY`` seconds (default 3) to make that window easy to see.
 The daemon reads the UI address from ``custom_app_url`` below without
-importing this module.
+importing this module. Like real apps, it asks for every interface; the
+bridge runtime's app_bind shim keeps it on loopback (#186).
 """
 
 import os
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-custom_app_url = "http://127.0.0.1:18742"
+custom_app_url = "http://0.0.0.0:18742"
 PORT = 18742
 
 
@@ -37,7 +38,7 @@ def main() -> None:
     delay = float(os.getenv("SIM_UI_DELAY", "3"))
     print(f"sim_ui_app: UI server starts in {delay:g} s", flush=True)
     time.sleep(delay)
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"sim_ui_app: serving on {custom_app_url}", flush=True)
     try:
         server.serve_forever()
