@@ -189,12 +189,17 @@ export function DrivePanel({ drive, blocked }: Props) {
   const status = disabled ? "off" : drive.phase === "live" ? "driving" : drive.phase === "connecting" ? "connecting" : "ready";
   return (
     <div className="pane drive">
-      <span className="chip">
-        <span className={`dot ${status === "driving" ? "live" : status === "connecting" ? "loading" : status === "ready" ? "ok" : ""}`}></span>
-        {status}
-      </span>
+      <div className="drive-head">
+        <span className="chip">
+          <span className={`dot ${status === "driving" ? "live" : status === "connecting" ? "loading" : status === "ready" ? "ok" : ""}`}></span>
+          {status}
+        </span>
+        <button className="btn" type="button" disabled={drive.phase === "idle"} onClick={drive.home}>
+          Home
+        </button>
+      </div>
       <p className={`note${drive.error && !disabled ? " error" : ""}`} id="drive-hint">
-        {blocked ?? drive.error ?? "Hold a pad and drag. Let go and the robot goes home."}
+        {blocked ?? drive.error ?? "Drag a pad. Let go and Reachy goes home."}
       </p>
       <div className="pads">
         <Pad
@@ -214,7 +219,7 @@ export function DrivePanel({ drive, blocked }: Props) {
           onMove={(x, y) => drive.move({ body: { x, y } })}
         />
       </div>
-      <div className="group">
+      <div className="group antennas">
         {(["Left", "Right"] as const).map((side, i) => (
           <Antenna
             key={side}
@@ -226,9 +231,6 @@ export function DrivePanel({ drive, blocked }: Props) {
           />
         ))}
       </div>
-      <button className="btn" type="button" disabled={drive.phase === "idle"} onClick={drive.home}>
-        Home
-      </button>
     </div>
   );
 }
