@@ -73,8 +73,6 @@ function Dashboard() {
   const active = activeApp(apps.statuses);
   const appActive = Boolean(active);
   const expr = useExpressions(daemonOnline, appActive);
-  const catalog = useCatalog(visible && tab === "apps" && daemonOnline, () => void apps.poll());
-
   const power = usePower(
     {
       setControlBusy,
@@ -84,6 +82,10 @@ function Dashboard() {
     // The running engine changes with power, so refresh the kinematics panel.
     () => void reloadKinematics(),
   );
+  // Installs, updates and the catalog go through the daemon's app API, which
+  // works with the robot off (the state stream, daemonOnline, needs it on).
+  const appsReachable = daemonOnline || power.reachable;
+  const catalog = useCatalog(visible && tab === "apps" && appsReachable, () => void apps.poll());
 
   const blocked = driveBlocked({
     daemonOnline,
@@ -179,7 +181,7 @@ function Dashboard() {
 
         <main className="view list" id="view-apps" role="tabpanel" hidden={tab !== "apps"} aria-label="Apps">
           <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} exprBusy={expr.busy !== null} />
-          <CatalogPanel catalog={catalog} daemonOnline={daemonOnline} />
+          <CatalogPanel catalog={catalog} daemonOnline={appsReachable} />
         </main>
 
         <main className="view list" id="view-system" role="tabpanel" hidden={tab !== "system"} aria-label="System">
