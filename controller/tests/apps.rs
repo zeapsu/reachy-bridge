@@ -33,31 +33,6 @@ async fn app_start_leaves_gravity_compensation_and_refuses_unknown_apps() {
 }
 
 #[tokio::test]
-async fn stopping_an_app_that_ran_limp_reports_the_motors_on() {
-    // The daemon turns torque on for its return home after an app stops,
-    // without updating its motor mode.
-    let h = harness(|f| {
-        f.state = "running".into();
-        f.motors = Some("disabled".into());
-        f.app = Some(json!({"info": {"name": "hello_world"}, "state": "running"}));
-    })
-    .await;
-    let (status, _) = h.call("POST", "/api/apps/stop/hello_world", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(h.calls(), vec!["stop-app", "set_mode enabled"]);
-
-    // A robot that was on is left alone.
-    let h = harness(|f| {
-        f.state = "running".into();
-        f.motors = Some("enabled".into());
-        f.app = Some(json!({"info": {"name": "hello_world"}, "state": "running"}));
-    })
-    .await;
-    h.call("POST", "/api/apps/stop/hello_world", None).await;
-    assert_eq!(h.calls(), vec!["stop-app"]);
-}
-
-#[tokio::test]
 async fn app_status_maps_daemon_states() {
     let h = harness(|f| f.app = Some(json!({"info": {"name": "reachy_mini_radio"}, "state": "starting"}))).await;
     let (_, body) = h.call("GET", "/api/apps/status", None).await;

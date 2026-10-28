@@ -9,27 +9,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use crate::daemon::{motor_mode, Daemon, DaemonError};
+use crate::daemon::{Daemon, DaemonError};
 
 /// The daemon answers start-app and stop-current-app only once the process
 /// has spawned or exited (it waits up to 20 s for an exit, then returns the
 /// robot home over 1 s): longer than the default request timeout.
 pub const APP_CONTROL_TIMEOUT: Duration = Duration::from_secs(25);
-
-/// Stop the daemon's current app.
-///
-/// After the app exits, the daemon turns torque on and returns the head home,
-/// but through `enable_motors()`, which leaves its motor mode as it was. An app
-/// that ran limp would leave the daemon reporting `disabled` on a robot that
-/// is on and holding its pose, so the dashboard showed it asleep. Set the mode
-/// to match.
-pub async fn stop_current(daemon: &Daemon) -> Result<Value, DaemonError> {
-    let result = daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await?;
-    if daemon.status().await.as_ref().and_then(motor_mode) == Some("disabled") {
-        let _ = daemon.post("motors/set_mode/enabled", &[]).await;
-    }
-    Ok(result)
-}
 
 const INSTALLED_TTL: Duration = Duration::from_secs(5);
 

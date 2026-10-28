@@ -211,10 +211,11 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   - Head within the sleep-pose radius: sets the motors to `disabled`.
   - Otherwise: enables the motors (real robot backend only) and moves to the
     init pose over 1 s.
-  - It enables them with `enable_motors()`, which doesn't update the motor
-    mode. After an app that ran limp, status still reports `disabled` on a
-    robot holding its pose. The controller sets the mode to `enabled` after
-    a stop so the dashboard doesn't show it asleep.
+  - That enable goes through `enable_motors()`, which leaves the motor mode
+    as it was: after an app that ran limp, status reports `disabled` on a
+    robot holding its pose. **Bridge patch:** the keep-awake wrapper sets the
+    mode to `enabled` after the stop when torque is on and the mode says
+    `disabled`.
 - The app's UI address is `extra.custom_app_url` in the app metadata (for
   example `0.0.0.0:8042` for radio, `:7860` for conversation). The UI server
   comes up 1–3 s after the process starts, so the bridge polls it before

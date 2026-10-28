@@ -17,6 +17,7 @@ use axum::{Json, Router};
 use reqwest::Method;
 use serde_json::{json, Value};
 
+use crate::apps::APP_CONTROL_TIMEOUT;
 use crate::daemon::{backend_up, motor_mode, robot_state, DaemonError};
 use crate::error::{ApiError, ApiResult};
 use crate::state::Shared;
@@ -115,7 +116,7 @@ pub async fn power_off_locked(state: &Shared) -> ApiResult<Value> {
     // No drive targets during the sleep move.
     state.player.abort_drive();
     if state.apps.refresh_active().await {
-        let _ = crate::apps::stop_current(daemon).await;
+        let _ = daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await;
     }
     // An expression (or its return home) still playing would run interleaved
     // with the sleep move.
