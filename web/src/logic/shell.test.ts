@@ -26,5 +26,8 @@ describe("shell", () => {
     expect(stageNote(view({ known: true }), false)?.title).toBe("Reachy is off");
     expect(stageNote(view({ known: true, powerClass: "disabled" }), false)?.title).toBe("Daemon offline");
     expect(stageNote(view({ known: true, powerClass: "starting" }), false)?.title).toBe("Waking up…");
+    // Powering off can't be woken from the button; asleep can.
+    expect(stageNote(view({ known: true, powerClass: "stopping", label: "Powering off…" }), false)?.detail).not.toContain("power button");
+    expect(stageNote(view({ known: true, powerClass: "stopping" }), false)?.detail).toContain("power button");
   });
 });

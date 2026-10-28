@@ -50,7 +50,10 @@ export function stageNote(power: PowerView, daemonOnline: boolean): StageNote | 
     case "running":
       return { title: "Connecting…", detail: "Waiting for the robot's live state.", dot: "loading" };
     case "stopping":
-      return { title: power.label || "Asleep", detail: "Press the power button to wake Reachy.", dot: "loading" };
+      // A power-off in flight disables the button; only asleep can be woken.
+      return power.label
+        ? { title: power.label, detail: "Reachy is going to sleep.", dot: "loading" }
+        : { title: "Asleep", detail: "Press the power button to wake Reachy.", dot: "loading" };
     default:
       return { title: "Reachy is off", detail: "Press the power button to switch it on.", dot: "" };
   }

@@ -117,6 +117,8 @@ export function Viewport({ daemonOnline, note, visible, poseSink }: Props) {
   // cache so a reconnect with an unchanged pose still repaints.
   useEffect(() => {
     canvas.current?.classList.toggle("offline", !daemonOnline);
+    // Hidden while offline, so screen readers skip it too.
+    canvas.current?.setAttribute("aria-hidden", String(!daemonOnline));
     if (daemonOnline) return;
     robot.current?.reset();
     if (rRpy.current) rRpy.current.textContent = "—/—/—";
