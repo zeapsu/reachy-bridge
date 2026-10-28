@@ -154,6 +154,37 @@ impl ExpressionPlayer {
         }
     }
 
+    /// Before power off: drop the session (so no return home follows), stop
+    /// every running move and wait up to `timeout` for the daemon to report
+    /// none. A move left running fights the sleep move: the robot stutters
+    /// and the antennas end wherever the last target loop left them.
+    pub async fn halt(&self, timeout: Duration) {
+        self.clear();
+        self.mode_changed();
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut stopped = Vec::new();
+        loop {
+            let Some(moves) = self.daemon.running_moves().await else {
+                return;
+            };
+            if moves.is_empty() {
+                return;
+            }
+            for uuid in moves {
+                if !stopped.contains(&uuid) {
+                    // Best effort: the daemon answers 500 for a move that already ended.
+                    let _ = self.daemon.post_json("move/stop", &json!({"uuid": uuid})).await;
+                    stopped.push(uuid);
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!("moves still running at power off");
+                return;
+            }
+            tokio::time::sleep(self.poll.min(Duration::from_millis(100))).await;
+        }
+    }
+
     pub fn current(&self) -> Value {
         match &*self.session.lock().unwrap() {
             None => json!({"active": false}),

@@ -132,6 +132,15 @@ async fn fake_daemon(fake: FakeState) -> String {
             }),
         )
         .route(
+            "/api/move/stop",
+            post(|State(f): State<FakeState>, Json(body): Json<Value>| async move {
+                let uuid = body["uuid"].as_str().unwrap_or("?").to_string();
+                record(&f, format!("move-stop {uuid}"));
+                f.lock().unwrap().running_moves.retain(|m| *m != uuid);
+                Json(json!({"message": "Move cancelled"}))
+            }),
+        )
+        .route(
             "/api/move/goto",
             post(|State(f): State<FakeState>| async move {
                 record(&f, "goto");
@@ -304,6 +313,23 @@ async fn power_off_stops_the_app_and_skips_the_sleep_move_when_asleep() {
     .await;
     h.call("POST", "/api/daemon/stop", None).await;
     assert_eq!(h.calls(), vec!["stop sleep=false"]);
+}
+
+#[tokio::test]
+async fn power_off_stops_a_playing_expression_first_and_skips_its_return_home() {
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+    })
+    .await;
+    let (status, _) = h.call("POST", "/api/expressions/play/pollen-robotics/reachy-mini-emotions-library/sad1", None).await;
+    assert_eq!(status, StatusCode::OK);
+    h.call("POST", "/api/daemon/stop", None).await;
+    // Give the player's watcher time to notice the move is gone.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let calls: Vec<String> = h.calls().into_iter().filter(|c| !c.starts_with("list ")).collect();
+    assert_eq!(calls, vec!["play pollen-robotics/reachy-mini-emotions-library/sad1", "move-stop expr", "stop sleep=true"]);
+    assert!(!h.state.player.active());
 }
 
 #[tokio::test]

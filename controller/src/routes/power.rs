@@ -22,6 +22,8 @@ use crate::daemon::{backend_up, motor_mode, robot_state, DaemonError};
 use crate::error::{ApiError, ApiResult};
 use crate::state::Shared;
 
+/// How long power off waits for stopped moves to leave the daemon.
+const MOVES_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 /// The sleep move takes about 5 s, then the daemon tears the backend down.
 pub const POWER_OFF_TIMEOUT: Duration = Duration::from_secs(40);
 const WAKE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -114,6 +116,9 @@ pub async fn power_off_locked(state: &Shared) -> ApiResult<Value> {
     if state.apps.refresh_active().await {
         let _ = daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await;
     }
+    // An expression (or its return home) still playing would run interleaved
+    // with the sleep move.
+    state.player.halt(MOVES_STOP_TIMEOUT).await;
     // Already asleep: skip the sleep move. It re-enables the motors and lifts
     // the head first, so the robot would seem to wake before sleeping.
     let asleep = daemon.status().await.is_some_and(|s| robot_state(&s) == "asleep");
