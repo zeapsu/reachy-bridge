@@ -21,6 +21,8 @@ const NOT_HOMED: &str =
 #[derive(Clone, Debug, PartialEq)]
 pub enum Phase {
     Playing,
+    /// A manual drive session (#152) holds the robot; see [`ExpressionPlayer::start_drive`].
+    Driving,
     ReturningHome,
 }
 
@@ -30,6 +32,10 @@ struct Session {
     dataset: Option<String>,
     name: Option<String>,
     phase: Phase,
+    /// The motor-mode epoch the session started in. Its return home clears
+    /// `needs_home` only if the mode never changed since: a goto "completes"
+    /// on schedule even without torque.
+    epoch: u64,
 }
 
 #[derive(Debug, PartialEq)]
@@ -90,6 +96,7 @@ impl ExpressionPlayer {
 
     pub async fn play(self: &Arc<Self>, dataset: &str, name: &str) -> Result<Value, PlayError> {
         let _guard = self.start_lock.lock().await;
+        let epoch = self.mode_epoch.load(Ordering::SeqCst);
         if self.active() {
             return Err(PlayError::Busy(BUSY));
         }
@@ -120,11 +127,12 @@ impl ExpressionPlayer {
             dataset: Some(dataset.to_string()),
             name: Some(name.to_string()),
             phase: Phase::Playing,
+            epoch,
         });
         let player = Arc::clone(self);
         let watched = uuid.clone();
         let halts = self.halts.load(Ordering::SeqCst);
-        tokio::spawn(async move { player.watch(watched, halts).await });
+        tokio::spawn(async move { player.watch(watched, epoch, halts).await });
         Ok(json!({"status": "playing", "uuid": uuid, "dataset": dataset, "move": name}))
     }
 
@@ -132,23 +140,87 @@ impl ExpressionPlayer {
     /// the session machinery, so plays and app starts are blocked meanwhile.
     pub async fn return_home(self: &Arc<Self>) -> Value {
         let _guard = self.start_lock.lock().await;
+        let epoch = self.mode_epoch.load(Ordering::SeqCst);
         {
             let mut session = self.session.lock().unwrap();
             if session.is_some() {
                 return json!({"status": "busy", "detail": BUSY});
             }
-            *session = Some(Session { uuid: None, dataset: None, name: None, phase: Phase::ReturningHome });
+            *session = Some(Session { uuid: None, dataset: None, name: None, phase: Phase::ReturningHome, epoch });
         }
         let player = Arc::clone(self);
         let halts = self.halts.load(Ordering::SeqCst);
-        tokio::spawn(async move { player.goto_home_and_clear(halts).await });
+        tokio::spawn(async move { player.goto_home_and_clear(epoch, halts).await });
         json!({"status": "returning_home"})
+    }
+
+    /// Claim the robot for a manual drive session (#152), under the same
+    /// checks as a play. Returns the motor-mode epoch the session started in:
+    /// [`Self::driving`] turns false once the mode changes.
+    pub async fn start_drive(&self) -> Result<u64, PlayError> {
+        let _guard = self.start_lock.lock().await;
+        let mut session = self.session.lock().unwrap();
+        if session.is_some() {
+            return Err(PlayError::Busy(BUSY));
+        }
+        if self.needs_home() {
+            return Err(PlayError::Busy(NOT_HOMED));
+        }
+        let epoch = self.mode_epoch.load(Ordering::SeqCst);
+        *session = Some(Session { uuid: None, dataset: None, name: None, phase: Phase::Driving, epoch });
+        Ok(epoch)
+    }
+
+    /// True while the drive session started in `epoch` may keep moving the robot.
+    pub fn driving(&self, epoch: u64) -> bool {
+        self.mode_epoch.load(Ordering::SeqCst) == epoch
+            && matches!(&*self.session.lock().unwrap(), Some(Session { phase: Phase::Driving, .. }))
+    }
+
+    /// Drop a drive session without a return home, so the motor-mode change
+    /// or power action that called it can run its own (#152). The pose is
+    /// left untrusted.
+    pub fn abort_drive(&self) {
+        let mut session = self.session.lock().unwrap();
+        if matches!(&*session, Some(Session { phase: Phase::Driving, .. })) {
+            *session = None;
+            self.needs_home.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// End the drive session started in `epoch`. With `home`, and no motor-mode
+    /// change since it started, it ends with the silent return home. Without,
+    /// it only clears the session: after a mode change the motors may have no
+    /// torque, and while an app runs the app owns the robot's moves.
+    pub fn end_drive(self: &Arc<Self>, epoch: u64, home: bool) {
+        let runtime = tokio::runtime::Handle::try_current().ok();
+        {
+            let mut session = self.session.lock().unwrap();
+            match session.as_mut() {
+                Some(s) if s.phase == Phase::Driving && s.epoch == epoch => {
+                    if !home || runtime.is_none() || self.mode_epoch.load(Ordering::SeqCst) != epoch {
+                        // The head stays where it was driven: not home.
+                        *session = None;
+                        self.needs_home.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    s.phase = Phase::ReturningHome;
+                }
+                _ => return,
+            }
+        }
+        let player = Arc::clone(self);
+        if let Some(runtime) = runtime {
+            let halts = self.halts.load(Ordering::SeqCst);
+            runtime.spawn(async move { player.goto_home_and_clear(epoch, halts).await });
+        }
     }
 
     pub async fn stop(&self) -> Value {
         let session = self.session.lock().unwrap().clone();
         match session {
             None => json!({"status": "idle"}),
+            Some(Session { phase: Phase::Driving, .. }) => json!({"status": "driving"}),
             Some(Session { phase: Phase::ReturningHome, .. }) => json!({"status": "returning_home"}),
             Some(Session { uuid, .. }) => {
                 if let Some(uuid) = uuid {
@@ -203,7 +275,7 @@ impl ExpressionPlayer {
             None => json!({"active": false}),
             Some(s) => json!({
                 "active": true,
-                "phase": match s.phase { Phase::Playing => "playing", Phase::ReturningHome => "returning_home" },
+                "phase": match s.phase { Phase::Playing => "playing", Phase::Driving => "driving", Phase::ReturningHome => "returning_home" },
                 "dataset": s.dataset,
                 "move": s.name,
                 "uuid": s.uuid,
@@ -238,7 +310,7 @@ impl ExpressionPlayer {
         }
     }
 
-    async fn watch(self: Arc<Self>, uuid: String, halts: u64) {
+    async fn watch(self: Arc<Self>, uuid: String, epoch: u64, halts: u64) {
         if !self.wait_until_gone(&uuid).await {
             self.clear();
             return;
@@ -250,14 +322,13 @@ impl ExpressionPlayer {
                 None => return,
             }
         }
-        self.goto_home_and_clear(halts).await;
+        self.goto_home_and_clear(epoch, halts).await;
     }
 
     /// Silent goto to the wake-up home pose (no head roll, no sound): head at
     /// identity, antennas at the ±10° park offset, body yaw 0, over 1.5 s.
-    async fn goto_home_and_clear(&self, halts: u64) {
+    async fn goto_home_and_clear(&self, epoch: u64, halts: u64) {
         let halted = || self.halts.load(Ordering::SeqCst) != halts;
-        let epoch = self.mode_epoch.load(Ordering::SeqCst);
         let home = json!({
             "head_pose": {"x": 0.0, "y": 0.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
             "antennas": [-0.1745, 0.1745],

@@ -31,19 +31,21 @@ The dev server listens on `localhost` only.
 ## Layout
 
 - `index.html`: the Vite entry.
-- `src/style.css`: shared stylesheet, carried over from the Python controller.
+- `src/styles/base.css`: design tokens (light, dark, accents), the glass
+  material and the shared controls. Each component imports its own
+  stylesheet next to it for its layout.
+- `src/glass.ts`: the live parts of the glass: per-element refraction
+  (desktop Chromium) and the pointer light.
 - `src/api.ts`: typed fetch helper, response types, and every API path.
 - `src/logic/`: pure functions (power state, app cards and gates, expression
   gating, log capping, pose, audio meter model, stats, kinematics, app-view
   start steps), each tested by a `*.test.ts` file next to it.
 - `src/hooks/`: SSE with reconnect, polling, page visibility, and the stateful
   domain hooks (apps, power, expressions).
-- `src/components/`: one component per panel (StatusBar, ThemePicker, Viewport
-  with the rig, camera, sim placeholder and power button, AudioPanel,
-  SystemPanel, AppsPanel, ExpressionsPanel, ControlsPanel).
-- `src/loading/`: the app launch tab. The dashboard opens it on click and
-  drives it through the URL hash (`#waking`, `#starting`, `#opening`,
-  `#failed:<message>`).
+- `src/components/`: the shell (top bar, Robot / Apps / System tabs, the phone
+  tab bar), Viewport (live camera and the 3D robot), the expression carousel,
+  ControlsPanel, AppsPanel, SystemPanel (board stats and logs), AudioPanel,
+  DevicesPanel and Appearance (light/dark, accent, wallpaper).
 
-The 10 Hz updates (rig pose, HUD, audio meter) write to the DOM through refs
+The 10 Hz updates (3D pose, telemetry, audio meter) write to the DOM through refs
 with change guards instead of re-rendering React.

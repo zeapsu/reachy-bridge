@@ -1,16 +1,11 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+// Base styles first, so each component's own stylesheet can override them.
+import "./styles/base.css";
 import { App } from "./App.tsx";
-import "./style.css";
+import { startGlass } from "./glass.ts";
 
-// Glass sheen follows the pointer (CSS reads --mx/--my).
-document.addEventListener("pointermove", (event) => {
-  const glass = (event.target as Element | null)?.closest?.(".glass") as HTMLElement | null;
-  if (!glass) return;
-  const rect = glass.getBoundingClientRect();
-  glass.style.setProperty("--mx", `${((event.clientX - rect.left) / rect.width) * 100}%`);
-  glass.style.setProperty("--my", `${((event.clientY - rect.top) / rect.height) * 100}%`);
-});
+startGlass();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

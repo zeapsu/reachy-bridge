@@ -1,14 +1,11 @@
 import type { CameraAvailability } from "../api.ts";
 
-export type ViewMode = "camera" | "sim" | "schematic";
+export type ViewMode = "camera" | "3d";
 
-export const MODE_BADGE: Record<ViewMode, string> = { camera: "CAMERA", sim: "SIM · MUJOCO", schematic: "SCHEMATIC" };
 export const MODE_META: Record<ViewMode, string> = {
   camera: "live camera · waiting",
-  sim: "decorative preview · not live",
-  schematic: "telemetry 10 hz",
+  "3d": "telemetry 10 hz",
 };
-export const modeName = (mode: ViewMode) => (mode === "sim" ? "simulation" : mode);
 
 /** Placeholder text when the camera availability check says no. */
 export function unavailableMessage(availability: CameraAvailability | null | undefined): string {

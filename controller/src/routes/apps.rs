@@ -105,6 +105,11 @@ async fn start(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> A
     let daemon = &state.daemon;
     let started = {
         let _power = state.power_lock.lock().await;
+        // A drive session claims the robot under this lock, so this check
+        // can't race one (#152).
+        if state.player.active() {
+            return Ok(refused(&name, "Robot is busy with another move.", "refused"));
+        }
         // The daemon keeps a crashed app in its slot (state "error") and
         // refuses every start until it is cleared.
         let current = state.apps.current().await.ok().flatten();

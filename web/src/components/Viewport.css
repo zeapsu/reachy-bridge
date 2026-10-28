@@ -1,0 +1,144 @@
+/* The robot stage: the live camera or the 3D robot, standing on the wallpaper.
+   Content, so no glass on it; only the small controls over it are glass. */
+.stage {
+  position: relative;
+  min-height: 360px;
+  border-radius: var(--r-sheet);
+  overflow: hidden;
+}
+
+.stage-layer {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.45s var(--ease);
+}
+.stage-layer.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+#robot-3d { transition: opacity 0.4s var(--ease), filter 0.4s var(--ease); }
+#robot-3d.offline {
+  opacity: 0.5;
+  filter: saturate(0.4);
+}
+
+/* The camera gets a dark frame of its own. */
+.stage-layer.camera {
+  background: #05070a;
+  border-radius: inherit;
+}
+.stage-layer.camera img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.stage-empty {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  font-size: 13px;
+  color: rgba(242, 245, 248, 0.5);
+}
+
+.stage-note {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--well);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.stage-top {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+}
+.stage-top > * { pointer-events: auto; }
+
+.stage-modes {
+  --r: 999px;
+  --frost: 14px;
+  padding: 4px;
+}
+.stage-modes .seg {
+  padding: 0;
+  background: none;
+  box-shadow: none;
+}
+.stage-modes .seg .droplet { top: 0; bottom: 0; }
+.stage-modes .seg button {
+  width: 40px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.stage-modes svg { width: 18px; height: 18px; }
+
+.camera-meta {
+  background: rgba(5, 8, 12, 0.5);
+  color: rgba(242, 245, 248, 0.8);
+}
+
+.telemetry {
+  --r: 999px;
+  --frost: 12px;
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  padding: 7px 16px;
+  display: flex;
+  gap: 18px;
+  overflow: hidden;
+  font: 12px var(--mono);
+  color: var(--ink-3);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.telemetry b {
+  font-weight: 500;
+  color: var(--ink-2);
+}
+.telemetry.speaking .doa b {
+  color: var(--accent);
+  text-shadow: 0 0 8px var(--accent);
+}
+
+@media (max-width: 860px) {
+  .stage { min-height: 46vh; }
+  .telemetry { gap: 12px; font-size: 11px; padding: 6px 12px; }
+}
+@media (max-width: 420px) {
+  .telemetry .doa { display: none; }
+}

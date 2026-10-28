@@ -72,9 +72,10 @@ A few files are touched by almost every PR in a lane, or by several lanes:
   (`uv lock`, `cargo update -p <crate>` or `cargo build`, `bun install`).
 - **Registries** (route setup in `controller/src/routes/mod.rs`, the paths in
   `web/src/api.ts`): add lines and don't reorder existing ones.
-- **Single large files** (`controller/tests/api.rs`, `web/src/style.css`): split by area
-  in #164 so that two dashboard PRs stop editing the same file. Until then, keep edits to
-  them small and merge `main` often.
+- **Single large files** (`controller/tests/api.rs`): split by area in #164 so that two
+  PRs stop editing the same file. Until then, keep edits to it small and merge `main`
+  often. The dashboard's styles are already split: shared tokens and controls in
+  `web/src/styles/base.css`, everything else in each component's own stylesheet.
 - **`README.md`**: owned by Public Release Readiness. Other lanes change only the lines
   about their own area.
 

@@ -113,6 +113,8 @@ pub async fn power_on_locked(state: &Shared, wake: bool) -> ApiResult<Value> {
 /// `power_lock` held.
 pub async fn power_off_locked(state: &Shared) -> ApiResult<Value> {
     let daemon = &state.daemon;
+    // No drive targets during the sleep move.
+    state.player.abort_drive();
     if state.apps.refresh_active().await {
         let _ = daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await;
     }
