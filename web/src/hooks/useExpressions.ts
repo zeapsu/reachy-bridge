@@ -35,9 +35,6 @@ export function useExpressions(daemonOnline: boolean, appActive: boolean): Expre
   const [error, setError] = useState<string | null>(null);
 
   const busyRef = useRef(false);
-  const loadingRef = useRef(false);
-  const onlineRef = useRef(daemonOnline);
-  onlineRef.current = daemonOnline;
   const poller = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPoller = useCallback((reconcile: boolean) => {
@@ -79,13 +76,13 @@ export function useExpressions(daemonOnline: boolean, appActive: boolean): Expre
   useEffect(() => setError(null), [daemonOnline, appActive]);
 
   // Populate the strips once the daemon is reachable; retry while it stays so.
+  // Each run owns its fetch: a stream drop mid-load cancels it, and the next
+  // run fetches again rather than waiting on one whose result it will drop.
   useEffect(() => {
     if (!daemonOnline || loaded) return;
     let cancelled = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
     const load = async () => {
-      if (loadingRef.current) return;
-      loadingRef.current = true;
       try {
         const groups = await Promise.all(
           MOVE_DATASETS.map(async ({ id, dataset }) => ({
@@ -96,36 +93,40 @@ export function useExpressions(daemonOnline: boolean, appActive: boolean): Expre
         if (cancelled) return;
         setMoves(Object.fromEntries(groups.map((g) => [g.id, g.moves])));
         setLoaded(true);
-        // Sync-on-load: a move may already be active (another tab, a reload
-        // mid-playback). Enter the busy state and poll it out.
-        if (onlineRef.current) {
-          try {
-            const current = await apiJson<ExpressionCurrent>(paths.expressionCurrent);
-            if (!cancelled && current && typeof current === "object" && current.active === true) {
-              busyRef.current = true;
-              setBusy("sync");
-              setPlaying(
-                current.phase === "playing" && current.move
-                  ? { dataset: current.dataset ?? null, move: current.move }
-                  : null,
-              );
-              setCancelHidden(current.phase !== "playing");
-              startPoller();
-            }
-          } catch {
-            // leave the UI idle; a later poll reconciles
-          }
-        }
       } catch {
         if (!cancelled) retry = setTimeout(() => void load(), LOAD_RETRY_MS);
-      } finally {
-        loadingRef.current = false;
       }
     };
     void load();
     return () => {
       cancelled = true;
       if (retry !== null) clearTimeout(retry);
+    };
+  }, [daemonOnline, loaded]);
+
+  // Sync-on-load: a move may already be active (another tab, a reload
+  // mid-playback). Enter the busy state and poll it out. Its own effect: the
+  // load's setLoaded re-runs (and cancels) the load effect before this answer.
+  useEffect(() => {
+    if (!daemonOnline || !loaded || busyRef.current) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const current = await apiJson<ExpressionCurrent>(paths.expressionCurrent);
+        if (cancelled || busyRef.current || !current || typeof current !== "object" || current.active !== true) return;
+        busyRef.current = true;
+        setBusy("sync");
+        setPlaying(
+          current.phase === "playing" && current.move ? { dataset: current.dataset ?? null, move: current.move } : null,
+        );
+        setCancelHidden(current.phase !== "playing");
+        startPoller();
+      } catch {
+        // leave the UI idle; a later poll reconciles
+      }
+    })();
+    return () => {
+      cancelled = true;
     };
   }, [daemonOnline, loaded, startPoller]);
 
