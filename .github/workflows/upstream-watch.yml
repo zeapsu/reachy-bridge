@@ -169,7 +169,7 @@ jobs:
   report:
     needs: [detect, push, check]
     if: >-
-      !cancelled() &&
+      !cancelled() && needs.detect.result == 'success' &&
       (needs.detect.outputs.status == 'new' || needs.detect.outputs.status == 'lock-failed')
     runs-on: ubuntu-24.04-arm
     permissions:
