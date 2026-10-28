@@ -85,6 +85,9 @@ async fn set_motor_mode(State(state): State<Shared>, Path(mode): Path<String>) -
     // applied the mode anyway.
     if !matches!(outcome, Err(DaemonError::Refused { status, .. }) if status < 500) {
         state.player.mode_changed();
+        // A drive session ends here rather than holding the slot until its
+        // socket notices, so the return home below isn't refused as busy.
+        state.player.abort_drive();
     }
     let result = match outcome {
         Ok(result) => result,
