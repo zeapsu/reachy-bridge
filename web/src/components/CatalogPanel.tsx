@@ -1,9 +1,9 @@
-import { useState, type CSSProperties } from "react";
+import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import type { CatalogApp } from "../api.ts";
 import { useLens } from "../glass.ts";
 import type { CatalogState, RowJob } from "../hooks/useCatalog.ts";
 import { appHue, appInitial } from "../logic/apps.ts";
-import { filterCatalog, tokenShape, validSpaceId } from "../logic/catalog.ts";
+import { appMeta, filterCatalog, spaceUrl, tokenShape, validSpaceId } from "../logic/catalog.ts";
 import { Segmented } from "./Segmented.tsx";
 import "./CatalogPanel.css";
 
@@ -27,6 +27,46 @@ export function JobText({ job }: { job: RowJob }) {
   );
 }
 
+/** An app row's name and state; tapping it shows what the app does. */
+export function AppCopy({ title, state, details }: { title: ReactNode; state: ReactNode; details: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <>
+      <button type="button" className="app-copy" aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>
+        <b>
+          {title}
+          <span className="more" aria-hidden="true"></span>
+        </b>
+        <small title={typeof state === "string" ? state : undefined}>{state}</small>
+      </button>
+      {open ? (
+        <div className="app-details" id={id}>
+          {details}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/** What an app does: its description, who made it, and its Space page (whose README explains it). */
+export function AppDetails({ description, meta, space }: { description: string; meta: string; space?: string | null }) {
+  const url = spaceUrl(space);
+  return (
+    <>
+      <p>{description || "No description."}</p>
+      {meta ? <small>{meta}</small> : null}
+      {url ? (
+        <a className="btn quiet press" href={url} target="_blank" rel="noopener noreferrer">
+          More on Hugging Face ↗
+        </a>
+      ) : (
+        <small>Not installed from a Hugging Face Space, so there's no page for it.</small>
+      )}
+    </>
+  );
+}
+
 function CatalogRow({ app, job, onInstall }: { app: CatalogApp; job?: RowJob; onInstall: () => void }) {
   const busy = job && job.status !== "failed";
   return (
@@ -34,13 +74,16 @@ function CatalogRow({ app, job, onInstall }: { app: CatalogApp; job?: RowJob; on
       <span className="app-tile" style={{ "--hue": appHue(app.name) } as CSSProperties} aria-hidden="true">
         {appInitial(app.title)}
       </span>
-      <div className="app-copy">
-        <b>
-          {app.title}
-          {app.private ? <span className="chip private">private</span> : null}
-        </b>
-        <small>{job ? <JobText job={job} /> : app.description || app.id}</small>
-      </div>
+      <AppCopy
+        title={
+          <>
+            <span className="title">{app.title}</span>
+            {app.private ? <span className="chip private">private</span> : null}
+          </>
+        }
+        state={job ? <JobText job={job} /> : app.description || app.id}
+        details={<AppDetails description={app.description} meta={appMeta(app)} space={app.id} />}
+      />
       <div className="app-actions">
         {app.installed ? (
           <span className="chip">Installed</span>

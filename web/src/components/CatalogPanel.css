@@ -1,11 +1,6 @@
 /* The app catalog (#126): the installed-app rows' look, plus search and login. */
 .catalog-sheet > header .seg { width: auto; }
 .catalog-sheet .search { width: 100%; }
-.catalog-sheet .app-copy b {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 .chip.private { padding: 2px 8px; font-size: 11px; }
 
 .catalog-sheet .app-list {

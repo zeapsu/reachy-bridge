@@ -42,6 +42,10 @@ async fn app_status_maps_daemon_states() {
     assert_eq!(body[0]["has_ui"], true);
     assert_eq!(body[1]["status"], "stopped");
     assert_eq!(body[1]["has_ui"], false);
+    // From a Space: its id for a link, and the card's description as the blurb.
+    assert_eq!((&body[0]["space"], &body[0]["blurb"]), (&Value::Null, &json!("Radio")));
+    assert_eq!((&body[1]["space"], &body[1]["blurb"]), (&json!("someone/hello_space"), &json!("Says hi")));
+    assert_eq!(body[1]["author"], "someone");
 }
 
 #[tokio::test]

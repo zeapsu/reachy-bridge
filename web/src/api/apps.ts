@@ -12,6 +12,9 @@ export interface AppStatus {
   /** Unix seconds, only while running. */
   start_time?: number | null;
   has_ui?: boolean;
+  /** The Hugging Face Space it was installed from, owner/name. */
+  space?: string | null;
+  author?: string | null;
 }
 
 /** POST /api/apps/start/{name} and /api/apps/stop/{name} */
@@ -43,6 +46,9 @@ export interface CatalogApp {
   title: string;
   description: string;
   likes: number;
+  author: string;
+  /** ISO time of the Space's last change. */
+  updated: string | null;
   private: boolean;
   installed: boolean;
 }

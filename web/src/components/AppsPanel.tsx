@@ -3,7 +3,8 @@ import type { AppStatus } from "../api.ts";
 import { useLens } from "../glass.ts";
 import type { AppsState } from "../hooks/useApps.ts";
 import type { CatalogState } from "../hooks/useCatalog.ts";
-import { JobText } from "./CatalogPanel.tsx";
+import { appMeta } from "../logic/catalog.ts";
+import { AppCopy, AppDetails, JobText } from "./CatalogPanel.tsx";
 import {
   LOADING_FRAGMENTS,
   MAX_FAVORITES,
@@ -80,10 +81,11 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps, catalog, manage
       <span className="app-tile" style={{ "--hue": appHue(name) } as CSSProperties} aria-hidden="true">
         {appInitial(display)}
       </span>
-      <div className="app-copy">
-        <b>{display}</b>
-        <small title={typeof state === "string" ? state : undefined}>{state}</small>
-      </div>
+      <AppCopy
+        title={<span className="title">{display}</span>}
+        state={state}
+        details={<AppDetails description={app.blurb || ""} meta={appMeta(app)} space={app.space} />}
+      />
       <div className="app-actions">
         {manage ? (
           <>

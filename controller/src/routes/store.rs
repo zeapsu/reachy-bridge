@@ -158,6 +158,8 @@ fn card(entry: &Value, installed: &Installed) -> Option<Value> {
         "title": title,
         "description": entry.get("description").and_then(Value::as_str).unwrap_or(""),
         "likes": extra.get("likes").and_then(Value::as_u64).unwrap_or(0),
+        "author": extra.get("author").and_then(Value::as_str).unwrap_or(""),
+        "updated": extra.get("lastModified").and_then(Value::as_str),
         "private": extra.get("private").and_then(Value::as_bool).unwrap_or(false),
         "installed": installed.has(entry),
     }))
