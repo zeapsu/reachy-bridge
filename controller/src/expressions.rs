@@ -194,6 +194,8 @@ impl ExpressionPlayer {
     /// torque, and while an app runs the app owns the robot's moves.
     pub fn end_drive(self: &Arc<Self>, epoch: u64, home: bool) {
         let runtime = tokio::runtime::Handle::try_current().ok();
+        // Read with the session locked, so a halt can't slip in between.
+        let halts;
         {
             let mut session = self.session.lock().unwrap();
             match session.as_mut() {
@@ -208,10 +210,10 @@ impl ExpressionPlayer {
                 }
                 _ => return,
             }
+            halts = self.halts.load(Ordering::SeqCst);
         }
         let player = Arc::clone(self);
         if let Some(runtime) = runtime {
-            let halts = self.halts.load(Ordering::SeqCst);
             runtime.spawn(async move { player.goto_home_and_clear(epoch, halts).await });
         }
     }
@@ -249,13 +251,13 @@ impl ExpressionPlayer {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut stopped = Vec::new();
         loop {
-            let Some(moves) = self.daemon.running_moves().await else {
-                return;
-            };
-            if moves.is_empty() {
+            // A failed poll isn't "nothing running": the daemon's loop can
+            // stall for seconds while it builds a recorded move.
+            let moves = self.daemon.running_moves().await;
+            if moves.as_ref().is_some_and(Vec::is_empty) {
                 return;
             }
-            for uuid in moves {
+            for uuid in moves.unwrap_or_default() {
                 if !stopped.contains(&uuid) {
                     // Best effort: the daemon answers 500 for a move that already ended.
                     let _ = self.daemon.post_json("move/stop", &json!({"uuid": uuid})).await;
