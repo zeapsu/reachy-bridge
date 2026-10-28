@@ -77,9 +77,11 @@ impl LogBroker {
         });
     }
 
-    /// Append a line; a source that wasn't live becomes live.
+    /// Append a line; a source that wasn't live becomes live. Anything
+    /// token-shaped is masked first: the daemon journals its app install
+    /// jobs' output, which can carry a Hugging Face token.
     pub fn publish(&self, source: &str, line: &str) {
-        let line = line.trim_end_matches(['\r', '\n']).to_string();
+        let line = crate::routes::store::scrub(line.trim_end_matches(['\r', '\n']));
         self.with_source(source, |s| {
             if s.status != "live" {
                 s.status = "live".into();
@@ -232,6 +234,13 @@ impl<S: tracing::Subscriber> Layer<S> for ControllerLogLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn published_lines_are_scrubbed() {
+        let broker = LogBroker::new();
+        broker.publish("daemon", "Cloning with hf_AbCdEf1234567890xyz done\n");
+        assert_eq!(broker.subscribe("daemon").lines, ["Cloning with hf_*** done"]);
+    }
 
     #[test]
     fn ring_is_bounded_and_replay_is_the_tail() {
