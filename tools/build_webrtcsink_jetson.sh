@@ -38,6 +38,7 @@ done
 echo "==> Checking prerequisites"
 command -v cargo >/dev/null || { echo "ERROR: cargo/rust not found"; exit 1; }
 command -v gst-inspect-1.0 >/dev/null || { echo "ERROR: gst-inspect-1.0 not found (gstreamer1.0-tools)"; exit 1; }
+command -v strip >/dev/null || { echo "ERROR: strip not found (binutils)"; exit 1; }
 for module in gstreamer-webrtc-1.0 openssl; do
   if ! pkg-config --exists "$module"; then
     echo "ERROR: $module dev headers missing."
@@ -51,22 +52,28 @@ if [ ! -d "$SRC_DIR/.git" ]; then
   git clone --depth 1 --branch "$VERSION" \
     https://github.com/GStreamer/gst-plugins-rs.git "$SRC_DIR"
 fi
+checked_out="$(git -C "$SRC_DIR" describe --tags --exact-match 2>/dev/null || true)"
+[ "$checked_out" = "$VERSION" ] \
+  || { echo "ERROR: $SRC_DIR is at '${checked_out:-an untagged commit}', not $VERSION; remove it or set GST_RS_SRC"; exit 1; }
 
 echo "==> Building gst-plugin-webrtc (release)"
 (cd "$SRC_DIR" && cargo build --release --locked -p gst-plugin-webrtc)
 
 BUILT_SO="$SRC_DIR/target/release/$SO_NAME"
 [ -f "$BUILT_SO" ] || { echo "ERROR: build did not produce $BUILT_SO"; exit 1; }
-# The unstripped plugin is about 140 MB, mostly debug info.
-strip --strip-unneeded "$BUILT_SO"
 
 echo "==> Verifying the plugin registers webrtcsink with run-signalling-server"
 check_dir="$(mktemp -d)"
 trap 'rm -rf "$check_dir"' EXIT
+# The unstripped plugin is about 140 MB, mostly debug info; strip a copy.
 cp "$BUILT_SO" "$check_dir/"
-GST_REGISTRY="$check_dir/registry.bin" GST_PLUGIN_PATH="$check_dir" \
-  gst-inspect-1.0 webrtcsink | grep -q run-signalling-server \
-  || { echo "ERROR: built plugin has no webrtcsink with run-signalling-server"; exit 1; }
+BUILT_SO="$check_dir/$SO_NAME"
+strip --strip-unneeded "$BUILT_SO"
+inspect="$(GST_REGISTRY="$check_dir/registry.bin" GST_PLUGIN_PATH="$check_dir" gst-inspect-1.0 webrtcsink || true)"
+case "$inspect" in
+  *run-signalling-server*) ;;
+  *) echo "ERROR: built plugin has no webrtcsink with run-signalling-server"; exit 1 ;;
+esac
 
 if [ -n "$OUT_DIR" ]; then
   mkdir -p "$OUT_DIR"
