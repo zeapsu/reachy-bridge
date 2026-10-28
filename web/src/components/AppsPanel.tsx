@@ -1,7 +1,9 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import type { AppStatus } from "../api.ts";
 import { useLens } from "../glass.ts";
 import type { AppsState } from "../hooks/useApps.ts";
+import type { CatalogState } from "../hooks/useCatalog.ts";
+import { JobText } from "./CatalogPanel.tsx";
 import {
   LOADING_FRAGMENTS,
   MAX_FAVORITES,
@@ -25,17 +27,25 @@ interface RowProps {
   tick: number;
   now: number;
   apps: AppsState;
+  catalog: CatalogState;
+  /** Manage mode: Update and Remove instead of Start and the star. */
+  manage: boolean;
 }
 
 /** One app on one line (#100): tile, name and state, its action, a star. */
-function AppRow({ app, gates, favorite, saving, tick, now, apps }: RowProps) {
+function AppRow({ app, gates, favorite, saving, tick, now, apps, catalog, manage }: RowProps) {
   const status = cardStatus(app);
   const name = String(app.name);
   const display = app.display || name;
   const action = appAction(app, gates);
 
+  const job = catalog.jobs[name];
+  const jobBusy = Boolean(job && job.status !== "failed");
+  const idle = status.kind === "" || status.kind === "error";
   let state: ReactNode;
-  if (status.kind === "running") {
+  if (job) {
+    state = <JobText job={job} />;
+  } else if (status.kind === "running") {
     state = (
       <>
         <span className="dot live"></span>Running{app.start_time ? uptimeSuffix(app, now) : ""}
@@ -75,7 +85,26 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps }: RowProps) {
         <small title={typeof state === "string" ? state : undefined}>{state}</small>
       </div>
       <div className="app-actions">
-        {action.kind === "running" ? (
+        {manage ? (
+          <>
+            {catalog.updates.includes(name) ? (
+              <button className="btn primary press" type="button" disabled={jobBusy || !idle} onClick={() => catalog.update(name)}>
+                Update
+              </button>
+            ) : null}
+            <button
+              className="btn danger press"
+              type="button"
+              disabled={jobBusy || !idle}
+              title={idle ? undefined : "Stop the app first"}
+              onClick={() => {
+                if (window.confirm(`Remove ${display}? You can install it again from Get apps.`)) catalog.remove(name);
+              }}
+            >
+              Remove
+            </button>
+          </>
+        ) : action.kind === "running" ? (
           <>
             {action.showOpen ? (
               <button className="btn primary press" type="button" title="Open the app's own interface" onClick={() => apps.openUi(name)}>
@@ -101,6 +130,7 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps }: RowProps) {
             Start
           </button>
         )}
+        {manage ? null : (
         <button
           className={`star press${favorite ? " on" : ""}`}
           type="button"
@@ -114,6 +144,7 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps }: RowProps) {
             <path d="m12 3.6 2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8L12 3.6Z"></path>
           </svg>
         </button>
+        )}
       </div>
     </li>
   );
@@ -121,6 +152,7 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps }: RowProps) {
 
 interface Props {
   apps: AppsState;
+  catalog: CatalogState;
   daemonOnline: boolean;
   exprBusy: boolean;
 }
@@ -129,8 +161,9 @@ interface Props {
  * Installed apps as compact rows. Pinned apps (favorites, plus whichever app
  * owns the robot or failed) stay on top; everything installed is below.
  */
-export function AppsPanel({ apps, daemonOnline, exprBusy }: Props) {
+export function AppsPanel({ apps, catalog, daemonOnline, exprBusy }: Props) {
   const sheet = useLens<HTMLElement>();
+  const [manage, setManage] = useState(false);
   const active = activeApp(apps.statuses);
   const gates: ActionGates = { anyActive: Boolean(active), appBusy: apps.appBusy, daemonOnline, exprBusy };
   const now = Date.now();
@@ -146,6 +179,8 @@ export function AppsPanel({ apps, daemonOnline, exprBusy }: Props) {
       tick={apps.tick}
       now={now}
       apps={apps}
+      catalog={catalog}
+      manage={manage}
     />
   );
 
@@ -157,6 +192,11 @@ export function AppsPanel({ apps, daemonOnline, exprBusy }: Props) {
           {apps.favoritesSaving ? <span className="spin" aria-hidden="true"></span> : null}
           {apps.favorites.length}/{MAX_FAVORITES} pinned
         </span>
+        {apps.names.length ? (
+          <button className="btn quiet press" type="button" aria-pressed={manage} onClick={() => setManage(!manage)}>
+            {manage ? "Done" : catalog.updates.length ? `Manage · ${catalog.updates.length} update${catalog.updates.length > 1 ? "s" : ""}` : "Manage"}
+          </button>
+        ) : null}
       </header>
       <p className={`note${apps.message.kind ? ` ${apps.message.kind}` : ""}`} id="apps-message" role="status">
         {apps.message.text}

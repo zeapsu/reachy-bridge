@@ -34,10 +34,36 @@ export interface Favorites {
   favorites: string[];
 }
 
+/** One entry of GET /api/apps/catalog: a Hugging Face Space (#126). */
+export interface CatalogApp {
+  /** The Space id, owner/name. */
+  id: string;
+  /** The installed package name. */
+  name: string;
+  title: string;
+  description: string;
+  likes: number;
+  private: boolean;
+  installed: boolean;
+}
+
+/** GET /api/apps/jobs/{id}: an install, update or removal. */
+export interface AppJob {
+  status: "pending" | "in_progress" | "done" | "failed" | string;
+  logs: string[];
+}
+
 export const appsPaths = {
   appsStatus: "/api/apps/status",
   appsFavorites: "/api/apps/favorites",
   appStart: (name: string) => `/api/apps/start/${encodeURIComponent(name)}`,
   appStop: (name: string) => `/api/apps/stop/${encodeURIComponent(name)}`,
   appUi: (name: string) => `/api/apps/${encodeURIComponent(name)}/ui`,
+  appCatalog: (all: boolean) => `/api/apps/catalog${all ? "?all=true" : ""}`,
+  appInstall: "/api/apps/install",
+  appInstallPrivate: "/api/apps/install-private",
+  appJob: (id: string) => `/api/apps/jobs/${encodeURIComponent(id)}`,
+  appRemove: (name: string) => `/api/apps/remove/${encodeURIComponent(name)}`,
+  appUpdates: "/api/apps/updates",
+  appUpdate: (name: string) => `/api/apps/update/${encodeURIComponent(name)}`,
 } as const;
