@@ -13,8 +13,15 @@ import {
 } from "../logic/drive.ts";
 
 const TICK_MS = 33;
-/** Sticks centred and the robot home this long ends the session. */
-const IDLE_MS = 800;
+/**
+ * Nothing held and the pose home this long ends the session. Long enough to
+ * go from one control to another without waiting out a return home.
+ */
+const IDLE_MS = 4000;
+/** A refused start is retried this often, while a control is still held... */
+const RETRY_MS = 250;
+/** ...for this long: the controller's return home takes about 1.5 s. */
+const RETRY_FOR_MS = 3000;
 
 export type DrivePhase = "idle" | "connecting" | "live";
 
@@ -38,7 +45,8 @@ const wsUrl = () => `${location.protocol === "https:" ? "wss" : "ws"}://${locati
  * streams the stick pose at ~30 Hz while it changes, and closes once nothing
  * has been held and the robot has been at the home pose for IDLE_MS, which
  * hands it to the controller's return home. It also closes when `allowed`
- * goes false.
+ * goes false. A start refused while a control is held (the last session's
+ * return home still running) is retried for RETRY_FOR_MS.
  */
 export function useDrive(allowed: boolean): DriveState {
   const [phase, setPhase] = useState<DrivePhase>("idle");
@@ -54,10 +62,14 @@ export function useDrive(allowed: boolean): DriveState {
   const last = useRef(0);
   const idleSince = useRef(0);
   const held = useRef(new Set<string>());
+  const firstTry = useRef(0);
+  const retry = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const close = useCallback(() => {
     if (timer.current !== null) clearInterval(timer.current);
     timer.current = null;
+    if (retry.current !== null) clearTimeout(retry.current);
+    retry.current = null;
     const ws = socket.current;
     socket.current = null;
     if (ws) {
@@ -95,13 +107,8 @@ export function useDrive(allowed: boolean): DriveState {
     }
   }, [close]);
 
-  const hold = useCallback((control: string) => {
-    if (!allowed) return;
-    held.current.add(control);
-    idleSince.current = 0;
-    if (socket.current) return;
-    setError(null);
-    setPhase("connecting");
+  const connect = useCallback(() => {
+    retry.current = null;
     limitsRead.current = false;
     const ws = new WebSocket(wsUrl());
     socket.current = ws;
@@ -127,14 +134,31 @@ export function useDrive(allowed: boolean): DriveState {
       }
     };
     ws.onclose = () => {
-      // A refused upgrade gives the page no status to read.
-      if (!opened) setError("Couldn't start driving. If the robot is still going home, try again in a moment.");
       socket.current = null;
+      // A refused upgrade gives the page no status to read. Most often the
+      // last session's return home is still running, so keep trying while
+      // a control is held.
+      if (!opened && held.current.size && performance.now() - firstTry.current < RETRY_FOR_MS) {
+        retry.current = setTimeout(connect, RETRY_MS);
+        return;
+      }
+      if (!opened && held.current.size) setError("Couldn't start driving. Let go and try again.");
       close();
     };
+  }, [close]);
+
+  const hold = useCallback((control: string) => {
+    if (!allowed) return;
+    held.current.add(control);
+    idleSince.current = 0;
+    if (socket.current || retry.current !== null) return;
+    setError(null);
+    setPhase("connecting");
+    firstTry.current = performance.now();
+    connect();
     last.current = performance.now();
     if (timer.current === null) timer.current = setInterval(tick, TICK_MS);
-  }, [allowed, close, tick]);
+  }, [allowed, connect, tick]);
 
   const release = useCallback((control: string) => {
     held.current.delete(control);
