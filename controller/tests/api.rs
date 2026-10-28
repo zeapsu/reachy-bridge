@@ -379,6 +379,21 @@ async fn a_motor_mode_change_waits_for_a_power_change() {
 }
 
 #[tokio::test]
+async fn motors_are_not_enabled_while_powering_off_but_can_always_go_limp() {
+    let h = harness(|f| {
+        f.state = "stopping".into();
+        f.motors = Some("enabled".into());
+    })
+    .await;
+    let (status, _) = h.call("POST", "/api/motors/set_mode/enabled", None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(!h.calls().iter().any(|c| c.starts_with("set_mode")));
+    let _power = h.state.power_lock.lock().await;
+    let (status, _) = h.call("POST", "/api/motors/set_mode/disabled", None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn kinematics_switch_while_on_cycles_power() {
     let h = harness(|f| {
         f.state = "running".into();

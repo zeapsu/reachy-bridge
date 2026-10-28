@@ -132,8 +132,9 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
         return login_required(host.as_deref());
     }
     // Another site can't make a tailnet browser act through the app (a plain
-    // form POST); the app's own page is same-origin. Every peer is loopback.
-    if (!parts.method.is_safe() || is_upgrade(&parts.headers)) && cross_site(&parts.headers, true) {
+    // form POST); the app's own page is same-origin. tailscale serve keeps
+    // Host, so X-Forwarded-Host isn't needed (and isn't believed).
+    if (!parts.method.is_safe() || is_upgrade(&parts.headers)) && cross_site(&parts.headers, false) {
         tracing::warn!("app proxy: refused cross-site {} {}", parts.method, parts.uri.path());
         return (StatusCode::FORBIDDEN, "cross-site request refused").into_response();
     }

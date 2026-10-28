@@ -223,8 +223,9 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   shows a blank frame; ↗ opens it in its own tab. Checked 2026-10-28: the
   app base class in reachy-mini 1.12.0, Radio, Conversation App and Gradio's
   Python server send neither, and the proxy passes app headers through as
-  they are. It strips only the controller's own cookies (both ways) and
-  refuses cross-site writes.
+  they are. It strips the controller's own cookies (both ways), the local
+  key header and hop-by-hop headers, and refuses cross-site writes and
+  WebSocket upgrades.
 - App processes get a scrubbed environment (`GST_*`, `PYTHONPATH`, `GI_*`,
   `XDG_*` removed) and import their own `reachy_mini` from `apps_venv`.
 

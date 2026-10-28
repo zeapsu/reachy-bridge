@@ -267,14 +267,16 @@ fn cookies<'a>(headers: &'a HeaderMap, name: &'a str) -> impl Iterator<Item = &'
 /// Drop any `Set-Cookie` for the controller's own cookies from an app's
 /// response: same host means same cookie jar, so an app could otherwise log
 /// the browser out of the dashboard, or swap in a device it paired. A value
-/// that isn't text is dropped too.
+/// that isn't text is dropped too, and so is a nameless cookie
+/// (`=rb_device=x`): browsers send it back as `rb_device=x`.
 pub fn strip_credential_cookies(headers: &mut HeaderMap) {
     let kept: Vec<HeaderValue> = headers
         .get_all(header::SET_COOKIE)
         .iter()
         .filter(|v| {
-            let name = v.to_str().ok().and_then(|v| v.split(['=', ';']).next()).map(str::trim);
-            name.is_some_and(|name| name != DEVICE_COOKIE && name != PAIR_COOKIE)
+            let pair = v.to_str().ok().and_then(|v| v.split(';').next()).unwrap_or("");
+            let name = pair.split_once('=').map_or("", |(name, _)| name).trim();
+            !name.is_empty() && name != DEVICE_COOKIE && name != PAIR_COOKIE
         })
         .cloned()
         .collect();
@@ -766,6 +768,8 @@ mod tests {
         h.append(header::SET_COOKIE, "theme=dark; Path=/".parse().unwrap());
         h.append(header::SET_COOKIE, "rb_device=evil; Path=/; Max-Age=999".parse().unwrap());
         h.append(header::SET_COOKIE, " rb_pair=x".parse().unwrap());
+        h.append(header::SET_COOKIE, "=rb_device=evil; Path=/api".parse().unwrap());
+        h.append(header::SET_COOKIE, "rb_device; Path=/api/x".parse().unwrap());
         strip_credential_cookies(&mut h);
         assert_eq!(h.get_all(header::SET_COOKIE).iter().collect::<Vec<_>>(), ["theme=dark; Path=/"]);
     }
