@@ -146,7 +146,9 @@ impl Drop for Session {
 async fn upgrade(State(state): State<Shared>, ws: WebSocketUpgrade) -> ApiResult<Response> {
     // Connect before claiming the robot, so a failure leaves nothing to undo.
     let url = state.daemon.ws_url("move/ws/set_target");
-    let Ok((upstream, _)) = tokio_tungstenite::connect_async(url.as_str()).await else {
+    // Bounded: the upgrade holds actions and sim switches apart (sim.rs).
+    let connect = tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(url.as_str()));
+    let Ok(Ok((upstream, _))) = connect.await else {
         return Err(ApiError::unavailable());
     };
     // Under the power lock, so an app start or a power action can't be

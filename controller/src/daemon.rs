@@ -4,6 +4,7 @@
 //! turns transport failures into [`DaemonError::Unavailable`] and error
 //! statuses into [`DaemonError::Refused`] with the daemon's `detail`.
 
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use reqwest::Method;
@@ -21,9 +22,15 @@ pub enum DaemonError {
     Refused { status: u16, detail: Option<String> },
 }
 
+/// Every clone shares one target, so [`Daemon::retarget`] moves the whole
+/// controller (apps, expressions, streams) between the robot's daemon and the
+/// sim daemon (#149) at once.
 #[derive(Clone)]
 pub struct Daemon {
-    base: String,
+    base: Arc<RwLock<String>>,
+    /// Bumped on every retarget, so long-lived connections can drop and
+    /// reconnect to the new daemon.
+    switched: Arc<tokio::sync::watch::Sender<u64>>,
     http: reqwest::Client,
     timeout: Duration,
 }
@@ -31,18 +38,30 @@ pub struct Daemon {
 impl Daemon {
     pub fn new(base_url: &str, timeout: Duration) -> Self {
         Self {
-            base: base_url.trim_end_matches('/').to_string(),
+            base: Arc::new(RwLock::new(base_url.trim_end_matches('/').to_string())),
+            switched: Arc::new(tokio::sync::watch::channel(0).0),
             http: reqwest::Client::new(),
             timeout,
         }
     }
 
-    pub fn base_url(&self) -> &str {
-        &self.base
+    pub fn base_url(&self) -> String {
+        self.base.read().unwrap().clone()
+    }
+
+    /// Point every clone at another daemon.
+    pub fn retarget(&self, base_url: &str) {
+        *self.base.write().unwrap() = base_url.trim_end_matches('/').to_string();
+        self.switched.send_modify(|epoch| *epoch += 1);
+    }
+
+    /// Changes on every [`Daemon::retarget`].
+    pub fn switched(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.switched.subscribe()
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}/api/{}", self.base, path.trim_start_matches("/api/").trim_start_matches('/'))
+        format!("{}/api/{}", self.base_url(), path.trim_start_matches("/api/").trim_start_matches('/'))
     }
 
     /// Open a request with no read timeout, for long-lived streams.
@@ -126,7 +145,7 @@ impl Daemon {
 
     pub fn ws_url(&self, path: &str) -> String {
         let base = self
-            .base
+            .base_url()
             .replacen("http://", "ws://", 1)
             .replacen("https://", "wss://", 1);
         format!("{base}/api/{}", path.trim_start_matches('/'))
