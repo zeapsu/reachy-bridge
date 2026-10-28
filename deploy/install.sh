@@ -30,6 +30,20 @@ CONTROLLER=reachy-bridge-controller.service
 step() { printf '\n== %s\n' "$*"; }
 die() { echo "install: $*" >&2; exit 1; }
 
+# Any failure before the Install step leaves the device as it was; it exits 3
+# so `reachy-bridge deploy` knows there is nothing to roll back.
+changed=0
+staging=
+cleanup() {
+    local rc=$?
+    [[ -z $staging ]] || rm -rf "$staging"
+    if (( rc != 0 && ! changed )); then
+        echo "install: nothing was changed" >&2
+        exit 3
+    fi
+}
+trap cleanup EXIT
+
 for tool in uv cargo bun systemctl curl; do
     command -v "$tool" >/dev/null || die "$tool is not on PATH"
 done
@@ -43,7 +57,7 @@ require_robot_off() {
     local power
     power=$("$CLI" robot-power)
     [[ $power == off ]] ||
-        die "the robot isn't confirmed off (${power}); turn it off from the dashboard and re-run. Nothing was changed."
+        die "the robot isn't confirmed off (${power}); turn it off from the dashboard and re-run."
 }
 
 step "Preflight"
@@ -52,7 +66,6 @@ if [[ -d $UNIT_DIR/$DAEMON.d || -d $UNIT_DIR/$CONTROLLER.d ]]; then
     echo "warning: drop-ins in $UNIT_DIR/*.service.d override the installed units"
 fi
 staging=$(mktemp -d)
-trap 'rm -rf "$staging"' EXIT
 # The lock decides the daemon version. Check it against the runtime's
 # upstream seam before touching the live venv.
 # --reinstall-package: uv caches the runtime's wheel by its pyproject.toml, so
@@ -60,7 +73,7 @@ trap 'rm -rf "$staging"' EXIT
 UV_PROJECT_ENVIRONMENT="$staging/venv" uv sync --project "$REPO" --frozen --no-dev \
     --no-editable --package reachy-bridge-runtime --reinstall-package reachy-bridge-runtime --quiet
 "$staging/venv/bin/reachy-bridge-runtime" --check ||
-    die "the locked reachy-mini doesn't match the runtime's upstream seam (see above). Nothing was changed."
+    die "the locked reachy-mini doesn't match the runtime's upstream seam (see above)."
 
 step "Build the controller"
 (cd "$REPO/web" && bun install --frozen-lockfile && bun run build)
@@ -69,6 +82,7 @@ step "Build the controller"
 step "Install"
 # The build takes minutes; the robot may have been switched on meanwhile.
 require_robot_off
+changed=1
 systemctl --user stop "$DAEMON" 2>/dev/null || true
 mkdir -p "$DEST/bin"
 # --no-editable, so the service doesn't depend on this checkout.
@@ -89,6 +103,8 @@ step "Start"
 systemctl --user start "$DAEMON"
 systemctl --user restart "$CONTROLLER"
 echo "daemon started (robot off); controller on 127.0.0.1:7861"
+# What is installed, for `reachy-bridge deploy` to roll back to.
+git -C "$REPO" rev-parse HEAD >"$DEST/VERSION" 2>/dev/null || rm -f "$DEST/VERSION"
 
 if [[ $(loginctl show-user "$USER" -p Linger --value 2>/dev/null) != yes ]]; then
     echo
