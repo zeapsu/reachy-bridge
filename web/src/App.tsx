@@ -11,7 +11,7 @@ import { AppearancePanel, Wallpaper } from "./components/Appearance.tsx";
 import { AuthGate } from "./components/Login.tsx";
 import { Segmented } from "./components/Segmented.tsx";
 import { PhoneTabs, TopBar } from "./components/Shell.tsx";
-import { SimPanel } from "./components/SimPanel.tsx";
+import { SimAppsNote, SimPanel } from "./components/SimPanel.tsx";
 import { LogsPanel, StatsPanel } from "./components/SystemPanel.tsx";
 import { Viewport, type PoseSink } from "./components/Viewport.tsx";
 import { useLens } from "./glass.ts";
@@ -190,8 +190,14 @@ function Dashboard() {
         </main>
 
         <main className="view list" id="view-apps" role="tabpanel" hidden={tab !== "apps"} aria-label="Apps">
-          <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} reachable={appsReachable} exprBusy={expr.busy !== null} />
-          <CatalogPanel catalog={catalog} reachable={appsReachable} />
+          {sim.target === "sim" ? (
+            <SimAppsNote />
+          ) : (
+            <>
+              <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} reachable={appsReachable} exprBusy={expr.busy !== null} />
+              <CatalogPanel catalog={catalog} reachable={appsReachable} />
+            </>
+          )}
         </main>
 
         <main className="view list" id="view-system" role="tabpanel" hidden={tab !== "system"} aria-label="System">
