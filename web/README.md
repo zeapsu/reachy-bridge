@@ -39,12 +39,12 @@ The dev server listens on `localhost` only.
 - `src/api.ts`: typed fetch helper, response types, and every API path.
 - `src/logic/`: pure functions (power state, app cards and gates, expression
   gating, log capping, pose, audio meter model, stats, kinematics, app-view
-  start steps), each tested by a `*.test.ts` file next to it.
+  start steps, drive pad mapping), each tested by a `*.test.ts` file next to it.
 - `src/hooks/`: SSE with reconnect, polling, page visibility, and the stateful
-  domain hooks (apps, power, expressions).
+  domain hooks (apps, power, expressions, the drive socket).
 - `src/components/`: the shell (top bar, Robot / Apps / System tabs, the phone
   tab bar), Viewport (live camera and the 3D robot), the expression carousel,
-  ControlsPanel, AppsPanel, SystemPanel (board stats and logs), AudioPanel,
+  DrivePanel (thumb pads), ControlsPanel, AppsPanel, SystemPanel (board stats and logs), AudioPanel,
   DevicesPanel and Appearance (light/dark, accent, wallpaper).
 
 The 10 Hz updates (3D pose, telemetry, audio meter) write to the DOM through refs
