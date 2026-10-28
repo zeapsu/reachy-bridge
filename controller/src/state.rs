@@ -10,6 +10,7 @@ use crate::daemon::Daemon;
 use crate::datasets::DatasetCache;
 use crate::expressions::ExpressionPlayer;
 use crate::logs::LogBroker;
+use crate::routes::store::Catalog;
 use crate::routes::telemetry::Streams;
 
 pub type Shared = Arc<AppState>;
@@ -19,6 +20,8 @@ pub struct AppState {
     /// Held by every action that powers, wakes or sleeps the robot (#148).
     pub power_lock: tokio::sync::Mutex<()>,
     pub apps: DaemonApps,
+    /// The app catalog listings (#126).
+    pub catalog: Catalog,
     pub player: Arc<ExpressionPlayer>,
     pub streams: Streams,
     pub logs: Arc<LogBroker>,
@@ -40,6 +43,7 @@ impl AppState {
         Arc::new(Self {
             auth: Auth::new(auth, &state_dir),
             apps: DaemonApps::new(daemon.clone()),
+            catalog: Catalog::default(),
             player: ExpressionPlayer::new(daemon.clone(), poll),
             daemon,
             power_lock: tokio::sync::Mutex::new(()),

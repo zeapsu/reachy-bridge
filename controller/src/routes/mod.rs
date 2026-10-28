@@ -7,3 +7,4 @@ pub mod logs;
 pub mod power;
 pub mod telemetry;
 pub mod drive;
+pub mod store;
