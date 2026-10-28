@@ -1,6 +1,6 @@
 /**
  * Emoji for the recorded moves, from Pollen Robotics' Reachy Mini desktop app
- * (src/constants/choreographies.ts, Apache-2.0), so both apps show the same
+ * (src/constants/choreographies.ts, Apache-2.0; adapted here), so both apps show the same
  * face for the same move. The carousel shows the desktop app's featured
  * emotions first, then the rest in the map's order (grouped by feeling), then
  * any move missing here in the daemon's order.

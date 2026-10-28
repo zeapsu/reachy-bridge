@@ -10,6 +10,8 @@ export interface ControlFeedback {
 
 export interface PowerState {
   view: PowerView;
+  /** The daemon answers, whether or not the robot is on (its app API works either way). */
+  reachable: boolean;
   poll: () => Promise<void>;
   toggle: () => void;
   /** Mark (or clear) a power-off started outside the button (kinematics switch). */
@@ -27,6 +29,7 @@ export interface PowerState {
  */
 export function usePower(feedback: ControlFeedback, onStatusChange: () => void): PowerState {
   const [view, setView] = useState<PowerView>(INITIAL_POWER);
+  const [reachable, setReachable] = useState(false);
   const [target, setTarget] = useState<Target | undefined>(undefined);
   const [status, setStatus] = useState<string | null>(null);
   const viewRef = useRef(view);
@@ -58,8 +61,10 @@ export function usePower(feedback: ControlFeedback, onStatusChange: () => void):
         onStatusChangeRef.current();
       }
       show(derived.view);
+      setReachable(status.reachable);
     } catch {
-      // Silent: the telemetry stream owns online/offline.
+      // Silent: the telemetry stream owns online/offline. `reachable` keeps
+      // its last value, so one dropped poll doesn't reload the catalog.
     } finally {
       inflight.current = false;
     }
@@ -112,5 +117,5 @@ export function usePower(feedback: ControlFeedback, onStatusChange: () => void):
     }
   }, [poll]);
 
-  return { view, poll, toggle, setStopping, target, status };
+  return { view, reachable, poll, toggle, setStopping, target, status };
 }

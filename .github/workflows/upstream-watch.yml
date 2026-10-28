@@ -1,0 +1,254 @@
+name: Upstream watch
+
+# Follows Pollen's reachy-mini releases (#155, step 1: detect and check).
+# Daily, it locks the newest reachy-mini that the floor in
+# runtime/pyproject.toml allows. When that differs from uv.lock, it pushes the
+# new lock to chore/reachy-mini-<version>, runs CI against that branch, and
+# opens a PR when everything passes or an upstream-break issue when it
+# doesn't. Merging the bump stays human: a new daemon needs hardware QA.
+#
+# Only the push and report jobs hold write tokens. Neither runs code from the
+# new package; resolving and testing it happen in read-only jobs.
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Lock this reachy-mini version instead of the newest one (e.g. 1.13.0).
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+env:
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  detect:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      # current: nothing to do; seen: this version already has a branch, PR
+      # or issue; new: a lock bump to test; lock-failed: uv could not lock it.
+      status: ${{ steps.lock.outputs.status || steps.find.outputs.status }}
+      old: ${{ steps.find.outputs.old }}
+      version: ${{ steps.find.outputs.version }}
+      branch: ${{ steps.find.outputs.branch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.11.24"
+      # Compared with PyPI's newest release, not with whatever uv resolves, so
+      # a release the floor or other pins can't take is reported rather than
+      # silently held back.
+      - name: Find the newest reachy-mini
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          old=$(python3 -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("uv.lock", "rb"))["package"] if p["name"] == "reachy-mini"))')
+          new=${VERSION:-$(curl -sSf --retry 3 https://pypi.org/pypi/reachy-mini/json | jq -r .info.version)}
+          if [[ ! "$new" =~ ^[0-9][0-9A-Za-z.+!-]*$ ]]; then
+            echo "::error::not a version: $new"
+            exit 1
+          fi
+          branch="chore/reachy-mini-$new"
+          status=new
+          # Equal, or lower than the lock (a yanked release): nothing to do.
+          if [[ "$(printf '%s\n%s\n' "$new" "$old" | sort -V | tail -n 1)" == "$old" ]]; then
+            status=current
+          else
+            # A branch, PR or issue for this version means an earlier run (or
+            # a human) already handled it, whatever its state now.
+            issues=$(gh issue list --state all --search "\"reachy-mini $new:\" in:title" --json number --jq 'length')
+            prs=$(gh pr list --state all --head "$branch" --json number --jq 'length')
+            if [[ "$issues" != 0 || "$prs" != 0 ]] || gh api "repos/$GH_REPO/branches/$branch" --silent 2> /dev/null; then
+              status=seen
+            fi
+          fi
+          echo "reachy-mini $old -> $new: $status"
+          {
+            echo "old=$old"
+            echo "version=$new"
+            echo "branch=$branch"
+            echo "status=$status"
+          } >> "$GITHUB_OUTPUT"
+      # Its own step without a token: resolving can run a dependency's build
+      # backend.
+      - name: Lock it
+        id: lock
+        if: steps.find.outputs.status == 'new'
+        env:
+          VERSION: ${{ steps.find.outputs.version }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/lock"
+          for attempt in 1 2 3; do
+            if uv lock --upgrade-package "reachy-mini==$VERSION" > "$RUNNER_TEMP/lock/lock.log" 2>&1; then
+              cp uv.lock "$RUNNER_TEMP/lock/uv.lock"
+              echo "status=new" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep $((attempt * 20))
+          done
+          cat "$RUNNER_TEMP/lock/lock.log"
+          # Only a resolver verdict is about the release; anything else (the
+          # network, uv itself) fails the run and is retried tomorrow.
+          if ! grep -q "No solution found" "$RUNNER_TEMP/lock/lock.log"; then
+            exit 1
+          fi
+          echo "status=lock-failed" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.find.outputs.status == 'new'
+        with:
+          name: lock
+          path: ${{ runner.temp }}/lock/
+
+  push:
+    needs: detect
+    if: needs.detect.outputs.status == 'new'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lock
+          path: ${{ runner.temp }}/lock
+      - name: Push the lock bump
+        env:
+          OLD: ${{ needs.detect.outputs.old }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          BRANCH: ${{ needs.detect.outputs.branch }}
+        run: |
+          set -euo pipefail
+          # The values and the lock come from a job that resolved the new
+          # package; accept only a version branch and a change to uv.lock.
+          if [[ ! "$VERSION" =~ ^[0-9][0-9A-Za-z.+!-]*$ || "$BRANCH" != "chore/reachy-mini-$VERSION" ]]; then
+            echo "::error::unexpected version or branch: $VERSION $BRANCH"
+            exit 1
+          fi
+          cp "$RUNNER_TEMP/lock/uv.lock" uv.lock
+          if [[ "$(git status --porcelain)" != " M uv.lock" ]]; then
+            git status --porcelain
+            echo "::error::the lock bump changed more than uv.lock"
+            exit 1
+          fi
+          git add uv.lock
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git commit -m "Lock reachy-mini $VERSION" \
+            -m "The upstream watch found reachy-mini $VERSION on PyPI (locked: $OLD) and ran uv lock --upgrade-package reachy-mini."
+          git push origin "$BRANCH"
+
+  check:
+    needs: [detect, push]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.detect.outputs.branch }}
+
+  report:
+    needs: [detect, push, check]
+    if: >-
+      !cancelled() && needs.detect.result == 'success' &&
+      (needs.detect.outputs.status == 'new' || needs.detect.outputs.status == 'lock-failed')
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lock
+          path: ${{ runner.temp }}/lock
+      - name: Open a PR or an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS: ${{ needs.detect.outputs.status }}
+          OLD: ${{ needs.detect.outputs.old }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          BRANCH: ${{ needs.detect.outputs.branch }}
+          PUSH: ${{ needs.push.result }}
+          CHECK: ${{ needs.check.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMPARE_URL: ${{ github.server_url }}/${{ github.repository }}/compare/main...${{ needs.detect.outputs.branch }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/body.md"
+          changelog="https://github.com/pollen-robotics/reachy_mini/releases"
+          checklist="Before merging (a human decision while #155 is in step 1):
+          - Push a commit to this branch (merging current \`main\` will do) so the PR gets CI of its own; PRs opened by Actions don't trigger it.
+          - Read the [upstream changelog]($changelog) for behaviour changes the checks can't see, and update \`docs/daemon-contract.md\` for the new version.
+          - Needs hardware QA: a new daemon drives the motors."
+
+          if [[ "$STATUS" == new && "$CHECK" == success ]]; then
+            cat > "$body" <<EOF
+          The daily upstream watch locked reachy-mini $VERSION (was $OLD). CI passed against this branch in [the watch run]($RUN_URL): unit tests, \`reachy-bridge-runtime --check\` and the sim contract tests.
+
+          $checklist
+
+          Part of #155.
+          EOF
+            if gh pr create --base main --head "$BRANCH" --title "Lock reachy-mini $VERSION" --body-file "$body"; then
+              exit 0
+            fi
+            # Actions may not be allowed to open PRs in this repository; leave
+            # an issue pointing at the ready branch instead.
+            {
+              echo "The branch is ready, but Actions could not open the PR. Open it from [the compare view]($COMPARE_URL)."
+              echo
+              cat "$body"
+            } > "$body.issue"
+            gh issue create --title "reachy-mini $VERSION: lock bump ready" --body-file "$body.issue"
+            exit 0
+          fi
+
+          if [[ "$STATUS" == lock-failed ]]; then
+            {
+              echo "The daily upstream watch could not lock reachy-mini $VERSION (locked: $OLD). uv's output:"
+              echo
+              # A tilde fence: the log can hold backticks from a build backend.
+              echo '~~~~~~~~~~'
+              tail -n 60 "$RUNNER_TEMP/lock/lock.log" | tr -d '~'
+              echo '~~~~~~~~~~'
+            } > "$body"
+          elif [[ "$PUSH" != success ]]; then
+            echo "The daily upstream watch locked reachy-mini $VERSION (was $OLD) but could not push \`$BRANCH\` ([run]($RUN_URL)), so nothing was tested. This is a workflow problem, not an upstream break." > "$body"
+            printf '\nPart of #155.\n' >> "$body"
+            gh issue create --title "reachy-mini $VERSION: upstream watch failed" --body-file "$body"
+            exit 0
+          else
+            failed=$(gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/jobs" --paginate \
+              --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | "- [\(.name)](\(.html_url)): \(.conclusion)"')
+            cat > "$body" <<EOF
+          The daily upstream watch locked reachy-mini $VERSION (was $OLD) on \`$BRANCH\`, and CI failed against it ([run]($RUN_URL)):
+
+          ${failed:-- (no failed job found; see the run)}
+
+          Diagnose against \`docs/daemon-contract.md\` and \`runtime/src/reachy_bridge_runtime/upstream.py\` (the one seam onto reachy-mini internals), with the [upstream changelog]($changelog). The fix goes on \`$BRANCH\`.
+          EOF
+          fi
+          echo >> "$body"
+          echo "Part of #155." >> "$body"
+          gh issue create --label upstream-break --title "reachy-mini $VERSION: breaks the bridge" --body-file "$body"
