@@ -411,15 +411,19 @@ impl Auth {
         ct_eq(key.as_bytes(), sent.as_bytes())
     }
 
-    /// Whether the app UI proxy may serve a request. Its listener is loopback
-    /// only, so visitors come through tailscale serve: trusted, unless LAN
-    /// mode runs with `CONTROLLER_TRUST_TAILNET=0`, when they need a paired
-    /// device (or the local key) as on the dashboard.
+    /// Whether the app UI proxy may serve a request, by the dashboard's rule.
+    /// Without LAN mode its listener is loopback only and everyone is
+    /// trusted. In LAN mode it listens on every interface (#186): loopback
+    /// peers (tailscale serve) are trusted unless `CONTROLLER_TRUST_TAILNET=0`
+    /// and only under a loopback or tailnet Host; everyone else needs a
+    /// paired device, or the local key from loopback.
     pub fn app_proxy_allowed(&self, headers: &HeaderMap, peer: Option<IpAddr>) -> bool {
-        if !self.config.lan || self.config.trust_loopback {
+        if !self.config.lan {
             return true;
         }
-        self.local_key_matches(headers)
+        let loopback = peer.is_some_and(|p| p.is_loopback());
+        (loopback && self.config.trust_loopback && loopback_host(headers))
+            || (loopback && self.local_key_matches(headers))
             || cookies(headers, DEVICE_COOKIE).take(MAX_COOKIE_VALUES).any(|token| self.device_for(token, peer).is_some())
     }
 }
@@ -758,6 +762,73 @@ async fn revoke(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LAN-mode auth with one paired device whose cookie token is "paired".
+    fn lan_auth(trust_loopback: bool) -> (Auth, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("rc-auth-unit-{}-{}", std::process::id(), random_token::<8>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth = Auth::new(AuthConfig { lan: true, trust_loopback, ..AuthConfig::default() }, &dir);
+        auth.devices.lock().unwrap().push(Device {
+            id: "d1".into(),
+            name: "phone".into(),
+            token_sha256: hex(&sha256(b"paired")),
+            created: now_unix(),
+            last_seen: now_unix(),
+            peer: "192.168.1.20".into(),
+        });
+        (auth, dir)
+    }
+
+    fn request(host: &str, cookie: Option<&str>, key: Option<&str>) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, host.parse().unwrap());
+        if let Some(cookie) = cookie {
+            h.insert(header::COOKIE, format!("{DEVICE_COOKIE}={cookie}").parse().unwrap());
+        }
+        if let Some(key) = key {
+            h.insert(LOCAL_KEY_HEADER, key.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn app_proxy_on_the_lan_needs_a_paired_device() {
+        let (auth, dir) = lan_auth(true);
+        let lan: IpAddr = "192.168.1.20".parse().unwrap();
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        let key = auth.local_key.clone().unwrap();
+        // An unpaired LAN visitor is refused, even with a loopback Host or the key.
+        assert!(!auth.app_proxy_allowed(&request("192.168.1.5:7863", None, None), Some(lan)));
+        assert!(!auth.app_proxy_allowed(&request("127.0.0.1:7863", None, None), Some(lan)));
+        assert!(!auth.app_proxy_allowed(&request("192.168.1.5:7863", None, Some(&key)), Some(lan)));
+        assert!(!auth.app_proxy_allowed(&request("192.168.1.5:7863", Some("wrong"), None), Some(lan)));
+        assert!(!auth.app_proxy_allowed(&request("192.168.1.5:7863", None, None), None));
+        // A paired device is let in from anywhere.
+        assert!(auth.app_proxy_allowed(&request("192.168.1.5:7863", Some("paired"), None), Some(lan)));
+        // tailscale serve (loopback) is trusted under a tailnet or loopback Host only.
+        assert!(auth.app_proxy_allowed(&request("robot.tail1234.ts.net:8043", None, None), Some(loopback)));
+        assert!(auth.app_proxy_allowed(&request("127.0.0.1:7863", None, None), Some(loopback)));
+        assert!(!auth.app_proxy_allowed(&request("evil.example:7863", None, None), Some(loopback)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn app_proxy_with_an_untrusted_tailnet_needs_a_login_from_loopback_too() {
+        let (auth, dir) = lan_auth(false);
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        let key = auth.local_key.clone().unwrap();
+        assert!(!auth.app_proxy_allowed(&request("robot.tail1234.ts.net:8043", None, None), Some(loopback)));
+        assert!(auth.app_proxy_allowed(&request("127.0.0.1:7863", None, Some(&key)), Some(loopback)));
+        assert!(auth.app_proxy_allowed(&request("robot.tail1234.ts.net:8043", Some("paired"), None), Some(loopback)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn app_proxy_without_lan_mode_is_open_on_its_loopback_listener() {
+        let dir = std::env::temp_dir().join(format!("rc-auth-unit-off-{}", std::process::id()));
+        let auth = Auth::new(AuthConfig::default(), &dir);
+        assert!(auth.app_proxy_allowed(&request("127.0.0.1:7863", None, None), Some("127.0.0.1".parse().unwrap())));
+    }
 
     #[test]
     fn codes_are_six_digits() {

@@ -219,11 +219,23 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
 - The app's UI address is `extra.custom_app_url` in the app metadata (for
   example `0.0.0.0:8042` for radio, `:7860` for conversation). The UI server
   comes up 1–3 s after the process starts, so the bridge polls it before
-  sending the user there. The app binds `0.0.0.0` on that port itself, so
-  nothing else may listen on it; over HTTPS the controller proxies the
-  current app's UI from `127.0.0.1:7863`, published as :8043 (#158).
+  sending the user there. The app binds that port itself, so nothing else
+  may listen on it. Apps ask for every interface (`0.0.0.0` in
+  `custom_app_url`, or Gradio's `server_name`). **Bridge patch (#186):**
+  before each start the runtime writes a stdlib-only shim and a `.pth` into
+  the app's venv, and the app inherits `REACHY_BRIDGE_APP_BIND=loopback`, so
+  its wildcard TCP binds become loopback binds. An app that would run in the
+  daemon's own venv, or whose venv can't take the shim, is refused. The
+  controller proxies the current app's UI from `:7863` (loopback, or every
+  interface behind the login in LAN mode), published over HTTPS as :8043
+  (#158).
+- webrtcsink runs the signalling server (`run-signalling-server`) on
+  `0.0.0.0:8443` upstream. **Bridge patch (#186):** `signalling-server-host`
+  is set to `127.0.0.1`; the daemon's central relay connects to
+  `ws://127.0.0.1:8443`, and only the Wireless model advertises its LAN
+  address for signalling.
 - The dashboard shows an app's UI in a frame (#159), from a different origin
-  (:8043 inside :10000, or the app's own port on the LAN). An app that sends
+  (:8043 inside :10000, or :7863 inside :7861 over plain http). An app that sends
   `X-Frame-Options` or a CSP `frame-ancestors` that leaves out the dashboard
   shows a blank frame; ↗ opens it in its own tab. Checked 2026-10-28: the
   app base class in reachy-mini 1.12.0, Radio, Conversation App and Gradio's
