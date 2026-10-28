@@ -171,7 +171,10 @@ deploy_tag() {
     echo "deploying: $tag"
     git -C "$repo" checkout --quiet --detach "refs/tags/$tag"
     "$repo/deploy/install.sh" || rc=$?
+    # The record is written here too, not only by install.sh: an older tag's
+    # install.sh doesn't write one.
     if (( rc == 0 )) && healthy; then
+        git -C "$repo" rev-parse HEAD >"$record"
         echo "deployed $tag (previously $prev_name)"
         return 0
     fi
@@ -179,7 +182,8 @@ deploy_tag() {
     # The tree was clean before, so --force only drops what the tag's build
     # left behind.
     if (( rc == 3 )); then
-        git -C "$repo" checkout --quiet --force "$checkout_ref" || true
+        git -C "$repo" checkout --quiet --force "$checkout_ref" ||
+            die "deploying $tag was refused before anything changed (see above), but checking out $checkout_ref again failed; the checkout is still at $tag"
         die "deploying $tag was refused before anything changed (see above); $prev_name is still installed"
     fi
     git -C "$repo" checkout --quiet --force "$prev_ref" ||
@@ -188,8 +192,12 @@ deploy_tag() {
     rc=0
     "$repo/deploy/install.sh" || rc=$?
     if (( rc == 0 )) && healthy; then
+        git -C "$repo" rev-parse HEAD >"$record"
+        [[ $prev_ref == "$checkout_ref" ]] || echo "reachy-bridge: the checkout is now detached at $prev_name (was $checkout_ref)" >&2
         die "deploying $tag failed; $prev_name is installed again"
     fi
+    # What is installed is now unknown; don't let the next deploy trust it.
+    rm -f "$record"
     die "deploying $tag failed, and so did reinstalling $prev_name; check reachy-bridge status and logs"
 }
 
