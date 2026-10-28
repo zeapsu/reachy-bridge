@@ -4,6 +4,7 @@ import { AppsPanel } from "./components/AppsPanel.tsx";
 import { AudioPanel } from "./components/AudioPanel.tsx";
 import { ControlsPanel, type ControlHint } from "./components/ControlsPanel.tsx";
 import { DevicesPanel } from "./components/DevicesPanel.tsx";
+import { DrivePanel } from "./components/DrivePanel.tsx";
 import { ExpressionsPanel } from "./components/ExpressionsPanel.tsx";
 import { AppearancePanel, Wallpaper } from "./components/Appearance.tsx";
 import { AuthGate } from "./components/Login.tsx";
@@ -14,6 +15,7 @@ import { Viewport, type PoseSink } from "./components/Viewport.tsx";
 import { useLens } from "./glass.ts";
 import { useAppearance } from "./hooks/useAppearance.ts";
 import { useApps } from "./hooks/useApps.ts";
+import { useDrive } from "./hooks/useDrive.ts";
 import { AppView } from "./components/AppView.tsx";
 import { readEventPayload, useEventSource } from "./hooks/useEventSource.ts";
 import { useExpressions } from "./hooks/useExpressions.ts";
@@ -23,6 +25,7 @@ import { usePower } from "./hooks/usePower.ts";
 import { activeApp } from "./logic/apps.ts";
 import { read, write } from "./logic/appearance.ts";
 import { CONTROL_HINT_OFFLINE } from "./logic/controls.ts";
+import { driveBlocked } from "./logic/drive.ts";
 import { TAB_KEY, parseTab, type Tab } from "./logic/shell.ts";
 
 const POLL_MS = 1000;
@@ -53,7 +56,7 @@ function Dashboard() {
   const poseSink = useRef<PoseSink | null>(null);
   const look = useAppearance();
   const [tab, setTabState] = useState<Tab>(() => parseTab(read(TAB_KEY)));
-  const [pane, setPane] = useState<"expressions" | "controls">("expressions");
+  const [pane, setPane] = useState<"expressions" | "drive" | "controls">("expressions");
   const side = useLens<HTMLElement>();
 
   const reloadKinematics = useCallback(async () => {
@@ -78,6 +81,16 @@ function Dashboard() {
     // The running engine changes with power, so refresh the kinematics panel.
     () => void reloadKinematics(),
   );
+
+  const blocked = driveBlocked({
+    daemonOnline,
+    motorMode: robotControlMode,
+    appActive,
+    exprBusy: expr.busy !== null,
+    controlBusy,
+  });
+  // Leaving the pane, the tab or the page ends a drive session.
+  const drive = useDrive(blocked === null && visible && tab === "robot" && pane === "drive");
 
   usePoll(power.poll, POLL_MS, visible);
   usePoll(apps.poll, POLL_MS, visible);
@@ -126,6 +139,7 @@ function Dashboard() {
               label="Robot controls"
               options={[
                 { value: "expressions", label: "Expressions" },
+                { value: "drive", label: "Drive" },
                 { value: "controls", label: "Controls" },
               ]}
               value={pane}
@@ -133,6 +147,9 @@ function Dashboard() {
             />
             <div hidden={pane !== "expressions"}>
               <ExpressionsPanel expr={expr} daemonOnline={daemonOnline} controlBusy={controlBusy} appActive={appActive} />
+            </div>
+            <div hidden={pane !== "drive"}>
+              <DrivePanel drive={drive} blocked={blocked} />
             </div>
             <div hidden={pane !== "controls"}>
               <ControlsPanel

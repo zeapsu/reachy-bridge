@@ -20,7 +20,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": { target: controller, changeOrigin: true },
+      "/api": { target: controller, changeOrigin: true, ws: true },
       // The robot state stream lives at /telemetry/state-stream, outside /api.
       "/telemetry": { target: controller, changeOrigin: true },
     },
