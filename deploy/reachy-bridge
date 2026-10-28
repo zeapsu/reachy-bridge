@@ -219,9 +219,9 @@ tailscale_serve() {
 # serving something else (another service reusing the number) is left alone.
 bridge_serve_ports() {
     local status
-    command -v tailscale >/dev/null && command -v python3 >/dev/null || return 0
-    status=$(tailscale serve status --json 2>/dev/null) || return 0
-    python3 -c '
+    command -v tailscale >/dev/null || return 0
+    if ! command -v python3 >/dev/null || ! status=$(tailscale serve status --json 2>/dev/null) ||
+        ! python3 -c '
 import json, sys
 web = (json.loads(sys.argv[1] or "{}") or {}).get("Web") or {}
 for mapping in sys.argv[2:]:
@@ -233,7 +233,9 @@ for mapping in sys.argv[2:]:
         ):
             print(port)
             break
-' "$status" "${SERVE_MAPPINGS[@]}"
+' "$status" "${SERVE_MAPPINGS[@]}" 2>/dev/null; then
+        echo "warning: couldn't read the tailnet serve config; check tailscale serve status afterwards" >&2
+    fi
 }
 
 # as_owner PATH CMD...: run CMD directly if PATH's directory is writable, with
@@ -244,10 +246,40 @@ as_owner() {
     if [[ -w $(dirname "$path") ]]; then "$@"; else sudo "$@"; fi
 }
 
-# Refuses paths outside the home directory, the home directory itself, and
-# relative or '..' paths: the manifest is only a list, not trusted blindly.
+# Only paths strictly inside the home directory, after resolving '..', '//'
+# and symlinks: the manifest is only a list, not trusted blindly.
 safe_path() {
-    [[ $1 == "$HOME"/?* && $1 != *..* && $1 != "$HOME/" ]]
+    local real home
+    [[ $1 == /* ]] || return 1
+    real=$(realpath -m -- "$1") && home=$(realpath -m -- "$HOME") || return 1
+    [[ $real == "$home"/?* ]]
+}
+
+# A path the uninstaller may restore a GStreamer plugin to: in the home
+# directory or a system GStreamer plugin directory.
+gst_path() {
+    safe_path "$1" || [[ $1 == /usr/lib/*/gstreamer-1.0/*.so && $1 != *..* ]]
+}
+
+# The bridge's sleep sequence: through the controller when it answers, which
+# also stops the app, halts expressions and drive targets, and skips the sleep
+# move if the robot is already asleep; straight to the daemon otherwise.
+robot_down() {
+    local i
+    [[ $(app_state) == none && $(robot_power) == off ]] && return 0
+    echo "== Stopping any app and putting the robot to sleep"
+    if ! (controller_api POST /api/daemon/stop >/dev/null 2>&1); then
+        if [[ $(app_state) != none ]]; then
+            curl -s -m 10 -X POST "$DAEMON_URL/api/apps/stop-current-app" >/dev/null || true
+            for (( i = 0; i < 30; i++ )); do [[ $(app_state) == none ]] && break; sleep 1; done
+        fi
+        [[ $(robot_power) == off ]] ||
+            curl -s -m 10 -X POST "$DAEMON_URL/api/daemon/stop?goto_sleep=true" >/dev/null || true
+    fi
+    for (( i = 0; i < 30; i++ )); do [[ $(robot_power) == off ]] && return 0; sleep 1; done
+    # Stopping the service next sends SIGINT, which also sleeps the robot and
+    # releases torque.
+    echo "warning: the robot didn't report off; stopping the service puts it to sleep"
 }
 
 # uninstall: reverse deploy/install.sh from its install manifest (#142).
@@ -261,29 +293,41 @@ uninstall_bridge() {
             *) die "usage: reachy-bridge uninstall [--keep-data] [--dry-run] [--yes]" ;;
         esac
     done
+    (( EUID != 0 )) || die "run uninstall as the user who installed the bridge, not as root; it asks for sudo when it needs it"
+    systemctl --user show-environment >/dev/null 2>&1 ||
+        die "can't reach your user systemd; run this from a login shell (e.g. ssh) as the user who installed the bridge"
     local dest=$HOME/.local/share/reachy-bridge
     local manifest=$dest/install-manifest
     local unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
-    local kind value units=() dirs=() files=() udev=() groups=() linger=0 gst=() ports=()
+    local kind value extra units=() dirs=() files=() udev=() groups=() linger=0 gst=() ports=()
+    # Kept with --keep-data: the apps and the daemon's metadata about them.
+    local kept=(apps_venv .app_metadata)
     if [[ -r $manifest ]]; then
-        while IFS=$'\t' read -r kind value; do
+        while IFS=$'\t' read -r kind value extra; do
             case "$kind" in
-                unit) units+=("$value") ;;
+                unit) [[ $value =~ ^[A-Za-z0-9@._-]+$ ]] && units+=("$value") ;;
                 dir) dirs+=("$value") ;;
                 file) files+=("$value") ;;
-                udev) udev+=("$value") ;;
-                group) groups+=("$value") ;;
+                udev) [[ $value == /etc/udev/rules.d/*.rules && $value != */../* ]] && udev+=("$value") ;;
+                group) [[ $value =~ ^[a-z_][a-z0-9_-]*$ ]] && groups+=("$value") ;;
                 linger) linger=1 ;;
-                gst-backup) gst+=("$value") ;;
+                gst-backup) gst_path "$value" && safe_path "$extra" && gst+=("$value"$'\t'"$extra") ;;
                 '') ;;
-                *) echo "reachy-bridge: skipping unknown manifest entry '$kind'" >&2 ;;
-            esac
+                *) false ;;
+            esac || echo "reachy-bridge: skipping manifest entry: $kind $value $extra" >&2
         done <"$manifest"
     else
         # Installed before the manifest existed: what every install.sh added.
         units=("$DAEMON" "$CONTROLLER" "$SIM")
         dirs=("$dest")
         files=("$HOME/.local/bin/reachy-bridge")
+    fi
+    # The state dir comes from the environment; only remove one that is the
+    # bridge's own, never a parent such as ~/.local/state.
+    local state=$STATE_DIR
+    if [[ ${state%/} != */reachy-bridge ]] || ! safe_path "$state"; then
+        echo "warning: won't remove the state dir $state (not a reachy-bridge directory in $HOME)" >&2
+        state=
     fi
     mapfile -t ports < <(bridge_serve_ports)
 
@@ -294,15 +338,17 @@ uninstall_bridge() {
     for value in "${udev[@]}"; do echo "  remove the udev rules $value (needs sudo)"; done
     for value in "${groups[@]}"; do echo "  remove $USER from the $value group (needs sudo)"; done
     (( linger )) && echo "  disable lingering for $USER (needs sudo)"
-    for value in "${gst[@]}"; do echo "  restore the GStreamer plugin ${value%% *} from ${value#* }"; done
+    for value in "${gst[@]}"; do echo "  restore the GStreamer plugin ${value%%$'\t'*} from ${value#*$'\t'}"; done
     for value in "${dirs[@]}"; do
         if (( keep )) && [[ $value == "$dest" ]]; then
-            echo "  remove $value, except apps_venv (installed apps)"
+            echo "  remove $value, except ${kept[*]} (installed apps)"
         else
             echo "  remove $value"
         fi
     done
-    (( keep )) && echo "  keep $STATE_DIR (settings, paired devices, logs)" || echo "  remove $STATE_DIR (settings, paired devices, logs)"
+    if [[ -n $state ]]; then
+        if (( keep )); then echo "  keep $state (settings, paired devices, logs)"; else echo "  remove $state (settings, paired devices, logs)"; fi
+    fi
     for value in "${files[@]}"; do echo "  remove $value"; done
     (( dry )) && { echo "(dry run: nothing changed)"; return 0; }
 
@@ -312,30 +358,18 @@ uninstall_bridge() {
         [[ $arg == [yY]* ]] || die "nothing changed"
     fi
 
-    if systemctl --user is-active --quiet "$DAEMON"; then
-        local i
-        if [[ $(app_state) != none ]]; then
-            echo "== Stopping the running app"
-            curl -s -m 10 -X POST "$DAEMON_URL/api/apps/stop-current-app" >/dev/null || true
-            for (( i = 0; i < 30; i++ )); do [[ $(app_state) == none ]] && break; sleep 1; done
-        fi
-        if [[ $(robot_power) != off ]]; then
-            echo "== Putting the robot to sleep"
-            curl -s -m 10 -X POST "$DAEMON_URL/api/daemon/stop?goto_sleep=true" >/dev/null || true
-            for (( i = 0; i < 30; i++ )); do [[ $(robot_power) == off ]] && break; sleep 1; done
-            # Stopping the service below sends SIGINT, which also sleeps the
-            # robot and releases torque.
-            [[ $(robot_power) == off ]] || echo "warning: the robot didn't report off; stopping the service puts it to sleep"
-        fi
-    fi
+    # Asks the daemon over HTTP rather than systemd: a daemon that is up
+    # outside the unit still gets its robot put to sleep.
+    robot_down
 
     echo "== Removing the services"
     for value in "${units[@]}"; do
-        systemctl --user disable --now "$value" 2>/dev/null || true
+        systemctl --user disable --now "$value" 2>/dev/null ||
+            echo "warning: couldn't stop or disable $value" >&2
         rm -f "$unit_dir/$value"
         [[ -d $unit_dir/$value.d ]] && echo "note: left your drop-ins in $unit_dir/$value.d"
     done
-    systemctl --user daemon-reload
+    systemctl --user daemon-reload || echo "warning: systemctl --user daemon-reload failed" >&2
     systemctl --user reset-failed "${units[@]}" 2>/dev/null || true
 
     for value in "${ports[@]}"; do
@@ -352,7 +386,7 @@ uninstall_bridge() {
     done
     (( linger )) && { sudo loginctl disable-linger "$USER" || echo "warning: couldn't disable lingering"; }
     for value in "${gst[@]}"; do
-        local plugin=${value%% *} backup=${value#* }
+        local plugin=${value%%$'\t'*} backup=${value#*$'\t'}
         if [[ -f $backup ]]; then
             as_owner "$plugin" mv -f "$backup" "$plugin"
         else
@@ -364,14 +398,12 @@ uninstall_bridge() {
     for value in "${dirs[@]}"; do
         safe_path "$value" || { echo "warning: skipped $value (outside $HOME)"; continue; }
         if (( keep )) && [[ $value == "$dest" ]]; then
-            find "$value" -mindepth 1 -maxdepth 1 ! -name apps_venv -exec rm -rf {} +
+            find "$value" -mindepth 1 -maxdepth 1 ! -name "${kept[0]}" ! -name "${kept[1]}" -exec rm -rf {} +
         else
             rm -rf "$value"
         fi
     done
-    if (( ! keep )); then
-        if safe_path "$STATE_DIR"; then rm -rf "$STATE_DIR"; else echo "warning: skipped $STATE_DIR (outside $HOME)"; fi
-    fi
+    (( keep )) || [[ -z $state ]] || rm -rf "$state"
     for value in "${files[@]}"; do
         safe_path "$value" && rm -f "$value"
     done
@@ -382,7 +414,7 @@ uninstall_bridge() {
     echo "  apt packages installed for it (GStreamer, libssl-dev, pkg-config)"
     echo "  the Hugging Face cache (~/.cache/huggingface), uv, Rust and Bun"
     echo "  the source checkout, if you installed from one"
-    (( keep )) && echo "  kept: $dest/apps_venv and $STATE_DIR, for a later reinstall"
+    (( keep )) && echo "  kept: ${kept[*]/#/$dest/} and ${state:-the state dir}, for a later reinstall"
     return 0
 }
 
