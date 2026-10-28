@@ -491,6 +491,12 @@ pub async fn guard(State(state): State<Shared>, mut request: Request, next: Next
         if (!request.method().is_safe() || headers.contains_key(header::UPGRADE)) && cross_site(headers, loopback) {
             return forbidden(&path, peer);
         }
+        // A DNS-rebinding page reaches loopback same-origin under its own
+        // name, so the API answers loopback only under a name such a page
+        // can't produce (installing apps made this matter, #126).
+        if loopback && headers.contains_key(header::HOST) && !loopback_host(headers) && (is_api(&path) || headers.contains_key(header::UPGRADE)) {
+            return forbidden(&path, peer);
+        }
         request.extensions_mut().insert(AuthContext { peer, authenticated: true, device: None, https });
         return next.run(request).await;
     }

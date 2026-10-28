@@ -35,6 +35,8 @@ const CATALOG_TTL: Duration = Duration::from_secs(300);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
 /// Validating a token calls Hugging Face.
 const HF_TIMEOUT: Duration = Duration::from_secs(15);
+/// The daemon asks Hugging Face who's logged in; keep the answer this long.
+const HF_STATUS_TTL: Duration = Duration::from_secs(60);
 /// Job log lines sent to the page.
 const JOB_LOG_LINES: usize = 40;
 const MAX_TOKEN_LEN: usize = 256;
@@ -68,33 +70,39 @@ impl Source {
     }
 }
 
-/// The daemon's listings, kept so an install can look its Space up.
+/// The daemon's listings, kept so an install can look its Space up, and the
+/// Hugging Face login.
 #[derive(Default)]
 pub struct Catalog {
     listings: Mutex<HashMap<Source, (Instant, Vec<Value>)>>,
+    hf: Mutex<Option<(Instant, Value)>>,
 }
 
 impl Catalog {
     async fn listing(&self, state: &Shared, source: Source) -> ApiResult<Vec<Value>> {
-        let mut listings = self.listings.lock().await;
-        if let Some((at, apps)) = listings.get(&source)
+        if let Some((at, apps)) = self.listings.lock().await.get(&source)
             && at.elapsed() < CATALOG_TTL
-            && !apps.is_empty()
         {
             return Ok(apps.clone());
         }
+        // Not under the lock: listing every Space can take most of the timeout.
         let payload = state
             .daemon
             .call(Method::GET, source.daemon_path(), &[], None, Some(CATALOG_TIMEOUT))
             .await?;
         let apps = payload.as_array().cloned().unwrap_or_default();
-        listings.insert(source, (Instant::now(), apps.clone()));
+        // The daemon answers an empty list when Hugging Face is unreachable.
+        if apps.is_empty() {
+            return Err(ApiError::new(502, "Hugging Face didn't list any apps. Try again in a moment."));
+        }
+        self.listings.lock().await.insert(source, (Instant::now(), apps.clone()));
         Ok(apps)
     }
 
     /// A login or logout changes which private Spaces the full listing has.
     async fn forget(&self) {
         self.listings.lock().await.clear();
+        *self.hf.lock().await = None;
     }
 }
 
@@ -111,7 +119,22 @@ fn entry_id(entry: &Value) -> Option<&str> {
     entry.get("extra")?.get("id")?.as_str()
 }
 
-fn card(entry: &Value, installed: &[String]) -> Option<Value> {
+/// Installed apps by name and by Space id. An installed app is named after
+/// its entry point, which needn't match the Space's name.
+struct Installed(Vec<Value>);
+
+impl Installed {
+    fn has(&self, entry: &Value) -> bool {
+        let name = entry.get("name").and_then(Value::as_str);
+        let id = entry_id(entry);
+        self.0.iter().any(|app| {
+            let app_id = entry_id(app);
+            (app_id.is_some() && app_id == id) || (name.is_some() && app.get("name").and_then(Value::as_str) == name)
+        })
+    }
+}
+
+fn card(entry: &Value, installed: &Installed) -> Option<Value> {
     let id = entry_id(entry)?;
     let name = entry.get("name").and_then(Value::as_str)?;
     let extra = &entry["extra"];
@@ -128,7 +151,7 @@ fn card(entry: &Value, installed: &[String]) -> Option<Value> {
         "description": entry.get("description").and_then(Value::as_str).unwrap_or(""),
         "likes": extra.get("likes").and_then(Value::as_u64).unwrap_or(0),
         "private": extra.get("private").and_then(Value::as_bool).unwrap_or(false),
-        "installed": installed.iter().any(|n| n == name),
+        "installed": installed.has(entry),
     }))
 }
 
@@ -142,10 +165,14 @@ async fn installed_names(state: &Shared) -> ApiResult<Vec<String>> {
     state.apps.installed_names().await.map_err(|_| ApiError::unavailable())
 }
 
+async fn installed(state: &Shared) -> ApiResult<Installed> {
+    state.apps.installed().await.map(Installed).map_err(|_| ApiError::unavailable())
+}
+
 async fn catalog(State(state): State<Shared>, Query(query): Query<CatalogQuery>) -> ApiResult<Json<Value>> {
     let source = if query.all { Source::All } else { Source::Curated };
     let listing = state.catalog.listing(&state, source).await?;
-    let installed = installed_names(&state).await?;
+    let installed = installed(&state).await?;
     let apps: Vec<Value> = listing.iter().filter_map(|e| card(e, &installed)).collect();
     Ok(Json(json!({"apps": apps})))
 }
@@ -176,8 +203,7 @@ async fn install(State(state): State<Shared>, body: Bytes) -> ApiResult<Json<Val
         }
     }
     let entry = found.ok_or_else(|| ApiError::new(404, "That Space isn't in the app catalog"))?;
-    let name = entry.get("name").and_then(Value::as_str).unwrap_or_default();
-    if installed_names(&state).await?.iter().any(|n| n == name) {
+    if installed(&state).await?.has(&entry) {
         return Err(ApiError::new(409, "Already installed"));
     }
     let started = state.daemon.post_json("apps/install", &entry).await?;
@@ -185,23 +211,36 @@ async fn install(State(state): State<Shared>, body: Bytes) -> ApiResult<Json<Val
     job_started(started)
 }
 
-/// Install a private Space by id, with the stored Hugging Face login.
+/// Install a private Space by id, with the stored Hugging Face login. Only
+/// one the full listing shows as private to this login: the daemon would
+/// otherwise fetch any Space id with the token.
 async fn install_private(State(state): State<Shared>, body: Bytes) -> ApiResult<Json<Value>> {
     let id = body_id(&body)?;
+    let listing = state.catalog.listing(&state, Source::All).await?;
+    let entry = listing
+        .iter()
+        .find(|e| entry_id(e) == Some(id.as_str()) && e["extra"]["private"].as_bool() == Some(true))
+        .ok_or_else(|| ApiError::new(404, "No private Space with that id for this Hugging Face login"))?;
+    if installed(&state).await?.has(entry) {
+        return Err(ApiError::new(409, "Already installed"));
+    }
     let started = state.daemon.post_json("apps/install-private-space", &json!({"space_id": id})).await?;
     state.apps.forget_installed().await;
     job_started(started)
 }
 
-/// Drop anything shaped like a Hugging Face token (`hf_…`) from a log line.
+/// Drop anything shaped like a Hugging Face token (`hf_…`, `hf_oauth_…`)
+/// from a log line, but not identifiers such as `hf_hub_download`.
 pub fn scrub(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut rest = line;
     while let Some(at) = rest.find("hf_") {
         out.push_str(&rest[..at]);
         let tail = &rest[at + 3..];
-        let len = tail.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(tail.len());
-        if len >= 8 {
+        let len = tail.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(tail.len());
+        let run = &tail[..len];
+        let mixed = run.bytes().any(|b| b.is_ascii_digit() || b.is_ascii_uppercase());
+        if len >= 8 && (mixed || len >= 16) {
             out.push_str("hf_***");
         } else {
             out.push_str(&rest[at..at + 3 + len]);
@@ -287,8 +326,15 @@ fn hf_login(payload: &Value) -> Value {
 }
 
 async fn hf_status(State(state): State<Shared>) -> ApiResult<Json<Value>> {
+    if let Some((at, login)) = state.catalog.hf.lock().await.as_ref()
+        && at.elapsed() < HF_STATUS_TTL
+    {
+        return Ok(Json(login.clone()));
+    }
     let payload = state.daemon.call(Method::GET, "hf-auth/status", &[], None, Some(HF_TIMEOUT)).await?;
-    Ok(Json(hf_login(&payload)))
+    let login = hf_login(&payload);
+    *state.catalog.hf.lock().await = Some((Instant::now(), login.clone()));
+    Ok(Json(login))
 }
 
 /// A token travels only over HTTPS or loopback: plain HTTP on the LAN
@@ -352,6 +398,8 @@ mod tests {
         assert_eq!(scrub("token hf_abcdefghij1234 used"), "token hf_*** used");
         assert_eq!(scrub("hf_abcdefghij1234"), "hf_***");
         assert_eq!(scrub("Downloading hf_space foo"), "Downloading hf_space foo");
+        assert_eq!(scrub("hf_oauth_abcDEF123456 ok"), "hf_*** ok");
+        assert_eq!(scrub("calling hf_hub_download"), "calling hf_hub_download");
         assert_eq!(scrub("no token here"), "no token here");
     }
 }

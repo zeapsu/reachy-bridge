@@ -189,7 +189,7 @@ pub async fn fake_daemon(fake: FakeState) -> String {
             get(|| async {
                 Json(json!([
                     {"name": "reachy_mini_radio", "description": "Radio", "extra": {"custom_app_url": "http://0.0.0.0:1"}},
-                    {"name": "hello_world", "extra": {}},
+                    {"name": "hello_world", "extra": {"id": "someone/hello_space"}},
                 ]))
             }),
         )
@@ -225,7 +225,11 @@ pub async fn fake_daemon(fake: FakeState) -> String {
             "/api/apps/list-available/hf_space",
             get(|State(f): State<FakeState>| async move {
                 record(&f, "list all");
-                Json(json!([catalog_entry("someone/other_app", false), catalog_entry("me/secret_app", true)]))
+                Json(json!([
+                    catalog_entry("someone/other_app", false),
+                    catalog_entry("me/secret_app", true),
+                    catalog_entry("someone/hello_space", false),
+                ]))
             }),
         )
         .route(

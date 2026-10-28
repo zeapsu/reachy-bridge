@@ -31,8 +31,10 @@ async fn catalog_lists_curated_or_all_and_marks_installed() {
 
     let (_, body) = h.call("GET", "/api/apps/catalog?all=true", None).await;
     let ids: Vec<&str> = body["apps"].as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["someone/other_app", "me/secret_app"]);
+    assert_eq!(ids, ["someone/other_app", "me/secret_app", "someone/hello_space"]);
     assert_eq!(body["apps"][1]["private"], true);
+    // Installed as hello_world (its entry point), from the Space hello_space.
+    assert_eq!(body["apps"][2]["installed"], true);
 }
 
 #[tokio::test]
@@ -52,6 +54,7 @@ async fn install_refuses_unlisted_installed_and_malformed() {
     for (id, code) in [
         (json!("evil/not_listed"), 404),
         (json!("pollen-robotics/reachy_mini_radio"), 409),
+        (json!("someone/hello_space"), 409),
         (json!("../../daemon/stop"), 422),
         (json!("radio"), 422),
         (json!(7), 400),
@@ -70,6 +73,12 @@ async fn private_install_takes_a_space_id() {
     assert!(h.calls().contains(&"install-private me/secret_app".to_string()));
     let (status, _) = h.call("POST", "/api/apps/install-private", Some(json!({"id": "me/secret app"}))).await;
     assert_eq!(status.as_u16(), 422);
+    // Only a private Space the listing shows: not a public one, not an unlisted one.
+    for id in ["someone/other_app", "evil/unlisted"] {
+        let (status, _) = h.call("POST", "/api/apps/install-private", Some(json!({"id": id}))).await;
+        assert_eq!(status.as_u16(), 404, "{id}");
+    }
+    assert_eq!(h.calls().iter().filter(|c| c.starts_with("install-private")).count(), 1);
 }
 
 #[tokio::test]
@@ -116,6 +125,12 @@ async fn hf_token_is_write_only_and_needs_a_secure_origin() {
         .send(from("192.168.1.20:5000", "PUT", "/api/hf/token", Some(json!({"token": "hf_goodtoken123"}))))
         .await;
     assert_eq!(status.as_u16(), 403);
+    assert!(!h.calls().iter().any(|c| c.starts_with("save-token")));
+
+    // HTTPS claimed by a LAN peer isn't HTTPS (only the local proxy's word counts).
+    let mut request = from("192.168.1.20:5000", "PUT", "/api/hf/token", Some(json!({"token": "hf_goodtoken123"})));
+    request.headers_mut().insert("x-forwarded-proto", "https".parse().unwrap());
+    assert_eq!(h.send(request).await.0.as_u16(), 403);
     assert!(!h.calls().iter().any(|c| c.starts_with("save-token")));
 
     // A rejected token: the daemon's detail (which echoes it here) isn't passed on.
