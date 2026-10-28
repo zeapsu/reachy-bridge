@@ -14,6 +14,7 @@
 //! returns it, and job logs are scrubbed of anything token-shaped.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
@@ -76,6 +77,8 @@ impl Source {
 pub struct Catalog {
     listings: Mutex<HashMap<Source, (Instant, Vec<Value>)>>,
     hf: Mutex<Option<(Instant, Value)>>,
+    /// Bumped by `forget`, so an answer fetched across a login change isn't kept.
+    generation: AtomicU64,
 }
 
 impl Catalog {
@@ -86,6 +89,7 @@ impl Catalog {
             return Ok(apps.clone());
         }
         // Not under the lock: listing every Space can take most of the timeout.
+        let generation = self.generation.load(Ordering::Acquire);
         let payload = state
             .daemon
             .call(Method::GET, source.daemon_path(), &[], None, Some(CATALOG_TIMEOUT))
@@ -95,12 +99,16 @@ impl Catalog {
         if apps.is_empty() {
             return Err(ApiError::new(502, "Hugging Face didn't list any apps. Try again in a moment."));
         }
-        self.listings.lock().await.insert(source, (Instant::now(), apps.clone()));
+        let mut listings = self.listings.lock().await;
+        if self.generation.load(Ordering::Acquire) == generation {
+            listings.insert(source, (Instant::now(), apps.clone()));
+        }
         Ok(apps)
     }
 
     /// A login or logout changes which private Spaces the full listing has.
     async fn forget(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
         self.listings.lock().await.clear();
         *self.hf.lock().await = None;
     }
@@ -331,9 +339,13 @@ async fn hf_status(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     {
         return Ok(Json(login.clone()));
     }
+    let generation = state.catalog.generation.load(Ordering::Acquire);
     let payload = state.daemon.call(Method::GET, "hf-auth/status", &[], None, Some(HF_TIMEOUT)).await?;
     let login = hf_login(&payload);
-    *state.catalog.hf.lock().await = Some((Instant::now(), login.clone()));
+    let mut cached = state.catalog.hf.lock().await;
+    if state.catalog.generation.load(Ordering::Acquire) == generation {
+        *cached = Some((Instant::now(), login.clone()));
+    }
     Ok(Json(login))
 }
 
