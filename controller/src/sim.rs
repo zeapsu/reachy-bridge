@@ -201,15 +201,16 @@ async fn exit(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     state.player.set_needs_home(true);
     state.apps.forget_installed().await;
     tracing::info!("sim mode off: the controller drives the robot's daemon again");
-    // Nothing points at the sim any more: let actions on the robot through
-    // while it stops.
-    drop(power);
+    // Nothing points at the sim any more: let actions through while it
+    // stops, but keep power_lock, which enter also takes, so a new sim mode
+    // can't start on a daemon this stop is about to kill.
     drop(switch);
     if let Some(unit) = &sim.unit
         && let Err(error) = systemctl("stop", unit).await
     {
         tracing::warn!(%error, "sim daemon not stopped");
     }
+    drop(power);
     Ok(Json(json!({"active": false, "target": "robot"})))
 }
 

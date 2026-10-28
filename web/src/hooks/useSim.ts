@@ -22,6 +22,8 @@ export function useSim(reported: Target | undefined, onSwitched: () => void): Si
   const switchingRef = useRef(false);
   // The target this page switched to, until a poll reports it.
   const pendingRef = useRef<Target | null>(null);
+  // Bumped when waiting for a switch's poll gives up, to re-run the check.
+  const [gaveUp, setGaveUp] = useState(0);
   const onSwitchedRef = useRef(onSwitched);
   onSwitchedRef.current = onSwitched;
 
@@ -35,7 +37,7 @@ export function useSim(reported: Target | undefined, onSwitched: () => void): Si
     const decision = syncTarget(target, reported, switchingRef.current, pendingRef.current);
     if (decision === "adopt" && reported) believe(reported);
     if (decision === "reload") window.location.reload();
-  }, [target, reported, believe]);
+  }, [target, reported, believe, gaveUp]);
 
   const toggle = useCallback(() => {
     if (switchingRef.current || target === null) return;
@@ -52,7 +54,10 @@ export function useSim(reported: Target | undefined, onSwitched: () => void): Si
         // restarted or another tab switched back meanwhile, stop waiting so
         // the next poll reloads this tab.
         window.setTimeout(() => {
-          if (pendingRef.current === status.target) pendingRef.current = null;
+          if (pendingRef.current === status.target) {
+            pendingRef.current = null;
+            setGaveUp((n) => n + 1);
+          }
         }, 5000);
         believe(status.target);
         onSwitchedRef.current();
