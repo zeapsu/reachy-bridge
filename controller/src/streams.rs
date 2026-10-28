@@ -69,20 +69,31 @@ impl LazyStream {
 /// The daemon refuses the socket (503, logged as two error lines) until its
 /// backend runs, so while the robot is off this polls `daemon/status` instead
 /// and connects only once the daemon reports `running` (#160).
+///
+/// A switch between the robot and the sim daemon (#149) drops the socket, so
+/// the stream reconnects to the new daemon.
 pub async fn run_state(daemon: Daemon, tx: watch::Sender<Sample>) {
-    // Head joints pose the dashboard's 3D view (#149).
-    let url = daemon.ws_url("state/ws/full?with_doa=true&with_head_joints=true");
+    let mut switched = daemon.switched();
     loop {
+        switched.mark_unchanged();
+        // Head joints pose the dashboard's 3D view (#149).
+        let url = daemon.ws_url("state/ws/full?with_doa=true&with_head_joints=true");
         let running = daemon
             .status()
             .await
             .is_some_and(|s| s.get("state").and_then(Value::as_str) == Some("running"));
         if running && let Ok((mut ws, _)) = tokio_tungstenite::connect_async(url.as_str()).await {
-            while let Some(Ok(message)) = ws.next().await {
-                if let Ok(text) = message.to_text()
-                    && let Ok(value) = serde_json::from_str::<Value>(text)
-                {
-                    tx.send_replace(Some(Arc::new(value)));
+            loop {
+                tokio::select! {
+                    message = ws.next() => {
+                        let Some(Ok(message)) = message else { break };
+                        if let Ok(text) = message.to_text()
+                            && let Ok(value) = serde_json::from_str::<Value>(text)
+                        {
+                            tx.send_replace(Some(Arc::new(value)));
+                        }
+                    }
+                    _ = switched.changed() => break,
                 }
             }
         }

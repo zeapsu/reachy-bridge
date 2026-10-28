@@ -12,6 +12,7 @@ use crate::expressions::ExpressionPlayer;
 use crate::logs::LogBroker;
 use crate::routes::store::Catalog;
 use crate::routes::telemetry::Streams;
+use crate::sim::SimMode;
 
 pub type Shared = Arc<AppState>;
 
@@ -32,6 +33,8 @@ pub struct AppState {
     pub state_dir: PathBuf,
     /// LAN login (#141); off unless `CONTROLLER_LAN=1`.
     pub auth: Auth,
+    /// Which daemon `daemon` drives: the robot's or the sim's (#149).
+    pub sim: SimMode,
 }
 
 impl AppState {
@@ -40,7 +43,20 @@ impl AppState {
     }
 
     pub fn with_auth(daemon: Daemon, logs: Arc<LogBroker>, state_dir: PathBuf, poll: Duration, auth: AuthConfig) -> Shared {
+        let sim = SimMode::new(&daemon.base_url(), "http://127.0.0.1:8001", None);
+        Self::with_sim(daemon, logs, state_dir, poll, auth, sim)
+    }
+
+    pub fn with_sim(
+        daemon: Daemon,
+        logs: Arc<LogBroker>,
+        state_dir: PathBuf,
+        poll: Duration,
+        auth: AuthConfig,
+        sim: SimMode,
+    ) -> Shared {
         Arc::new(Self {
+            sim,
             auth: Auth::new(auth, &state_dir),
             apps: DaemonApps::new(daemon.clone()),
             catalog: Catalog::default(),

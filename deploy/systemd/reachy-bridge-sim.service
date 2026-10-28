@@ -1,0 +1,24 @@
+[Unit]
+Description=Reachy Mini sim daemon for the controller's sim mode (MuJoCo; started on demand)
+# Not enabled: the controller starts it when sim mode is switched on (#149)
+# and stops it when sim mode ends or the controller starts.
+
+[Service]
+Type=simple
+# Its own working directory and state, so the sim's app metadata and
+# kinematics choice never replace the robot daemon's.
+WorkingDirectory=%h/.local/share/reachy-bridge/sim
+Environment=REACHY_BRIDGE_STATE_DIR=%h/.local/state/reachy-bridge/sim
+Environment=PYTHONUNBUFFERED=1
+# Loopback only, like the robot's daemon. No media (WebRTC signalling would
+# clash with the robot daemon's :8443) and no apps (no --desktop-app-daemon).
+# Its own robot name, so its mDNS entry isn't mistaken for the robot (a name
+# set from the mobile app, in ~/.config/reachy_mini, wins over it upstream).
+ExecStart=%h/.local/share/reachy-bridge/.venv/bin/reachy-bridge-runtime \
+    --sim --headless --no-media --no-autostart --no-wake-up-on-start \
+    --robot-name reachy_mini_sim \
+    --fastapi-host 127.0.0.1 --fastapi-port 8001
+# The robot's daemon comes first for the CPU.
+Nice=10
+KillSignal=SIGINT
+TimeoutStopSec=15

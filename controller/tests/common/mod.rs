@@ -333,6 +333,12 @@ pub struct Harness {
 
 pub struct TempDir(std::path::PathBuf);
 
+impl TempDir {
+    pub fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
