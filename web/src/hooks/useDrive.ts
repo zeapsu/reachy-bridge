@@ -139,7 +139,8 @@ export function useDrive(allowed: boolean): DriveState {
       // last session's return home is still running, so keep trying while
       // a control is held.
       if (!opened && held.current.size && performance.now() - firstTry.current < RETRY_FOR_MS) {
-        retry.current = setTimeout(connect, RETRY_MS);
+        // Let go meanwhile: nothing to drive, so don't take the robot.
+        retry.current = setTimeout(() => (held.current.size ? connect() : close()), RETRY_MS);
         return;
       }
       if (!opened && held.current.size) setError("Couldn't start driving. Let go and try again.");
@@ -151,6 +152,8 @@ export function useDrive(allowed: boolean): DriveState {
     if (!allowed) return;
     held.current.add(control);
     idleSince.current = 0;
+    // A new grab gets the full retry window, even while one is pending.
+    if (retry.current !== null) firstTry.current = performance.now();
     if (socket.current || retry.current !== null) return;
     setError(null);
     setPhase("connecting");
