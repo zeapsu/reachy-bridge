@@ -132,7 +132,7 @@ function Dashboard() {
           activeApp={active ? active.display || active.name : null}
         />
 
-        <main className="view robot" id="view-robot" role="tabpanel" hidden={tab !== "robot"} aria-label="Robot">
+        <main className={`view robot${pane === "drive" ? " driving" : ""}`} id="view-robot" role="tabpanel" hidden={tab !== "robot"} aria-label="Robot">
           <Viewport daemonOnline={daemonOnline} note={stageNote(power.view, daemonOnline)} visible={visible && tab === "robot"} poseSink={poseSink} />
           <section className="glass sheet side" data-lens ref={side} aria-label="Robot controls">
             <Segmented

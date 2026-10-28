@@ -1,5 +1,10 @@
 /* Manual drive: two thumb pads, the antenna sliders and Home. */
-.pane.drive > .chip { align-self: flex-start; }
+.drive-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
 
 .pads {
   display: grid;
@@ -69,7 +74,20 @@
 
 .pane.drive input[type="range"] { touch-action: none; }
 
-.pane.drive > .btn { align-self: center; min-width: 120px; }
+.drive-head .btn { min-width: 92px; }
+
+/* Phones: the stage sits above this pane, so keep the pane short enough
+   that the whole robot stays in view while driving. */
+@media (max-width: 860px) {
+  .pane.drive { gap: 12px; }
+  .pad { max-width: 128px; }
+  .pane.drive .antennas {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .pane.drive .antennas label { font-size: 13px; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .pad-knob { transition: none; }
