@@ -262,7 +262,8 @@ export function useApps(): AppsState {
         }
         await sleep(APP_UI_WAIT_INTERVAL_MS);
       }
-      if (ready && proxyPort === null && window.location.protocol !== "https:") {
+      // :8043 (tailscale serve) forwards to the same listener.
+      if (ready && proxyPort === null) {
         updateView(seq, { error: "The controller's app proxy isn't running, so the app's interface can't open. See the controller log." });
       } else if (!ready) {
         const display = viewRef.current?.display || name;

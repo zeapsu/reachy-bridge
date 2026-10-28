@@ -94,6 +94,7 @@ def _write(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as file:
             file.write(text)
+        os.chmod(tmp, 0o644)  # mkstemp makes it 0600
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)

@@ -23,14 +23,16 @@ def fake_venv(root: Path) -> Path:
     return root / "bin/python"
 
 
-def bound_host(site_packages: Path, host: str, family: int = socket.AF_INET, v6only: bool | None = None) -> str:
+def bound_host(
+    site_packages: Path, host: str, family: int = socket.AF_INET, v6only: bool | None = None, port: int = 0
+) -> str:
     """Where a fresh Python with the shim's site-packages binds ``host``."""
     code = (
         "import site, socket, sys\n"
         f"site.addsitedir({str(site_packages)!r})\n"
         f"s = socket.socket({int(family)}, socket.SOCK_STREAM)\n"
         + (f"s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, {int(v6only)})\n" if v6only is not None else "")
-        + f"s.bind(({host!r}, 0))\n"
+        + f"s.bind(({host!r}, {port}))\n"
         "print(s.getsockname()[0])\n"
     )
     result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True)
@@ -52,7 +54,10 @@ def test_shim_moves_every_non_loopback_tcp_bind_to_loopback(tmp_path: Path) -> N
         assert bound_host(site_packages, host) == "127.0.0.1", host
     lan = lan_address()
     if lan and not lan.startswith("127."):
-        assert bound_host(site_packages, lan) == "127.0.0.1"
+        with socket.socket() as probe:  # a server port; port 0 on a specific address is a client's source
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        assert bound_host(site_packages, lan, port=port) == "127.0.0.1"
     # Loopback stays as asked.
     assert bound_host(site_packages, "127.0.0.1") == "127.0.0.1"
     assert bound_host(site_packages, "localhost") in ("127.0.0.1", "::1")
@@ -75,6 +80,10 @@ def test_shim_leaves_udp_and_loopback_alone() -> None:
     assert shim.loopback_address(socket.AF_INET6, socket.SOCK_STREAM, ("::", 80), v6only=False) == ("::ffff:127.0.0.1", 80, 0, 0)
     assert shim.loopback_address(socket.AF_UNIX, socket.SOCK_STREAM, "/tmp/sock") == "/tmp/sock"
     assert shim.loopback_address(socket.AF_INET, socket.SOCK_STREAM, (b"0.0.0.0", 80)) == ("127.0.0.1", 80)
+    # A client picking its source address before connect keeps it; a wildcard server on port 0 doesn't.
+    assert shim.loopback_address(socket.AF_INET, socket.SOCK_STREAM, ("192.168.1.5", 0)) == ("192.168.1.5", 0)
+    assert shim.loopback_address(socket.AF_INET, socket.SOCK_STREAM, ("0.0.0.0", 0)) == ("127.0.0.1", 0)
+    assert shim.loopback_address(socket.AF_INET, socket.SOCK_STREAM, ("", 0)) == ("127.0.0.1", 0)
 
 
 def test_site_packages_follows_pyvenv_cfg(tmp_path: Path) -> None:

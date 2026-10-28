@@ -19,6 +19,17 @@ import ipaddress
 import socket
 
 
+def _is_wildcard(host):
+    try:
+        numeric = socket.getaddrinfo(host, None, flags=socket.AI_NUMERICHOST)[0][4][0]
+        ip = ipaddress.ip_address(str(numeric).split("%")[0])
+    except (OSError, ValueError, IndexError):
+        return host == ""
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_unspecified
+
+
 def _is_loopback(host):
     if host == "localhost":
         return True
@@ -37,7 +48,9 @@ def loopback_address(family, kind, address, v6only=True):
 
     A dual-stack IPv6 socket (``v6only`` off, Linux's default for ``::``)
     gets IPv4 loopback, so clients of ``127.0.0.1`` (the controller's proxy
-    and readiness check) still reach it.
+    and readiness check) still reach it. A specific address with port 0 is
+    left alone: that is a client choosing its source address before
+    ``connect``, which loopback would break.
     """
     if kind != socket.SOCK_STREAM or family not in (socket.AF_INET, socket.AF_INET6):
         return address
@@ -49,6 +62,9 @@ def loopback_address(family, kind, address, v6only=True):
     if not isinstance(host, str):
         return address
     if _is_loopback(host):
+        return address
+    port = address[1] if len(address) > 1 else None
+    if port == 0 and not _is_wildcard(host):
         return address
     if family == socket.AF_INET:
         return ("127.0.0.1", *address[1:])
