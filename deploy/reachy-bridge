@@ -9,6 +9,7 @@
 #   reachy-bridge pair <code> [name]     approve a browser's LAN login code
 #   reachy-bridge devices [revoke <n|id>]  list or revoke paired browsers
 #   reachy-bridge deploy <tag>           install a tag; reinstall the previous version if it fails
+#   reachy-bridge uninstall [--keep-data] [--dry-run] [--yes]
 #
 # Stopping the daemon sends SIGINT, which puts the robot to sleep and releases
 # torque. Restarting the daemon is refused while the robot is on, unless
@@ -214,6 +215,177 @@ tailscale_serve() {
     sudo tailscale serve "$@"
 }
 
+# The tailnet ports `serve on` added that still point at the bridge: a port
+# serving something else (another service reusing the number) is left alone.
+bridge_serve_ports() {
+    local status
+    command -v tailscale >/dev/null && command -v python3 >/dev/null || return 0
+    status=$(tailscale serve status --json 2>/dev/null) || return 0
+    python3 -c '
+import json, sys
+web = (json.loads(sys.argv[1] or "{}") or {}).get("Web") or {}
+for mapping in sys.argv[2:]:
+    port, target = mapping.split()
+    for host, conf in web.items():
+        handlers = (conf or {}).get("Handlers") or {}
+        if host.rsplit(":", 1)[-1] == port and handlers and all(
+            (h or {}).get("Proxy", "").rstrip("/") == target for h in handlers.values()
+        ):
+            print(port)
+            break
+' "$status" "${SERVE_MAPPINGS[@]}"
+}
+
+# as_owner PATH CMD...: run CMD directly if PATH's directory is writable, with
+# sudo otherwise (udev rules, a system GStreamer plugin).
+as_owner() {
+    local path=$1
+    shift
+    if [[ -w $(dirname "$path") ]]; then "$@"; else sudo "$@"; fi
+}
+
+# Refuses paths outside the home directory, the home directory itself, and
+# relative or '..' paths: the manifest is only a list, not trusted blindly.
+safe_path() {
+    [[ $1 == "$HOME"/?* && $1 != *..* && $1 != "$HOME/" ]]
+}
+
+# uninstall: reverse deploy/install.sh from its install manifest (#142).
+uninstall_bridge() {
+    local keep=0 dry=0 yes=0 arg
+    for arg in "$@"; do
+        case "$arg" in
+            --keep-data) keep=1 ;;
+            --dry-run) dry=1 ;;
+            --yes|-y) yes=1 ;;
+            *) die "usage: reachy-bridge uninstall [--keep-data] [--dry-run] [--yes]" ;;
+        esac
+    done
+    local dest=$HOME/.local/share/reachy-bridge
+    local manifest=$dest/install-manifest
+    local unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+    local kind value units=() dirs=() files=() udev=() groups=() linger=0 gst=() ports=()
+    if [[ -r $manifest ]]; then
+        while IFS=$'\t' read -r kind value; do
+            case "$kind" in
+                unit) units+=("$value") ;;
+                dir) dirs+=("$value") ;;
+                file) files+=("$value") ;;
+                udev) udev+=("$value") ;;
+                group) groups+=("$value") ;;
+                linger) linger=1 ;;
+                gst-backup) gst+=("$value") ;;
+                '') ;;
+                *) echo "reachy-bridge: skipping unknown manifest entry '$kind'" >&2 ;;
+            esac
+        done <"$manifest"
+    else
+        # Installed before the manifest existed: what every install.sh added.
+        units=("$DAEMON" "$CONTROLLER" "$SIM")
+        dirs=("$dest")
+        files=("$HOME/.local/bin/reachy-bridge")
+    fi
+    mapfile -t ports < <(bridge_serve_ports)
+
+    echo "This removes reachy-bridge from this device:"
+    echo "  stop any app, put the robot to sleep and switch it off"
+    (( ${#units[@]} )) && echo "  stop, disable and remove the user units: ${units[*]}"
+    (( ${#ports[@]} )) && echo "  remove the tailnet HTTPS ports: ${ports[*]} (needs sudo)"
+    for value in "${udev[@]}"; do echo "  remove the udev rules $value (needs sudo)"; done
+    for value in "${groups[@]}"; do echo "  remove $USER from the $value group (needs sudo)"; done
+    (( linger )) && echo "  disable lingering for $USER (needs sudo)"
+    for value in "${gst[@]}"; do echo "  restore the GStreamer plugin ${value%% *} from ${value#* }"; done
+    for value in "${dirs[@]}"; do
+        if (( keep )) && [[ $value == "$dest" ]]; then
+            echo "  remove $value, except apps_venv (installed apps)"
+        else
+            echo "  remove $value"
+        fi
+    done
+    (( keep )) && echo "  keep $STATE_DIR (settings, paired devices, logs)" || echo "  remove $STATE_DIR (settings, paired devices, logs)"
+    for value in "${files[@]}"; do echo "  remove $value"; done
+    (( dry )) && { echo "(dry run: nothing changed)"; return 0; }
+
+    if (( ! yes )); then
+        [[ -t 0 ]] || die "not a terminal; pass --yes to uninstall"
+        read -r -p "Uninstall? [y/N] " arg
+        [[ $arg == [yY]* ]] || die "nothing changed"
+    fi
+
+    if systemctl --user is-active --quiet "$DAEMON"; then
+        local i
+        if [[ $(app_state) != none ]]; then
+            echo "== Stopping the running app"
+            curl -s -m 10 -X POST "$DAEMON_URL/api/apps/stop-current-app" >/dev/null || true
+            for (( i = 0; i < 30; i++ )); do [[ $(app_state) == none ]] && break; sleep 1; done
+        fi
+        if [[ $(robot_power) != off ]]; then
+            echo "== Putting the robot to sleep"
+            curl -s -m 10 -X POST "$DAEMON_URL/api/daemon/stop?goto_sleep=true" >/dev/null || true
+            for (( i = 0; i < 30; i++ )); do [[ $(robot_power) == off ]] && break; sleep 1; done
+            # Stopping the service below sends SIGINT, which also sleeps the
+            # robot and releases torque.
+            [[ $(robot_power) == off ]] || echo "warning: the robot didn't report off; stopping the service puts it to sleep"
+        fi
+    fi
+
+    echo "== Removing the services"
+    for value in "${units[@]}"; do
+        systemctl --user disable --now "$value" 2>/dev/null || true
+        rm -f "$unit_dir/$value"
+        [[ -d $unit_dir/$value.d ]] && echo "note: left your drop-ins in $unit_dir/$value.d"
+    done
+    systemctl --user daemon-reload
+    systemctl --user reset-failed "${units[@]}" 2>/dev/null || true
+
+    for value in "${ports[@]}"; do
+        tailscale_serve --https="$value" off ||
+            echo "warning: couldn't remove tailnet port $value; run: sudo tailscale serve --https=$value off"
+    done
+
+    if (( ${#udev[@]} )); then
+        for value in "${udev[@]}"; do sudo rm -f "$value"; done
+        sudo udevadm control --reload-rules && sudo udevadm trigger || true
+    fi
+    for value in "${groups[@]}"; do
+        sudo gpasswd -d "$USER" "$value" || echo "warning: couldn't remove $USER from $value"
+    done
+    (( linger )) && { sudo loginctl disable-linger "$USER" || echo "warning: couldn't disable lingering"; }
+    for value in "${gst[@]}"; do
+        local plugin=${value%% *} backup=${value#* }
+        if [[ -f $backup ]]; then
+            as_owner "$plugin" mv -f "$backup" "$plugin"
+        else
+            echo "warning: no backup at $backup; left $plugin in place"
+        fi
+    done
+
+    echo "== Removing files"
+    for value in "${dirs[@]}"; do
+        safe_path "$value" || { echo "warning: skipped $value (outside $HOME)"; continue; }
+        if (( keep )) && [[ $value == "$dest" ]]; then
+            find "$value" -mindepth 1 -maxdepth 1 ! -name apps_venv -exec rm -rf {} +
+        else
+            rm -rf "$value"
+        fi
+    done
+    if (( ! keep )); then
+        if safe_path "$STATE_DIR"; then rm -rf "$STATE_DIR"; else echo "warning: skipped $STATE_DIR (outside $HOME)"; fi
+    fi
+    for value in "${files[@]}"; do
+        safe_path "$value" && rm -f "$value"
+    done
+
+    echo
+    echo "reachy-bridge is uninstalled. Left in place, to remove by hand if you want:"
+    echo "  Tailscale, and any other tailnet ports (tailscale serve status)"
+    echo "  apt packages installed for it (GStreamer, libssl-dev, pkg-config)"
+    echo "  the Hugging Face cache (~/.cache/huggingface), uv, Rust and Bun"
+    echo "  the source checkout, if you installed from one"
+    (( keep )) && echo "  kept: $dest/apps_venv and $STATE_DIR, for a later reinstall"
+    return 0
+}
+
 cmd=${1:-status}
 shift || true
 force=0
@@ -331,12 +503,18 @@ if 1 <= n <= len(devices):
         deploy_tag "${args[0]}"
         exit
         ;;
+    uninstall)
+        # Exit from inside the case: this removes the file bash is reading.
+        (( ! force )) || die "usage: reachy-bridge uninstall [--keep-data] [--dry-run] [--yes]"
+        uninstall_bridge "${args[@]}"
+        exit
+        ;;
     robot-power)
         # For install.sh: off, on or unknown (see robot_power).
         robot_power
         ;;
     -h|--help|help)
-        sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         die "unknown command '$cmd' (try: reachy-bridge help)"
