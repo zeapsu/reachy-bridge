@@ -35,7 +35,6 @@ export function useExpressions(daemonOnline: boolean, appActive: boolean): Expre
   const [error, setError] = useState<string | null>(null);
 
   const busyRef = useRef(false);
-  const loadingRef = useRef(false);
   const onlineRef = useRef(daemonOnline);
   onlineRef.current = daemonOnline;
   const poller = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -79,13 +78,13 @@ export function useExpressions(daemonOnline: boolean, appActive: boolean): Expre
   useEffect(() => setError(null), [daemonOnline, appActive]);
 
   // Populate the strips once the daemon is reachable; retry while it stays so.
+  // Each run owns its fetch: a stream drop mid-load cancels it, and the next
+  // run fetches again rather than waiting on one whose result it will drop.
   useEffect(() => {
     if (!daemonOnline || loaded) return;
     let cancelled = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
     const load = async () => {
-      if (loadingRef.current) return;
-      loadingRef.current = true;
       try {
         const groups = await Promise.all(
           MOVE_DATASETS.map(async ({ id, dataset }) => ({
@@ -118,8 +117,6 @@ export function useExpressions(daemonOnline: boolean, appActive: boolean): Expre
         }
       } catch {
         if (!cancelled) retry = setTimeout(() => void load(), LOAD_RETRY_MS);
-      } finally {
-        loadingRef.current = false;
       }
     };
     void load();

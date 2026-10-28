@@ -154,7 +154,11 @@ export function ExpressionsPanel({ expr, daemonOnline, controlBusy, appActive }:
             </button>
           ))}
         </div>
-        <span className="lensring" aria-hidden="true"></span>
+        {moves.length ? (
+          <span className="lensring" aria-hidden="true"></span>
+        ) : (
+          <p className="carousel-empty">{daemonOnline ? "Loading expressions…" : "Expressions appear when Reachy is on."}</p>
+        )}
       </div>
       <div className="picked">
         <div>
