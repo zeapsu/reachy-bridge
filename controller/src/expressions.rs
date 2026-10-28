@@ -165,9 +165,15 @@ impl ExpressionPlayer {
     /// none. A move left running fights the sleep move: the robot stutters
     /// and the antennas end wherever the last target loop left them.
     pub async fn halt(&self, timeout: Duration) {
-        self.halts.fetch_add(1, Ordering::SeqCst);
-        self.clear();
-        self.mode_changed();
+        {
+            // Under start_lock: a play or return home being started finishes
+            // registering its session first, so it's cleared and its move
+            // stopped below, and the needs_home gate refuses any after.
+            let _guard = self.start_lock.lock().await;
+            self.halts.fetch_add(1, Ordering::SeqCst);
+            self.clear();
+            self.mode_changed();
+        }
         let deadline = tokio::time::Instant::now() + timeout;
         let mut stopped = Vec::new();
         loop {
