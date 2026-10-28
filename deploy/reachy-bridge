@@ -105,17 +105,19 @@ json_string() {
 }
 
 # Prints none, running or unknown: whether an app is starting, running or
-# stopping. No daemon listening means none.
+# stopping. No daemon listening means none; an answer it can't read, unknown.
 app_state() {
     local status rc=0
     status=$(curl -s -m 5 -w '\n%{http_code}' "$DAEMON_URL/api/apps/current-app-status") || rc=$?
     if (( rc == 7 )); then echo none; return; fi
     if (( rc != 0 )) || [[ ${status##*$'\n'} != 200 ]]; then echo unknown; return; fi
     status=${status%$'\n'*}
-    if [[ $status == *'"state":"starting"'* || $status == *'"state":"running"'* || $status == *'"state":"stopping"'* ]]; then
+    if [[ $status == null || $status == *'"state":"done"'* || $status == *'"state":"error"'* ]]; then
+        echo none
+    elif [[ $status == *'"state":"starting"'* || $status == *'"state":"running"'* || $status == *'"state":"stopping"'* ]]; then
         echo running
     else
-        echo none
+        echo unknown
     fi
 }
 
@@ -125,7 +127,7 @@ healthy() {
     local i
     for (( i = 0; i < 45; i++ )); do
         if [[ $(curl -s -m 5 "$DAEMON_URL/api/daemon/status") == *'"state":"'* ]] &&
-            controller_api GET /api/daemon/status 2>/dev/null | grep -q '"reachable":true'; then
+            (controller_api GET /api/daemon/status >/dev/null 2>&1); then
             return 0
         fi
         sleep 2
@@ -137,8 +139,8 @@ healthy() {
 # the services come back, and reinstall the previous version if not (#200).
 # The robot must be off and no app running; install.sh checks the robot again.
 deploy_tag() {
-    local tag=${1:-} repo=${REACHY_BRIDGE_REPO:-$HOME/reachy-bridge} prev prev_ref prev_name
-    [[ -n $tag && $tag != -* ]] || die "usage: reachy-bridge deploy <tag>"
+    local tag=$1 repo=${REACHY_BRIDGE_REPO:-$HOME/reachy-bridge}
+    local record=$HOME/.local/share/reachy-bridge/VERSION installed="" prev prev_ref checkout_ref prev_name rc=0
     [[ -x $repo/deploy/install.sh ]] || die "no checkout at $repo (set REACHY_BRIDGE_REPO)"
     [[ $(robot_power) == off ]] || die "the robot isn't confirmed off ($(robot_state)); turn it off first"
     [[ $(app_state) == none ]] || die "an app is running, or the daemon didn't say; stop it first"
@@ -147,20 +149,45 @@ deploy_tag() {
     git -C "$repo" fetch --quiet --tags origin || die "git fetch failed"
     git -C "$repo" rev-parse --quiet --verify "refs/tags/$tag^{commit}" >/dev/null || die "no tag $tag"
 
+    # Roll back to what install.sh last installed (it records the commit),
+    # which can differ from the checkout's HEAD after a pull. Without a record
+    # yet, the checkout is the best guess.
+    [[ -r $record ]] && installed=$(<"$record")
+    if [[ -n $installed ]] && ! git -C "$repo" cat-file -e "$installed^{commit}" 2>/dev/null; then
+        installed=""
+    fi
     prev=$(git -C "$repo" rev-parse HEAD)
-    prev_ref=$(git -C "$repo" symbolic-ref --quiet --short HEAD || echo "$prev")
+    checkout_ref=$(git -C "$repo" symbolic-ref --quiet --short HEAD || echo "$prev")
+    prev_ref=$checkout_ref
+    if [[ -n $installed && $installed != "$prev" ]]; then
+        prev=$installed prev_ref=$installed
+    fi
     prev_name=$(git -C "$repo" describe --tags --always "$prev")
-    echo "installed: $prev_name ($prev_ref)"
+    if [[ -n $installed ]]; then
+        echo "installed: $prev_name"
+    else
+        echo "installed: $prev_name (no install record yet; assuming the checkout)"
+    fi
     echo "deploying: $tag"
     git -C "$repo" checkout --quiet --detach "refs/tags/$tag"
-    if "$repo/deploy/install.sh" && healthy; then
+    "$repo/deploy/install.sh" || rc=$?
+    if (( rc == 0 )) && healthy; then
         echo "deployed $tag (previously $prev_name)"
         return 0
     fi
 
+    # The tree was clean before, so --force only drops what the tag's build
+    # left behind.
+    if (( rc == 3 )); then
+        git -C "$repo" checkout --quiet --force "$checkout_ref" || true
+        die "deploying $tag was refused before anything changed (see above); $prev_name is still installed"
+    fi
+    git -C "$repo" checkout --quiet --force "$prev_ref" ||
+        die "deploying $tag failed, and checking out $prev_name again failed too; the checkout is still at $tag"
     echo "reachy-bridge: deploying $tag failed; reinstalling $prev_name" >&2
-    git -C "$repo" checkout --quiet "$prev_ref"
-    if "$repo/deploy/install.sh" && healthy; then
+    rc=0
+    "$repo/deploy/install.sh" || rc=$?
+    if (( rc == 0 )) && healthy; then
         die "deploying $tag failed; $prev_name is installed again"
     fi
     die "deploying $tag failed, and so did reinstalling $prev_name; check reachy-bridge status and logs"
@@ -284,7 +311,8 @@ if 1 <= n <= len(devices):
     deploy)
         # Exit from inside the case: install.sh replaces this file, and bash
         # would otherwise read on from the new one.
-        deploy_tag "${args[0]:-}"
+        (( ${#args[@]} == 1 && ! force )) && [[ ${args[0]} != -* ]] || die "usage: reachy-bridge deploy <tag>"
+        deploy_tag "${args[0]}"
         exit
         ;;
     robot-power)
