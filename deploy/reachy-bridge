@@ -8,6 +8,7 @@
 #   reachy-bridge serve [on|off|status]
 #   reachy-bridge pair <code> [name]     approve a browser's LAN login code
 #   reachy-bridge devices [revoke <n|id>]  list or revoke paired browsers
+#   reachy-bridge deploy <tag>           install a tag; reinstall the previous version if it fails
 #
 # Stopping the daemon sends SIGINT, which puts the robot to sleep and releases
 # torque. Restarting the daemon is refused while the robot is on, unless
@@ -104,6 +105,106 @@ json_string() {
     local s=${1//\\/\\\\}
     s=${s//\"/\\\"}
     printf '"%s"' "${s//[[:cntrl:]]/}"
+}
+
+# Prints none, running or unknown: whether an app is starting, running or
+# stopping. No daemon listening means none; an answer it can't read, unknown.
+app_state() {
+    local status rc=0
+    status=$(curl -s -m 5 -w '\n%{http_code}' "$DAEMON_URL/api/apps/current-app-status") || rc=$?
+    if (( rc == 7 )); then echo none; return; fi
+    if (( rc != 0 )) || [[ ${status##*$'\n'} != 200 ]]; then echo unknown; return; fi
+    status=${status%$'\n'*}
+    if [[ $status == null || $status == *'"state":"done"'* || $status == *'"state":"error"'* ]]; then
+        echo none
+    elif [[ $status == *'"state":"starting"'* || $status == *'"state":"running"'* || $status == *'"state":"stopping"'* ]]; then
+        echo running
+    else
+        echo unknown
+    fi
+}
+
+# Waits up to 90 s for the daemon and the controller to answer their status
+# routes after an install (the daemon starts with the robot off).
+healthy() {
+    local i
+    for (( i = 0; i < 45; i++ )); do
+        if [[ $(curl -s -m 5 "$DAEMON_URL/api/daemon/status") == *'"state":"'* ]] &&
+            (controller_api GET /api/daemon/status >/dev/null 2>&1); then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+# deploy <tag>: install a tag from the checkout with deploy/install.sh, check
+# the services come back, and reinstall the previous version if not (#200).
+# The robot must be off and no app running; install.sh checks the robot again.
+deploy_tag() {
+    local tag=$1 repo=${REACHY_BRIDGE_REPO:-$HOME/reachy-bridge}
+    local record=$HOME/.local/share/reachy-bridge/VERSION installed="" prev prev_ref checkout_ref prev_name rc=0
+    [[ -x $repo/deploy/install.sh ]] || die "no checkout at $repo (set REACHY_BRIDGE_REPO)"
+    [[ $(robot_power) == off ]] || die "the robot isn't confirmed off ($(robot_state)); turn it off first"
+    [[ $(app_state) == none ]] || die "an app is running, or the daemon didn't say; stop it first"
+    [[ -z $(git -C "$repo" status --porcelain --untracked-files=no) ]] ||
+        die "$repo has local changes; commit or discard them first"
+    git -C "$repo" fetch --quiet --tags origin || die "git fetch failed"
+    git -C "$repo" rev-parse --quiet --verify "refs/tags/$tag^{commit}" >/dev/null || die "no tag $tag"
+
+    # Roll back to what was last installed (deploy and install.sh record the
+    # commit), which can differ from the checkout's HEAD after a pull. Without
+    # a record yet, the checkout is the best guess.
+    [[ -r $record ]] && installed=$(<"$record")
+    if [[ -n $installed ]] && ! git -C "$repo" cat-file -e "$installed^{commit}" 2>/dev/null; then
+        installed=""
+    fi
+    prev=$(git -C "$repo" rev-parse HEAD)
+    checkout_ref=$(git -C "$repo" symbolic-ref --quiet --short HEAD || echo "$prev")
+    prev_ref=$checkout_ref
+    if [[ -n $installed && $installed != "$prev" ]]; then
+        prev=$installed prev_ref=$installed
+    fi
+    prev_name=$(git -C "$repo" describe --tags --always "$prev")
+    if [[ -n $installed ]]; then
+        echo "installed: $prev_name"
+    else
+        echo "installed: $prev_name (no install record yet; assuming the checkout)"
+    fi
+    echo "deploying: $tag"
+    git -C "$repo" checkout --quiet --detach "refs/tags/$tag"
+    "$repo/deploy/install.sh" || rc=$?
+    # The record is written here too, not only by install.sh: an older tag's
+    # install.sh doesn't write one.
+    if (( rc == 0 )) && healthy; then
+        git -C "$repo" rev-parse HEAD >"$record"
+        echo "deployed $tag (previously $prev_name)"
+        return 0
+    fi
+
+    # The tree was clean before, so --force only drops what the tag's build
+    # left behind.
+    if (( rc == 3 )); then
+        git -C "$repo" checkout --quiet --force "$checkout_ref" ||
+            die "deploying $tag was refused before anything changed (see above), but checking out $checkout_ref again failed; the checkout is still at $tag"
+        die "deploying $tag was refused before anything changed (see above); $prev_name is still installed"
+    fi
+    git -C "$repo" checkout --quiet --force "$prev_ref" ||
+        die "deploying $tag failed, and checking out $prev_name again failed too; the checkout is still at $tag"
+    echo "reachy-bridge: deploying $tag failed; reinstalling $prev_name" >&2
+    rc=0
+    "$repo/deploy/install.sh" || rc=$?
+    if (( rc == 3 )); then
+        die "deploying $tag failed, and reinstalling $prev_name was refused before it changed anything (see above); check reachy-bridge status"
+    fi
+    if (( rc == 0 )) && healthy; then
+        git -C "$repo" rev-parse HEAD >"$record"
+        [[ $prev_ref == "$checkout_ref" ]] || echo "reachy-bridge: the checkout is now detached at $prev_name (was $checkout_ref)" >&2
+        die "deploying $tag failed; $prev_name is installed again"
+    fi
+    # What is installed is now unknown; don't let the next deploy trust it.
+    rm -f "$record"
+    die "deploying $tag failed, and so did reinstalling $prev_name; check reachy-bridge status and logs"
 }
 
 tailscale_serve() {
@@ -222,12 +323,19 @@ if 1 <= n <= len(devices):
             *) die "devices takes list or revoke <n|id>" ;;
         esac
         ;;
+    deploy)
+        # Exit from inside the case: install.sh replaces this file, and bash
+        # would otherwise read on from the new one.
+        (( ${#args[@]} == 1 && ! force )) && [[ ${args[0]} != -* ]] || die "usage: reachy-bridge deploy <tag>"
+        deploy_tag "${args[0]}"
+        exit
+        ;;
     robot-power)
         # For install.sh: off, on or unknown (see robot_power).
         robot_power
         ;;
     -h|--help|help)
-        sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         die "unknown command '$cmd' (try: reachy-bridge help)"
