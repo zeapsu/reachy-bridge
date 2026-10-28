@@ -18,8 +18,11 @@ def test_installed_reachy_mini_matches_the_seam() -> None:
 
 
 def test_check_reports_a_missing_symbol_against_its_feature(monkeypatch: pytest.MonkeyPatch) -> None:
+    from reachy_mini.apps.manager import AppManager
+
     manager = types.ModuleType("reachy_mini.apps.manager")
-    manager.AppManager = type("AppManager", (), {})  # stop_current_app is gone
+    # stop_current_app is gone; start_app (app_bind) is still there
+    manager.AppManager = type("AppManager", (), {"start_app": AppManager.start_app})
     monkeypatch.setitem(sys.modules, "reachy_mini.apps.manager", manager)
     problems = upstream.check()
     assert list(problems) == ["keep_awake"]
@@ -53,7 +56,7 @@ def test_startup_skips_only_the_mismatched_feature(monkeypatch: pytest.MonkeyPat
     )
     skipped = runtime_main.apply(platforms.Platform(name="test", tier="tested"))
     assert skipped == ["keep_awake"]
-    assert applied == ["kinematics"]
+    assert applied == ["app_bind", "kinematics"]
 
 
 def test_a_daemon_mismatch_stops_startup(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,7 +109,7 @@ def test_a_routes_mismatch_spares_features_without_routes(monkeypatch: pytest.Mo
         {name: (lambda name=name: applied.append(name)) for name in runtime_main.FEATURES},
     )
     assert runtime_main.apply(platforms.Platform(name="test", tier="tested")) == ["kinematics"]
-    assert applied == ["keep_awake"]
+    assert applied == ["app_bind", "keep_awake"]
 
 
 def test_a_wrapped_app_factory_no_longer_matches_the_routes_seam(monkeypatch: pytest.MonkeyPatch) -> None:
