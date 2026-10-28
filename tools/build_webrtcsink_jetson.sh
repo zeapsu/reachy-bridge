@@ -1,57 +1,79 @@
 #!/usr/bin/env bash
 #
-# Build the GStreamer `webrtcsink` element (gst-plugins-rs) for this Jetson.
+# Build the GStreamer `webrtcsink` element (gst-plugins-rs) for an arm64
+# Ubuntu 24.04 device (JetPack 7) or for a release.
 #
-# The Reachy Mini daemon's media server requires the `webrtcsink` element from
-# gst-plugins-rs (the GStreamer "Rust" plugins). It is NOT packaged for L4T /
-# Ubuntu 22.04 aarch64, so we build it from source. GStreamer here is 1.20.3,
-# so we use the gst-plugins-rs `0.10` branch (newer branches need GStreamer
-# >= 1.22). We build only the webrtc plugin and install it into the per-user
-# GStreamer plugin dir, so no root is needed for the build/install step.
+# The Reachy Mini daemon's media server needs `webrtcsink` with
+# `run-signalling-server`, which gst-plugins-rs added after 0.13. It is not
+# packaged for Ubuntu 24.04 (GStreamer 1.24.2), so it is built from source.
+# Releases attach the plugin built by this script on ubuntu-24.04-arm (#132),
+# so devices only download it; building on a Jetson takes about 7 minutes.
 #
-# Prerequisite (run once, needs sudo -- the ONLY privileged step):
-#   sudo apt-get update
-#   sudo apt-get install -y libgstreamer-plugins-bad1.0-dev libssl-dev
+# Prerequisites (once, with sudo):
+#   sudo apt-get install -y libgstreamer-plugins-bad1.0-dev libssl-dev pkg-config gstreamer1.0-tools
+# and Rust (rustup).
 #
-# Then run this script (no sudo):
-#   bash tools/build_webrtcsink_jetson.sh
+# Usage:
+#   bash tools/build_webrtcsink_jetson.sh             build and install into ~/.local/share/gstreamer-1.0/plugins
+#   bash tools/build_webrtcsink_jetson.sh --out DIR   build and copy the plugin to DIR only (release builds)
+#
+# GST_RS_VERSION picks the gst-plugins-rs tag (default below); GST_RS_SRC the
+# checkout directory.
 #
 set -euo pipefail
 
-SRC_DIR="${GST_RS_SRC:-/tmp/gst-plugins-rs}"
-BRANCH="0.10"
+VERSION="${GST_RS_VERSION:-0.14.5}"
+SRC_DIR="${GST_RS_SRC:-${TMPDIR:-/tmp}/gst-plugins-rs-$VERSION}"
 PLUGIN_DIR="$HOME/.local/share/gstreamer-1.0/plugins"
 SO_NAME="libgstrswebrtc.so"
+OUT_DIR=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out) OUT_DIR="${2:?--out needs a directory}"; shift 2 ;;
+    *) echo "usage: $0 [--out DIR]" >&2; exit 2 ;;
+  esac
+done
 
 echo "==> Checking prerequisites"
 command -v cargo >/dev/null || { echo "ERROR: cargo/rust not found"; exit 1; }
-if ! pkg-config --exists gstreamer-webrtc-1.0; then
-  echo "ERROR: gstreamer-webrtc-1.0 dev headers missing."
-  echo "       Run: sudo apt-get install -y libgstreamer-plugins-bad1.0-dev libssl-dev"
-  exit 1
-fi
-if ! pkg-config --exists openssl; then
-  echo "ERROR: openssl dev headers missing."
-  echo "       Run: sudo apt-get install -y libssl-dev"
-  exit 1
-fi
+command -v gst-inspect-1.0 >/dev/null || { echo "ERROR: gst-inspect-1.0 not found (gstreamer1.0-tools)"; exit 1; }
+for module in gstreamer-webrtc-1.0 openssl; do
+  if ! pkg-config --exists "$module"; then
+    echo "ERROR: $module dev headers missing."
+    echo "       Run: sudo apt-get install -y libgstreamer-plugins-bad1.0-dev libssl-dev"
+    exit 1
+  fi
+done
 
-echo "==> Fetching gst-plugins-rs ($BRANCH) into $SRC_DIR"
+echo "==> Fetching gst-plugins-rs $VERSION into $SRC_DIR"
 if [ ! -d "$SRC_DIR/.git" ]; then
-  git clone --depth 1 --branch "$BRANCH" \
+  git clone --depth 1 --branch "$VERSION" \
     https://github.com/GStreamer/gst-plugins-rs.git "$SRC_DIR"
 fi
 
-echo "==> Building gst-plugin-webrtc (release) -- this can take 10-30 min"
-cd "$SRC_DIR"
-cargo build --release -p gst-plugin-webrtc
+echo "==> Building gst-plugin-webrtc (release)"
+(cd "$SRC_DIR" && cargo build --release --locked -p gst-plugin-webrtc)
 
 BUILT_SO="$SRC_DIR/target/release/$SO_NAME"
 [ -f "$BUILT_SO" ] || { echo "ERROR: build did not produce $BUILT_SO"; exit 1; }
+# The unstripped plugin is about 140 MB, mostly debug info.
+strip --strip-unneeded "$BUILT_SO"
 
-echo "==> Verifying the built plugin exposes webrtcsink"
-gst-inspect-1.0 "$BUILT_SO" | grep -q webrtcsink \
-  || { echo "ERROR: built plugin does not register webrtcsink"; exit 1; }
+echo "==> Verifying the plugin registers webrtcsink with run-signalling-server"
+check_dir="$(mktemp -d)"
+trap 'rm -rf "$check_dir"' EXIT
+cp "$BUILT_SO" "$check_dir/"
+GST_REGISTRY="$check_dir/registry.bin" GST_PLUGIN_PATH="$check_dir" \
+  gst-inspect-1.0 webrtcsink | grep -q run-signalling-server \
+  || { echo "ERROR: built plugin has no webrtcsink with run-signalling-server"; exit 1; }
+
+if [ -n "$OUT_DIR" ]; then
+  mkdir -p "$OUT_DIR"
+  cp -f "$BUILT_SO" "$OUT_DIR/"
+  echo "SUCCESS: $OUT_DIR/$SO_NAME (gst-plugins-rs $VERSION)"
+  exit 0
+fi
 
 echo "==> Installing to user plugin dir: $PLUGIN_DIR"
 mkdir -p "$PLUGIN_DIR"

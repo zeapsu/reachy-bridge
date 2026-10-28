@@ -1,0 +1,48 @@
+name: webrtcsink
+
+# Builds the gst-plugins-rs webrtc plugin (libgstrswebrtc.so) that the daemon
+# needs, so releases can ship it and devices skip a 7-minute build (#132).
+# ubuntu-24.04-arm has GStreamer 1.24.2, the same as JetPack 7. Runs on its own
+# when this workflow or the build script changes, and from release.yml.
+
+on:
+  workflow_call:
+  pull_request:
+    paths:
+      - .github/workflows/webrtcsink.yml
+      - tools/build_webrtcsink_jetson.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webrtcsink-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GST_RS_VERSION: "0.14.5"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-tools
+      - name: Install Rust 1.96.0
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup default 1.96.0
+      - name: Build
+        run: bash tools/build_webrtcsink_jetson.sh --out "$RUNNER_TEMP/webrtcsink"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: webrtcsink
+          path: ${{ runner.temp }}/webrtcsink/libgstrswebrtc.so
+          if-no-files-found: error
+          retention-days: 7
