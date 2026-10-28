@@ -73,11 +73,16 @@ export function useDrive(allowed: boolean): DriveState {
 
   const tick = useCallback(() => {
     const now = performance.now();
+    const ws = socket.current;
+    // Nothing ramps until the controller is ready: the first target sent is
+    // one step from home, however long the connection took.
+    if (!ws || ws.readyState !== WebSocket.OPEN || !limitsRead.current) {
+      last.current = now;
+      return;
+    }
     const goal = stickPose(sticks.current, limits.current);
     pose.current = stepToward(pose.current, goal, (now - last.current) / 1000);
     last.current = now;
-    const ws = socket.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !limitsRead.current) return;
     if (!sent.current || !samePose(sent.current, pose.current)) {
       ws.send(driveMessage(pose.current));
       sent.current = pose.current;
@@ -114,6 +119,8 @@ export function useDrive(allowed: boolean): DriveState {
       if (message?.type === "ready") {
         limits.current = parseLimits(message);
         limitsRead.current = true;
+        pose.current = HOME;
+        last.current = performance.now();
         setPhase("live");
       } else if (message?.type === "error") {
         setError(typeof message.detail === "string" ? message.detail : "Drive stopped.");

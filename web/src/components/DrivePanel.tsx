@@ -1,4 +1,4 @@
-import { useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import type { DriveState } from "../hooks/useDrive.ts";
 import "./DrivePanel.css";
 
@@ -106,6 +106,8 @@ function Pad({ label, hint, disabled, onHold, onRelease, onMove }: PadProps) {
   );
 }
 
+const SLIDER_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"]);
+
 interface AntennaProps {
   side: "Left" | "Right";
   disabled: boolean;
@@ -117,15 +119,34 @@ interface AntennaProps {
 /** An antenna slider: -100..100 around park, back to park on release. */
 function Antenna({ side, disabled, onHold, onRelease, onMove }: AntennaProps) {
   const [value, setValue] = useState(0);
+  const held = useRef(false);
   const id = `drive-antenna-${side.toLowerCase()}`;
   const set = (next: number) => {
     setValue(next);
     onMove(next / 100);
   };
+  const grab = () => {
+    held.current = true;
+    onHold();
+  };
   const letGo = () => {
+    if (!held.current) return;
+    held.current = false;
     set(0);
     onRelease();
   };
+  // A drag that ends outside the slider (or turns into a pan) still lets go.
+  const release = useRef(letGo);
+  release.current = letGo;
+  useEffect(() => {
+    const up = () => release.current();
+    addEventListener("pointerup", up);
+    addEventListener("pointercancel", up);
+    return () => {
+      removeEventListener("pointerup", up);
+      removeEventListener("pointercancel", up);
+    };
+  }, []);
   return (
     <div className="slider">
       <label htmlFor={id}>
@@ -139,12 +160,13 @@ function Antenna({ side, disabled, onHold, onRelease, onMove }: AntennaProps) {
         value={value}
         disabled={disabled}
         style={{ "--fill": `${(value + 100) / 2}%` } as CSSProperties}
-        onPointerDown={onHold}
-        onKeyDown={onHold}
-        onChange={(event) => set(Number(event.target.value))}
-        onPointerUp={letGo}
-        onPointerCancel={letGo}
-        onKeyUp={letGo}
+        onPointerDown={grab}
+        onKeyDown={(event) => {
+          if (SLIDER_KEYS.has(event.key)) grab();
+        }}
+        // Only a held slider moves its antenna, so a stray change can't leave it off park.
+        onChange={(event) => held.current && set(Number(event.target.value))}
+        onKeyUp={(event) => SLIDER_KEYS.has(event.key) && letGo()}
         onBlur={letGo}
       />
     </div>

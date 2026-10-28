@@ -31,11 +31,12 @@ describe("stickPose", () => {
   });
 
   test("sticks past the edge or not numbers stay in range", () => {
-    const pose = stickPose({ head: { x: 5, y: Number.NaN }, body: { x: -9, y: 0 }, antennas: [3, -3] });
+    const pose = stickPose({ head: { x: 5, y: Number.NaN }, body: { x: -9, y: 0 }, antennas: [3, 3] });
     expect(pose.headYaw).toBeCloseTo(-65 * DEG);
     expect(pose.pitch).toBe(0);
     expect(pose.bodyYaw).toBeCloseTo(160 * DEG);
-    // Slider order is [left, right]; the pose is daemon order [right, left].
+    // Slider order is [left, right]; the pose is daemon order [right, left],
+    // and + swings both antennas away from the middle.
     expect(pose.antennas[0]).toBeCloseTo(-90 * DEG);
     expect(pose.antennas[1]).toBeCloseTo(90 * DEG);
   });

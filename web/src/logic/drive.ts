@@ -73,7 +73,7 @@ const unit = (v: number) => (Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) :
 /**
  * Head pad: right looks right, down looks down. Body pad: right turns the
  * body right, up raises the head and down lowers it. A slider swings its
- * antenna through the range either side of park.
+ * antenna either side of park, mirrored so + moves both the same way.
  */
 export function stickPose(sticks: Sticks, limits: DriveLimits = DEFAULT_LIMITS): Pose {
   const by = unit(sticks.body.y);
@@ -85,7 +85,7 @@ export function stickPose(sticks: Sticks, limits: DriveLimits = DEFAULT_LIMITS):
     headYaw: -unit(sticks.head.x) * limits.headYaw + 0,
     bodyYaw: -unit(sticks.body.x) * limits.bodyYaw + 0,
     z: (by < 0 ? -by * limits.z[1] : by * limits.z[0]) + 0,
-    antennas: [ANTENNA_PARK[0] + right * swing, ANTENNA_PARK[1] + left * swing],
+    antennas: [ANTENNA_PARK[0] - right * swing, ANTENNA_PARK[1] + left * swing],
   };
 }
 
