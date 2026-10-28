@@ -3,8 +3,8 @@
 # Replaces the old reachy-up / reachy-down shell functions (#130).
 #
 #   reachy-bridge status
-#   reachy-bridge start | stop | restart [daemon|controller]   (default: both)
-#   reachy-bridge logs [daemon|controller]
+#   reachy-bridge start | stop | restart [daemon|controller|sim]   (default: daemon and controller)
+#   reachy-bridge logs [daemon|controller|sim]
 #   reachy-bridge serve [on|off|status]
 #   reachy-bridge pair <code> [name]     approve a browser's LAN login code
 #   reachy-bridge devices [revoke <n|id>]  list or revoke paired browsers
@@ -16,6 +16,8 @@ set -euo pipefail
 
 DAEMON=reachy-bridge.service
 CONTROLLER=reachy-bridge-controller.service
+# The sim daemon behind the dashboard's sim mode (#149); the controller starts it.
+SIM=reachy-bridge-sim.service
 DAEMON_URL=${DAEMON_URL:-http://127.0.0.1:8000}
 
 # tailscale serve: dedicated HTTPS ports only. Never the root mapping, never
@@ -44,7 +46,8 @@ units_for() {
         all) UNITS=("$DAEMON" "$CONTROLLER") ;;
         daemon) UNITS=("$DAEMON") ;;
         controller) UNITS=("$CONTROLLER") ;;
-        *) die "unknown service '$1' (daemon, controller)" ;;
+        sim) UNITS=("$SIM") ;;
+        *) die "unknown service '$1' (daemon, controller, sim)" ;;
     esac
 }
 
@@ -119,7 +122,7 @@ done
 
 case "$cmd" in
     status)
-        systemctl --user --no-pager --lines=0 status $DAEMON $CONTROLLER || true
+        systemctl --user --no-pager --lines=0 status $DAEMON $CONTROLLER $SIM || true
         echo "robot: $(robot_state)"
         ;;
     start)
@@ -141,6 +144,7 @@ case "$cmd" in
         case "${args[0]:-daemon}" in
             daemon) unit=$DAEMON ;;
             controller) unit=$CONTROLLER ;;
+            sim) unit=$SIM ;;
             *) die "unknown service '${args[0]}'" ;;
         esac
         # --user-unit reads the system journal, where user services log when

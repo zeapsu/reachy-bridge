@@ -8,8 +8,10 @@
 #   .venv/           the runtime and Pollen's daemon (reachy-mini at the locked version)
 #   apps_venv/       community apps, managed by the daemon (left untouched here)
 #   bin/reachy-controller
-# and the reachy-bridge and reachy-bridge-controller user units, plus the
-# reachy-bridge command in ~/.local/bin.
+#   sim/             the sim daemon's working directory (sim mode, #149)
+# and the reachy-bridge and reachy-bridge-controller user units, the
+# reachy-bridge-sim unit (not enabled: the controller starts it on demand),
+# plus the reachy-bridge command in ~/.local/bin.
 #
 # It changes nothing on the device until the robot is confirmed off and the
 # locked reachy-mini has passed the runtime's --check in a throwaway venv.
@@ -26,6 +28,7 @@ BIN_DIR=$HOME/.local/bin
 CLI=$REPO/deploy/reachy-bridge
 DAEMON=reachy-bridge.service
 CONTROLLER=reachy-bridge-controller.service
+SIM=reachy-bridge-sim.service
 
 step() { printf '\n== %s\n' "$*"; }
 die() { echo "install: $*" >&2; exit 1; }
@@ -48,7 +51,7 @@ require_robot_off() {
 
 step "Preflight"
 require_robot_off
-if [[ -d $UNIT_DIR/$DAEMON.d || -d $UNIT_DIR/$CONTROLLER.d ]]; then
+if [[ -d $UNIT_DIR/$DAEMON.d || -d $UNIT_DIR/$CONTROLLER.d || -d $UNIT_DIR/$SIM.d ]]; then
     echo "warning: drop-ins in $UNIT_DIR/*.service.d override the installed units"
 fi
 staging=$(mktemp -d)
@@ -58,7 +61,7 @@ trap 'rm -rf "$staging"' EXIT
 # --reinstall-package: uv caches the runtime's wheel by its pyproject.toml, so
 # without it a source change at the same version installs the old code.
 UV_PROJECT_ENVIRONMENT="$staging/venv" uv sync --project "$REPO" --frozen --no-dev \
-    --no-editable --package reachy-bridge-runtime --reinstall-package reachy-bridge-runtime --quiet
+    --no-editable --package reachy-bridge-runtime --extra sim --reinstall-package reachy-bridge-runtime --quiet
 "$staging/venv/bin/reachy-bridge-runtime" --check ||
     die "the locked reachy-mini doesn't match the runtime's upstream seam (see above). Nothing was changed."
 
@@ -69,19 +72,21 @@ step "Build the controller"
 step "Install"
 # The build takes minutes; the robot may have been switched on meanwhile.
 require_robot_off
-systemctl --user stop "$DAEMON" 2>/dev/null || true
-mkdir -p "$DEST/bin"
-# --no-editable, so the service doesn't depend on this checkout.
+systemctl --user stop "$DAEMON" "$SIM" 2>/dev/null || true
+mkdir -p "$DEST/bin" "$DEST/sim"
+# --no-editable, so the service doesn't depend on this checkout. The sim extra
+# (MuJoCo) is for the sim daemon.
 UV_PROJECT_ENVIRONMENT="$DEST/.venv" uv sync --project "$REPO" --frozen --no-dev \
-    --no-editable --package reachy-bridge-runtime --reinstall-package reachy-bridge-runtime
+    --no-editable --package reachy-bridge-runtime --extra sim --reinstall-package reachy-bridge-runtime
 install -m 755 "$REPO/controller/target/release/reachy-controller" "$DEST/bin/reachy-controller.new"
 mv -f "$DEST/bin/reachy-controller.new" "$DEST/bin/reachy-controller"
 install -D -m 755 "$CLI" "$BIN_DIR/reachy-bridge"
 mkdir -p "$UNIT_DIR"
 # rm first: never write through a symlinked unit file to its target.
-rm -f "$UNIT_DIR/$DAEMON" "$UNIT_DIR/$CONTROLLER"
+rm -f "$UNIT_DIR/$DAEMON" "$UNIT_DIR/$CONTROLLER" "$UNIT_DIR/$SIM"
 sed "s|@UV_DIR@|$uv_dir|" "$REPO/deploy/systemd/$DAEMON" >"$UNIT_DIR/$DAEMON"
 install -m 644 "$REPO/deploy/systemd/$CONTROLLER" "$UNIT_DIR/$CONTROLLER"
+install -m 644 "$REPO/deploy/systemd/$SIM" "$UNIT_DIR/$SIM"
 systemctl --user daemon-reload
 systemctl --user enable "$DAEMON" "$CONTROLLER"
 
