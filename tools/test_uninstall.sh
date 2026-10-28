@@ -144,6 +144,12 @@ mv "$D" "$ROOT/nvme-install" && ln -s "$ROOT/nvme-install" "$D"
 run --yes || { fail "symlinked exited $?"; cat "$ROOT/out"; }
 check "removes the link and empties what it pointed to" '[[ ! -e $D && ! -L $D && -z $(ls -A "$ROOT/nvme-install") ]]'
 
+echo "== install dir linked to a whole disk"
+setup manifest
+mkdir -p "$ROOT/disk" && echo precious >"$ROOT/disk/photo" && rm -rf "$D" && ln -s "$ROOT/disk" "$D"
+run --yes || { fail "disk link exited $?"; cat "$ROOT/out"; }
+check "removes only the link" '[[ ! -L $D && -f $ROOT/disk/photo ]]'
+
 echo "== state dir override"
 setup manifest
 REACHY_BRIDGE_STATE_DIR=$H/.local/state run --yes || { fail "override exited $?"; cat "$ROOT/out"; }

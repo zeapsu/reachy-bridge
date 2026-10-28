@@ -406,12 +406,18 @@ uninstall_bridge() {
     echo "== Removing files"
     for value in "${dirs[@]}"; do
         safe_path "$value" || { echo "warning: skipped $value (outside $HOME)"; continue; }
+        # A linked dir (an install moved to another disk) is emptied through
+        # the link, but only if it holds an install: a link to a whole disk
+        # or a shared folder only loses the link.
+        local inside=1
+        if [[ -L $value && ! -e $value/.venv && ! -e $value/install-manifest && ! -e $value/bin/reachy-controller ]]; then
+            inside=0
+            echo "note: $value links to $(readlink -- "$value"), which doesn't look like an install; left its contents alone"
+        fi
         if (( keep )) && [[ $value == "$dest" ]]; then
-            find -H "$value" -mindepth 1 -maxdepth 1 ! -name "${kept[0]}" ! -name "${kept[1]}" -exec rm -rf {} +
+            (( inside )) && find -H "$value" -mindepth 1 -maxdepth 1 ! -name "${kept[0]}" ! -name "${kept[1]}" -exec rm -rf {} +
         else
-            # A linked dir (an install moved to another disk): empty what it
-            # points to, then remove the link.
-            [[ -L $value ]] && find -H "$value" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+            [[ -L $value ]] && (( inside )) && find -H "$value" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
             rm -rf "$value"
         fi
     done
