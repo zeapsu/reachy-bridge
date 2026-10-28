@@ -78,7 +78,9 @@ def main(out: str) -> None:
         rgba = m.mat_rgba[m.geom_matid[g]] if m.geom_matid[g] >= 0 else m.geom_rgba[g]
         colors = np.tile((np.asarray(rgba) * 255).astype(np.uint8), (len(mesh.faces), 1))
         mesh.visual = trimesh.visual.ColorVisuals(mesh, face_colors=colors)
-        meshes.setdefault(name, []).append(mesh)
+        # See-through parts (the eye lenses) get their own node, so the
+        # browser can give them a glass material; they move with their part.
+        meshes.setdefault(f"{name}_glass" if rgba[3] < 1 else name, []).append(mesh)
 
     scene_out = trimesh.Scene()
     for name, parts in meshes.items():
