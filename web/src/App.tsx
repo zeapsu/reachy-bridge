@@ -11,7 +11,7 @@ import { AppearancePanel, Wallpaper } from "./components/Appearance.tsx";
 import { AuthGate } from "./components/Login.tsx";
 import { Segmented } from "./components/Segmented.tsx";
 import { PhoneTabs, TopBar } from "./components/Shell.tsx";
-import { SimPanel } from "./components/SimPanel.tsx";
+import { SimAppsNote, SimPanel } from "./components/SimPanel.tsx";
 import { LogsPanel, StatsPanel } from "./components/SystemPanel.tsx";
 import { Viewport, type PoseSink } from "./components/Viewport.tsx";
 import { useLens } from "./glass.ts";
@@ -87,14 +87,17 @@ function Dashboard() {
   // Installs, updates and the catalog go through the daemon's app API, which
   // works with the robot off (the state stream, daemonOnline, needs it on).
   const appsReachable = daemonOnline || power.reachable;
-  const catalog = useCatalog(visible && tab === "apps" && appsReachable, () => void apps.poll());
 
   // The power, apps and kinematics shown are the new robot's after a switch.
   const sim = useSim(power.target, () => {
+    // An app view open across a switch shows the other robot's app.
+    apps.closeAppView();
     void power.poll();
     void apps.poll();
     void reloadKinematics();
   });
+  // Sim mode has no apps (#149): no catalog until the target is the robot.
+  const catalog = useCatalog(visible && tab === "apps" && appsReachable && sim.target === "robot", () => void apps.poll());
 
   const blocked = driveBlocked({
     daemonOnline,
@@ -190,8 +193,14 @@ function Dashboard() {
         </main>
 
         <main className="view list" id="view-apps" role="tabpanel" hidden={tab !== "apps"} aria-label="Apps">
-          <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} reachable={appsReachable} exprBusy={expr.busy !== null} />
-          <CatalogPanel catalog={catalog} reachable={appsReachable} />
+          {sim.target === "sim" ? (
+            <SimAppsNote />
+          ) : sim.target === null ? null : (
+            <>
+              <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} reachable={appsReachable} exprBusy={expr.busy !== null} />
+              <CatalogPanel catalog={catalog} reachable={appsReachable} />
+            </>
+          )}
         </main>
 
         <main className="view list" id="view-system" role="tabpanel" hidden={tab !== "system"} aria-label="System">

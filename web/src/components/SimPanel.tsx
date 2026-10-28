@@ -32,3 +32,19 @@ export function SimPanel({ sim, powerStatus }: { sim: SimState; powerStatus: str
     </section>
   );
 }
+
+/**
+ * The Apps tab in sim mode. The sim daemon has no apps, and the robot's
+ * installed and pinned apps aren't the sim's, so neither list is shown.
+ */
+export function SimAppsNote() {
+  const sheet = useLens<HTMLElement>();
+  return (
+    <section className="glass sheet" data-lens ref={sheet} aria-labelledby="sim-apps-title">
+      <header>
+        <h2 id="sim-apps-title">Apps</h2>
+      </header>
+      <p className="note">Apps are off in sim mode. Go back to the robot from System → Simulation to install and run them.</p>
+    </section>
+  );
+}
