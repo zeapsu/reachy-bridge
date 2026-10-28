@@ -12,6 +12,11 @@ describe("syncTarget", () => {
     expect(syncTarget("robot", "sim", true)).toBe("keep");
     expect(syncTarget("robot", undefined, false)).toBe("keep");
   });
+
+  test("a poll from before its own switch doesn't reload", () => {
+    expect(syncTarget("sim", "robot", false, "sim")).toBe("keep");
+    expect(syncTarget("sim", "sim", false, "sim")).toBe("keep");
+  });
 });
 
 describe("simView", () => {

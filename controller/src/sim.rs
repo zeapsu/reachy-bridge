@@ -5,12 +5,14 @@
 //! starts it and points the controller's [`Daemon`] client at it; leaving
 //! points the client back at the robot and stops it.
 //!
-//! Sim mode is only entered with the robot off, and nothing in the controller
-//! can switch the robot on while it lasts (every action goes to the sim), so a
-//! request that reaches the robot's daemon around a switch finds it off. The
-//! dashboard sends the target it believes in (`X-Reachy-Target`), and an
-//! action from a tab that missed a switch is refused rather than carried out
-//! on the other robot.
+//! Sim mode is only entered with the robot confirmed off, and nothing in the
+//! controller can switch the robot on while it lasts (every action goes to
+//! the sim). A switch waits for every action in flight to finish, and actions
+//! wait for a switch, so an action checked against one target never runs
+//! against the other. The dashboard sends the target it believes in
+//! (`X-Reachy-Target`, or `?target=` on the drive socket), and an action from
+//! a tab that missed a switch is refused rather than carried out on the other
+//! robot.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -46,8 +48,8 @@ pub struct SimMode {
     /// runs the sim daemon (tests, `tools/sim`).
     unit: Option<String>,
     active: AtomicBool,
-    /// The robot's return-home gate, kept while the sim uses the player.
-    robot_needs_home: AtomicBool,
+    /// Actions hold it shared, a switch exclusively.
+    switch: tokio::sync::RwLock<()>,
 }
 
 impl SimMode {
@@ -57,7 +59,7 @@ impl SimMode {
             sim_url: sim_url.to_string(),
             unit: unit.filter(|u| !u.is_empty()),
             active: AtomicBool::new(false),
-            robot_needs_home: AtomicBool::new(false),
+            switch: tokio::sync::RwLock::new(()),
         }
     }
 
@@ -81,14 +83,18 @@ impl SimMode {
         &self.sim_url
     }
 
-    /// Stop a sim daemon left running by an earlier controller, which would
-    /// otherwise use the CPU with nothing pointed at it.
-    pub async fn stop_leftover(&self) {
-        if let Some(unit) = &self.unit
-            && let Err(error) = systemctl("stop", unit).await
-        {
-            tracing::debug!(%error, "sim daemon not stopped");
-        }
+}
+
+/// Stop a sim daemon left running by an earlier controller, which would
+/// otherwise use the CPU with nothing pointed at it. Under `power_lock`, so a
+/// sim mode entered meanwhile isn't stopped under it.
+pub async fn stop_leftover(state: Shared) {
+    let _power = state.power_lock.lock().await;
+    if !state.sim.active()
+        && let Some(unit) = &state.sim.unit
+        && let Err(error) = systemctl("stop", unit).await
+    {
+        tracing::debug!(%error, "sim daemon not stopped");
     }
 }
 
@@ -120,21 +126,24 @@ async fn status(State(state): State<Shared>) -> Json<Value> {
 }
 
 /// Start the sim daemon and switch the controller to it. Refused unless the
-/// robot is off; a daemon that can't be reached has no robot on.
+/// robot is confirmed off: a daemon that doesn't answer may be busy with a
+/// move (daemon-contract.md), not down.
 async fn enter(State(state): State<Shared>) -> ApiResult<Json<Value>> {
+    let _switch = state.sim.switch.write().await;
     let _power = state.power_lock.lock().await;
     let sim = &state.sim;
     if sim.active() {
         return Ok(Json(json!({"active": true, "target": "sim"})));
     }
-    if let Some(status) = state.daemon.status().await {
-        let robot = robot_state(&status);
-        if backend_up(&status) || matches!(robot.as_str(), "running" | "asleep" | "starting" | "stopping") {
-            return Err(ApiError::new(409, "Switch the robot off before starting the simulation"));
-        }
-        if state.apps.refresh_active().await {
-            return Err(ApiError::new(409, "Stop the app before starting the simulation"));
-        }
+    let Some(status) = state.daemon.status().await else {
+        return Err(ApiError::new(503, "Can't confirm the robot is off; try again shortly"));
+    };
+    let robot = robot_state(&status);
+    if backend_up(&status) || matches!(robot.as_str(), "running" | "asleep" | "starting" | "stopping") {
+        return Err(ApiError::new(409, "Switch the robot off before starting the simulation"));
+    }
+    if state.player.active() || state.apps.refresh_active().await {
+        return Err(ApiError::new(409, "Stop the app or expression before starting the simulation"));
     }
     if let Some(unit) = &sim.unit {
         systemctl("start", unit)
@@ -149,7 +158,6 @@ async fn enter(State(state): State<Shared>) -> ApiResult<Json<Value>> {
         return Err(ApiError::new(504, "The simulation didn't start in time"));
     }
     state.player.abort_drive();
-    sim.robot_needs_home.store(state.player.needs_home(), Ordering::SeqCst);
     state.daemon.retarget(&sim.sim_url);
     sim.active.store(true, Ordering::SeqCst);
     state.apps.forget_installed().await;
@@ -159,6 +167,7 @@ async fn enter(State(state): State<Shared>) -> ApiResult<Json<Value>> {
 
 /// Switch the controller back to the robot (still off) and stop the sim.
 async fn exit(State(state): State<Shared>) -> ApiResult<Json<Value>> {
+    let _switch = state.sim.switch.write().await;
     let _power = state.power_lock.lock().await;
     let sim = &state.sim;
     if !sim.active() {
@@ -169,7 +178,9 @@ async fn exit(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     state.player.halt(MOVES_STOP_TIMEOUT).await;
     state.daemon.retarget(&sim.robot_url);
     sim.active.store(false, Ordering::SeqCst);
-    state.player.set_needs_home(sim.robot_needs_home.load(Ordering::SeqCst));
+    // The robot's pose is unknown to the player: no expression before a
+    // power-on (or a return home) puts it somewhere known.
+    state.player.set_needs_home(true);
     state.apps.forget_installed().await;
     tracing::info!("sim mode off: the controller drives the robot's daemon again");
     if let Some(unit) = &sim.unit
@@ -180,12 +191,28 @@ async fn exit(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     Ok(Json(json!({"active": false, "target": "robot"})))
 }
 
-/// Refuse app installs and runs in sim mode, and any action from a tab that
-/// believes in the other target.
+/// The target a request believes in: the header, or `?target=` on the drive
+/// socket (a browser can't set headers on a WebSocket).
+fn believed(request: &Request) -> Option<String> {
+    if let Some(header) = request.headers().get(TARGET_HEADER) {
+        return header.to_str().ok().map(str::to_string);
+    }
+    request.uri().query()?.split('&').find_map(|pair| pair.strip_prefix("target=")).map(str::to_string)
+}
+
+/// Hold actions off while a switch runs (and a switch off while actions
+/// run). Refuse app installs and runs in sim mode, and any action from a tab
+/// that believes in the other target.
 pub async fn guard(State(state): State<Shared>, request: Request, next: Next) -> Response {
     let path = request.uri().path();
-    if !request.method().is_safe() && path.starts_with("/api/") && !path.starts_with("/api/sim") && !path.starts_with("/api/auth/") {
-        let believed = request.headers().get(TARGET_HEADER).and_then(|v| v.to_str().ok());
+    let action = (!request.method().is_safe() || path == "/api/drive/ws")
+        && path.starts_with("/api/")
+        && !path.starts_with("/api/sim")
+        && !path.starts_with("/api/auth/");
+    if action {
+        let state = state.clone();
+        let _switch = state.sim.switch.read().await;
+        let believed = believed(&request);
         let target = state.sim.target();
         if believed.is_some_and(|b| b != target) {
             let detail = if target == "sim" {
@@ -198,6 +225,7 @@ pub async fn guard(State(state): State<Shared>, request: Request, next: Next) ->
         if state.sim.active() && APP_ACTIONS.iter().any(|p| path.starts_with(p)) {
             return ApiError::new(409, "Apps are off in sim mode").into_response();
         }
+        return next.run(request).await;
     }
     next.run(request).await
 }

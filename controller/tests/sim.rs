@@ -103,3 +103,41 @@ async fn apps_are_off_in_sim_mode() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(calls(&s.sim).is_empty());
 }
+
+#[tokio::test]
+async fn entering_needs_the_robot_confirmed_off() {
+    let sim = Arc::new(Mutex::new(Fake { state: "stopped".into(), ..Default::default() }));
+    let sim_url = fake_daemon(sim.clone()).await;
+    let robot_url = "http://127.0.0.1:9";
+    let state = AppState::with_sim(
+        Daemon::new(robot_url, Duration::from_millis(200)),
+        LogBroker::new(),
+        std::env::temp_dir().join("rc-test-sim-unreachable"),
+        Duration::from_millis(10),
+        AuthConfig::default(),
+        SimMode::new(robot_url, &sim_url, None),
+    );
+    let response = reachy_controller::app(state.clone())
+        .oneshot(Request::post("/api/sim/enter").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(!state.sim.active());
+}
+
+#[tokio::test]
+async fn a_drive_socket_from_a_stale_tab_is_refused() {
+    let s = sim_harness(|_| {}).await;
+    s.h.call("POST", "/api/sim/enter", None).await;
+    let (status, _) = s.h.call("GET", "/api/drive/ws?target=robot", None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn leaving_keeps_expressions_off_until_the_robot_is_home() {
+    let s = sim_harness(|_| {}).await;
+    s.h.call("POST", "/api/sim/enter", None).await;
+    s.h.state.player.set_needs_home(false);
+    s.h.call("POST", "/api/sim/exit", None).await;
+    assert!(s.h.state.player.needs_home());
+}

@@ -12,7 +12,8 @@ Environment=REACHY_BRIDGE_STATE_DIR=%h/.local/state/reachy-bridge/sim
 Environment=PYTHONUNBUFFERED=1
 # Loopback only, like the robot's daemon. No media (WebRTC signalling would
 # clash with the robot daemon's :8443) and no apps (no --desktop-app-daemon).
-# Its own robot name, so its mDNS entry isn't mistaken for the robot.
+# Its own robot name, so its mDNS entry isn't mistaken for the robot (a name
+# set from the mobile app, in ~/.config/reachy_mini, wins over it upstream).
 ExecStart=%h/.local/share/reachy-bridge/.venv/bin/reachy-bridge-runtime \
     --sim --headless --no-media --no-autostart --no-wake-up-on-start \
     --robot-name reachy_mini_sim \

@@ -15,6 +15,8 @@ export function setBelievedTarget(target: string | null): void {
   believedTarget = target;
 }
 
+export const getBelievedTarget = (): string | null => believedTarget;
+
 /**
  * Fetch JSON; non-2xx throws with the response's `detail` (or `HTTP <status>`),
  * matching main.js so error text shown in the panels is unchanged.

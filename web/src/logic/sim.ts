@@ -7,10 +7,17 @@ import type { Target } from "../api/sim.ts";
  * first one it sees; after that a different target means the controller was
  * switched elsewhere (another tab, another device), and everything the page
  * shows (power, moves, apps) is about the other robot: reload. A switch this
- * page is making itself is waited out.
+ * page is making itself is waited out, until a poll reports its result
+ * (`pending`).
  */
-export function syncTarget(believed: Target | null, reported: Target | undefined, switching: boolean): "adopt" | "keep" | "reload" {
+export function syncTarget(
+  believed: Target | null,
+  reported: Target | undefined,
+  switching: boolean,
+  pending: Target | null = null,
+): "adopt" | "keep" | "reload" {
   if (!reported || switching) return "keep";
+  if (pending !== null && reported !== pending) return "keep";
   if (believed === null) return "adopt";
   return believed === reported ? "keep" : "reload";
 }

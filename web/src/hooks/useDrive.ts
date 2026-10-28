@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getBelievedTarget } from "../api.ts";
 import {
   CENTRED,
   DEFAULT_LIMITS,
@@ -38,7 +39,12 @@ export interface DriveState {
   home: () => void;
 }
 
-const wsUrl = () => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/drive/ws`;
+// A WebSocket can't carry the target header, so the believed target rides in the query (#149).
+const wsUrl = () => {
+  const target = getBelievedTarget();
+  const query = target ? `?target=${encodeURIComponent(target)}` : "";
+  return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/drive/ws${query}`;
+};
 
 /**
  * One drive session over `/api/drive/ws` (#152). It opens on the first touch,

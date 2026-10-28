@@ -20,6 +20,8 @@ export function useSim(reported: Target | undefined, onSwitched: () => void): Si
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState("");
   const switchingRef = useRef(false);
+  // The target this page switched to, until a poll reports it.
+  const pendingRef = useRef<Target | null>(null);
   const onSwitchedRef = useRef(onSwitched);
   onSwitchedRef.current = onSwitched;
 
@@ -29,7 +31,8 @@ export function useSim(reported: Target | undefined, onSwitched: () => void): Si
   }, []);
 
   useEffect(() => {
-    const decision = syncTarget(target, reported, switchingRef.current);
+    if (pendingRef.current !== null && reported === pendingRef.current) pendingRef.current = null;
+    const decision = syncTarget(target, reported, switchingRef.current, pendingRef.current);
     if (decision === "adopt" && reported) believe(reported);
     if (decision === "reload") window.location.reload();
   }, [target, reported, believe]);
@@ -44,6 +47,7 @@ export function useSim(reported: Target | undefined, onSwitched: () => void): Si
     void (async () => {
       try {
         const status = await apiJson<SimStatus>(entering ? paths.simEnter : paths.simExit, { method: "POST" });
+        pendingRef.current = status.target;
         believe(status.target);
         onSwitchedRef.current();
       } catch (err) {

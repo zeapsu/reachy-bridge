@@ -78,8 +78,7 @@ async fn main() -> std::io::Result<()> {
     let sim = SimMode::from_env(&daemon_url);
     let sim_url = sim.sim_url().to_string();
     let state = AppState::with_sim(daemon, logs.clone(), state_dir, Duration::from_millis(300), auth, sim);
-    let leftover = state.clone();
-    tokio::spawn(async move { leftover.sim.stop_leftover().await });
+    tokio::spawn(reachy_controller::sim::stop_leftover(state.clone()));
     tokio::spawn(reachy_controller::datasets::prefetch(state.clone()));
     tokio::spawn(follow_journal(logs, env_or("REACHY_DAEMON_UNIT", "reachy-bridge.service")));
 
