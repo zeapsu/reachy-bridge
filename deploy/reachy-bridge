@@ -246,12 +246,14 @@ as_owner() {
     if [[ -w $(dirname "$path") ]]; then "$@"; else sudo "$@"; fi
 }
 
-# Only paths strictly inside the home directory, after resolving '..', '//'
-# and symlinks: the manifest is only a list, not trusted blindly.
+# Only absolute paths strictly inside the home directory once '..' and '//'
+# are resolved: the manifest is only a list, not trusted blindly. Symlinks
+# are not resolved, so an install moved to another disk through a link is
+# still removed; a trailing slash is refused so rm never follows a final link.
 safe_path() {
     local real home
-    [[ $1 == /* ]] || return 1
-    real=$(realpath -m -- "$1") && home=$(realpath -m -- "$HOME") || return 1
+    [[ $1 == /* && $1 != */ ]] || return 1
+    real=$(realpath -m -s -- "$1") && home=$(realpath -m -s -- "$HOME") || return 1
     [[ $real == "$home"/?* ]]
 }
 
@@ -268,7 +270,14 @@ robot_down() {
     local i
     [[ $(app_state) == none && $(robot_power) == off ]] && return 0
     echo "== Stopping any app and putting the robot to sleep"
-    if ! (controller_api POST /api/daemon/stop >/dev/null 2>&1); then
+    # Its power-off can take 40 s (it stops the app first); a timeout means
+    # it is still working, so only a controller that isn't there, or that
+    # refused, falls back to the daemon, never one still mid-sequence.
+    local key="" code rc=0
+    [[ -r $STATE_DIR/controller.key ]] && key=$(<"$STATE_DIR/controller.key")
+    code=$(if [[ -n $key ]]; then printf 'X-Reachy-Bridge-Key: %s\n' "$key"; fi |
+        curl -s -m 60 -o /dev/null -w '%{http_code}' -X POST -H @- "$CONTROLLER_URL/api/daemon/stop") || rc=$?
+    if (( rc == 7 )) || { (( rc == 0 )) && [[ $code != 2* ]]; }; then
         if [[ $(app_state) != none ]]; then
             curl -s -m 10 -X POST "$DAEMON_URL/api/apps/stop-current-app" >/dev/null || true
             for (( i = 0; i < 30; i++ )); do [[ $(app_state) == none ]] && break; sleep 1; done
@@ -309,7 +318,7 @@ uninstall_bridge() {
                 dir) dirs+=("$value") ;;
                 file) files+=("$value") ;;
                 udev) [[ $value == /etc/udev/rules.d/*.rules && $value != */../* ]] && udev+=("$value") ;;
-                group) [[ $value =~ ^[a-z_][a-z0-9_-]*$ ]] && groups+=("$value") ;;
+                group) [[ $value == dialout ]] && groups+=("$value") ;;
                 linger) linger=1 ;;
                 gst-backup) gst_path "$value" && safe_path "$extra" && gst+=("$value"$'\t'"$extra") ;;
                 '') ;;
@@ -325,7 +334,7 @@ uninstall_bridge() {
     # The state dir comes from the environment; only remove one that is the
     # bridge's own, never a parent such as ~/.local/state.
     local state=$STATE_DIR
-    if [[ ${state%/} != */reachy-bridge ]] || ! safe_path "$state"; then
+    if [[ $state != */reachy-bridge ]] || ! safe_path "$state"; then
         echo "warning: won't remove the state dir $state (not a reachy-bridge directory in $HOME)" >&2
         state=
     fi

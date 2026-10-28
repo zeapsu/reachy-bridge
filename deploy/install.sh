@@ -34,7 +34,7 @@ MANIFEST=$DEST/install-manifest
 
 # record KIND VALUE: note something this install added, for the uninstaller.
 # Kinds: dir, file, unit; changes outside the user's home use udev (a rules
-# file), group (a group the user was added to), linger, and gst-backup
+# file), group (dialout, if the user was added to it), linger, and gst-backup
 # (VALUE is "<plugin path><TAB><backup of the plugin it replaced>"). None of
 # those four is made by this script yet; the uninstaller undoes them when a
 # later installer records them. Record a system change only when this install

@@ -48,7 +48,7 @@ setup() {
             unit reachy-bridge-sim.service unit reachy-bridge-update.timer \
             udev /etc/udev/rules.d/99-reachy-test.rules group dialout linger 1 \
             gst-backup "$H/.local/share/gstreamer-1.0/plugins/libgstrswebrtc.so"$'\t'"$H/.local/share/gstreamer-1.0/plugins/libgstrswebrtc.so.bak" \
-            dir /etc/reachy-bridge dir "$H//" udev /etc/passwd unit ../../evil.service >"$D/install-manifest"
+            dir /etc/reachy-bridge dir "$H//" dir "$H/.local/share/" udev /etc/passwd unit ../../evil.service group sudo >"$D/install-manifest"
         mkdir -p "$D/.app_metadata" && echo meta >"$D/.app_metadata/radio.json"
     fi
     local log="echo \"\$(basename \"\$0\") \$*\" >>'$ROOT/log'"
@@ -60,7 +60,10 @@ url=\${*: -1}
 case \$url in
     *:7861/api/daemon/stop)
         [[ -e '$ROOT/no-controller' ]] && exit 7
-        touch '$ROOT/app-stopped' '$ROOT/robot-off'; printf '{}\n200' ;;
+        touch '$ROOT/app-stopped' '$ROOT/robot-off'
+        # Still powering off when curl gives up.
+        [[ -e '$ROOT/slow-controller' ]] && exit 28
+        printf 200 ;;
     *:7861/*) exit 7 ;;
     */api/apps/stop-current-app) touch '$ROOT/app-stopped' ;;
     */api/daemon/stop*) touch '$ROOT/robot-off' ;;
@@ -77,7 +80,7 @@ exit 0"
     stub sudo "$log
 [[ \$1 == rm ]] || \"\$@\""
     for tool in udevadm gpasswd loginctl sleep; do stub "$tool" "$log"; done
-    rm -f "$ROOT/app-stopped" "$ROOT/robot-off" "$ROOT/no-controller"
+    rm -f "$ROOT/app-stopped" "$ROOT/robot-off" "$ROOT/no-controller" "$ROOT/slow-controller"
 }
 
 run() {
@@ -91,7 +94,7 @@ run --dry-run || fail "dry run exited $?"
 check "dry run removes nothing" '[[ -d $D/.venv && -f $U/reachy-bridge.service && -d $S ]]'
 check "dry run touches no service or robot" '! grep -qE "^(systemctl --user (stop|disable)|curl .*-X POST|sudo|tailscale serve --https)" "$ROOT/log"'
 check "dry run lists the bridge port only" 'grep -q "tailnet HTTPS ports: 10000 (needs" "$ROOT/out"'
-check "skips unsafe manifest entries" '(( $(grep -c "skipping manifest entry" "$ROOT/out") == 2 ))'
+check "skips unsafe manifest entries" '(( $(grep -c "skipping manifest entry" "$ROOT/out") == 3 ))'
 
 echo "== refuses without a terminal or --yes"
 setup manifest
@@ -113,7 +116,8 @@ check "undoes dialout and linger" 'grep -q "gpasswd -d tester dialout" "$ROOT/lo
 check "restores the GStreamer plugin" '[[ $(<"$H/.local/share/gstreamer-1.0/plugins/libgstrswebrtc.so") == old ]]'
 check "removes the install, apps and state" '[[ ! -e $D && ! -e $S ]]'
 check "removes the CLI" '[[ ! -e $H/.local/bin/reachy-bridge ]]'
-check "skips a manifest path outside HOME" 'grep -q "skipped /etc/reachy-bridge" "$ROOT/out" && grep -q "skipped $H//" "$ROOT/out"'
+check "skips a manifest path outside HOME" 'grep -q "skipped /etc/reachy-bridge" "$ROOT/out" && grep -q "skipped $H//" "$ROOT/out" && grep -q "skipped $H/.local/share/ " "$ROOT/out"'
+check "never removes sudo membership" '! grep -q "gpasswd -d tester sudo" "$ROOT/log"'
 check "leaves unrelated files" '[[ -f $H/unrelated ]]'
 
 echo "== --keep-data"
@@ -127,6 +131,18 @@ setup manifest
 touch "$ROOT/no-controller"
 run --yes || { fail "fallback exited $?"; cat "$ROOT/out"; }
 check "stops the app, then sleeps the robot through the daemon" '(( $(grep -n "stop-current-app" "$ROOT/log" | cut -d: -f1) < $(grep -n "daemon/stop?goto_sleep=true" "$ROOT/log" | cut -d: -f1) ))'
+
+echo "== controller slower than curl"
+setup manifest
+touch "$ROOT/slow-controller"
+run --yes || { fail "slow exited $?"; cat "$ROOT/out"; }
+check "doesn't race the controller with a direct sleep" '! grep -qE "goto_sleep|curl .*:8000/api/apps/stop-current-app" "$ROOT/log"'
+
+echo "== install moved to another disk through a symlink"
+setup manifest
+mv "$D" "$ROOT/nvme-install" && ln -s "$ROOT/nvme-install" "$D"
+run --yes || { fail "symlinked exited $?"; cat "$ROOT/out"; }
+check "removes the link, leaves what it points to" '[[ ! -e $D && ! -L $D && -d $ROOT/nvme-install ]]'
 
 echo "== state dir override"
 setup manifest
