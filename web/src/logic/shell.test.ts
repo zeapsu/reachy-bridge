@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { INITIAL_POWER, type PowerView } from "./power.ts";
-import { parseTab, robotStatus } from "./shell.ts";
+import { parseTab, robotStatus, stageNote } from "./shell.ts";
 
 const view = (v: Partial<PowerView>): PowerView => ({ ...INITIAL_POWER, ...v });
 
@@ -17,5 +17,17 @@ describe("shell", () => {
     expect(robotStatus(view({ powerClass: "stopping", label: "Powering off…" }), true, null).text).toBe("Powering off…");
     expect(robotStatus(view({}), true, null).text).toBe("Off");
     expect(robotStatus(view({}), false, null).text).toBe("Connecting…");
+    // Off: the status poll answered, though the state stream is down.
+    expect(robotStatus(view({ known: true }), false, null).text).toBe("Off");
+  });
+  test("the stage says why there is no robot", () => {
+    expect(stageNote(view({ known: true, powerClass: "running" }), true)).toBeNull();
+    expect(stageNote(view({}), false)?.title).toBe("Connecting…");
+    expect(stageNote(view({ known: true }), false)?.title).toBe("Reachy is off");
+    expect(stageNote(view({ known: true, powerClass: "disabled" }), false)?.title).toBe("Daemon offline");
+    expect(stageNote(view({ known: true, powerClass: "starting" }), false)?.title).toBe("Waking up…");
+    // Powering off can't be woken from the button; asleep can.
+    expect(stageNote(view({ known: true, powerClass: "stopping", label: "Powering off…" }), false)?.detail).not.toContain("power button");
+    expect(stageNote(view({ known: true, powerClass: "stopping" }), false)?.detail).toContain("power button");
   });
 });

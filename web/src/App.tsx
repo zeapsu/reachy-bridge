@@ -26,7 +26,7 @@ import { activeApp } from "./logic/apps.ts";
 import { read, write } from "./logic/appearance.ts";
 import { CONTROL_HINT_OFFLINE } from "./logic/controls.ts";
 import { driveBlocked } from "./logic/drive.ts";
-import { TAB_KEY, parseTab, type Tab } from "./logic/shell.ts";
+import { TAB_KEY, parseTab, stageNote, type Tab } from "./logic/shell.ts";
 
 const POLL_MS = 1000;
 
@@ -133,7 +133,7 @@ function Dashboard() {
         />
 
         <main className="view robot" id="view-robot" role="tabpanel" hidden={tab !== "robot"} aria-label="Robot">
-          <Viewport daemonOnline={daemonOnline} visible={visible && tab === "robot"} poseSink={poseSink} />
+          <Viewport daemonOnline={daemonOnline} note={stageNote(power.view, daemonOnline)} visible={visible && tab === "robot"} poseSink={poseSink} />
           <section className="glass sheet side" data-lens ref={side} aria-label="Robot controls">
             <Segmented
               label="Robot controls"

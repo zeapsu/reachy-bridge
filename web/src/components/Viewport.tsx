@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode, type RefObject } from "rea
 import type { RobotState } from "../api.ts";
 import { MODE_META, type ViewMode } from "../logic/camera.ts";
 import { poseFrame, type PoseFrame } from "../logic/pose.ts";
+import type { StageNote } from "../logic/shell.ts";
 import { CameraController } from "./cameraController.ts";
 import type { RobotView } from "./robotView.ts";
 import { Segmented } from "./Segmented.tsx";
@@ -11,6 +12,8 @@ export type PoseSink = (state: RobotState) => void;
 
 interface Props {
   daemonOnline: boolean;
+  /** Why there is no live robot, shown over the stage; null while there is one. */
+  note: StageNote | null;
   visible: boolean;
   /** The viewport installs its 10 Hz pose writer here. */
   poseSink: RefObject<PoseSink | null>;
@@ -41,7 +44,7 @@ const MODES: { value: ViewMode; title: string; label: ReactNode }[] = [
 
 type Cache = Partial<Record<keyof PoseFrame, unknown>>;
 
-export function Viewport({ daemonOnline, visible, poseSink }: Props) {
+export function Viewport({ daemonOnline, note, visible, poseSink }: Props) {
   const [mode, setMode] = useState<ViewMode>("3d");
   const [meta, setMeta] = useState(MODE_META["3d"]);
 
@@ -114,6 +117,8 @@ export function Viewport({ daemonOnline, visible, poseSink }: Props) {
   // cache so a reconnect with an unchanged pose still repaints.
   useEffect(() => {
     canvas.current?.classList.toggle("offline", !daemonOnline);
+    // Hidden while offline, so screen readers skip it too.
+    canvas.current?.setAttribute("aria-hidden", String(!daemonOnline));
     if (daemonOnline) return;
     robot.current?.reset();
     if (rRpy.current) rRpy.current.textContent = "—/—/—";
@@ -156,9 +161,15 @@ export function Viewport({ daemonOnline, visible, poseSink }: Props) {
       <div className={`stage-layer${mode === "3d" ? " active" : ""}`}>
         <canvas id="robot-3d" ref={canvas} aria-label="Live 3D view of the robot's pose"></canvas>
       </div>
-      <p className="stage-note" hidden={daemonOnline}>
-        <span className="dot error"></span>Daemon offline
-      </p>
+      {note ? (
+        <div className="glass stage-note" role="status">
+          <span className="stage-note-title">
+            <span className={`dot ${note.dot}`}></span>
+            {note.title}
+          </span>
+          <span className="stage-note-detail">{note.detail}</span>
+        </div>
+      ) : null}
 
       <div className="stage-top">
         <div className="glass stage-modes">
