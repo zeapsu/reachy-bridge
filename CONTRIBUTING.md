@@ -70,12 +70,15 @@ A few files are touched by almost every PR in a lane, or by several lanes:
 - **Lock files** (`uv.lock`, `controller/Cargo.lock`, `web/bun.lock`): never resolve a
   conflict by hand. Take `main`'s version, then regenerate the lock from your manifest
   (`uv lock`, `cargo update -p <crate>` or `cargo build`, `bun install`).
-- **Registries** (route setup in `controller/src/routes/mod.rs`, the paths in
+- **Registries** (route setup in `controller/src/routes/mod.rs`, the `paths` merge in
   `web/src/api.ts`): add lines and don't reorder existing ones.
-- **Single large files** (`controller/tests/api.rs`): split by area in #164 so that two
-  PRs stop editing the same file. Until then, keep edits to it small and merge `main`
-  often. The dashboard's styles are already split: shared tokens and controls in
-  `web/src/styles/base.css`, everything else in each component's own stylesheet.
+- **Split by area (#164)**, so a feature adds or edits its own file:
+  - controller integration tests are one file per area in `controller/tests/`, sharing the
+    fake daemon and harness in `controller/tests/common/mod.rs`. Add routes to the fake
+    daemon there; keep edits to it small.
+  - the API client is one module per area in `web/src/api/`, re-exported by `api.ts`.
+  - styles: shared tokens and controls in `web/src/styles/base.css`, everything else in
+    each component's own stylesheet.
 - **`README.md`**: owned by Public Release Readiness. Other lanes change only the lines
   about their own area.
 
