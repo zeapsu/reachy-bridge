@@ -126,7 +126,7 @@ impl Harness {
         let daemon = fake_daemon(ports, current.clone()).await;
         let dir = std::env::temp_dir().join(format!("rc-proxy-test-{}-{}", std::process::id(), ports[0]));
         let state = AppState::with_auth(Daemon::new(&daemon, Duration::from_secs(2)), LogBroker::new(), dir.clone(), Duration::from_millis(10), auth);
-        let proxy_port = serve(reachy_controller::app_proxy::router(state, &[own])).await;
+        let proxy_port = serve(reachy_controller::app_proxy::router(state, own, &[own])).await;
         Self { current, proxy: format!("http://127.0.0.1:{proxy_port}"), proxy_port, dir }
     }
 

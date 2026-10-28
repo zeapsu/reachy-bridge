@@ -245,14 +245,16 @@ export function useApps(): AppsState {
   const showWhenReady = useCallback(
     async (seq: number, name: string) => {
       const crashed = () => statusesRef.current.find((item) => item.name === name)?.status === "error";
-      let port: number | string | null = null;
+      let ready = false;
+      let proxyPort: number | null | undefined;
       for (let attempt = 0; attempt < APP_UI_WAIT_ATTEMPTS; attempt += 1) {
         if (seq !== viewSeq.current) return;
         if (crashed()) return closeAppView();
         try {
           const payload = await apiJson<AppUi>(paths.appUi(name));
           if (payload && payload.port && payload.ready) {
-            port = payload.port;
+            ready = true;
+            proxyPort = payload.proxy_port;
             break;
           }
         } catch {
@@ -260,11 +262,14 @@ export function useApps(): AppsState {
         }
         await sleep(APP_UI_WAIT_INTERVAL_MS);
       }
-      if (port == null) {
+      // :8043 (tailscale serve) forwards to the same listener.
+      if (ready && proxyPort === null) {
+        updateView(seq, { error: "The controller's app proxy isn't running, so the app's interface can't open. See the controller log." });
+      } else if (!ready) {
         const display = viewRef.current?.display || name;
         updateView(seq, { error: `${display} did not open its interface within 30 s.` });
       } else {
-        updateView(seq, { step: "opening", url: appUiUrl(window.location.hostname, port) });
+        updateView(seq, { step: "opening", url: appUiUrl(window.location.hostname, proxyPort ?? undefined) });
       }
     },
     [closeAppView, updateView],

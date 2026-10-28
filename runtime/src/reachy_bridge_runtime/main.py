@@ -3,9 +3,11 @@
     reachy-bridge-runtime [daemon args...]   start the daemon (args go to it)
     reachy-bridge-runtime --check            verify the upstream seam and exit
 
-Patches are applied in-process and never edit the venv. At startup a feature
+Patches are applied in-process and never edit the bridge's venv (``app_bind``
+writes a small loopback shim into the separate apps venv). At startup a feature
 whose upstream requirements don't match the installed ``reachy-mini`` is
-skipped with an error, so the robot stays usable without it; ``--check``
+skipped with an error, so the robot stays usable without it (except
+``app_bind``, which stops startup rather than run apps open on the LAN); ``--check``
 treats any mismatch as a failure (CI, and the SDK update pipeline in #155).
 """
 
@@ -17,20 +19,24 @@ import logging
 import sys
 
 from reachy_bridge_runtime import platforms, upstream
-from reachy_bridge_runtime.features import keep_awake, kinematics, media, platform_info
+from reachy_bridge_runtime.features import app_bind, keep_awake, kinematics, media, platform_info
 
 logger = logging.getLogger("reachy_bridge_runtime")
 
 # Feature name -> how to apply it. Order matters only in that every route
 # installer is registered before the daemon builds its app.
 FEATURES = {
+    app_bind.FEATURE: app_bind.apply,
     keep_awake.FEATURE: keep_awake.apply,
     kinematics.FEATURE: kinematics.apply,
     "audio_levels": media.apply_audio_spectrum,
     "camera": media.apply_camera_stream,
 }
 # On every platform; the rest only where the platform adapter enables them.
-CORE_FEATURES = frozenset({keep_awake.FEATURE, kinematics.FEATURE})
+CORE_FEATURES = frozenset({app_bind.FEATURE, keep_awake.FEATURE, kinematics.FEATURE})
+# Features whose mismatch or failure stops startup, like a daemon mismatch:
+# without them the daemon would run apps open on the LAN (#186).
+FATAL_FEATURES = frozenset({app_bind.FEATURE})
 # Features that add routes to the daemon app, so need the "routes" hooks.
 ROUTE_FEATURES = frozenset({kinematics.FEATURE, "audio_levels", "camera"})
 # Features that read the daemon's media; off under --no-media.
@@ -67,6 +73,8 @@ def apply(platform: platforms.Platform) -> list[str]:
         if name not in wanted:
             continue
         blocked = problems.get(name, []) + (problems.get("routes", []) if name in ROUTE_FEATURES else [])
+        if blocked and name in FATAL_FEATURES:
+            raise upstream.UpstreamMismatch(f"{name}: " + "; ".join(blocked))
         if blocked:
             logger.error(
                 "Skipping %s: reachy-mini %s doesn't match what it patches: %s",
@@ -75,6 +83,9 @@ def apply(platform: platforms.Platform) -> list[str]:
                 "; ".join(blocked),
             )
             skipped.append(name)
+            continue
+        if name in FATAL_FEATURES:
+            apply_feature()
             continue
         try:
             apply_feature()

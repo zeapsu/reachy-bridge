@@ -23,10 +23,11 @@ DAEMON_URL=${DAEMON_URL:-http://127.0.0.1:8000}
 
 # tailscale serve: dedicated HTTPS ports only. Never the root mapping, never
 # `tailscale serve reset` (other services share this node's serve config).
-# WebRTC signalling (:8443) and app UIs (:8042, :7860, ...) bind 0.0.0.0
-# themselves, so a serve listener on the same port would make their bind fail
-# at power-on: never serve those port numbers. Browsers don't need :8443
-# (remote WebRTC goes through the central relay over HTTPS). App UIs are
+# WebRTC signalling (:8443) and app UIs (:8042, :7860, ...) listen on
+# loopback only (the runtime's app_bind, #186); still never serve those port
+# numbers, as an older runtime binds them on 0.0.0.0 and a serve listener on
+# the same port would make that bind fail at power-on. Browsers don't need
+# :8443 (remote WebRTC goes through the central relay over HTTPS). App UIs are
 # reached through :8043 instead, the controller's app proxy, which forwards
 # to whichever app is running; nothing on the device binds 8043.
 SERVE_CONTROLLER_PORT=${REACHY_BRIDGE_SERVE_PORT:-10000}

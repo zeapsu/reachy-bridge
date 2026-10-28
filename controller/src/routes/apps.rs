@@ -146,7 +146,9 @@ async fn stop(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> Ap
 
 /// Port of the app's own web UI and whether it answers yet. Apps start their
 /// web server a few seconds after the process; the dashboard waits for
-/// `ready` so it never lands on a connection-refused page.
+/// `ready` so it never lands on a connection-refused page. Browsers open it
+/// through the app proxy (`proxy_port` over plain http, #186): the app
+/// itself listens on loopback.
 async fn ui(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> ApiResult<Json<Value>> {
     let port = state.apps.ui_port(&name).await.map_err(|_| ApiError::unavailable())?;
     let ready = match port {
@@ -159,5 +161,5 @@ async fn ui(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> ApiR
             .is_ok(),
         None => false,
     };
-    Ok(Json(json!({"name": name, "port": port, "ready": ready})))
+    Ok(Json(json!({"name": name, "port": port, "ready": ready, "proxy_port": crate::app_proxy::listening_port()})))
 }
