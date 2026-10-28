@@ -8,14 +8,18 @@ import {
   Matrix4,
   Mesh,
   MeshBasicMaterial,
+  MeshPhysicalMaterial,
   MeshStandardMaterial,
   PerspectiveCamera,
+  PMREMGenerator,
   PlaneGeometry,
   Scene,
   SRGBColorSpace,
   Texture,
   WebGLRenderer,
 } from "three";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import modelUrl from "../assets/reachy_mini.glb?url";
 import type { RobotState } from "../api.ts";
@@ -59,6 +63,20 @@ function settled(shown: Shown, target: Shown): boolean {
   );
 }
 
+/** The camera eyes' lenses: dark, clear, glossy glass over the camera. */
+function glass(): MeshPhysicalMaterial {
+  return new MeshPhysicalMaterial({
+    color: 0x1a2026,
+    roughness: 0.04,
+    metalness: 0,
+    clearcoat: 1,
+    clearcoatRoughness: 0.03,
+    transparent: true,
+    opacity: 0.38,
+    depthWrite: false,
+  });
+}
+
 function disposeMaterial(material: Material | Material[]): void {
   for (const m of Array.isArray(material) ? material : [material]) {
     for (const value of Object.values(m)) if (value instanceof Texture) value.dispose();
@@ -82,6 +100,8 @@ export class RobotView {
   private scene = new Scene();
   private camera = new PerspectiveCamera(24, 1, 0.01, 10);
   private parts = new Map<string, Mesh>();
+  /** Each mesh's own node transform (the compressed model's dequantization). */
+  private baked = new Map<Mesh, Matrix4>();
   private shown: Shown = structuredClone(NEUTRAL);
   private target: Shown = structuredClone(NEUTRAL);
   private frame = 0;
@@ -94,6 +114,11 @@ export class RobotView {
     this.renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true });
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
+    // A soft studio to reflect: what makes the plastic and the eye glass read as real.
+    const pmrem = new PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environmentIntensity = 0.45;
+    pmrem.dispose();
     this.scene.add(new HemisphereLight(0xdfe8f2, 0x2a2622, 2.2));
     const key = new DirectionalLight(0xffffff, 2.4);
     key.position.set(0.6, 0.9, 0.5);
@@ -105,14 +130,16 @@ export class RobotView {
     const robot = new Group();
     robot.rotation.x = -Math.PI / 2;
     this.scene.add(robot);
-    new GLTFLoader().load(
+    new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).load(
       modelUrl,
       (gltf) => {
         if (this.disposed) return;
+        gltf.scene.updateMatrixWorld(true);
         gltf.scene.traverse((o) => {
           if (!(o instanceof Mesh)) return;
           disposeMaterial(o.material);
-          o.material = new MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.05 });
+          o.material = o.name.endsWith("_glass") ? glass() : new MeshStandardMaterial({ vertexColors: true, roughness: 0.45, metalness: 0.05 });
+          this.baked.set(o, o.matrixWorld.clone());
           o.matrixAutoUpdate = false;
           this.parts.set(o.name, o);
         });
@@ -215,7 +242,11 @@ export class RobotView {
 
   private apply(state: Shown): void {
     const matrices = partMatrices(state);
-    for (const [name, mesh] of this.parts) mesh.matrix.copy(matrices[name] ?? new Matrix4());
+    for (const [name, mesh] of this.parts) {
+      // A see-through part ("head_glass") moves with its part.
+      const part = matrices[name] ?? matrices[name.replace(/_glass$/, "")] ?? new Matrix4();
+      mesh.matrix.multiplyMatrices(part, this.baked.get(mesh) ?? new Matrix4());
+    }
   }
 
   private fit(): void {

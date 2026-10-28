@@ -5,7 +5,10 @@ from two committed files:
 
 - `web/src/assets/reachy_mini.glb`: one mesh per moving part (`base`, `body`,
   `horn1`..`horn6`, `rod1`..`rod6`, `head`, `antenna_right`, `antenna_left`),
-  baked in world coordinates at the neutral pose.
+  baked in world coordinates at the neutral pose, plus `head_glass`, the
+  camera eyes' lenses, which the view draws as glass. It is meshopt
+  compressed (EXT_meshopt_compression); `GLTFLoader` decodes it with three's
+  `MeshoptDecoder`.
 - `web/src/assets/reachy_mini.rig.json`: what the browser needs to move them:
   the head pivot, the horn and antenna hinges, and the rod ends.
 
@@ -28,7 +31,11 @@ uv run --with trimesh --with scipy python tools/model/export.py /tmp/reachy-mode
 ```
 
 ```bash
-/Applications/Blender.app/Contents/MacOS/Blender -b --python tools/model/decimate.py -- /tmp/reachy-model/reachy_mini_full.glb web/src/assets/reachy_mini.glb
+/Applications/Blender.app/Contents/MacOS/Blender -b --python tools/model/decimate.py -- /tmp/reachy-model/reachy_mini_full.glb /tmp/reachy-model/reachy_mini.glb
+```
+
+```bash
+bunx @gltf-transform/cli@4.2.1 meshopt /tmp/reachy-model/reachy_mini.glb web/src/assets/reachy_mini.glb
 ```
 
 ```bash
@@ -36,7 +43,8 @@ cp /tmp/reachy-model/reachy_mini.rig.json web/src/assets/
 ```
 
 `decimate.py` needs Blender (tested with 5.1); it cuts the model from about
-1M faces to about 80k (2 MB).
+1M faces to about 260k (12 MB), and meshopt compression brings that to 1.8 MB.
+It draws at a steady 60 fps on an M4 Mac at desktop and phone sizes.
 
 Then refresh the test fixture: start a sim daemon on port 8200
 (`tools/sim/README.md`), move it to an off-centre pose with a `goto`, and run
