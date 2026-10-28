@@ -3,6 +3,10 @@ import { apiJson, errorText, paths, type AppJob, type CatalogApp, type HfLogin }
 import { jobFinished, jobLine } from "../logic/catalog.ts";
 
 const JOB_POLL_MS = 1000;
+/** Polls that may fail in a row (a dropped request) before a job counts as lost. */
+const JOB_POLL_RETRIES = 3;
+/** How long a failed job's error stays on its row. */
+const FAILED_JOB_MS = 15_000;
 
 export type JobKind = "install" | "update" | "remove";
 
@@ -55,10 +59,25 @@ export function useCatalog(live: boolean, onChanged: () => void): CatalogState {
   const onChangedRef = useRef(onChanged);
   onChangedRef.current = onChanged;
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  const alive = useRef(true);
 
   useEffect(() => {
+    alive.current = true;
     const pending = timers.current;
-    return () => pending.forEach(clearTimeout);
+    return () => {
+      alive.current = false;
+      pending.forEach(clearTimeout);
+      pending.clear();
+    };
+  }, []);
+
+  const later = useCallback((ms: number, run: () => void) => {
+    if (!alive.current) return;
+    const timer = setTimeout(() => {
+      timers.current.delete(timer);
+      if (alive.current) run();
+    }, ms);
+    timers.current.add(timer);
   }, []);
 
   useEffect(() => {
@@ -89,43 +108,65 @@ export function useCatalog(live: boolean, onChanged: () => void): CatalogState {
     };
   }, [live, reload]);
 
-  const setJob = useCallback((key: string, job: RowJob | null) => {
-    setJobs((current) => {
-      const next = { ...current };
-      if (job) next[key] = job;
-      else delete next[key];
-      return next;
-    });
-  }, []);
+  const setJob = useCallback(
+    (key: string, job: RowJob | null) => {
+      setJobs((current) => {
+        const next = { ...current };
+        if (job) next[key] = job;
+        else delete next[key];
+        return next;
+      });
+      // A failed job's error fades unless something replaced it meanwhile.
+      if (job?.status === "failed") {
+        later(FAILED_JOB_MS, () =>
+          setJobs((current) => {
+            if (current[key] !== job) return current;
+            const next = { ...current };
+            delete next[key];
+            return next;
+          }),
+        );
+      }
+    },
+    [later],
+  );
 
   const follow = useCallback(
     (key: string, kind: JobKind, id: string) => {
+      let misses = 0;
+      const ended = () => {
+        onChangedRef.current();
+        setReload((n) => n + 1);
+      };
       const poll = async () => {
         let job: AppJob;
         try {
           job = await apiJson<AppJob>(paths.appJob(id));
         } catch (err) {
+          if (!alive.current) return;
+          if (++misses < JOB_POLL_RETRIES) {
+            later(JOB_POLL_MS, () => void poll());
+            return;
+          }
           setJob(key, { kind, status: "failed", line: errorText(err, "Lost track of the job") });
+          ended();
           return;
         }
+        if (!alive.current) return;
+        misses = 0;
         const line = jobLine(Array.isArray(job.logs) ? job.logs : []);
         if (jobFinished(job.status)) {
           if (job.status === "done") setJob(key, null);
           else setJob(key, { kind, status: "failed", line: line || `The ${kind} failed` });
-          onChangedRef.current();
-          setReload((n) => n + 1);
+          ended();
           return;
         }
         setJob(key, { kind, status: job.status, line });
-        const timer = setTimeout(() => {
-          timers.current.delete(timer);
-          void poll();
-        }, JOB_POLL_MS);
-        timers.current.add(timer);
+        later(JOB_POLL_MS, () => void poll());
       };
       void poll();
     },
-    [setJob],
+    [later, setJob],
   );
 
   const start = useCallback(
@@ -138,6 +179,7 @@ export function useCatalog(live: boolean, onChanged: () => void): CatalogState {
         });
         follow(key, kind, job);
       } catch (err) {
+        if (!alive.current) return;
         setJob(key, { kind, status: "failed", line: errorText(err, `Couldn't start the ${kind}`) });
       }
     },

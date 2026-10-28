@@ -60,7 +60,9 @@ function HfLoginRow({ catalog }: { catalog: CatalogState }) {
   const { hf } = catalog;
   const submitToken = async (event: { preventDefault(): void }) => {
     event.preventDefault();
-    if (await catalog.saveToken(token)) setToken("");
+    // Cleared either way: a rejected token shouldn't sit in the page.
+    setToken("");
+    await catalog.saveToken(token);
   };
   const submitSpace = (event: { preventDefault(): void }) => {
     event.preventDefault();
@@ -110,7 +112,7 @@ function HfLoginRow({ catalog }: { catalog: CatalogState }) {
             type="password"
             placeholder="Access token (hf_…)"
             aria-label="Hugging Face access token"
-            autoComplete="off"
+            autoComplete="new-password"
             spellCheck={false}
             value={token}
             onChange={(e) => setToken(e.target.value)}

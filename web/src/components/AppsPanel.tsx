@@ -123,8 +123,8 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps, catalog, manage
           <button
             className="btn press"
             type="button"
-            disabled={action.disabled}
-            title={action.title || undefined}
+            disabled={action.disabled || jobBusy}
+            title={(jobBusy ? `${job?.kind === "remove" ? "Removing" : "Updating"}…` : action.title) || undefined}
             onClick={() => apps.perform(name, "start")}
           >
             Start
