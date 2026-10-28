@@ -27,11 +27,17 @@ FEATURE = "keep_awake"
 
 
 async def _stop_current_app(original: Any, manager: Any, *args: Any, **kwargs: Any) -> Any:
-    result = await _stop_keeping_awake(original, manager, *args, **kwargs)
-    backend = upstream.daemon_backend(upstream.manager_daemon(manager))
-    if backend is not None and upstream.sync_torque_mode(backend):
-        logger.info("App stop left torque on; motor mode set to enabled")
-    return result
+    try:
+        return await _stop_keeping_awake(original, manager, *args, **kwargs)
+    finally:
+        # Also after a failed or cancelled stop: the check reads the real
+        # torque state, and a sync error mustn't fail a stop that worked.
+        backend = upstream.daemon_backend(upstream.manager_daemon(manager))
+        try:
+            if backend is not None and upstream.sync_torque_mode(backend):
+                logger.info("App stop left torque on; motor mode set to enabled")
+        except Exception:
+            logger.exception("Could not set the motor mode after an app stop")
 
 
 async def _stop_keeping_awake(original: Any, manager: Any, *args: Any, **kwargs: Any) -> Any:

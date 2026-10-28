@@ -150,13 +150,17 @@ REQUIREMENTS: tuple[Requirement, ...] = (
     ),
     Requirement(
         "keep_awake",
-        "RobotBackend tracks torque in _torque_enabled and the mode in motor_control_mode",
-        _source_mentions(_ROBOT_BACKEND, "RobotBackend", "_torque_enabled", "motor_control_mode"),
+        "RobotBackend tracks torque in _torque_enabled",
+        _source_mentions(_ROBOT_BACKEND, "RobotBackend", "self._torque_enabled ="),
     ),
     Requirement(
         "keep_awake",
-        "Backend.set_motor_control_mode(mode)",
-        _function(_BACKEND, "Backend.set_motor_control_mode", "mode"),
+        "Backend.get_motor_control_mode() and set_motor_control_mode(mode)",
+        lambda: (
+            _function(_BACKEND, "Backend.get_motor_control_mode")(),
+            _function(_BACKEND, "Backend.set_motor_control_mode", "mode")(),
+            _attr(_BACKEND, "MotorControlMode.Disabled"),
+        ),
     ),
     Requirement(
         "kinematics",
@@ -328,7 +332,7 @@ def sync_torque_mode(backend: Any) -> bool:
 
     if getattr(backend, "_torque_enabled", None) is not True:
         return False
-    if getattr(backend, "motor_control_mode", None) != MotorControlMode.Disabled:
+    if backend.get_motor_control_mode() != MotorControlMode.Disabled:
         return False
     backend.set_motor_control_mode(MotorControlMode.Enabled)
     return True

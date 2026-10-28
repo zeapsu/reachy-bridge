@@ -21,13 +21,24 @@ class Backend:
         self.is_shutting_down = False
         self.modes: list[MotorControlMode] = []
 
+    def get_motor_control_mode(self) -> MotorControlMode:
+        return self.motor_control_mode
+
     def set_motor_control_mode(self, mode: MotorControlMode) -> None:
         self.modes.append(mode)
         self.motor_control_mode = mode
 
 
-def stop(backend: Backend, *, torque_after: bool | None) -> Backend:
-    daemon = types.SimpleNamespace(backend=backend, robot_app_lock=None)
+class Lock:
+    def __init__(self) -> None:
+        self._on_became_free: Any = "idle reset"
+
+    def set_on_became_free_handler(self, handler: Any) -> None:
+        self._on_became_free = handler
+
+
+def stop(backend: Backend, *, torque_after: bool | None, lock: Lock | None = None) -> Backend:
+    daemon = types.SimpleNamespace(backend=backend, robot_app_lock=lock)
     manager = types.SimpleNamespace(daemon=daemon)
 
     async def original(manager: Any) -> None:
@@ -42,6 +53,13 @@ def stop(backend: Backend, *, torque_after: bool | None) -> Backend:
 def test_a_limp_app_returned_home_reports_the_motors_on() -> None:
     backend = stop(Backend(False, MotorControlMode.Disabled), torque_after=True)
     assert backend.modes == [MotorControlMode.Enabled]
+
+
+def test_the_sync_runs_with_the_idle_reset_detached_and_rearmed() -> None:
+    lock = Lock()
+    backend = stop(Backend(False, MotorControlMode.Disabled), torque_after=True, lock=lock)
+    assert backend.modes == [MotorControlMode.Enabled]
+    assert lock._on_became_free == "idle reset"
 
 
 def test_a_robot_left_limp_in_the_sleep_pose_stays_limp() -> None:
