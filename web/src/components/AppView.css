@@ -5,7 +5,7 @@
   inset: 0;
   z-index: 50;
   display: flex;
-  background: var(--bg-0);
+  background: var(--ground);
 }
 
 .app-view-panel {
@@ -13,19 +13,19 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-0);
+  background: var(--ground);
   overflow: hidden;
 }
 
 @media (min-width: 900px) {
   .app-view {
     padding: 24px;
-    background: color-mix(in srgb, var(--bg-0) 72%, transparent);
+    background: color-mix(in srgb, var(--ground) 72%, transparent);
     backdrop-filter: blur(6px);
   }
   .app-view-panel {
-    border: 1px solid var(--glass-edge);
-    border-radius: var(--r-md);
+    border: 1px solid var(--hair);
+    border-radius: var(--r-sheet);
     box-shadow: 0 24px 60px rgb(0 0 0 / 0.45);
   }
 }
@@ -36,9 +36,9 @@
   gap: 10px;
   padding: calc(env(safe-area-inset-top, 0px) + 8px) calc(env(safe-area-inset-right, 0px) + 12px) 8px
     calc(env(safe-area-inset-left, 0px) + 12px);
-  background: var(--bg-1);
-  border-bottom: 1px solid var(--glass-edge);
-  color: var(--text);
+  background: color-mix(in srgb, var(--ground) 88%, var(--ink) 12%);
+  border-bottom: 1px solid var(--hair);
+  color: var(--ink);
 }
 
 .app-view-bar button,
@@ -47,10 +47,10 @@
   padding: 0 14px;
   display: inline-flex;
   align-items: center;
-  border: 1px solid var(--glass-edge);
-  border-radius: var(--r-sm);
-  background: var(--glass-fill-2);
-  color: var(--text);
+  border: 1px solid var(--hair);
+  border-radius: 999px;
+  background: var(--tint-strong);
+  color: var(--ink);
   font: inherit;
   font-weight: 600;
   text-decoration: none;
@@ -61,7 +61,7 @@
 }
 
 .app-view-bar .app-view-stop {
-  color: var(--coral);
+  color: var(--danger);
 }
 
 .app-view-title {
@@ -71,7 +71,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: center;
-  color: var(--muted);
+  color: var(--ink-3);
 }
 
 .app-view-frame {
@@ -94,8 +94,8 @@
 }
 .app-view-card h2 {
   margin: 0 0 22px;
-  font: 600 24px/1.15 "Space Grotesk", sans-serif;
-  color: var(--text);
+  font: 600 24px/1.15 var(--font);
+  color: var(--ink);
   overflow-wrap: anywhere;
 }
 .app-view-steps {
@@ -111,39 +111,39 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  font: 500 14px/1.2 "Inter", sans-serif;
-  color: var(--muted);
+  font: 500 14px/1.2 var(--font);
+  color: var(--ink-3);
 }
 .app-view-steps .mark {
   flex: none;
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 1.5px solid var(--glass-edge);
+  border: 1.5px solid var(--hair);
   display: grid;
   place-items: center;
 }
 .app-view-steps li.active,
 .app-view-steps li.done {
-  color: var(--text);
+  color: var(--ink);
 }
 .app-view-steps li.active .mark {
   border-color: transparent;
-  background: conic-gradient(from 0deg, var(--amber) 0deg, color-mix(in srgb, var(--amber) 15%, transparent) 360deg);
+  background: conic-gradient(from 0deg, var(--accent) 0deg, color-mix(in srgb, var(--accent) 15%, transparent) 360deg);
   -webkit-mask: radial-gradient(circle, transparent 5px, #000 5.5px);
   mask: radial-gradient(circle, transparent 5px, #000 5.5px);
   animation: spin 1s linear infinite;
 }
 .app-view-steps li.done .mark {
-  border-color: var(--mint);
-  background: color-mix(in srgb, var(--mint) 22%, transparent);
+  border-color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 22%, transparent);
 }
 .app-view-steps li.done .mark::after {
   content: "";
   width: 7px;
   height: 4px;
   margin-top: -2px;
-  border: solid var(--mint);
+  border: solid var(--ok);
   border-width: 0 0 2px 2px;
   transform: rotate(-45deg);
 }
@@ -151,27 +151,27 @@
   height: 3px;
   margin: 24px 0 14px;
   border-radius: 3px;
-  background: var(--glass-fill-2);
+  background: var(--tint-strong);
   overflow: hidden;
 }
 .app-view-progress span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--amber), var(--cyan));
+  background: linear-gradient(90deg, var(--accent), var(--accent));
   transition: width 0.8s var(--ease);
 }
 .app-view-card p {
   margin: 0;
-  font: 400 13px/1.4 "Inter", sans-serif;
-  color: var(--muted);
+  font: 400 13px/1.4 var(--font);
+  color: var(--ink-3);
 }
 .app-view-card.failed h2,
 .app-view-card.failed p {
-  color: var(--coral);
+  color: var(--danger);
 }
 .app-view-card.failed .app-view-progress span {
-  background: var(--coral);
+  background: var(--danger);
 }
 @media (prefers-reduced-motion: reduce) {
   .app-view-steps li.active .mark {

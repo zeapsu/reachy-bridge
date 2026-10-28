@@ -112,7 +112,10 @@ export interface SystemStats {
 
 /** SSE `state-update` on /telemetry/state-stream (daemon full state, with_doa). */
 export interface RobotState {
-  head_pose?: number[] | { roll?: number; pitch?: number; yaw?: number } | null;
+  /** Metres and radians about the head pivot. */
+  head_pose?: number[] | { x?: number; y?: number; z?: number; roll?: number; pitch?: number; yaw?: number } | null;
+  /** Body yaw then the six Stewart horn angles, radians. */
+  head_joints?: number[] | null;
   body_yaw?: number | null;
   antennas_position?: number[] | { left?: number; right?: number } | null;
   doa?: { angle?: number; speech_detected?: boolean } | null;

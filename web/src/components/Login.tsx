@@ -90,7 +90,7 @@ export function Login() {
 
   return (
     <main className="login-screen">
-      <section className="glass pad login-card" aria-labelledby="login-title">
+      <section className="glass login-card" aria-labelledby="login-title">
         <h1 id="login-title">reachy-bridge</h1>
         <p className="login-lead">This browser isn't paired with the robot yet.</p>
         {phase.kind === "starting" && <p className="login-note">Getting a code…</p>}
@@ -113,7 +113,7 @@ export function Login() {
             <p className="login-note login-error" role="alert">
               {pairEndedText(phase.reason)}
             </p>
-            <button className="btn start" type="button" onClick={retry}>
+            <button className="btn primary press" type="button" onClick={retry}>
               get a new code
             </button>
           </>
@@ -123,7 +123,7 @@ export function Login() {
             <p className="login-note login-error" role="alert">
               {phase.text}
             </p>
-            <button className="btn start" type="button" onClick={retry}>
+            <button className="btn primary press" type="button" onClick={retry}>
               try again
             </button>
           </>

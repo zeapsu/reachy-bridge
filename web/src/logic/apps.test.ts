@@ -4,6 +4,8 @@ import {
   APP_UI_HTTPS_PORT,
   activeApp,
   appAction,
+  appHue,
+  appInitial,
   appUiUrl,
   cardStatus,
   formatUptime,
@@ -127,5 +129,21 @@ describe("appUiUrl", () => {
   });
   test("defaults to http without a page location", () => {
     expect(appUiUrl("reachy.tailnet", 8042)).toBe("http://reachy.tailnet:8042/");
+  });
+});
+
+describe("app tiles", () => {
+  test("hue is stable per name and in range", () => {
+    expect(appHue("radio")).toBe(appHue("radio"));
+    expect(appHue("radio")).not.toBe(appHue("hello_world"));
+    for (const name of ["", "a", "reachy_mini_conversation_app"]) {
+      expect(appHue(name)).toBeGreaterThanOrEqual(0);
+      expect(appHue(name)).toBeLessThan(360);
+    }
+  });
+  test("initial skips punctuation", () => {
+    expect(appInitial("radio")).toBe("R");
+    expect(appInitial("  _hello")).toBe("H");
+    expect(appInitial("—")).toBe("?");
   });
 });

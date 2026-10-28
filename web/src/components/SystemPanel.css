@@ -1,0 +1,133 @@
+/* System tab: board stats, logs and the microphone meter. */
+.gauges {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.gauge {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+}
+.gauge svg { width: 84px; height: 84px; }
+.gauge .gv {
+  font: 600 18px var(--mono);
+  fill: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.gauge .gu { font: 9px var(--mono); fill: var(--ink-3); }
+.gauge .gl {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.bar-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  font: 12px var(--mono);
+  color: var(--ink-3);
+}
+.barline {
+  height: 8px;
+  border-radius: 6px;
+  background: var(--well);
+  overflow: hidden;
+}
+.barline > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  transition: width 0.6s var(--ease);
+}
+
+.route {
+  display: grid;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--hair);
+  font: 12px var(--mono);
+}
+.route .row {
+  font-size: inherit;
+}
+.route .row span:first-child { color: var(--ink-3); }
+.route .row span:last-child { text-align: right; overflow-wrap: anywhere; }
+
+/* Logs */
+.log-bar select { width: 100%; }
+.log-body { position: relative; }
+.log-scroll {
+  height: 280px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--well);
+}
+.log-out {
+  margin: 0;
+  font: 12px/1.6 var(--mono);
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.log-out .ln { display: block; }
+.log-empty { margin: 0; font: 12px var(--mono); color: var(--ink-3); }
+.log-follow {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+}
+.log-foot,
+.eq-foot {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font: 12px var(--mono);
+  color: var(--ink-3);
+}
+.log-foot .v,
+.eq-foot .v { color: var(--ink); }
+
+/* Microphone meter */
+.eq {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 92px;
+}
+.eq .bar {
+  flex: 1;
+  height: 6%;
+  border-radius: 4px 4px 2px 2px;
+  background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 35%, transparent));
+  transition: height 0.12s linear, opacity 0.2s;
+}
+.eq-rms {
+  width: 0%;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.12s linear, opacity 0.2s;
+}
+.eq-bands {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  font: 11px var(--mono);
+  letter-spacing: 0.12em;
+  text-align: center;
+  color: var(--ink-3);
+}
+.eq.idle .bar,
+.eq.idle + .eq-rms { opacity: 0.35; }
+
+@media (max-width: 480px) {
+  .gauge svg { width: 72px; height: 72px; }
+  .log-scroll { height: 220px; }
+}

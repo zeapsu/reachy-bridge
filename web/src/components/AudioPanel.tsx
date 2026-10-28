@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { paths } from "../api.ts";
+import { useLens } from "../glass.ts";
 import { readEventPayload, useEventSource } from "../hooks/useEventSource.ts";
 import { reduceMotion } from "../hooks/reduceMotion.ts";
 import { EqModel, NBARS, audioLevelsFromPayload, formatPeak, formatSampleRate, type AudioLevels } from "../logic/audio.ts";
@@ -17,6 +18,7 @@ const BAR_INDEXES = Array.from({ length: NBARS }, (_, i) => i);
  */
 export function AudioPanel({ daemonOnline, live }: { daemonOnline: boolean; live: boolean }) {
   const [status, setStatus] = useState<MicStatus>("waiting");
+  const sheet = useLens<HTMLElement>();
   const eq = useRef<HTMLDivElement>(null);
   const rmsEl = useRef<HTMLDivElement>(null);
   const inputEl = useRef<HTMLSpanElement>(null);
@@ -119,15 +121,14 @@ export function AudioPanel({ daemonOnline, live }: { daemonOnline: boolean; live
   });
 
   return (
-    <section className="glass pad instrument">
-      <div className="head">
-        <h2>audio</h2>
-        <div className="rule"></div>
-        <span className="pill">
+    <section className="glass sheet" data-lens ref={sheet} aria-labelledby="audio-title">
+      <header>
+        <h2 id="audio-title">Microphone</h2>
+        <span className="chip">
           <span className={micDot(status)} id="mic-dot"></span>
           <span id="mic-state">{status}</span>
         </span>
-      </div>
+      </header>
       <div className="eq" id="eq" ref={eq} aria-hidden="true">
         {BAR_INDEXES.map((i) => (
           <div className="bar" key={i}></div>
