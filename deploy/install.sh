@@ -72,7 +72,9 @@ step "Build the controller"
 step "Install"
 # The build takes minutes; the robot may have been switched on meanwhile.
 require_robot_off
-systemctl --user stop "$DAEMON" "$SIM" 2>/dev/null || true
+systemctl --user stop "$DAEMON" 2>/dev/null || true
+# Separately: on the first install with sim mode the unit doesn't exist yet.
+systemctl --user stop "$SIM" 2>/dev/null || true
 mkdir -p "$DEST/bin" "$DEST/sim"
 # --no-editable, so the service doesn't depend on this checkout. The sim extra
 # (MuJoCo) is for the sim daemon.

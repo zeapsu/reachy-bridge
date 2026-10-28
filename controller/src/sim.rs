@@ -37,9 +37,21 @@ const SIM_START_TIMEOUT: Duration = Duration::from_secs(90);
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(40);
 /// How long leaving waits for sim moves to stop.
 const MOVES_STOP_TIMEOUT: Duration = Duration::from_secs(2);
-/// Routes that install, change or start apps: the sim daemon has none.
-const APP_ACTIONS: [&str; 5] =
-    ["/api/apps/start/", "/api/apps/install", "/api/apps/remove/", "/api/apps/update/", "/api/hf/token"];
+/// How long a switch waits for actions in flight before answering busy:
+/// queued, it would hold every new action (power off included) behind them.
+const SWITCH_WAIT: Duration = Duration::from_secs(3);
+/// Routes that install, change or start apps (the sim daemon has none), and
+/// the volume and sound routes: the sim daemon would set the host's real
+/// speaker and microphone.
+const SIM_REFUSED: [(&str, &str); 7] = [
+    ("/api/apps/start/", "Apps are off in sim mode"),
+    ("/api/apps/install", "Apps are off in sim mode"),
+    ("/api/apps/remove/", "Apps are off in sim mode"),
+    ("/api/apps/update/", "Apps are off in sim mode"),
+    ("/api/hf/token", "Apps are off in sim mode"),
+    ("/api/volume/", "Sound is off in sim mode"),
+    ("/api/media/", "Sound is off in sim mode"),
+];
 
 pub struct SimMode {
     robot_url: String,
@@ -121,6 +133,12 @@ pub fn router() -> Router<Shared> {
         .route("/api/sim/exit", post(exit))
 }
 
+async fn switch_lock(state: &Shared) -> ApiResult<tokio::sync::RwLockWriteGuard<'_, ()>> {
+    tokio::time::timeout(SWITCH_WAIT, state.sim.switch.write())
+        .await
+        .map_err(|_| ApiError::new(409, "The robot is busy with an action; try again when it finishes"))
+}
+
 async fn status(State(state): State<Shared>) -> Json<Value> {
     Json(json!({"active": state.sim.active(), "target": state.sim.target()}))
 }
@@ -129,7 +147,7 @@ async fn status(State(state): State<Shared>) -> Json<Value> {
 /// robot is confirmed off: a daemon that doesn't answer may be busy with a
 /// move (daemon-contract.md), not down.
 async fn enter(State(state): State<Shared>) -> ApiResult<Json<Value>> {
-    let _switch = state.sim.switch.write().await;
+    let _switch = switch_lock(&state).await?;
     let _power = state.power_lock.lock().await;
     let sim = &state.sim;
     if sim.active() {
@@ -167,8 +185,8 @@ async fn enter(State(state): State<Shared>) -> ApiResult<Json<Value>> {
 
 /// Switch the controller back to the robot (still off) and stop the sim.
 async fn exit(State(state): State<Shared>) -> ApiResult<Json<Value>> {
-    let _switch = state.sim.switch.write().await;
-    let _power = state.power_lock.lock().await;
+    let switch = switch_lock(&state).await?;
+    let power = state.power_lock.lock().await;
     let sim = &state.sim;
     if !sim.active() {
         return Ok(Json(json!({"active": false, "target": "robot"})));
@@ -183,6 +201,10 @@ async fn exit(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     state.player.set_needs_home(true);
     state.apps.forget_installed().await;
     tracing::info!("sim mode off: the controller drives the robot's daemon again");
+    // Nothing points at the sim any more: let actions on the robot through
+    // while it stops.
+    drop(power);
+    drop(switch);
     if let Some(unit) = &sim.unit
         && let Err(error) = systemctl("stop", unit).await
     {
@@ -222,8 +244,10 @@ pub async fn guard(State(state): State<Shared>, request: Request, next: Next) ->
             };
             return ApiError::new(409, detail).into_response();
         }
-        if state.sim.active() && APP_ACTIONS.iter().any(|p| path.starts_with(p)) {
-            return ApiError::new(409, "Apps are off in sim mode").into_response();
+        if state.sim.active()
+            && let Some((_, detail)) = SIM_REFUSED.iter().find(|(prefix, _)| path.starts_with(prefix))
+        {
+            return ApiError::new(409, *detail).into_response();
         }
         return next.run(request).await;
     }

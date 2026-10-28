@@ -141,3 +141,12 @@ async fn leaving_keeps_expressions_off_until_the_robot_is_home() {
     s.h.call("POST", "/api/sim/exit", None).await;
     assert!(s.h.state.player.needs_home());
 }
+
+#[tokio::test]
+async fn the_sim_never_sets_the_hosts_sound() {
+    let s = sim_harness(|_| {}).await;
+    s.h.call("POST", "/api/sim/enter", None).await;
+    let (status, body) = s.h.call("POST", "/api/volume/set", Some(json!({"volume": 10}))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["detail"], "Sound is off in sim mode");
+}

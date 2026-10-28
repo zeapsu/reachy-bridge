@@ -41,7 +41,7 @@ def for_daemon_args(platform: platforms.Platform, args: list[str]) -> platforms.
     """The platform as this daemon uses it. A sim daemon (sim mode, #149)
     runs beside the robot's, so it leaves the host's audio setup alone, and a
     --no-media daemon has no media for the media features to read."""
-    if "--sim" in args:
+    if "--sim" in args or "--mockup-sim" in args:
         platform = dataclasses.replace(platform, host_setup=())
     if "--no-media" in args:
         platform = dataclasses.replace(platform, features=platform.features - MEDIA_FEATURES)

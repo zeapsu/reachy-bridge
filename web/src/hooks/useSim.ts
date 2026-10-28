@@ -48,6 +48,12 @@ export function useSim(reported: Target | undefined, onSwitched: () => void): Si
       try {
         const status = await apiJson<SimStatus>(entering ? paths.simEnter : paths.simExit, { method: "POST" });
         pendingRef.current = status.target;
+        // A poll will report it within a second or two; if the controller
+        // restarted or another tab switched back meanwhile, stop waiting so
+        // the next poll reloads this tab.
+        window.setTimeout(() => {
+          if (pendingRef.current === status.target) pendingRef.current = null;
+        }, 5000);
         believe(status.target);
         onSwitchedRef.current();
       } catch (err) {

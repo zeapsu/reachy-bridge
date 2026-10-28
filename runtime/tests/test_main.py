@@ -21,3 +21,7 @@ def test_a_sim_daemon_leaves_the_host_and_media_alone():
     assert board.host_setup == ()
     assert board.features == frozenset()
     assert board.name == "jetson"
+
+
+def test_a_mockup_sim_daemon_leaves_the_host_alone():
+    assert for_daemon_args(_board(), ["--mockup-sim"]).host_setup == ()
