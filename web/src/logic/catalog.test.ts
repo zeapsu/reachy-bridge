@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { CatalogApp } from "../api.ts";
-import { filterCatalog, jobFinished, jobLine, tokenShape, validSpaceId } from "./catalog.ts";
+import { appMeta, filterCatalog, jobFinished, jobLine, spaceUrl, tokenShape, validSpaceId } from "./catalog.ts";
 
 const app = (id: string, title: string, description = ""): CatalogApp => ({
   id,
@@ -8,6 +8,8 @@ const app = (id: string, title: string, description = ""): CatalogApp => ({
   title,
   description,
   likes: 0,
+  author: "",
+  updated: null,
   private: false,
   installed: false,
 });
@@ -20,6 +22,18 @@ describe("catalog", () => {
     expect(validSpaceId("a/b/c")).toBe(false);
     expect(validSpaceId("me/..")).toBe(false);
     expect(validSpaceId("me/my app")).toBe(false);
+  });
+
+  test("details link to the Space page and say who and when", () => {
+    expect(spaceUrl("cdeplanne/wake_me_up")).toBe("https://huggingface.co/spaces/cdeplanne/wake_me_up");
+    expect(spaceUrl("javascript:alert(1)")).toBeNull();
+    expect(spaceUrl("a/b/c")).toBeNull();
+    expect(spaceUrl(null)).toBeNull();
+    expect(appMeta({ author: "cdeplanne", likes: 12, updated: "2026-06-09T09:02:48.000Z" })).toBe(
+      "by cdeplanne · 12 likes · updated Jun 2026",
+    );
+    expect(appMeta({ likes: 1, updated: "nope" })).toBe("1 like");
+    expect(appMeta({})).toBe("");
   });
 
   test("search matches every word across title, description and id", () => {

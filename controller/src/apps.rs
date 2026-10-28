@@ -184,10 +184,25 @@ impl DaemonApps {
                         start_time = since.map_or(Value::Null, Value::from);
                     }
                 }
+                let extra = item.get("extra");
+                let card = extra.and_then(|e| e.get("cardData"));
+                let blurb = [item.get("description"), card.and_then(|c| c.get("short_description"))]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .find(|d| !d.is_empty())
+                    .unwrap_or("");
+                // Apps installed from a Space keep its id, for a link to its page.
+                let space = extra
+                    .and_then(|e| e.get("id"))
+                    .and_then(Value::as_str)
+                    .filter(|id| crate::routes::store::space_id(id));
                 Some(json!({
                     "name": name,
                     "display": display_name(name),
-                    "blurb": item.get("description").and_then(Value::as_str).unwrap_or(""),
+                    "blurb": blurb,
+                    "space": space,
+                    "author": extra.and_then(|e| e.get("author")).and_then(Value::as_str),
                     "status": status,
                     "error": error,
                     "start_time": start_time,

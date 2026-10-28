@@ -35,6 +35,8 @@ async fn catalog_lists_curated_or_all_and_marks_installed() {
     assert_eq!(body["apps"][1]["private"], true);
     // Installed as hello_world (its entry point), from the Space hello_space.
     assert_eq!(body["apps"][2]["installed"], true);
+    assert_eq!(body["apps"][0]["author"], "someone");
+    assert_eq!(body["apps"][0]["updated"], "2026-06-09T09:02:48.000Z");
 }
 
 #[tokio::test]

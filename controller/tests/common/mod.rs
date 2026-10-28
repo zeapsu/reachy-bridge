@@ -58,7 +58,14 @@ pub fn catalog_entry(id: &str, private: bool) -> Value {
         "source_kind": "hf_space",
         "description": format!("About {name}"),
         "url": format!("https://huggingface.co/spaces/{id}"),
-        "extra": {"id": id, "private": private, "likes": 3, "cardData": {"title": name}},
+        "extra": {
+            "id": id,
+            "private": private,
+            "likes": 3,
+            "author": id.split('/').next().unwrap(),
+            "lastModified": "2026-06-09T09:02:48.000Z",
+            "cardData": {"title": name},
+        },
     })
 }
 
@@ -189,7 +196,7 @@ pub async fn fake_daemon(fake: FakeState) -> String {
             get(|| async {
                 Json(json!([
                     {"name": "reachy_mini_radio", "description": "Radio", "extra": {"custom_app_url": "http://0.0.0.0:1"}},
-                    {"name": "hello_world", "extra": {"id": "someone/hello_space"}},
+                    {"name": "hello_world", "extra": {"id": "someone/hello_space", "author": "someone", "cardData": {"short_description": "Says hi"}}},
                 ]))
             }),
         )

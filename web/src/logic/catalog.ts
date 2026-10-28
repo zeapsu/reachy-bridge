@@ -6,6 +6,23 @@ export function validSpaceId(id: string): boolean {
   return parts.length === 2 && parts.every((p) => p.length > 0 && p.length <= 96 && /^[A-Za-z0-9._-]+$/.test(p) && p !== "." && p !== "..");
 }
 
+/** The Space's page on Hugging Face, where its README says what it does. */
+export function spaceUrl(id: string | null | undefined): string | null {
+  return id && validSpaceId(id) ? `https://huggingface.co/spaces/${id.trim()}` : null;
+}
+
+/** "by owner · 12 likes · updated Jun 2026", from what's known. */
+export function appMeta(details: { author?: string | null; likes?: number; updated?: string | null }): string {
+  const parts: string[] = [];
+  if (details.author) parts.push(`by ${details.author}`);
+  if (details.likes) parts.push(`${details.likes} like${details.likes === 1 ? "" : "s"}`);
+  const updated = details.updated ? new Date(details.updated) : null;
+  if (updated && !Number.isNaN(updated.getTime())) {
+    parts.push(`updated ${updated.toLocaleDateString("en", { month: "short", year: "numeric", timeZone: "UTC" })}`);
+  }
+  return parts.join(" · ");
+}
+
 /** Catalog entries matching a search, by title, description or Space id. */
 export function filterCatalog(apps: CatalogApp[], query: string): CatalogApp[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
