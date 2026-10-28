@@ -43,6 +43,9 @@ jobs:
         with:
           version: "0.11.24"
           enable-cache: true
+          # A lock-bump run from the upstream watch tests unreviewed code; keep
+          # its caches away from main's.
+          save-cache: ${{ inputs.ref == '' }}
       - run: uv sync --frozen
       - run: uv run ruff check runtime tools
       - run: uv run pytest
@@ -66,6 +69,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: controller
+          save-if: ${{ inputs.ref == '' }}
       - name: Web
         working-directory: web
         run: |
@@ -102,6 +106,9 @@ jobs:
         with:
           version: "0.11.24"
           enable-cache: true
+          # A lock-bump run from the upstream watch tests unreviewed code; keep
+          # its caches away from main's.
+          save-cache: ${{ inputs.ref == '' }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.4.3"
@@ -112,6 +119,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: controller
+          save-if: ${{ inputs.ref == '' }}
       - run: uv sync --frozen
       - name: Web
         working-directory: web
