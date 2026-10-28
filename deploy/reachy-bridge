@@ -149,9 +149,9 @@ deploy_tag() {
     git -C "$repo" fetch --quiet --tags origin || die "git fetch failed"
     git -C "$repo" rev-parse --quiet --verify "refs/tags/$tag^{commit}" >/dev/null || die "no tag $tag"
 
-    # Roll back to what install.sh last installed (it records the commit),
-    # which can differ from the checkout's HEAD after a pull. Without a record
-    # yet, the checkout is the best guess.
+    # Roll back to what was last installed (deploy and install.sh record the
+    # commit), which can differ from the checkout's HEAD after a pull. Without
+    # a record yet, the checkout is the best guess.
     [[ -r $record ]] && installed=$(<"$record")
     if [[ -n $installed ]] && ! git -C "$repo" cat-file -e "$installed^{commit}" 2>/dev/null; then
         installed=""
@@ -191,6 +191,9 @@ deploy_tag() {
     echo "reachy-bridge: deploying $tag failed; reinstalling $prev_name" >&2
     rc=0
     "$repo/deploy/install.sh" || rc=$?
+    if (( rc == 3 )); then
+        die "deploying $tag failed, and reinstalling $prev_name was refused before it changed anything (see above); check reachy-bridge status"
+    fi
     if (( rc == 0 )) && healthy; then
         git -C "$repo" rev-parse HEAD >"$record"
         [[ $prev_ref == "$checkout_ref" ]] || echo "reachy-bridge: the checkout is now detached at $prev_name (was $checkout_ref)" >&2
