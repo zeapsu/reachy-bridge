@@ -39,10 +39,12 @@ interface Props {
   onPower: () => void;
   daemonOnline: boolean;
   activeApp: string | null;
+  /** The controller drives the simulated robot (#149). */
+  sim: boolean;
 }
 
 /** Brand, the section tabs (a bottom bar on phones), robot status and power. */
-export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp }: Props) {
+export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, sim }: Props) {
   const tabs = useLens<HTMLDivElement>();
   const status = robotStatus(power, daemonOnline, activeApp);
   return (
@@ -62,6 +64,7 @@ export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp }: 
       <div className="top-right">
         <span className="glass status" role="status">
           <span className={`dot ${status.dot}`}></span>
+          {sim ? <span className="sim-badge">Sim</span> : null}
           {status.text}
         </span>
         <button

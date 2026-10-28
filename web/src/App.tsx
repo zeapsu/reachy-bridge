@@ -11,6 +11,7 @@ import { AppearancePanel, Wallpaper } from "./components/Appearance.tsx";
 import { AuthGate } from "./components/Login.tsx";
 import { Segmented } from "./components/Segmented.tsx";
 import { PhoneTabs, TopBar } from "./components/Shell.tsx";
+import { SimPanel } from "./components/SimPanel.tsx";
 import { LogsPanel, StatsPanel } from "./components/SystemPanel.tsx";
 import { Viewport, type PoseSink } from "./components/Viewport.tsx";
 import { useLens } from "./glass.ts";
@@ -24,6 +25,7 @@ import { useExpressions } from "./hooks/useExpressions.ts";
 import { usePageVisible } from "./hooks/usePageVisible.ts";
 import { usePoll } from "./hooks/usePoll.ts";
 import { usePower } from "./hooks/usePower.ts";
+import { useSim } from "./hooks/useSim.ts";
 import { activeApp } from "./logic/apps.ts";
 import { read, write } from "./logic/appearance.ts";
 import { CONTROL_HINT_OFFLINE } from "./logic/controls.ts";
@@ -85,6 +87,13 @@ function Dashboard() {
     () => void reloadKinematics(),
   );
 
+  // The power, apps and kinematics shown are the new robot's after a switch.
+  const sim = useSim(power.target, () => {
+    void power.poll();
+    void apps.poll();
+    void reloadKinematics();
+  });
+
   const blocked = driveBlocked({
     daemonOnline,
     motorMode: robotControlMode,
@@ -133,6 +142,7 @@ function Dashboard() {
           onPower={power.toggle}
           daemonOnline={daemonOnline}
           activeApp={active ? active.display || active.name : null}
+          sim={sim.target === "sim"}
         />
 
         <main className={`view robot${pane === "drive" ? " driving" : ""}`} id="view-robot" role="tabpanel" hidden={tab !== "robot"} aria-label="Robot">
@@ -185,6 +195,7 @@ function Dashboard() {
         <main className="view list" id="view-system" role="tabpanel" hidden={tab !== "system"} aria-label="System">
           <StatsPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
           <AudioPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
+          <SimPanel sim={sim} powerStatus={power.status} />
           <LogsPanel live={visible && tab === "system"} />
           <DevicesPanel />
           <AppearancePanel look={look} />

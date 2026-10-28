@@ -156,3 +156,14 @@
   /* Driving: a shorter stage, so it and the pads fit one screen. */
   .view.robot.driving > .stage { min-height: 0; height: 34dvh; }
 }
+
+/* Sim mode (#149): the status names the simulated robot. */
+.sim-badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--warn);
+  color: #1b1300;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
