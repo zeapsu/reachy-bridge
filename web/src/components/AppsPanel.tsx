@@ -84,7 +84,7 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps, catalog, manage
       <AppCopy
         title={<span className="title">{display}</span>}
         state={state}
-        details={<AppDetails description={app.blurb || ""} meta={appMeta(app)} space={app.space} />}
+        details={<AppDetails description={state === app.blurb ? "" : app.blurb} meta={appMeta(app)} space={app.space} />}
       />
       <div className="app-actions">
         {manage ? (

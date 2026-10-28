@@ -49,12 +49,15 @@ export function AppCopy({ title, state, details }: { title: ReactNode; state: Re
   );
 }
 
-/** What an app does: its description, who made it, and its Space page (whose README explains it). */
-export function AppDetails({ description, meta, space }: { description: string; meta: string; space?: string | null }) {
+/**
+ * What an app does: who made it and its Space page (whose README explains
+ * it), plus its description when the row isn't already showing it.
+ */
+export function AppDetails({ description, meta, space }: { description?: string; meta: string; space?: string | null }) {
   const url = spaceUrl(space);
   return (
     <>
-      <p>{description || "No description."}</p>
+      {description ? <p>{description}</p> : null}
       {meta ? <small>{meta}</small> : null}
       {url ? (
         <a className="btn quiet press" href={url} target="_blank" rel="noopener noreferrer">
@@ -82,7 +85,7 @@ function CatalogRow({ app, job, onInstall }: { app: CatalogApp; job?: RowJob; on
           </>
         }
         state={job ? <JobText job={job} /> : app.description || app.id}
-        details={<AppDetails description={app.description} meta={appMeta(app)} space={app.id} />}
+        details={<AppDetails description={job ? app.description : ""} meta={appMeta(app)} space={app.id} />}
       />
       <div className="app-actions">
         {app.installed ? (
