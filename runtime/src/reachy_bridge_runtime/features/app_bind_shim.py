@@ -41,9 +41,14 @@ def loopback_address(family, kind, address, v6only=True):
     """
     if kind != socket.SOCK_STREAM or family not in (socket.AF_INET, socket.AF_INET6):
         return address
-    if not isinstance(address, tuple) or not address or not isinstance(address[0], str):
+    if not isinstance(address, tuple) or not address:
         return address
-    if _is_loopback(address[0]):
+    host = address[0]
+    if isinstance(host, (bytes, bytearray)):
+        host = bytes(host).decode("ascii", "replace")
+    if not isinstance(host, str):
+        return address
+    if _is_loopback(host):
         return address
     if family == socket.AF_INET:
         return ("127.0.0.1", *address[1:])

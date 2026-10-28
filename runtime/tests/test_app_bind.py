@@ -74,6 +74,7 @@ def test_shim_leaves_udp_and_loopback_alone() -> None:
     assert shim.loopback_address(socket.AF_INET6, socket.SOCK_STREAM, ("::", 80, 0, 0)) == ("::1", 80, 0, 0)
     assert shim.loopback_address(socket.AF_INET6, socket.SOCK_STREAM, ("::", 80), v6only=False) == ("::ffff:127.0.0.1", 80, 0, 0)
     assert shim.loopback_address(socket.AF_UNIX, socket.SOCK_STREAM, "/tmp/sock") == "/tmp/sock"
+    assert shim.loopback_address(socket.AF_INET, socket.SOCK_STREAM, (b"0.0.0.0", 80)) == ("127.0.0.1", 80)
 
 
 def test_site_packages_follows_pyvenv_cfg(tmp_path: Path) -> None:
