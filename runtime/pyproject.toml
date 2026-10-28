@@ -3,6 +3,7 @@ name = "reachy-bridge-runtime"
 version = "0.1.0"
 description = "Pollen's Reachy Mini daemon with the bridge's features and platform adapters."
 requires-python = "==3.12.*"
+license = "Apache-2.0"
 dependencies = [
     # A floor, not a pin: uv.lock records the exact tested version, and #155
     # bumps it as Pollen releases. Upstream internals are only touched in
