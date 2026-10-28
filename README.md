@@ -60,7 +60,7 @@ The dashboard then listens on every interface on port 7861; the daemon stays on 
 A browser on the LAN gets a login screen with a 6-digit code (valid for 5 minutes). Approve it
 on the device with `reachy-bridge pair <code> [name]`, or from an already-paired dashboard
 (devices panel). The browser then keeps a device cookie for a year. `reachy-bridge devices`
-lists paired browsers and `reachy-bridge devices revoke <id>` logs one out at once.
+lists paired browsers and `reachy-bridge devices revoke <n>` logs one out at once (`<n>` is its number in that list; the id works too).
 Visitors through `tailscale serve` and local tools are trusted without pairing; set
 `CONTROLLER_TRUST_TAILNET=0` to make them pair too (that covers the app UIs on :8043 as well).
 The login protects the dashboard and :8043 only: app UIs also listen on plain http on their own
