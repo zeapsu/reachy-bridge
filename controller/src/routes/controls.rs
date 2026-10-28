@@ -57,6 +57,18 @@ async fn set_motor_mode(State(state): State<Shared>, Path(mode): Path<String>) -
     if !matches!(mode.as_str(), "enabled" | "disabled" | "gravity_compensation") {
         return Err(ApiError::new(400, "Invalid motor mode"));
     }
+    // Not during a power change: enabling starts a return home, which would
+    // run under the sleep move (#177). Going limp is the safe direction and
+    // never waits behind a slow app start.
+    let _power = if mode == "disabled" { None } else { Some(state.power_lock.lock().await) };
+    // daemon/stop returns before its sleep move ends, so the lock alone
+    // doesn't cover a power-off still in progress.
+    if mode == "enabled" {
+        let daemon_state = state.daemon.status().await;
+        if daemon_state.as_ref().and_then(|s| s.get("state")).and_then(Value::as_str) != Some("running") {
+            return Err(ApiError::new(409, "The robot is off or powering off"));
+        }
+    }
     if mode == "gravity_compensation" {
         // The motors ignore move targets in this mode, so an app's moves would
         // silently do nothing while its speech carries on (#150).
