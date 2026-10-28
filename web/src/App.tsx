@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson, paths, type Kinematics, type RobotState } from "./api.ts";
 import { AppsPanel } from "./components/AppsPanel.tsx";
+import { CatalogPanel } from "./components/CatalogPanel.tsx";
 import { AudioPanel } from "./components/AudioPanel.tsx";
 import { ControlsPanel, type ControlHint } from "./components/ControlsPanel.tsx";
 import { DevicesPanel } from "./components/DevicesPanel.tsx";
@@ -15,6 +16,7 @@ import { Viewport, type PoseSink } from "./components/Viewport.tsx";
 import { useLens } from "./glass.ts";
 import { useAppearance } from "./hooks/useAppearance.ts";
 import { useApps } from "./hooks/useApps.ts";
+import { useCatalog } from "./hooks/useCatalog.ts";
 import { useDrive } from "./hooks/useDrive.ts";
 import { AppView } from "./components/AppView.tsx";
 import { readEventPayload, useEventSource } from "./hooks/useEventSource.ts";
@@ -71,6 +73,7 @@ function Dashboard() {
   const active = activeApp(apps.statuses);
   const appActive = Boolean(active);
   const expr = useExpressions(daemonOnline, appActive);
+  const catalog = useCatalog(visible && tab === "apps" && daemonOnline, () => void apps.poll());
 
   const power = usePower(
     {
@@ -175,7 +178,8 @@ function Dashboard() {
         </main>
 
         <main className="view list" id="view-apps" role="tabpanel" hidden={tab !== "apps"} aria-label="Apps">
-          <AppsPanel apps={apps} daemonOnline={daemonOnline} exprBusy={expr.busy !== null} />
+          <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} exprBusy={expr.busy !== null} />
+          <CatalogPanel catalog={catalog} daemonOnline={daemonOnline} />
         </main>
 
         <main className="view list" id="view-system" role="tabpanel" hidden={tab !== "system"} aria-label="System">

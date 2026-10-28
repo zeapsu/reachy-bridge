@@ -32,6 +32,8 @@ pub struct Fake {
     pub kinematics_put_status: u16,
     pub set_mode_status: u16,
     pub calls: Vec<String>,
+    /// The Hugging Face user the fake daemon is logged in as.
+    pub hf_user: Option<String>,
 }
 
 pub type FakeState = Arc<Mutex<Fake>>;
@@ -45,6 +47,18 @@ pub fn status_body(f: &Fake) -> Value {
         "state": f.state,
         "backend_status": f.motors.as_ref().map(|m| json!({"motor_control_mode": m})),
         "error": null,
+    })
+}
+
+/// A listing entry the way the daemon builds one from a Space.
+pub fn catalog_entry(id: &str, private: bool) -> Value {
+    let name = id.rsplit('/').next().unwrap();
+    json!({
+        "name": name,
+        "source_kind": "hf_space",
+        "description": format!("About {name}"),
+        "url": format!("https://huggingface.co/spaces/{id}"),
+        "extra": {"id": id, "private": private, "likes": 3, "cardData": {"title": name}},
     })
 }
 
@@ -175,7 +189,7 @@ pub async fn fake_daemon(fake: FakeState) -> String {
             get(|| async {
                 Json(json!([
                     {"name": "reachy_mini_radio", "description": "Radio", "extra": {"custom_app_url": "http://0.0.0.0:1"}},
-                    {"name": "hello_world", "extra": {}},
+                    {"name": "hello_world", "extra": {"id": "someone/hello_space"}},
                 ]))
             }),
         )
@@ -199,11 +213,109 @@ pub async fn fake_daemon(fake: FakeState) -> String {
                 Json(json!({"ok": true}))
             }),
         )
+        // The app catalog (#126).
+        .route(
+            "/api/apps/list-available/dashboard_selection",
+            get(|State(f): State<FakeState>| async move {
+                record(&f, "list curated");
+                Json(json!([catalog_entry("pollen-robotics/reachy_mini_radio", false), catalog_entry("pollen-robotics/new_app", false)]))
+            }),
+        )
+        .route(
+            "/api/apps/list-available/hf_space",
+            get(|State(f): State<FakeState>| async move {
+                record(&f, "list all");
+                Json(json!([
+                    catalog_entry("someone/other_app", false),
+                    catalog_entry("me/secret_app", true),
+                    catalog_entry("someone/hello_space", false),
+                ]))
+            }),
+        )
+        .route(
+            "/api/apps/install",
+            post(|State(f): State<FakeState>, Json(body): Json<Value>| async move {
+                record(&f, format!("install {}", body));
+                Json(json!({"job_id": "job-1"}))
+            }),
+        )
+        .route(
+            "/api/apps/install-private-space",
+            post(|State(f): State<FakeState>, Json(body): Json<Value>| async move {
+                record(&f, format!("install-private {}", body["space_id"].as_str().unwrap_or("?")));
+                Json(json!({"job_id": "job-2"}))
+            }),
+        )
+        .route(
+            "/api/apps/job-status/{id}",
+            get(|Path(id): Path<String>| async move {
+                if id != "job-1" {
+                    return (StatusCode::NOT_FOUND, Json(json!({"detail": "Job ID not found"})));
+                }
+                (StatusCode::OK, Json(json!({"command": "install", "status": "done", "logs": ["Downloading", "token hf_abcdefghijklmnop leaked", "Installed"]})))
+            }),
+        )
+        .route(
+            "/api/apps/remove/{name}",
+            post(|State(f): State<FakeState>, Path(name): Path<String>| async move {
+                record(&f, format!("remove {name}"));
+                Json(json!({"job_id": "job-3"}))
+            }),
+        )
+        .route(
+            "/api/apps/update/{name}",
+            post(|State(f): State<FakeState>, Path(name): Path<String>| async move {
+                record(&f, format!("update {name}"));
+                Json(json!({"job_id": "job-4"}))
+            }),
+        )
+        .route(
+            "/api/apps/check-updates",
+            get(|| async {
+                Json(json!({"apps_with_updates": [{"app_name": "hello_world", "space_id": "x/hello_world", "installed_sha": "a", "latest_sha": "b", "update_available": true}], "apps_checked": 2, "apps_skipped": 0}))
+            }),
+        )
+        .route(
+            "/api/hf-auth/status",
+            get(|State(f): State<FakeState>| async move {
+                let user = f.lock().unwrap().hf_user.clone();
+                Json(json!({"is_logged_in": user.is_some(), "username": user}))
+            }),
+        )
+        .route(
+            "/api/hf-auth/save-token",
+            post(|State(f): State<FakeState>, Json(body): Json<Value>| async move {
+                let token = body["token"].as_str().unwrap_or_default().to_string();
+                record(&f, format!("save-token {token}"));
+                if token != "hf_goodtoken123" {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"detail": format!("Invalid token {token}")})));
+                }
+                f.lock().unwrap().hf_user = Some("andry".into());
+                (StatusCode::OK, Json(json!({"status": "success", "username": "andry"})))
+            }),
+        )
+        .route(
+            "/api/hf-auth/token",
+            axum::routing::delete(|State(f): State<FakeState>| async move {
+                record(&f, "delete-token");
+                f.lock().unwrap().hf_user = None;
+                Json(json!({"status": "success"}))
+            }),
+        )
         .with_state(fake);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     url
+}
+
+pub fn request(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+        .unwrap()
 }
 
 pub struct Harness {
@@ -243,12 +355,10 @@ pub fn rand_suffix() -> u64 {
 
 impl Harness {
     pub async fn call(&self, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-        let request = Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("content-type", "application/json")
-            .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
-            .unwrap();
+        self.send(request(method, uri, body)).await
+    }
+
+    pub async fn send(&self, request: Request<Body>) -> (StatusCode, Value) {
         let response = reachy_controller::app(self.state.clone()).oneshot(request).await.unwrap();
         let status = response.status();
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();

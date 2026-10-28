@@ -113,6 +113,12 @@ impl DaemonApps {
         Ok(tracked.installed.clone())
     }
 
+    /// Re-read the installed list on the next call (after an install,
+    /// update or removal).
+    pub async fn forget_installed(&self) {
+        self.tracked.lock().await.installed_at = None;
+    }
+
     pub async fn installed_names(&self) -> Result<Vec<String>, DaemonError> {
         Ok(self
             .installed()

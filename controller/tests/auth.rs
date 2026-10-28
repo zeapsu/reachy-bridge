@@ -169,6 +169,23 @@ async fn lan_off_checks_nothing() {
 }
 
 #[tokio::test]
+async fn lan_off_refuses_a_rebinding_host_on_loopback() {
+    let h = harness(AuthConfig::default()).await;
+    for host in ["127.0.0.1:7861", "localhost:7861", "robot.tail1234.ts.net"] {
+        let r = h.call("POST", "/api/apps/stop/x", LOOPBACK, &[("host", host)], None).await;
+        assert_ne!(r.status, StatusCode::FORBIDDEN, "{host}");
+    }
+    for host in ["evil.example:7861", "127.0.0.1.evil.example"] {
+        for (method, uri) in [("GET", "/api/logs/sources"), ("PUT", "/api/hf/token"), ("POST", "/api/apps/install")] {
+            let r = h.call(method, uri, LOOPBACK, &[("host", host), ("sec-fetch-site", "same-origin")], None).await;
+            assert_eq!(r.status, StatusCode::FORBIDDEN, "{method} {uri} via {host}");
+        }
+    }
+    // The page itself still loads (it then shows the API's refusals).
+    assert_ne!(h.call("GET", "/", LOOPBACK, &[("host", "evil.example")], None).await.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn lan_on_trusts_loopback_and_locks_out_lan_peers() {
     let h = harness(lan()).await;
     assert_eq!(h.call("GET", "/api/daemon/status", LOOPBACK, &[], None).await.status, StatusCode::OK);

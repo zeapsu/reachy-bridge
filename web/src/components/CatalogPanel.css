@@ -1,0 +1,30 @@
+/* The app catalog (#126): the installed-app rows' look, plus search and login. */
+.catalog-sheet > header .seg { width: auto; }
+.catalog-sheet .search { width: 100%; }
+.catalog-sheet .app-copy b {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chip.private { padding: 2px 8px; font-size: 11px; }
+
+.catalog-sheet .app-list {
+  max-height: min(60vh, 560px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.inline-form {
+  display: flex;
+  gap: 8px;
+}
+.inline-form .field { flex: 1; }
+
+.group.hf .row span { font-size: 13.5px; color: var(--ink-2); }
+.job-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
