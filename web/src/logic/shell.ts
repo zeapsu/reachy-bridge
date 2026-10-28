@@ -26,6 +26,32 @@ export function robotStatus(power: PowerView, daemonOnline: boolean, activeApp: 
     case "starting":
       return { text: "Starting…", dot: "loading" };
     default:
-      return daemonOnline ? { text: "Off", dot: "" } : { text: "Connecting…", dot: "" };
+      // The state stream is down whenever the robot is off, so only an
+      // unanswered status poll means we're still connecting.
+      return daemonOnline || power.known ? { text: "Off", dot: "" } : { text: "Connecting…", dot: "" };
+  }
+}
+
+export interface StageNote {
+  title: string;
+  detail: string;
+  dot: RobotStatus["dot"];
+}
+
+/** What the robot stage says while there is no live robot to show; null when there is. */
+export function stageNote(power: PowerView, daemonOnline: boolean): StageNote | null {
+  if (daemonOnline) return null;
+  if (!power.known) return { title: "Connecting…", detail: "Looking for the robot.", dot: "loading" };
+  switch (power.powerClass) {
+    case "disabled":
+      return { title: "Daemon offline", detail: "The robot service isn't answering.", dot: "error" };
+    case "starting":
+      return { title: "Waking up…", detail: "Reachy will appear in a moment.", dot: "loading" };
+    case "running":
+      return { title: "Connecting…", detail: "Waiting for the robot's live state.", dot: "loading" };
+    case "stopping":
+      return { title: power.label || "Asleep", detail: "Press the power button to wake Reachy.", dot: "loading" };
+    default:
+      return { title: "Reachy is off", detail: "Press the power button to switch it on.", dot: "" };
   }
 }

@@ -70,7 +70,7 @@ export function usePower(feedback: ControlFeedback, onStatusChange: () => void):
       fb.setControlBusy(true);
       stopping.current = true;
       stoppingSince.current = Date.now();
-      show({ powerClass: "stopping", title: "Shutting down…", disabled: true, label: "Shutting down…" });
+      show({ known: true, powerClass: "stopping", title: "Shutting down…", disabled: true, label: "Shutting down…" });
       fb.setControlStatus("stopping");
       void (async () => {
         try {

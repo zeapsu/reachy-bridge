@@ -13,7 +13,7 @@ const status = (over: Partial<DaemonStatus>): DaemonStatus => ({
 describe("derivePower", () => {
   test("unreachable daemon disables the button", () => {
     const { view } = derivePower(status({ reachable: false, status: "offline" }), false, 0, 0);
-    expect(view).toEqual({ powerClass: "disabled", title: "Daemon service offline", disabled: true, label: "" });
+    expect(view).toEqual({ known: true, powerClass: "disabled", title: "Daemon service offline", disabled: true, label: "" });
   });
 
   test("running robot offers switch-off", () => {

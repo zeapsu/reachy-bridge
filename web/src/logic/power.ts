@@ -8,6 +8,8 @@ export interface PowerView {
   disabled: boolean;
   /** Text under the power button; empty hides it. */
   label: string;
+  /** False until the first status poll answers. */
+  known: boolean;
 }
 
 export const INITIAL_POWER: PowerView = {
@@ -15,6 +17,7 @@ export const INITIAL_POWER: PowerView = {
   title: "Start daemon",
   disabled: false,
   label: "",
+  known: false,
 };
 
 /** A daemon that stays unreachable for a minute is offline, not powering off. */
@@ -44,44 +47,44 @@ export function derivePower(
     // "powering off", not "offline".
     const sleeping = status.running || (status.status === "stopping" && status.motors === "enabled");
     const label = sleeping ? "Shutting down…" : "Powering off…";
-    return { view: { powerClass: "stopping", label, title: label, disabled: true }, stopping: true };
+    return { view: { known: true, powerClass: "stopping", label, title: label, disabled: true }, stopping: true };
   }
   stillStopping = false;
 
   if (!status.reachable) {
     return {
-      view: { powerClass: "disabled", title: "Daemon service offline", disabled: true, label: "" },
+      view: { known: true, powerClass: "disabled", title: "Daemon service offline", disabled: true, label: "" },
       stopping: stillStopping,
     };
   }
   if (status.running) {
     return {
-      view: { powerClass: "running", title: "Switch robot off", disabled: false, label: "" },
+      view: { known: true, powerClass: "running", title: "Switch robot off", disabled: false, label: "" },
       stopping: stillStopping,
     };
   }
   if (status.status === "asleep") {
     // Backend up, motors released (e.g. the daemon slept after an app exited).
     return {
-      view: { powerClass: "stopping", title: "Robot asleep — wake up", disabled: false, label: "" },
+      view: { known: true, powerClass: "stopping", title: "Robot asleep — wake up", disabled: false, label: "" },
       stopping: stillStopping,
     };
   }
   if (status.status === "starting") {
     return {
-      view: { powerClass: "starting", title: "Robot starting…", disabled: true, label: "Starting…" },
+      view: { known: true, powerClass: "starting", title: "Robot starting…", disabled: true, label: "Starting…" },
       stopping: stillStopping,
     };
   }
   if (status.status === "stopping") {
     // Stopped from elsewhere (another tab, the kinematics switch).
     return {
-      view: { powerClass: "stopping", title: "Powering off…", disabled: true, label: "Powering off…" },
+      view: { known: true, powerClass: "stopping", title: "Powering off…", disabled: true, label: "Powering off…" },
       stopping: stillStopping,
     };
   }
   return {
-    view: { powerClass: "", title: "Switch robot on", disabled: false, label: "" },
+    view: { known: true, powerClass: "", title: "Switch robot on", disabled: false, label: "" },
     stopping: stillStopping,
   };
 }
