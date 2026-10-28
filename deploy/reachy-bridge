@@ -201,12 +201,13 @@ for n, d in enumerate(devices, 1):
                 # ids are 12 hex characters.
                 if [[ $id =~ ^[0-9]{1,4}$ ]]; then
                     command -v python3 >/dev/null || die "revoking by number needs python3; pass the id instead"
+                    list=$(controller_api GET /api/auth/devices)
                     id=$(python3 -c '
 import json, sys
 devices, n = json.loads(sys.argv[1])["devices"], int(sys.argv[2])
 if 1 <= n <= len(devices):
     print(devices[n - 1]["id"], devices[n - 1]["name"], sep="\t")
-' "$(controller_api GET /api/auth/devices)" "$id")
+' "$list" "$id")
                     [[ -n $id ]] || die "no device ${args[1]} (see reachy-bridge devices)"
                     name=${id#*$'\t'}
                     id=${id%%$'\t'*}
@@ -214,7 +215,7 @@ if 1 <= n <= len(devices):
                 controller_api DELETE "/api/auth/devices/$id" >/dev/null
                 echo "revoked $id${name:+ ($name)}"
                 ;;
-            *) die "devices takes list or revoke <id>" ;;
+            *) die "devices takes list or revoke <n|id>" ;;
         esac
         ;;
     robot-power)
