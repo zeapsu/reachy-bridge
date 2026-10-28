@@ -98,6 +98,7 @@ _APP_MAIN = "reachy_mini.daemon.app.main"
 _LOCK = "reachy_mini.daemon.robot_app_lock"
 _BACKEND = "reachy_mini.daemon.backend.abstract"
 _MEDIA_SERVER = "reachy_mini.media.media_server"
+_ROBOT_BACKEND = "reachy_mini.daemon.backend.robot.backend"
 
 REQUIREMENTS: tuple[Requirement, ...] = (
     Requirement("daemon", "daemon entry point", _function(_APP_MAIN, "main")),
@@ -146,6 +147,20 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         "keep_awake",
         "Backend.is_shutting_down",
         _source_mentions(_BACKEND, "Backend", "is_shutting_down"),
+    ),
+    Requirement(
+        "keep_awake",
+        "RobotBackend tracks torque in _torque_enabled",
+        _source_mentions(_ROBOT_BACKEND, "RobotBackend", "self._torque_enabled ="),
+    ),
+    Requirement(
+        "keep_awake",
+        "Backend.get_motor_control_mode() and set_motor_control_mode(mode)",
+        lambda: (
+            _function(_BACKEND, "Backend.get_motor_control_mode")(),
+            _function(_BACKEND, "Backend.set_motor_control_mode", "mode")(),
+            _attr(_BACKEND, "MotorControlMode.Disabled"),
+        ),
     ),
     Requirement(
         "kinematics",
@@ -302,6 +317,25 @@ def daemon_backend(daemon: Any) -> Any | None:
 
 def backend_shutting_down(backend: Any) -> bool:
     return bool(getattr(backend, "is_shutting_down", False))
+
+
+def sync_torque_mode(backend: Any) -> bool:
+    """Set the motor mode to ``enabled`` when torque is on but the mode says
+    ``disabled``; True if it did.
+
+    The app manager's return home after a stop turns torque on with
+    ``enable_motors()``, which leaves ``motor_control_mode`` as it was. Only the
+    real robot backend tracks torque; the simulators report a mode that is
+    always right.
+    """
+    from reachy_mini.daemon.backend.abstract import MotorControlMode
+
+    if getattr(backend, "_torque_enabled", None) is not True:
+        return False
+    if backend.get_motor_control_mode() != MotorControlMode.Disabled:
+        return False
+    backend.set_motor_control_mode(MotorControlMode.Enabled)
+    return True
 
 
 # --- The daemon's FastAPI app --------------------------------------------------
