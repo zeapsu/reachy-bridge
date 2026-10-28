@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { apiJson, errorText, paths, type Kinematics, type MotorStatus, type Volume } from "../api.ts";
 import { CONTROL_HINT_OFFLINE, clampVolume, kinematicsSwitch, kinematicsView } from "../logic/controls.ts";
+import { Segmented } from "./Segmented.tsx";
+import "./ControlsPanel.css";
 
 export interface ControlHint {
   text: string;
@@ -31,13 +33,13 @@ interface Props {
 type SliderId = "vol-spk" | "vol-mic";
 
 const SLIDERS: { id: SliderId; label: string; status: string; current: string; set: string; initial: number }[] = [
-  { id: "vol-spk", label: "Speaker volume", status: "speaker", current: paths.volumeCurrent, set: paths.volumeSet, initial: 80 },
-  { id: "vol-mic", label: "Microphone volume", status: "microphone", current: paths.micCurrent, set: paths.micSet, initial: 60 },
+  { id: "vol-spk", label: "Speaker", status: "speaker", current: paths.volumeCurrent, set: paths.volumeSet, initial: 80 },
+  { id: "vol-mic", label: "Microphone", status: "microphone", current: paths.micCurrent, set: paths.micSet, initial: 60 },
 ];
 const SAVE_DEBOUNCE_MS = 240;
 const MOTOR_MODES = [
   { mode: "enabled", label: "Enabled" },
-  { mode: "disabled", label: "Disabled" },
+  { mode: "disabled", label: "Off" },
 ] as const;
 
 export function ControlsPanel(props: Props) {
@@ -274,21 +276,58 @@ export function ControlsPanel(props: Props) {
   const kinHint = kinSwitching ?? kin.hint;
 
   return (
-    <section className="glass pad instrument">
-      <div className="head">
-        <h2>controls</h2>
-        <div className="rule"></div>
-        <span className="pill" id="control-status">
-          {props.status}
-        </span>
-      </div>
-      <p className={`panel-hint${props.hint.error ? " error" : ""}`} id="control-hint">
+    <div className="pane controls">
+      <span className="chip controls-status" id="control-status">
+        <span className={`dot ${props.status === "error" ? "error" : props.status === "offline" ? "" : "ok"}`}></span>
+        {props.status}
+      </span>
+      <p className={`note${props.hint.error ? " error" : ""}`} id="control-hint">
         {props.hint.text}
       </p>
-      {SLIDERS.map((s) => (
-        <div className="control" key={s.id}>
-          <label htmlFor={s.id}>{s.label}</label>
-          <div className="with-val">
+      <div className="group">
+        <span className="label">Motors</span>
+        <Segmented
+          id="motor-seg"
+          label="Motors"
+          reselect
+          options={MOTOR_MODES.map(({ mode, label }) => ({ value: mode, label }))}
+          value={robotControlMode === "enabled" || robotControlMode === "disabled" ? robotControlMode : null}
+          disabled={controlsDisabled}
+          onChange={onMotor}
+        />
+        <div className="row">
+          <label htmlFor="gravity">Gravity compensation</label>
+          <button
+            className="switch"
+            type="button"
+            role="switch"
+            id="gravity"
+            aria-checked={gravityChecked}
+            disabled={kin.gravityDisabled}
+            onClick={() => onGravity(!gravityChecked)}
+          ></button>
+        </div>
+      </div>
+      <div className="group">
+        <span className="label">Kinematics</span>
+        <Segmented
+          id="kin-seg"
+          label="Kinematics"
+          options={kin.buttons.map((b) => ({ value: b.engine, label: b.label, disabled: b.disabled, title: b.title || undefined }))}
+          value={kin.buttons.find((b) => b.active)?.engine ?? null}
+          onChange={(engine) => onKinematics(engine, kin.buttons.find((b) => b.engine === engine)?.label ?? engine)}
+        />
+        <p className="note" id="kin-hint">
+          {kinHint}
+        </p>
+      </div>
+      <div className="group">
+        <span className="label">Audio</span>
+        {SLIDERS.map((s) => (
+          <div className="slider" key={s.id}>
+            <label htmlFor={s.id}>
+              {s.label} <output htmlFor={s.id}>{values[s.id]}</output>
+            </label>
             <input
               type="range"
               id={s.id}
@@ -312,84 +351,27 @@ export function ControlsPanel(props: Props) {
               }}
               onBlur={endInteraction}
             />
-            <span className="ctl-val" id={`${s.id}-v`}>
-              {values[s.id]}
-            </span>
           </div>
-        </div>
-      ))}
-      <div className="control">
-        <label>Motors</label>
-        <div className="segmented" id="motor-seg">
-          {MOTOR_MODES.map(({ mode, label }) => (
-            <button
-              key={mode}
-              type="button"
-              data-mode={mode}
-              className={robotControlMode === mode ? "active" : undefined}
-              disabled={controlsDisabled}
-              onClick={() => onMotor(mode)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="control">
-        <label>Kinematics</label>
-        <div className="segmented" id="kin-seg">
-          {kin.buttons.map((b) => (
-            <button
-              key={b.engine}
-              type="button"
-              data-engine={b.engine}
-              className={b.active ? "active" : undefined}
-              disabled={b.disabled}
-              title={b.title}
-              onClick={() => onKinematics(b.engine, b.label)}
-            >
-              {b.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="control toggle-row">
-        <label htmlFor="gravity">Gravity compensation</label>
-        <label className="switch">
-          <input
-            type="checkbox"
-            id="gravity"
-            checked={gravityChecked}
-            disabled={kin.gravityDisabled}
-            onChange={(e) => onGravity(e.target.checked)}
-          />
-          <span className="slider"></span>
-        </label>
-      </div>
-      <p className="panel-hint" id="kin-hint" hidden={kinHint === ""}>
-        {kinHint}
-      </p>
-      <div className="control toggle-row">
-        <label htmlFor="wobble">Audio-reactive wobble</label>
-        <label className="switch">
-          <input
-            type="checkbox"
+        ))}
+        <div className="row">
+          <label htmlFor="wobble">Audio-reactive wobble</label>
+          <button
+            className="switch"
+            type="button"
+            role="switch"
             id="wobble"
-            checked={wobble}
+            aria-checked={wobble}
             disabled={controlsDisabled}
-            onChange={(e) => onWobble(e.target.checked)}
-          />
-          <span className="slider"></span>
-        </label>
-      </div>
-      <p className="panel-hint" id="wobble-hint" hidden={!wobbleHint}>
-        Reacts to audio — press <b>Play test sound</b> (or run an app) to see the head move.
-      </p>
-      <div className="control action">
-        <button className="btn wide" id="testsound" type="button" disabled={controlsDisabled} onClick={onTestSound}>
+            onClick={() => onWobble(!wobble)}
+          ></button>
+        </div>
+        <p className="note" id="wobble-hint" hidden={!wobbleHint}>
+          Reacts to audio: play the test sound (or run an app) to see the head move.
+        </p>
+        <button className="btn press" id="testsound" type="button" disabled={controlsDisabled} onClick={onTestSound}>
           {testLabel}
         </button>
       </div>
-    </section>
+    </div>
   );
 }

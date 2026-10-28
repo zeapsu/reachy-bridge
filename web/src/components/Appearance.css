@@ -1,0 +1,63 @@
+/* The wallpaper behind everything, and the Appearance sheet that picks it. */
+.wall {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: var(--wall-img, none) center / cover no-repeat, var(--wall);
+}
+.wall::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* The veil darkens in dark mode and lightens in light mode (--veil). */
+  background:
+    radial-gradient(70% 60% at 38% 45%, transparent, rgba(var(--veil), min(0.85, calc(var(--dim-a, 0.25) + 0.2)))),
+    rgba(var(--veil), var(--dim-a, 0.25));
+}
+
+.accents {
+  display: flex;
+  gap: 10px;
+}
+.accent {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 2px 6px -2px var(--shadow);
+}
+.accent[aria-pressed="true"] {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.walls {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+  gap: 10px;
+}
+.swatch {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 16px;
+  border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px var(--rim-soft);
+  background-size: cover;
+  background-position: center;
+  cursor: pointer;
+}
+.swatch.wall-studio { background: radial-gradient(90% 70% at 40% 35%, #2a323e, #0b0e13 75%); }
+.swatch[aria-pressed="true"] { border-color: var(--accent); }
+.swatch.add {
+  display: grid;
+  place-items: center;
+  font-size: 26px;
+  color: var(--ink-2);
+  background: rgba(127, 127, 127, 0.14);
+}
+.swatch.add input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.swatch.add:focus-within { outline: 2px solid var(--accent); outline-offset: 3px; }

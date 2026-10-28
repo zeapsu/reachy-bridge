@@ -1,28 +1,26 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { RobotState } from "../api.ts";
-import { MODE_BADGE, MODE_META, modeName, type ViewMode } from "../logic/camera.ts";
+import { MODE_META, type ViewMode } from "../logic/camera.ts";
 import { poseFrame, type PoseFrame } from "../logic/pose.ts";
-import type { PowerView } from "../logic/power.ts";
 import { CameraController } from "./cameraController.ts";
 import type { RobotView } from "./robotView.ts";
+import { Segmented } from "./Segmented.tsx";
+import "./Viewport.css";
 
 export type PoseSink = (state: RobotState) => void;
 
 interface Props {
   daemonOnline: boolean;
   visible: boolean;
-  power: PowerView;
-  onPower: () => void;
   /** The viewport installs its 10 Hz pose writer here. */
   poseSink: RefObject<PoseSink | null>;
 }
 
-const MODES: { mode: ViewMode; title: string; label: string; icon: ReactNode }[] = [
+const MODES: { value: ViewMode; title: string; label: ReactNode }[] = [
   {
-    mode: "camera",
+    value: "camera",
     title: "Live camera",
-    label: "Camera",
-    icon: (
+    label: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
         <path d="M3 7h3l2-2h6l2 2h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"></path>
         <circle cx="12" cy="13" r="3.5"></circle>
@@ -30,10 +28,9 @@ const MODES: { mode: ViewMode; title: string; label: string; icon: ReactNode }[]
     ),
   },
   {
-    mode: "3d",
+    value: "3d",
     title: "3D view",
-    label: "3D",
-    icon: (
+    label: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
         <path d="M12 2 21 7v10l-9 5-9-5V7l9-5Z"></path>
         <path d="M12 12 21 7M12 12v10M12 12 3 7"></path>
@@ -44,7 +41,7 @@ const MODES: { mode: ViewMode; title: string; label: string; icon: ReactNode }[]
 
 type Cache = Partial<Record<keyof PoseFrame, unknown>>;
 
-export function Viewport({ daemonOnline, visible, power, onPower, poseSink }: Props) {
+export function Viewport({ daemonOnline, visible, poseSink }: Props) {
   const [mode, setMode] = useState<ViewMode>("3d");
   const [meta, setMeta] = useState(MODE_META["3d"]);
 
@@ -53,10 +50,10 @@ export function Viewport({ daemonOnline, visible, power, onPower, poseSink }: Pr
   daemonOnlineRef.current = daemonOnline;
   const robot = useRef<RobotView | null>(null);
   const hud = useRef<HTMLDivElement>(null);
-  const rDoa = useRef<HTMLSpanElement>(null);
-  const rRpy = useRef<HTMLSpanElement>(null);
-  const rYaw = useRef<HTMLSpanElement>(null);
-  const rAnt = useRef<HTMLSpanElement>(null);
+  const rDoa = useRef<HTMLElement>(null);
+  const rRpy = useRef<HTMLElement>(null);
+  const rYaw = useRef<HTMLElement>(null);
+  const rAnt = useRef<HTMLElement>(null);
   const cache = useRef<Cache>({});
 
   const img = useRef<HTMLImageElement>(null);
@@ -144,83 +141,44 @@ export function Viewport({ daemonOnline, visible, power, onPower, poseSink }: Pr
   }, [mode, daemonOnline, visible]);
 
   const selectMode = (next: ViewMode) => {
-    if (next === mode) return;
     setMode(next);
     setMeta(MODE_META[next]);
   };
 
   return (
-    <section className="glass viewport">
-      <div className="vp-stage" id="vp">
-        <div className={`vp-layer${mode === "camera" ? " active" : ""}`} data-mode="camera">
-          <img id="camera-stream" ref={img} alt="" hidden aria-hidden="true" />
-          <p className="empty-state" id="camera-placeholder" ref={placeholder}>
-            Select live camera to connect
-          </p>
-        </div>
-        <div className={`vp-layer${mode === "3d" ? " active" : ""}`} data-mode="3d">
-          <canvas id="robot-3d" ref={canvas} aria-label="Live 3D view of the robot's pose"></canvas>
-          <p className="rig-note" id="rig-note" hidden={daemonOnline}>
-            Daemon offline
-          </p>
-        </div>
-
-        <div className={`vp-power${power.powerClass ? ` ${power.powerClass}` : ""}`} id="vp-power">
-          <button
-            id="daemon-power"
-            type="button"
-            title={power.title}
-            aria-label={power.title}
-            disabled={power.disabled}
-            onClick={onPower}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
-              <path d="M12 3.2v8" />
-              <path d="M6.5 6.6a8 8 0 1 0 11 0" />
-            </svg>
-          </button>
-          <span className="vp-power-label" id="vp-power-label" aria-live="polite" hidden={!power.label}>
-            {power.label}
-          </span>
-        </div>
-
-        <div className="vp-badge" id="vp-badge">
-          <span className={`rec${daemonOnline ? " ok" : ""}`} id="vp-rec"></span>
-          <span id="vp-badge-t">{MODE_BADGE[mode]}</span>
-        </div>
-        <div className="vp-switch" id="vp-switch" aria-label="Viewport mode">
-          {MODES.map((m) => (
-            <button
-              key={m.mode}
-              type="button"
-              className={mode === m.mode ? "active" : undefined}
-              data-mode={m.mode}
-              title={m.title}
-              aria-label={m.label}
-              onClick={() => selectMode(m.mode)}
-            >
-              {m.icon}
-            </button>
-          ))}
-        </div>
-        <div className="hud" ref={hud}>
-          <div className="hud-readout">
-            <span className="k">doa</span>
-            <span className="v amber" id="r-doa" ref={rDoa}>—°</span>
-            <span className="k">head rpy°</span>
-            <span className="v" id="r-rpy" ref={rRpy}>—/—/—</span>
-            <span className="k">body yaw</span>
-            <span className="v" id="r-yaw" ref={rYaw}>—</span>
-            <span className="k">ant L/R</span>
-            <span className="v" id="r-ant" ref={rAnt}>—/—</span>
-          </div>
-        </div>
+    <section className={`stage mode-${mode}`} aria-label="Robot view">
+      <div className={`stage-layer camera${mode === "camera" ? " active" : ""}`}>
+        <img id="camera-stream" ref={img} alt="Live camera" hidden />
+        <p className="stage-empty" id="camera-placeholder" ref={placeholder}>
+          Select live camera to connect
+        </p>
       </div>
-      <div className="vp-foot">
+      <div className={`stage-layer${mode === "3d" ? " active" : ""}`}>
+        <canvas id="robot-3d" ref={canvas} aria-label="Live 3D view of the robot's pose"></canvas>
+      </div>
+      <p className="stage-note" hidden={daemonOnline}>
+        <span className="dot error"></span>Daemon offline
+      </p>
+
+      <div className="stage-top">
+        <div className="glass stage-modes">
+          <Segmented label="View" options={MODES} value={mode} onChange={selectMode} />
+        </div>
+        {mode === "camera" ? <span className="chip camera-meta">{meta.replace(/^live camera · /, "")}</span> : null}
+      </div>
+      <div className="glass telemetry" ref={hud} aria-label="Live pose">
         <span>
-          viewport · <span className="v" id="vp-name">{modeName(mode)}</span>
+          head <b ref={rRpy}>—/—/—</b>
         </span>
-        <span id="vp-meta">{meta}</span>
+        <span>
+          body <b ref={rYaw}>—</b>
+        </span>
+        <span>
+          antennas <b ref={rAnt}>—/—</b>
+        </span>
+        <span className="doa">
+          voice <b ref={rDoa}>—°</b>
+        </span>
       </div>
     </section>
   );

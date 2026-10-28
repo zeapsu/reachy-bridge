@@ -1,4 +1,4 @@
-/* LAN login screen (#141). Reuses the .glass, .pad and .btn styles. */
+/* LAN login screen (#141). */
 .login-screen {
   min-height: 100vh;
   display: grid;
@@ -8,16 +8,16 @@
 
 .login-card {
   width: min(440px, 100%);
+  padding: 28px 24px;
   text-align: center;
 }
 
 .login-card h1 {
-  font-family: "Space Grotesk", sans-serif;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--ink-3);
   margin: 0 0 18px;
 }
 
@@ -27,34 +27,34 @@
 }
 
 .login-code {
-  font-family: "Space Grotesk", ui-monospace, monospace;
+  font-family: var(--mono);
   font-size: clamp(40px, 12vw, 56px);
   font-weight: 600;
   letter-spacing: 0.08em;
-  color: var(--amber);
+  color: var(--accent);
   margin: 18px 0;
   font-variant-numeric: tabular-nums;
 }
 
 .login-note {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 13px;
   line-height: 1.5;
   margin: 0 0 14px;
 }
 
 .login-note code {
-  color: var(--text);
-  background: var(--glass-fill-2);
+  color: var(--ink);
+  background: var(--well);
   border-radius: 6px;
   padding: 1px 6px;
   white-space: nowrap;
 }
 
-.login-error { color: var(--coral); }
+.login-error { color: var(--danger); }
 
 .login-wait {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 12px;
   letter-spacing: 0.05em;
   margin: 0;

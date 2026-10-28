@@ -155,3 +155,15 @@ export function appUiUrl(
 
 export const APP_UI_WAIT_ATTEMPTS = 60;
 export const APP_UI_WAIT_INTERVAL_MS = 500;
+
+/** A stable hue (0..359) for an app's monogram tile, from its name. */
+export function appHue(name: string): number {
+  let hash = 0;
+  for (const ch of name) hash = (hash * 31 + ch.codePointAt(0)!) >>> 0;
+  return hash % 360;
+}
+
+/** The monogram on an app's tile: its display name's first letter or digit. */
+export function appInitial(display: string): string {
+  return (/[\p{L}\p{N}]/u.exec(display)?.[0] ?? "?").toUpperCase();
+}

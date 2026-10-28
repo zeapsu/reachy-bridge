@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { apiJson, errorText, paths } from "../api.ts";
+import { useLens } from "../glass.ts";
 import { normalizeCode, seenText, type AuthStatus, type PairedDevice } from "../logic/auth.ts";
 import "./DevicesPanel.css";
 
@@ -14,6 +15,7 @@ export function DevicesPanel() {
   const [name, setName] = useState("");
   const [hint, setHint] = useState<{ text: string; error: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
+  const sheet = useLens<HTMLElement>();
 
   const reload = useCallback(async () => {
     try {
@@ -76,13 +78,13 @@ export function DevicesPanel() {
 
   const now = Date.now();
   return (
-    <section className="glass pad devices-panel" id="devices-panel" aria-labelledby="devices-title">
-      <div className="head">
-        <h2 id="devices-title">devices</h2>
-        <div className="rule"></div>
-      </div>
+    <section className="glass sheet devices-panel" data-lens ref={sheet} id="devices-panel" aria-labelledby="devices-title">
+      <header>
+        <h2 id="devices-title">Devices</h2>
+      </header>
       <form className="devices-approve" onSubmit={(event) => void approve(event)}>
         <input
+          className="field"
           aria-label="Login code"
           inputMode="numeric"
           autoComplete="off"
@@ -90,14 +92,14 @@ export function DevicesPanel() {
           value={code}
           onChange={(e) => setCode(e.target.value)}
         />
-        <input aria-label="Device name (optional)" placeholder="name (optional)" maxLength={64} value={name} onChange={(e) => setName(e.target.value)} />
-        <button className="btn start" type="submit" disabled={busy}>
-          approve
+        <input className="field" aria-label="Device name (optional)" placeholder="name (optional)" maxLength={64} value={name} onChange={(e) => setName(e.target.value)} />
+        <button className="btn primary press" type="submit" disabled={busy}>
+          Approve
         </button>
       </form>
-      {hint && <p className={`panel-hint ${hint.error ? "error" : "ok"}`}>{hint.text}</p>}
+      {hint && <p className={`note ${hint.error ? "error" : "ok"}`}>{hint.text}</p>}
       {devices.length === 0 ? (
-        <p className="devices-empty">No paired browsers.</p>
+        <p className="note">No paired browsers.</p>
       ) : (
         <ul className="devices-list">
           {devices.map((device) => (
@@ -109,8 +111,8 @@ export function DevicesPanel() {
               <span className="devices-meta">
                 {seenText(device.last_seen, now)} · {device.peer}
               </span>
-              <button className="btn stop" type="button" onClick={() => void revoke(device)}>
-                revoke
+              <button className="btn danger press" type="button" onClick={() => void revoke(device)}>
+                Revoke
               </button>
             </li>
           ))}
