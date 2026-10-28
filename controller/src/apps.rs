@@ -199,7 +199,12 @@ impl DaemonApps {
                     .filter(|id| crate::routes::store::space_id(id));
                 Some(json!({
                     "name": name,
-                    "display": display_name(name),
+                    // The Space's own title, as the catalog shows it.
+                    "display": card
+                        .and_then(|c| c.get("title"))
+                        .and_then(Value::as_str)
+                        .filter(|t| !t.is_empty())
+                        .map_or_else(|| display_name(name), str::to_string),
                     "blurb": blurb,
                     "space": space,
                     "author": extra.and_then(|e| e.get("author")).and_then(Value::as_str),

@@ -196,7 +196,7 @@ pub async fn fake_daemon(fake: FakeState) -> String {
             get(|| async {
                 Json(json!([
                     {"name": "reachy_mini_radio", "description": "Radio", "extra": {"custom_app_url": "http://0.0.0.0:1"}},
-                    {"name": "hello_world", "extra": {"id": "someone/hello_space", "author": "someone", "cardData": {"short_description": "Says hi"}}},
+                    {"name": "hello_world", "extra": {"id": "someone/hello_space", "author": "someone", "cardData": {"title": "Hello Space", "short_description": "Says hi"}}},
                 ]))
             }),
         )
