@@ -36,7 +36,9 @@ The dev server listens on `localhost` only.
   stylesheet next to it for its layout.
 - `src/glass.ts`: the live parts of the glass: per-element refraction
   (desktop Chromium) and the pointer light.
-- `src/api.ts`: typed fetch helper, response types, and every API path.
+- `src/api.ts`: the typed API client, re-exporting one module per area from `src/api/`
+  (fetch helper in `client.ts`; response types and paths in `power`, `apps`, `expressions`,
+  `media`, `system`, `auth`).
 - `src/logic/`: pure functions (power state, app cards and gates, expression
   gating, log capping, pose, audio meter model, stats, kinematics, app-view
   start steps, drive pad mapping), each tested by a `*.test.ts` file next to it.
