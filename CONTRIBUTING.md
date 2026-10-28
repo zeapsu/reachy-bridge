@@ -61,7 +61,14 @@ go-ahead still comes from you.
    see what's taken.
 3. Before asking for review, merge the current `main` into your branch and rerun the
    checks.
-4. The owner merges PRs in any order. PRs still open merge `main` again.
+4. Merge once every gate passes: CI green with the current `main` merged in, and a
+   separate read-only review (a reviewer with fresh context, given the diff) with no
+   unresolved correctness findings. Security-relevant PRs (login, sessions, headers,
+   anything exposed beyond `127.0.0.1`, secrets, update signing) also need a dedicated
+   security review and a second independent reviewer, both clean. Merge with a merge
+   commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
+   `main` directly. The owner QAs on the robot after merge. PRs still open merge `main`
+   again.
 
 ## Shared files
 
