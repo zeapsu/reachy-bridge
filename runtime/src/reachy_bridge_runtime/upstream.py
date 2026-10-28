@@ -193,6 +193,23 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         ),
     ),
     Requirement(
+        "sim_apps",
+        "every apps_venv path comes from local_common_venv._get_venv_parent_dir()",
+        lambda: (
+            _function(_APPS_VENV, "_get_venv_parent_dir")(),
+            _source_mentions(_APPS_VENV, "_get_app_venv_path", "_get_venv_parent_dir()")(),
+            _function(_APPS_VENV, "get_app_python", "app_name")(),
+        ),
+    ),
+    Requirement(
+        "sim_apps",
+        "AppManager.start_app(app_name) runs get_app_python's interpreter",
+        lambda: (
+            _coroutine(_MANAGER, "AppManager.start_app", "app_name")(),
+            _source_mentions(_MANAGER, "AppManager.start_app", "get_app_python")(),
+        ),
+    ),
+    Requirement(
         "kinematics",
         "Daemon.start takes kinematics_engine",
         _coroutine(_DAEMON, "Daemon.start", "kinematics_engine"),
@@ -328,6 +345,27 @@ def wrap_start_app(wrapper: Callable[..., Awaitable[Any]]) -> None:
     from reachy_mini.apps.manager import AppManager
 
     _wrap(AppManager, "start_app", wrapper)
+
+
+def default_apps_root() -> Path:
+    """Where the daemon keeps ``apps_venv`` unless told otherwise: next to its own venv."""
+    from reachy_mini.apps.sources import local_common_venv
+
+    function = getattr(local_common_venv._get_venv_parent_dir, "__wrapped__", local_common_venv._get_venv_parent_dir)
+    return Path(function())
+
+
+def set_apps_root(root: Path) -> None:
+    """Keep ``apps_venv`` under ``root`` (a sim daemon's apps, #218)."""
+    from reachy_mini.apps.sources import local_common_venv
+
+    original = local_common_venv._get_venv_parent_dir
+
+    def apps_root() -> Path:
+        return Path(root)
+
+    apps_root.__wrapped__ = getattr(original, "__wrapped__", original)  # type: ignore[attr-defined]
+    local_common_venv._get_venv_parent_dir = apps_root
 
 
 def app_python(manager: Any, app_name: str) -> Path:

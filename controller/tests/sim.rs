@@ -93,15 +93,15 @@ async fn a_tab_that_missed_the_switch_is_refused() {
 }
 
 #[tokio::test]
-async fn apps_are_off_in_sim_mode() {
+async fn apps_run_on_the_sim_with_their_own_pins() {
     let s = sim_harness(|_| {}).await;
+    s.h.call("PUT", "/api/apps/favorites", Some(json!({"favorites": []}))).await;
     s.h.call("POST", "/api/sim/enter", None).await;
-    let (status, body) = s.h.call("POST", "/api/apps/start/reachy_mini_radio", None).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["detail"], "Apps are off in sim mode");
-    let (status, _) = s.h.call("POST", "/api/apps/install", Some(json!({"name": "x"}))).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert!(calls(&s.sim).is_empty());
+    let (status, _) = s.h.call("POST", "/api/apps/start/reachy_mini_radio", None).await;
+    assert_ne!(status, StatusCode::CONFLICT, "apps aren't refused in sim mode");
+    assert!(calls(&s.robot).is_empty(), "nothing reached the robot: {:?}", calls(&s.robot));
+    assert!(s.h._dir.path().join("favorites.json").exists());
+    assert!(!s.h._dir.path().join("favorites-sim.json").exists());
 }
 
 #[tokio::test]

@@ -35,12 +35,13 @@ async fn installed_names(state: &Shared) -> ApiResult<Vec<String>> {
     state.apps.installed_names().await.map_err(|_| ApiError::unavailable())
 }
 
-fn favorites_path(dir: &Path) -> PathBuf {
-    dir.join("favorites.json")
+/// The sim's apps aren't the robot's, so neither are its pins (#218).
+fn favorites_path(dir: &Path, sim: bool) -> PathBuf {
+    dir.join(if sim { "favorites-sim.json" } else { "favorites.json" })
 }
 
-fn load_favorites(dir: &Path) -> Option<Vec<String>> {
-    let text = std::fs::read_to_string(favorites_path(dir)).ok()?;
+fn load_favorites(dir: &Path, sim: bool) -> Option<Vec<String>> {
+    let text = std::fs::read_to_string(favorites_path(dir, sim)).ok()?;
     let payload: Value = serde_json::from_str(&text).ok()?;
     let mut favorites: Vec<String> = serde_json::from_value(payload.get("favorites")?.clone()).ok()?;
     favorites.truncate(MAX_FAVORITES);
@@ -48,19 +49,19 @@ fn load_favorites(dir: &Path) -> Option<Vec<String>> {
 }
 
 /// Write atomically: a temp file in the same directory, fsync, rename.
-fn save_favorites(dir: &Path, favorites: &[String]) -> std::io::Result<()> {
+fn save_favorites(dir: &Path, sim: bool, favorites: &[String]) -> std::io::Result<()> {
     use std::io::Write;
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".favorites.{}.tmp", std::process::id()));
     let mut file = std::fs::File::create(&tmp)?;
     file.write_all(json!({"favorites": favorites}).to_string().as_bytes())?;
     file.sync_all()?;
-    std::fs::rename(&tmp, favorites_path(dir))
+    std::fs::rename(&tmp, favorites_path(dir, sim))
 }
 
 async fn get_favorites(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     let installed = installed_names(&state).await?;
-    let favorites = load_favorites(&state.state_dir)
+    let favorites = load_favorites(&state.state_dir, state.sim.active())
         .unwrap_or_else(|| installed.iter().take(MAX_FAVORITES).cloned().collect());
     let favorites: Vec<String> = favorites.into_iter().filter(|name| installed.contains(name)).collect();
     Ok(Json(json!({"favorites": favorites})))
@@ -82,7 +83,7 @@ async fn put_favorites(State(state): State<Shared>, body: Bytes) -> ApiResult<Js
     if let Some(unknown) = favorites.iter().find(|name| !installed.contains(name)) {
         return Err(ApiError::new(422, format!("Unknown favorite app: {unknown}")));
     }
-    save_favorites(&state.state_dir, &favorites).map_err(|error| {
+    save_favorites(&state.state_dir, state.sim.active(), &favorites).map_err(|error| {
         tracing::error!(%error, "could not save favorites");
         ApiError::new(500, "Could not save favorites")
     })?;

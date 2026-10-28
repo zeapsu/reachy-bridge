@@ -1,7 +1,8 @@
 //! Sim mode (#149): try the controller on a simulated robot, with no hardware.
 //!
 //! An on-demand second daemon (`reachy-bridge-sim.service`: MuJoCo, no media,
-//! no apps, its own loopback port) runs beside the robot's. Entering sim mode
+//! its own apps folder and loopback port) runs beside the robot's. Its apps
+//! are pointed at it by the runtime (sim_apps, #218). Entering sim mode
 //! starts it and points the controller's [`Daemon`] client at it; leaving
 //! points the client back at the robot and stops it.
 //!
@@ -40,18 +41,10 @@ const MOVES_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long a switch waits for actions in flight before answering busy:
 /// queued, it would hold every new action (power off included) behind them.
 const SWITCH_WAIT: Duration = Duration::from_secs(3);
-/// Routes that install, change or start apps (the sim daemon has none), and
-/// the volume and sound routes: the sim daemon would set the host's real
+/// The volume and sound routes: the sim daemon would set the host's real
 /// speaker and microphone.
-const SIM_REFUSED: [(&str, &str); 7] = [
-    ("/api/apps/start/", "Apps are off in sim mode"),
-    ("/api/apps/install", "Apps are off in sim mode"),
-    ("/api/apps/remove/", "Apps are off in sim mode"),
-    ("/api/apps/update/", "Apps are off in sim mode"),
-    ("/api/hf/token", "Apps are off in sim mode"),
-    ("/api/volume/", "Sound is off in sim mode"),
-    ("/api/media/", "Sound is off in sim mode"),
-];
+const SIM_REFUSED: [(&str, &str); 2] =
+    [("/api/volume/", "Sound is off in sim mode"), ("/api/media/", "Sound is off in sim mode")];
 
 pub struct SimMode {
     robot_url: String,
@@ -191,7 +184,12 @@ async fn exit(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     if !sim.active() {
         return Ok(Json(json!({"active": false, "target": "robot"})));
     }
-    // Nothing started on the sim may carry on against the robot.
+    // Nothing started on the sim may carry on against the robot. Its app
+    // stops with the sim daemon too; stopping it here also covers a sim
+    // daemon that isn't a unit, and frees the app UI port first.
+    if state.apps.refresh_active().await {
+        let _ = state.daemon.post_slow("apps/stop-current-app", crate::apps::APP_CONTROL_TIMEOUT).await;
+    }
     state.player.abort_drive();
     state.player.halt(MOVES_STOP_TIMEOUT).await;
     state.daemon.retarget(&sim.robot_url);
