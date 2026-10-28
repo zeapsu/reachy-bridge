@@ -4,8 +4,14 @@ on:
   pull_request:
   push:
     branches: [main]
-  # The release workflow runs these jobs before it publishes.
+  # The release workflow runs these jobs before it publishes; the upstream
+  # watch runs them against a lock-bump branch (ref).
   workflow_call:
+    inputs:
+      ref:
+        description: Branch or SHA to test; empty means the triggering commit.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -22,6 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       # PyGObject and pycairo have no Linux wheels, so uv builds them from
       # source against the girepository and cairo headers. reachy_mini's media
@@ -47,6 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -81,6 +89,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       # As in the python job: PyGObject and pycairo build from source.
       - name: Install system packages
@@ -133,6 +142,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       # The runner's apt shellcheck is older than the version the scripts are
       # kept clean with, so fetch the pinned release binary.
