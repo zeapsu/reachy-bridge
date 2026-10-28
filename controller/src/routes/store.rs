@@ -204,7 +204,13 @@ async fn install(State(state): State<Shared>, body: Bytes) -> ApiResult<Json<Val
     let id = body_id(&body)?;
     let mut found = None;
     for source in [Source::Curated, Source::All] {
-        let listing = state.catalog.listing(&state, source).await?;
+        // Featured comes from Pollen, All from Hugging Face: one can fail
+        // while the other answers, so only the last error counts.
+        let listing = match state.catalog.listing(&state, source).await {
+            Ok(listing) => listing,
+            Err(_) if source == Source::Curated => continue,
+            Err(err) => return Err(err),
+        };
         found = listing.into_iter().find(|e| entry_id(e) == Some(id.as_str()));
         if found.is_some() {
             break;
@@ -228,7 +234,9 @@ async fn install_private(State(state): State<Shared>, body: Bytes) -> ApiResult<
     let entry = listing
         .iter()
         .find(|e| entry_id(e) == Some(id.as_str()) && e["extra"]["private"].as_bool() == Some(true))
-        .ok_or_else(|| ApiError::new(404, "No private Space with that id for this Hugging Face login"))?;
+        .ok_or_else(|| {
+            ApiError::new(404, "No private Space with that id for this login. It needs the reachy_mini_python_app tag.")
+        })?;
     if installed(&state).await?.has(entry) {
         return Err(ApiError::new(409, "Already installed"));
     }
