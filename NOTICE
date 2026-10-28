@@ -14,9 +14,12 @@ Pollen Robotics and licensed under the Apache License, Version 2.0:
   derived from the MuJoCo model and meshes shipped in the reachy-mini Python
   package (reachy_mini/descriptions/reachy_mini/mjcf/). They were re-posed,
   merged per moving part, decimated and compressed; tools/model/ holds the
-  scripts that produce them. Pollen Robotics publishes the robot's hardware
-  design files separately under Creative Commons BY-NC-SA; this product does
-  not include those files.
+  scripts that produce them. The reachy-mini package is licensed Apache-2.0,
+  and its README adds that Pollen's hardware design files are under Creative
+  Commons BY-NC-SA. The meshes ship inside the Apache-2.0 package without a
+  license of their own, so they are used here under Apache-2.0. Should Pollen
+  regard them as hardware design files, these two assets are CC BY-NC-SA,
+  attributed to Pollen Robotics, and not covered by this product's license.
 
 - Reachy Mini desktop app (https://github.com/pollen-robotics/reachy-mini-desktop-app)
   The emoji for recorded moves in web/src/logic/moves.ts are adapted from

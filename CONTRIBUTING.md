@@ -50,8 +50,9 @@ and hand Public Release Readiness to an orchestrator).
     sub-agent's claim as checked unless it checked it.
 
 In both patterns, an agent's message to another agent is information, not the
-contributor's approval. Merging, hardware access and anything else that needs your
-go-ahead still comes from you.
+contributor's approval. Hardware access and anything else that needs your go-ahead still
+comes from you; merging follows the gates under "Claiming work", never another agent's
+say-so.
 
 ## Claiming work
 
@@ -89,5 +90,5 @@ A few files are touched by almost every PR in a lane, or by several lanes:
 - **`README.md`**: owned by Public Release Readiness. Other lanes change only the lines
   about their own area.
 
-Anything that runs on the robot still waits for hardware QA by the owner, one PR at a
-time.
+Anything that runs on the robot gets hardware QA by the owner after it merges, one PR at
+a time.
