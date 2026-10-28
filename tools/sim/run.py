@@ -103,6 +103,9 @@ def main() -> int:
     daemon_port = free_port()
     while (controller_port := free_port()) == daemon_port:
         pass
+    # The app UI proxy too, so a dev controller on the default 7863 can't collide.
+    while (app_port := free_port()) in (daemon_port, controller_port):
+        pass
     daemon_url = f"http://127.0.0.1:{daemon_port}"
     controller_url = f"http://127.0.0.1:{controller_port}"
     print(f"sim run in {work}: daemon {daemon_url}, controller {controller_url}", flush=True)
@@ -130,6 +133,7 @@ def main() -> int:
             controller = subprocess.Popen(
                 [str(controller_bin)],
                 env={**os.environ, "DAEMON_URL": daemon_url, "CONTROLLER_PORT": str(controller_port),
+                     "CONTROLLER_APP_PORT": str(app_port),
                      "REACHY_BRIDGE_STATE_DIR": str(work / "controller-state"),
                      "REACHY_DAEMON_UNIT": "none.service"},
                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,

@@ -83,3 +83,35 @@ async fn gravity_compensation_waits_for_an_expression() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(body["detail"].as_str().unwrap().contains("expression"));
 }
+
+#[tokio::test]
+async fn a_motor_mode_change_waits_for_a_power_change() {
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("disabled".into());
+    })
+    .await;
+    let power = h.state.power_lock.lock().await;
+    let pending = h.call("POST", "/api/motors/set_mode/enabled", None);
+    tokio::pin!(pending);
+    assert!(tokio::time::timeout(Duration::from_millis(200), &mut pending).await.is_err(), "waits while power is held");
+    assert!(!h.calls().iter().any(|c| c.starts_with("set_mode")));
+    drop(power);
+    let (status, _) = pending.await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn motors_are_not_enabled_while_powering_off_but_can_always_go_limp() {
+    let h = harness(|f| {
+        f.state = "stopping".into();
+        f.motors = Some("enabled".into());
+    })
+    .await;
+    let (status, _) = h.call("POST", "/api/motors/set_mode/enabled", None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(!h.calls().iter().any(|c| c.starts_with("set_mode")));
+    let _power = h.state.power_lock.lock().await;
+    let (status, _) = h.call("POST", "/api/motors/set_mode/disabled", None).await;
+    assert_eq!(status, StatusCode::OK);
+}
