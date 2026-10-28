@@ -114,6 +114,7 @@ async fn start(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> A
         // refuses every start until it is cleared.
         let current = state.apps.current().await.ok().flatten();
         if current.as_ref().and_then(|c| c.get("state")).and_then(Value::as_str) == Some("error") {
+            // ensure_awake below sets the motor mode anyway.
             let _ = daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await;
         }
         ensure_awake(&state).await?;
@@ -133,7 +134,7 @@ async fn start(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> A
 
 /// Stop the daemon's current app (it runs one at a time).
 async fn stop(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> ApiResult<Json<Value>> {
-    match state.daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await {
+    match crate::apps::stop_current(&state.daemon).await {
         Ok(_) => {}
         Err(crate::daemon::DaemonError::Unavailable) => return Err(ApiError::unavailable()),
         Err(crate::daemon::DaemonError::Refused { .. }) => {
