@@ -48,6 +48,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # As in ci.yml: PyGObject and pycairo ship only sdists, and a release
+      # that changes their pins makes uv build them to read their metadata.
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgirepository1.0-dev libcairo2-dev
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.11.24"
@@ -192,6 +199,7 @@ jobs:
           PUSH: ${{ needs.push.result }}
           CHECK: ${{ needs.check.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PLAYBOOK: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/update-reachy-mini.md
           COMPARE_URL: ${{ github.server_url }}/${{ github.repository }}/compare/main...${{ needs.detect.outputs.branch }}
         run: |
           set -euo pipefail
@@ -199,7 +207,7 @@ jobs:
           changelog="https://github.com/pollen-robotics/reachy_mini/releases"
           checklist="Before merging (a human decision while #155 is in step 1):
           - Push a commit to this branch (merging current \`main\` will do) so the PR gets CI of its own; PRs opened by Actions don't trigger it.
-          - Read the [upstream changelog]($changelog) for behaviour changes the checks can't see, and update \`docs/daemon-contract.md\` for the new version.
+          - Review it as [docs/update-reachy-mini.md]($PLAYBOOK) describes: read the [upstream changelog]($changelog) and diff for behaviour changes the checks can't see, and update \`docs/daemon-contract.md\` for the new version.
           - Needs hardware QA: a new daemon drives the motors."
 
           if [[ "$STATUS" == new && "$CHECK" == success ]]; then
@@ -246,7 +254,7 @@ jobs:
 
           ${failed:-- (no failed job found; see the run)}
 
-          Diagnose against \`docs/daemon-contract.md\` and \`runtime/src/reachy_bridge_runtime/upstream.py\` (the one seam onto reachy-mini internals), with the [upstream changelog]($changelog). The fix goes on \`$BRANCH\`.
+          Fix it on \`$BRANCH\` following [docs/update-reachy-mini.md]($PLAYBOOK): the fix stays inside \`upstream.py\`, the lock and the daemon contract, or the issue gets a diagnosis and a proposed patch instead. Upstream changes: [changelog]($changelog).
           EOF
           fi
           echo >> "$body"

@@ -94,6 +94,10 @@ UV_PROJECT_ENVIRONMENT="$staging/venv" uv sync --project "$REPO" --frozen --no-d
     --no-editable --package reachy-bridge-runtime --extra sim --reinstall-package reachy-bridge-runtime --quiet
 "$staging/venv/bin/reachy-bridge-runtime" --check ||
     die "the locked reachy-mini doesn't match the runtime's upstream seam (see above)."
+# Report only: a missing robot or plugin is worth fixing, but the services
+# install fine without them (reachy-bridge check runs it again later).
+"$staging/venv/bin/reachy-bridge-runtime" --doctor ||
+    echo "warning: the device check found problems (above); the install continues"
 
 step "Build the controller"
 (cd "$REPO/web" && bun install --frozen-lockfile && bun run build)
