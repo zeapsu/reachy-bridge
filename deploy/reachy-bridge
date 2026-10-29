@@ -6,7 +6,8 @@
 #   reachy-bridge start | stop | restart [daemon|controller|sim]   (default: daemon and controller)
 #   reachy-bridge logs [daemon|controller|sim]
 #   reachy-bridge serve [on|off|status]
-#   reachy-bridge pair [--admin] <code> [name]  approve a browser's login code
+#   reachy-bridge pair [--admin] [--person=<who>] <code> [name]
+#                                        approve a browser's login code
 #                                        (--admin: as the admin, #221)
 #   reachy-bridge devices [revoke <n|id>]  list or revoke paired browsers
 #   reachy-bridge deploy <tag>           install a tag; reinstall the previous version if it fails
@@ -466,10 +467,12 @@ cmd=${1:-status}
 shift || true
 force=0
 admin=0
+person=""
 args=()
 for arg in "$@"; do
     if [[ $arg == --force ]]; then force=1
     elif [[ $arg == --admin && $cmd == pair ]]; then admin=1
+    elif [[ $arg == --person=* && $cmd == pair ]]; then person=${arg#--person=}
     else args+=("$arg"); fi
 done
 
@@ -527,9 +530,11 @@ case "$cmd" in
         esac
         ;;
     pair)
-        [[ ${args[0]:-} =~ ^[0-9]{6}$ ]] || die "usage: reachy-bridge pair [--admin] <6-digit code> [name]"
+        [[ ${args[0]:-} =~ ^[0-9]{6}$ ]] || die "usage: reachy-bridge pair [--admin] [--person=<who>] <6-digit code> [name]"
         body="{\"code\": \"${args[0]}\""
         [[ -n ${args[1]:-} ]] && body+=", \"name\": $(json_string "${args[*]:1}")"
+        # Control time is granted per person (#221); it defaults to the name.
+        [[ -n $person ]] && body+=", \"person\": $(json_string "$person")"
         if (( admin )); then
             # Only the local key approves an admin.
             [[ -r $STATE_DIR/controller.key ]] ||

@@ -4,6 +4,8 @@ import { AppsPanel } from "./components/AppsPanel.tsx";
 import { CatalogPanel } from "./components/CatalogPanel.tsx";
 import { AudioPanel } from "./components/AudioPanel.tsx";
 import { ControlsPanel, type ControlHint } from "./components/ControlsPanel.tsx";
+import { ControlBar } from "./components/ControlBar.tsx";
+import { ControlPanel } from "./components/ControlPanel.tsx";
 import { DevicesPanel } from "./components/DevicesPanel.tsx";
 import { DrivePanel } from "./components/DrivePanel.tsx";
 import { ExpressionsPanel } from "./components/ExpressionsPanel.tsx";
@@ -20,6 +22,7 @@ import { useApps } from "./hooks/useApps.ts";
 import { useCatalog } from "./hooks/useCatalog.ts";
 import { useDrive } from "./hooks/useDrive.ts";
 import { AppView } from "./components/AppView.tsx";
+import { useControl } from "./hooks/useControl.ts";
 import { readEventPayload, useEventSource } from "./hooks/useEventSource.ts";
 import { useExpressions } from "./hooks/useExpressions.ts";
 import { usePageVisible } from "./hooks/usePageVisible.ts";
@@ -72,6 +75,7 @@ function Dashboard() {
     }
   }, []);
 
+  const control = useControl(visible);
   const apps = useApps();
   const active = activeApp(apps.statuses);
   const appActive = Boolean(active);
@@ -156,6 +160,7 @@ function Dashboard() {
         <main className={`view robot${pane === "drive" ? " driving" : ""}`} id="view-robot" role="tabpanel" hidden={tab !== "robot"} aria-label="Robot">
           <Viewport daemonOnline={daemonOnline} note={stageNote(power.view, daemonOnline)} visible={visible && tab === "robot"} poseSink={poseSink} />
           <section className="glass sheet side" data-lens ref={side} aria-label="Robot controls">
+            <ControlBar control={control} />
             <Segmented
               label="Robot controls"
               options={[
@@ -210,6 +215,7 @@ function Dashboard() {
           <AudioPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
           <SimPanel sim={sim} sounds={simSounds} powerStatus={power.status} />
           <LogsPanel live={visible && tab === "system"} />
+          <ControlPanel control={control} />
           <DevicesPanel />
           <AppearancePanel look={look} />
         </main>

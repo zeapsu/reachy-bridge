@@ -292,6 +292,13 @@ fn random_code() -> String {
     }
 }
 
+/// A random id of `n` bytes, as hex.
+pub fn random_hex(n: usize) -> String {
+    let mut bytes = vec![0u8; n];
+    getrandom::fill(&mut bytes).expect("operating system random number generator");
+    hex(&bytes)
+}
+
 fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
@@ -309,7 +316,7 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Write `bytes` to `path` atomically (temp file, fsync, rename), mode 0600.
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -489,7 +496,9 @@ impl Auth {
             return None;
         }
         let device = &mut devices[index];
-        let paired = Paired { id: device.id.clone(), person: device.person.clone(), role: device.role };
+        // Devices paired before #221 have no person: the name stands in.
+        let person = if device.person.is_empty() { device.name.clone() } else { device.person.clone() };
+        let paired = Paired { id: device.id.clone(), person, role: device.role };
         if now.saturating_sub(device.last_seen) >= LAST_SEEN_STEP {
             device.last_seen = now;
             if let Some(peer) = peer {
@@ -500,6 +509,16 @@ impl Auth {
             }
         }
         Some(paired)
+    }
+
+    /// Device id -> name, for showing who holds control.
+    pub fn device_names(&self) -> HashMap<String, String> {
+        self.devices.lock().unwrap().iter().map(|d| (d.id.clone(), d.name.clone())).collect()
+    }
+
+    /// Some paired device belongs to `person`.
+    pub fn has_person(&self, person: &str) -> bool {
+        self.devices.lock().unwrap().iter().any(|d| d.person == person || (d.person.is_empty() && d.name == person))
     }
 
     fn has_device(&self, id: &str) -> bool {
@@ -607,7 +626,7 @@ fn rate_key(peer: IpAddr) -> IpAddr {
     }
 }
 
-fn is_api(path: &str) -> bool {
+pub fn is_api(path: &str) -> bool {
     path == "/api" || path.starts_with("/api/") || path == "/telemetry" || path.starts_with("/telemetry/")
 }
 
@@ -615,7 +634,7 @@ fn is_api(path: &str) -> bool {
 /// code (an app runs as the bridge's user and can read the local key, so a
 /// member installing one could make itself admin), the Hugging Face token,
 /// and the kinematics engine.
-fn admin_only(method: &axum::http::Method, path: &str) -> bool {
+pub fn admin_only(method: &axum::http::Method, path: &str) -> bool {
     if method.is_safe() {
         return false;
     }

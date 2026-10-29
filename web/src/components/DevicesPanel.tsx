@@ -125,7 +125,13 @@ export function DevicesPanel() {
             onChange={(e) => setCode(e.target.value)}
           />
           <input className="field" aria-label="Device name (optional)" placeholder="device (optional)" maxLength={64} value={name} onChange={(e) => setName(e.target.value)} />
-          <input className="field" aria-label="Person (optional)" placeholder="person (optional)" maxLength={64} value={person} onChange={(e) => setPerson(e.target.value)} />
+          <input className="field" aria-label="Person (optional)" placeholder="person (optional)" maxLength={64} list="devices-people" value={person} onChange={(e) => setPerson(e.target.value)} />
+          {/* Existing people, so a second device joins its person's control time rather than a near-duplicate name. */}
+          <datalist id="devices-people">
+            {[...new Set(devices.map((d) => d.person || d.name))].map((p) => (
+              <option key={p} value={p} />
+            ))}
+          </datalist>
           <button className="btn primary press" type="submit" disabled={busy}>
             Approve
           </button>
