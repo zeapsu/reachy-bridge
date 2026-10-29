@@ -308,7 +308,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Equal-length comparison whose time doesn't depend on where bytes differ.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -529,11 +529,6 @@ impl Auth {
     /// admin exists, and unless `CONTROLLER_TRUST_TAILNET=0`.
     fn trusts_loopback(&self) -> bool {
         self.config.trust_loopback && !self.admin_mode()
-    }
-
-    /// The CLI's key, which the audio gateway also requires (#219).
-    pub fn local_key(&self) -> Option<&str> {
-        self.local_key.as_deref()
     }
 
     fn local_key_matches(&self, headers: &HeaderMap) -> bool {

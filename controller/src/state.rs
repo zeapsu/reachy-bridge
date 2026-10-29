@@ -63,7 +63,7 @@ impl AppState {
     ) -> Shared {
         let player = ExpressionPlayer::new(daemon.clone(), poll);
         let auth = Auth::new(auth, &state_dir);
-        let audio = Audio::from_env().with_key(auth.local_key());
+        let audio = Audio::from_env().with_key_file(&state_dir);
         Arc::new(Self {
             sim,
             auth,

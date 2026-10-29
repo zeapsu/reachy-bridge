@@ -17,10 +17,13 @@ ICE candidates are limited to UDP host candidates on ``AUDIO_GATEWAY_NETS``
 (the tailnet by default) in both directions, there's no STUN or TURN, and
 UDP ports come from ``AUDIO_GATEWAY_PORTS`` so one firewall rule covers them.
 
-Every request needs the controller's local key (``controller.key`` in its
-state dir, sent as ``X-Reachy-Bridge-Key``), so neither another local user
-nor an app's UI proxied by the controller can open the mic behind the
-controller's back.
+Only the controller can use it. It writes a fresh ``audio.key`` (0600) to
+its state dir at start; every request carries ``X-Audio-Auth:
+<nonce>.<HMAC(key, "request:<nonce>")>`` and every reply
+``X-Audio-Proof: HMAC(key, "reply:<nonce>")``. The key itself never goes
+over the socket, so neither another local user, nor an app UI proxied by the
+controller, nor something squatting this port can open the mic or pass for
+the gateway. A session whose controller stops asking for its status ends.
 
 HTTP API (loopback, JSON):
 
@@ -34,6 +37,7 @@ HTTP API (loopback, JSON):
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -68,19 +72,28 @@ NETS = [
 ]
 
 
-def _key_file() -> Path | None:
+def _key_file() -> Path:
+    """The controller's ``audio.key``: in its state dir, found the same way."""
     configured = os.environ.get("AUDIO_GATEWAY_KEY_FILE")
-    if configured is not None:
-        # Empty: no key (tests and local development only).
-        return Path(configured) if configured else None
+    if configured:
+        return Path(configured)
     state = os.environ.get("REACHY_BRIDGE_STATE_DIR")
     if not state:
         state = str(Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "reachy-bridge")
-    return Path(state) / "controller.key"
+    return Path(state) / "audio.key"
 
 
 KEY_FILE = _key_file()
-KEY_HEADER = "X-Reachy-Bridge-Key"
+AUTH_HEADER = "X-Audio-Auth"
+PROOF_HEADER = "X-Audio-Proof"
+NONCE = re.compile(r"[0-9a-f]{32}")
+# A session whose controller hasn't asked for its status this long ends: the
+# controller watches every session (it polls every 2 s) and may be gone.
+UNWATCHED_TIMEOUT = 30.0
+
+
+def sign(key: str, what: str, nonce: str) -> str:
+    return hmac.new(key.encode(), f"{what}:{nonce}".encode(), hashlib.sha256).hexdigest()
 PORTS = os.environ.get("AUDIO_GATEWAY_PORTS", "47100-47199")
 GATHER_TIMEOUT = 5.0
 CALL_TIMEOUT = 10.0
@@ -190,10 +203,13 @@ class Session:
         self.webrtc.connect("notify::ice-gathering-state", self._on_gathering)
         self.offer: str | None = None
         self.answered = False
+        self.failed: str | None = None
 
     def _on_error(self, _bus: Any, message: Gst.Message) -> None:
         error, debug = message.parse_error()
         logger.warning("Audio session %s: %s (%s)", self.id, error.message, debug)
+        # E.g. the mic or speaker busy: end it rather than show "live" in silence.
+        self.failed = error.message
 
     def _on_gathering(self, webrtc: Any, _pspec: Any) -> None:
         if webrtc.get_property("ice-gathering-state") == GstWebRTC.WebRTCICEGatheringState.COMPLETE:
@@ -283,6 +299,7 @@ class Gateway:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.session: Session | None = None
+        self.polled = time.monotonic()
 
     def _end(self) -> None:
         if self.session is not None:
@@ -320,15 +337,28 @@ class Gateway:
                 raise KeyError(sid)
             self._end()
 
-    def status(self) -> dict[str, Any]:
+    def status(self, polled: bool = True) -> dict[str, Any]:
+        """The session's state; `polled` is false for the gateway's own check."""
         with self.lock:
+            now = time.monotonic()
+            if polled:
+                self.polled = now
             session = self.session
             if session is None:
                 return {"session": None}
             state = on_main(session.state)
+            if session.failed:
+                logger.info("Audio session %s failed (%s); ending it", session.id, session.failed)
+                self._end()
+                return {"session": None}
             # Never connected, or its browser went away: give the port back.
             if not state["connected"] and state["quiet"] > CONNECT_TIMEOUT:
                 logger.info("Audio session %s not connected for %ss; ending it", session.id, CONNECT_TIMEOUT)
+                self._end()
+                return {"session": None}
+            # Nobody watches it: it would go on with no badge and no way to end it.
+            if now - max(self.polled, session.created) > UNWATCHED_TIMEOUT:
+                logger.info("Audio session %s: the controller stopped watching; ending it", session.id)
                 self._end()
                 return {"session": None}
             return {"session": state}
@@ -343,9 +373,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
         logger.debug(format, *args)
 
+    proof = ""
+
     def _reply(self, status: int, body: Any = None) -> None:
         data = b"" if body is None else json.dumps(body).encode()
         self.send_response(status)
+        if self.proof:
+            self.send_header(PROOF_HEADER, self.proof)
         if body is not None:
             self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -362,14 +396,17 @@ class Handler(BaseHTTPRequestHandler):
         return value
 
     def _authorized(self) -> bool:
-        if KEY_FILE is None:
-            return True
+        """Check the request's signature; sign the reply with the same nonce."""
+        self.proof = ""
         try:
             key = KEY_FILE.read_text().strip()
         except OSError:
             return False
-        sent = self.headers.get(KEY_HEADER) or ""
-        return bool(key) and hmac.compare_digest(sent.encode(), key.encode())
+        nonce, _, mac = (self.headers.get(AUTH_HEADER) or "").partition(".")
+        if not key or not NONCE.fullmatch(nonce) or not hmac.compare_digest(mac.encode(), sign(key, "request", nonce).encode()):
+            return False
+        self.proof = sign(key, "reply", nonce)
+        return True
 
     def _route(self, method: str) -> None:
         parts = [p for p in self.path.split("?")[0].split("/") if p]
@@ -426,7 +463,7 @@ def reap() -> None:
     while True:
         time.sleep(5)
         try:
-            GATEWAY.status()
+            GATEWAY.status(polled=False)
         except Exception:
             logger.exception("Audio gateway: status check failed")
 

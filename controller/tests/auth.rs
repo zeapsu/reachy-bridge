@@ -15,6 +15,7 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::StreamExt;
+use reachy_controller::audio;
 use reachy_controller::auth::AuthConfig;
 use reachy_controller::daemon::Daemon;
 use reachy_controller::logs::LogBroker;
@@ -901,8 +902,9 @@ async fn devices_paired_before_people_use_their_name() {
 
 // Listen and talk (#219) -----------------------------------------------------
 
-/// A stand-in audio gateway: one session "s1", always connected; records deletes.
-async fn fake_gateway(deleted: Arc<AtomicU64>) -> String {
+/// A stand-in audio gateway: one session "s1", always connected; records
+/// deletes. It signs its replies with `key` (None: a squatter that can't).
+async fn fake_gateway(deleted: Arc<AtomicU64>, key: Option<String>) -> String {
     use axum::routing::{delete, post};
     let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let app = Router::new()
@@ -944,18 +946,47 @@ async fn fake_gateway(deleted: Arc<AtomicU64>) -> String {
                     StatusCode::NO_CONTENT
                 }
             }),
-        );
+        )
+        .layer(axum::middleware::from_fn(move |request: Request<Body>, next: axum::middleware::Next| {
+            let key = key.clone();
+            async move {
+                let auth = request.headers().get(audio::AUTH_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                let mut response = next.run(request).await;
+                if let (Some(key), Some((nonce, _))) = (key, auth.split_once('.')) {
+                    response.headers_mut().insert(audio::PROOF_HEADER, audio::sign(&key, "reply", nonce).parse().unwrap());
+                }
+                response
+            }
+        }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     url
 }
 
+#[test]
+fn signs_like_the_gateway() {
+    // Vectors from runtime/.../audio_gateway.py's sign().
+    assert_eq!(audio::sign("key", "request", "00"), "3d015b8f1153a6c9583a8918449da7ef14f83a80453c525fc6ab27a28e5ebdde");
+    assert_eq!(audio::sign(&"k".repeat(70), "reply", "ab"), "36dfa5b9b523a5c76a47b81281bdf031eb86d84df0e2183c621c4f91e8043147");
+}
+
+#[tokio::test]
+async fn a_squatter_on_the_gateway_port_is_not_believed() {
+    let h = harness(AuthConfig::default()).await;
+    let deleted = Arc::new(AtomicU64::new(0));
+    h.state.audio.set_url(&fake_gateway(deleted, None).await);
+    let r = h.call("POST", "/api/audio/session", LOOPBACK, &[], Some(json!({"listen": true, "talk": true}))).await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", r.body);
+    assert_eq!(h.call("GET", "/api/audio", LOOPBACK, &[], None).await.body["session"], Value::Null);
+}
+
 #[tokio::test]
 async fn only_the_holder_listens_and_talks_and_loses_it_with_control() {
     let (h, admin, sam) = control_harness().await;
     let deleted = Arc::new(AtomicU64::new(0));
-    h.state.audio.set_url(&fake_gateway(deleted.clone()).await);
+    let key = std::fs::read_to_string(h.state.state_dir.join(audio::KEY_FILE)).unwrap().trim().to_string();
+    h.state.audio.set_url(&fake_gateway(deleted.clone(), Some(key)).await);
     let open = json!({"listen": true, "talk": true});
     let r = h
         .call(

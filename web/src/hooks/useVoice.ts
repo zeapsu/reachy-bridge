@@ -46,9 +46,9 @@ function gathered(pc: RTCPeerConnection): Promise<void> {
 
 /**
  * Listen and talk (#219): one WebRTC session with the robot's audio gateway,
- * through the controller. The session outlives a hidden page (a phone with
- * its screen off keeps talking); polling stops while hidden and, back in
- * view, notices a session the controller ended (control or login lost).
+ * through the controller. Hiding the page doesn't end it (whether a locked
+ * phone keeps streaming is up to its browser); polling stops while hidden
+ * and, back in view, notices a session that ended meanwhile.
  */
 export function useVoice(visible: boolean): VoiceApi {
   const [view, setView] = useState<VoiceView | null>(null);
@@ -87,7 +87,7 @@ export function useVoice(visible: boolean): VoiceApi {
       const next = await apiJson<VoiceView>(paths.voice);
       setView(next);
       if (id.current && sent > openedAt.current && next.session?.ref !== mineRef.current) {
-        teardown("Your audio session ended: this browser no longer has control of the robot.");
+        teardown("Your audio session ended (control or login changed, the robot's audio stopped, or another browser started one).");
       }
     } catch {
       // An older controller has no audio routes; a blip retries next tick.
@@ -107,7 +107,7 @@ export function useVoice(visible: boolean): VoiceApi {
     const end = () => {
       if (id.current) void fetch(paths.voiceEnd(id.current), { method: "DELETE", keepalive: true }).catch(() => {});
     };
-    // Closing or leaving the page, not hiding it: a phone with its screen off keeps going.
+    // Closing or leaving the page, not hiding it.
     const leave = (event: PageTransitionEvent) => {
       if (!event.persisted) end();
     };
@@ -171,17 +171,23 @@ export function useVoice(visible: boolean): VoiceApi {
             out.srcObject = event.streams[0] ?? new MediaStream([event.track]);
             out.play().catch(() => setNeedsTap(true));
           };
+          // End it on the controller too, so the robot's mic closes and the
+          // badge clears now, not when the gateway notices.
+          const dropped = () => {
+            teardown("The audio connection dropped.");
+            void apiJson(paths.voiceEnd(sid), { method: "DELETE" }).catch(() => {});
+          };
           let grace: ReturnType<typeof setTimeout> | undefined;
           peer.onconnectionstatechange = () => {
             if (pc.current !== peer) return;
             clearTimeout(grace);
             if (peer.connectionState === "connected") setStatus("live");
-            else if (peer.connectionState === "failed") teardown("The audio connection dropped.");
+            else if (peer.connectionState === "failed") dropped();
             // The controller may have ended it while this page was hidden:
             // don't keep the mic until ICE gives up, but allow a network blip.
             else if (peer.connectionState === "disconnected") {
               grace = setTimeout(() => {
-                if (pc.current === peer && peer.connectionState !== "connected") teardown("The audio connection dropped.");
+                if (pc.current === peer && peer.connectionState !== "connected") dropped();
               }, DISCONNECT_GRACE_MS);
             }
           };

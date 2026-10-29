@@ -10,7 +10,10 @@ export const DISCONNECT_GRACE_MS = 8000;
 export const ICE_WAIT_MS = 3000;
 
 /** Why this browser can't start listening or talking now, or null. */
-export function voiceBlocked(view: VoiceView | null, control: ControlState): string | null {
+export function voiceBlocked(view: VoiceView | null, control: ControlState, secure = true): string | null {
+  // Audio only connects over the tailnet, where the dashboard is served over https;
+  // a plain-http LAN page would open the robot's mic and never connect.
+  if (!secure) return "Listening and talking work from the dashboard's https (Tailscale) address.";
   if (!view) return "Checking the robot's audio…";
   if (!view.available) return "Listening and talking work with the real robot, not the simulation.";
   if (control.kind === "other" || control.kind === "free") return "Take control of the robot to listen or talk.";

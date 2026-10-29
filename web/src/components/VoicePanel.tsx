@@ -15,7 +15,7 @@ const hasMic = typeof navigator !== "undefined" && Boolean(navigator.mediaDevice
 export function VoicePanel({ voice, control }: { voice: VoiceApi; control: ControlState }) {
   const [wanted, setWanted] = useState({ listen: true, talk: false });
   const open = voice.status !== "off";
-  const blocked = voiceBlocked(voice.view, control);
+  const blocked = voiceBlocked(voice.view, control, secure);
   const noTalk = talkBlocked(secure, hasMic);
   const route = open ? voice.route : wanted;
   const session = voice.view?.session;

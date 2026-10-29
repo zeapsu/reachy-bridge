@@ -15,6 +15,9 @@ const session = (over: Partial<VoiceSession> = {}): VoiceSession => ({
 
 describe("voiceBlocked", () => {
   const asking = { kind: "can_ask" } as const;
+  test("needs the https (tailnet) address", () => {
+    expect(voiceBlocked({ available: true, session: null }, { kind: "off" }, false)).toContain("https");
+  });
   test("refuses in sim mode", () => {
     expect(voiceBlocked({ available: false, session: null }, { kind: "off" })).toContain("simulation");
   });

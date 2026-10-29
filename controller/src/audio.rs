@@ -28,6 +28,26 @@ use crate::error::{ApiError, ApiResult};
 use crate::state::Shared;
 
 pub const DEFAULT_URL: &str = "http://127.0.0.1:8002";
+pub const KEY_FILE: &str = "audio.key";
+/// `<nonce>.<sign(key, "request", nonce)>` on every request.
+pub const AUTH_HEADER: &str = "x-audio-auth";
+/// `sign(key, "reply", nonce)` on every reply.
+pub const PROOF_HEADER: &str = "x-audio-proof";
+
+/// HMAC-SHA256 of `"<what>:<nonce>"`, in hex.
+pub fn sign(key: &str, what: &str, nonce: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut block = [0u8; 64];
+    if key.len() > 64 {
+        block[..32].copy_from_slice(&Sha256::digest(key.as_bytes()));
+    } else {
+        block[..key.len()].copy_from_slice(key.as_bytes());
+    }
+    let pad = |byte: u8| block.map(|b| b ^ byte);
+    let inner = Sha256::new().chain_update(pad(0x36)).chain_update(format!("{what}:{nonce}")).finalize();
+    let outer = Sha256::new().chain_update(pad(0x5c)).chain_update(inner).finalize();
+    outer.iter().map(|b| format!("{b:02x}")).collect()
+}
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// How often a session's watcher checks the gateway.
 const WATCH: Duration = Duration::from_secs(2);
@@ -57,7 +77,10 @@ pub struct Audio {
     unit: Option<String>,
     systemctl: String,
     http: reqwest::Client,
-    /// The controller's local key: the gateway refuses requests without it.
+    /// Shared with the gateway through `audio.key` in the state dir (0600).
+    /// Requests and replies are signed with it, never carry it: whoever
+    /// answers on the gateway's port learns nothing, and a stand-in that
+    /// can't sign its replies isn't believed (#219).
     key: Option<String>,
     owner: Mutex<Option<Owner>>,
     /// One open at a time, so `owner` names the gateway's latest session.
@@ -85,8 +108,13 @@ impl Audio {
         Self::new(url.as_deref().unwrap_or(DEFAULT_URL), Some(unit))
     }
 
-    pub fn with_key(mut self, key: Option<&str>) -> Self {
-        self.key = key.map(str::to_owned);
+    /// Write a fresh `audio.key` for the gateway (it reads it per request).
+    pub fn with_key_file(mut self, state_dir: &std::path::Path) -> Self {
+        let key = crate::auth::random_hex(32);
+        match crate::auth::write_private(&state_dir.join(KEY_FILE), format!("{key}\n").as_bytes()) {
+            Ok(()) => self.key = Some(key),
+            Err(error) => tracing::error!("audio: cannot write {KEY_FILE} ({error}); listen and talk won't work"),
+        }
         self
     }
 
@@ -97,14 +125,23 @@ impl Audio {
 
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Option<Value>, ApiError> {
         let url = format!("{}{path}", self.url.lock().unwrap());
-        let mut request = self.http.request(method, url);
-        if let Some(key) = &self.key {
-            request = request.header(crate::auth::LOCAL_KEY_HEADER, key);
-        }
+        let Some(key) = &self.key else {
+            return Err(ApiError::new(503, format!("No {KEY_FILE}; listen and talk are off")));
+        };
+        let nonce = crate::auth::random_hex(16);
+        let mut request = self.http.request(method, url).header(AUTH_HEADER, format!("{nonce}.{}", sign(key, "request", &nonce)));
         if let Some(body) = body {
             request = request.json(&body);
         }
         let response = request.send().await.map_err(|_| ApiError::new(503, "The audio gateway isn't answering"))?;
+        let proof = response.headers().get(PROOF_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("");
+        if !crate::auth::ct_eq(proof.as_bytes(), sign(key, "reply", &nonce).as_bytes()) {
+            if response.status() == reqwest::StatusCode::FORBIDDEN {
+                return Err(ApiError::new(503, format!("The audio gateway refused the controller's {KEY_FILE}; do both use the same state dir?")));
+            }
+            tracing::warn!("audio: something unsigned answered on the gateway's port; not using it");
+            return Err(ApiError::new(503, "Something other than the audio gateway is on its port"));
+        }
         let status = response.status();
         let value: Option<Value> = response.json().await.ok();
         if status.is_success() {
@@ -121,8 +158,10 @@ impl Audio {
 
     /// Start the gateway's unit unless it already answers.
     async fn ensure_running(&self) -> ApiResult<()> {
-        if self.status().await.is_ok() {
-            return Ok(());
+        // Something listening that isn't a working gateway (a wrong key, a
+        // squatter): say so instead of starting a unit that can't bind.
+        if self.listening().await {
+            return self.status().await.map(|_| ());
         }
         let Some(unit) = &self.unit else {
             return Err(ApiError::new(503, "The audio gateway isn't running"));
@@ -138,6 +177,14 @@ impl Audio {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         Err(ApiError::new(503, "The audio gateway didn't start"))
+    }
+
+    async fn listening(&self) -> bool {
+        let url = self.url.lock().unwrap().clone();
+        let Some(address) = reqwest::Url::parse(&url).ok().and_then(|u| Some(format!("{}:{}", u.host_str()?, u.port_or_known_default()?))) else {
+            return false;
+        };
+        matches!(tokio::time::timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(address)).await, Ok(Ok(_)))
     }
 
     fn owner(&self) -> Option<Owner> {
@@ -161,7 +208,7 @@ pub async fn end_leftover(state: Shared) {
     if let Ok(session) = audio.status().await
         && let Some(id) = session["id"].as_str()
     {
-        tracing::info!("audio: ending session {id} left by an earlier controller");
+        tracing::info!("audio: ending a session left by an earlier controller");
         let _ = audio.call(reqwest::Method::DELETE, &format!("/session/{id}"), None).await;
     }
 }
@@ -238,8 +285,10 @@ async fn open(
     if let Some(previous) = audio.owner.lock().unwrap().replace(owner.clone()) {
         previous.end.notify_one();
     }
+    // The log is readable from every dashboard: name the public ref, never the id.
     tracing::info!(
-        "audio: session {id} for {} (listen={}, talk={})",
+        "audio: session {} for {} (listen={}, talk={})",
+        owner.public,
         ctx.person.as_deref().or(ctx.device.as_deref()).unwrap_or("this host"),
         body.listen,
         body.talk
@@ -252,7 +301,7 @@ async fn open(
 
 /// Keep a session tied to its browser: end it when the browser's login or
 /// control ends, sim mode starts, or it's replaced; while it's connected,
-/// count the browser as present (a locked phone still talking holds on).
+/// count the browser as present, even if its page is hidden.
 async fn watch(state: Shared, owner: Owner, credential: Credential, local: bool) {
     let audio = &state.audio;
     let id = owner.id.clone();
@@ -292,7 +341,7 @@ async fn watch(state: Shared, owner: Owner, credential: Credential, local: bool)
         () = lost => "its device lost control",
         why = ticks => why,
     };
-    tracing::info!("audio: session {id} ended: {why}");
+    tracing::info!("audio: session {} ended: {why}", owner.public);
     // Best effort: the gateway may already have dropped it.
     let _ = audio.call(reqwest::Method::DELETE, &format!("/session/{id}"), None).await;
     audio.forget(&id);
@@ -348,5 +397,7 @@ async fn route(
 /// control.)
 async fn close(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     owned(&state, &ctx, &id)?.end.notify_one();
+    // Gone for every dashboard now; the watcher still ends it on the gateway.
+    state.audio.forget(&id);
     Ok(Json(json!({"status": "closed"})))
 }

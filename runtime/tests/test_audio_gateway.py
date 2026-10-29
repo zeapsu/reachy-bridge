@@ -5,7 +5,7 @@ import os
 import pytest
 
 pytest.importorskip("gi")
-os.environ.setdefault("AUDIO_GATEWAY_KEY_FILE", "")
+os.environ.setdefault("AUDIO_GATEWAY_KEY_FILE", "/nonexistent/audio.key")
 
 from reachy_bridge_runtime.audio_gateway import candidate_allowed, filter_candidates  # noqa: E402
 
