@@ -123,8 +123,9 @@ def main() -> int:
                     "--fastapi-port", str(daemon_port),
                 ],
                 cwd=ROOT,
+                # REACHY_MINI_TELEMETRY=0: no usage events from test runs.
                 env={**os.environ, "REACHY_BRIDGE_STATE_DIR": str(work / "daemon-state"),
-                     "REACHY_BRIDGE_APPS_ROOT": str(work / "apps")},
+                     "REACHY_BRIDGE_APPS_ROOT": str(work / "apps"), "REACHY_MINI_TELEMETRY": "0"},
                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
