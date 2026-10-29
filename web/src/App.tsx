@@ -241,6 +241,10 @@ function Dashboard() {
           busy={apps.appBusy}
           onClose={apps.closeAppView}
           onStop={() => apps.perform(apps.appView!.name, "stop")}
+          onTake={(() => {
+            const state = controlState(control.view);
+            return state.kind === "free" && state.canTake ? () => void control.act(paths.controlTake) : undefined;
+          })()}
         />
       ) : null}
     </>

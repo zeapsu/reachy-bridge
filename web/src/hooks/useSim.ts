@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiJson, errorText, paths, setBelievedTarget, type SimStatus, type Target } from "../api.ts";
+import { apiJson, errorText, paths, setBelievedTarget, takeControlIfFree, type SimStatus, type Target } from "../api.ts";
 import { syncTarget } from "../logic/sim.ts";
 
 export interface SimState {
@@ -48,6 +48,8 @@ export function useSim(reported: Target | undefined, onSwitched: () => void): Si
     setError("");
     void (async () => {
       try {
+        // After a confirm dialog the tap's activation may have run out.
+        await takeControlIfFree(true);
         const status = await apiJson<SimStatus>(entering ? paths.simEnter : paths.simExit, { method: "POST" });
         pendingRef.current = status.target;
         // A poll will report it within a second or two; if the controller

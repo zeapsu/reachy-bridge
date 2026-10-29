@@ -82,7 +82,7 @@ export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, si
           {sim ? <span className="sim-badge">Sim</span> : null}
           {status.text}
           {holder === "you" ? (
-            <button type="button" className="control-who" title="You're in control" onClick={onHolder}>
+            <button type="button" className="control-who" aria-label="You're in control: show Release" onClick={onHolder}>
               · you
             </button>
           ) : holder ? (

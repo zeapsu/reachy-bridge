@@ -3,6 +3,8 @@
 export const controlPaths = {
   control: "/api/control",
   controlTake: "/api/control/take",
+  /** Takes control only while nobody has it (the dashboard's take for a robot action). */
+  controlTakeIfFree: "/api/control/take?if_free=true",
   controlRelease: "/api/control/release",
   controlRequest: "/api/control/request",
   controlRefuse: (person: string) => `/api/control/requests/${encodeURIComponent(person)}/refuse`,

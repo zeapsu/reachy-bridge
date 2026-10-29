@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { paths } from "../api.ts";
+import { CONTROL_NEEDED_EVENT, paths } from "../api.ts";
 import type { ControlApi } from "../hooks/useControl.ts";
 import { SLOTS, clock, controlNotice, controlState, showStrip, type Asking, type ControlState } from "../logic/control.ts";
 import "./ControlStrip.css";
@@ -8,13 +8,31 @@ import "./ControlStrip.css";
  * Who drives the robot (#221), one line inside a view that acts on it, and
  * only when this browser can't just act: someone else is in control, or
  * nobody is and this person has to ask. Nothing outside admin mode, while
- * this browser is in control, or when its first action can take control.
+ * this browser is in control, or when its first action can take control,
+ * unless an action was refused without taking it (no tap behind it): then
+ * it offers Take control.
  */
 export function ControlStrip({ control }: { control: ControlApi }) {
   const [slot, setSlot] = useState(1);
+  const [refused, setRefused] = useState(false);
   const state = controlState(control.view);
-  if (!showStrip(state)) return null;
-  const { act, busy, error } = control;
+  const free = state.kind === "free";
+
+  useEffect(() => {
+    const onRefused = () => setRefused(true);
+    window.addEventListener(CONTROL_NEEDED_EVENT, onRefused);
+    return () => window.removeEventListener(CONTROL_NEEDED_EVENT, onRefused);
+  }, []);
+  useEffect(() => {
+    if (!free) setRefused(false);
+  }, [free]);
+
+  const { act, busy } = control;
+  const takeButton = (label: string, primary = false) => (
+    <button className={`btn press${primary ? " primary" : ""}`} type="button" disabled={busy} onClick={() => void act(paths.controlTake)}>
+      {label}
+    </button>
+  );
 
   const ask = (asking: Asking): [string, ReactNode] => {
     switch (asking.kind) {
@@ -55,32 +73,27 @@ export function ControlStrip({ control }: { control: ControlApi }) {
 
   let text = "";
   let action: ReactNode = null;
-  if (state.kind === "other") {
+  if (state.kind === "other" && showStrip(state)) {
     text = `${state.person} is in control${state.until === null ? "" : ` until ${clock(state.until)}`}.`;
     if (state.canTakeOver) {
-      action = (
-        <button className="btn press" type="button" disabled={busy} onClick={() => void act(paths.controlTake)}>
-          Take over
-        </button>
-      );
+      action = takeButton("Take over");
     } else {
       const [more, button] = ask(state.asking);
       if (more) text += ` ${more}`;
       action = button;
     }
-  } else if (state.kind === "free") {
+  } else if (state.kind === "free" && showStrip(state)) {
     [text, action] = ask(state.asking);
+  } else if (state.kind === "free" && refused) {
+    text = "Nobody is in control.";
+    action = takeButton("Take control", true);
   }
+  if (!text && !action) return null;
 
   return (
-    <div className="control-strip" role="status" aria-live="polite">
+    <div className="control-strip">
       <p className="control-text">{text}</p>
       {action}
-      {error && (
-        <p className="note error control-error" role="alert">
-          {error}
-        </p>
-      )}
     </div>
   );
 }
@@ -89,14 +102,16 @@ const TOAST_MS = 4000;
 
 /**
  * A notice for a few seconds when who drives changes (#221): you took
- * control (with Release), someone took over, your time is nearly up.
- * `nudge` changing shows "You're in control" again, from the status pill.
+ * control (with Release), someone took over, your time is nearly up; and
+ * control actions that failed. `nudge` changing shows "You're in control"
+ * again, from the status pill. It stays while hovered or focused.
  */
 export function ControlToast({ control, nudge }: { control: ControlApi; nudge: number }) {
   const state = controlState(control.view);
   const key = JSON.stringify(state);
   const prev = useRef<ControlState>({ kind: "off" });
-  const [toast, setToast] = useState<{ text: string; release: boolean } | null>(null);
+  const [toast, setToast] = useState<{ text: string; release: boolean; error?: boolean } | null>(null);
+  const [held, setHeld] = useState(false);
 
   useEffect(() => {
     const next: ControlState = JSON.parse(key);
@@ -112,15 +127,28 @@ export function ControlToast({ control, nudge }: { control: ControlApi; nudge: n
   }, [nudge]);
 
   useEffect(() => {
-    if (!toast) return;
+    if (control.error) setToast({ text: control.error, release: false, error: true });
+  }, [control.error]);
+
+  useEffect(() => {
+    if (!toast || held) return;
     const timer = setTimeout(() => setToast(null), TOAST_MS);
     return () => clearTimeout(timer);
-  }, [toast]);
+  }, [toast, held]);
 
   return (
-    <div aria-live="polite">
+    <>
+      <p className="sr-only" role="status">
+        {toast?.text ?? ""}
+      </p>
       {toast && (
-        <div className="glass control-toast" role="status">
+        <div
+          className={`glass control-toast${toast.error ? " error" : ""}`}
+          onMouseEnter={() => setHeld(true)}
+          onMouseLeave={() => setHeld(false)}
+          onFocus={() => setHeld(true)}
+          onBlur={() => setHeld(false)}
+        >
           <span>{toast.text}</span>
           {toast.release && (
             <button
@@ -129,6 +157,7 @@ export function ControlToast({ control, nudge }: { control: ControlApi; nudge: n
               disabled={control.busy}
               onClick={() => {
                 setToast(null);
+                setHeld(false);
                 void control.act(paths.controlRelease);
               }}
             >
@@ -137,6 +166,6 @@ export function ControlToast({ control, nudge }: { control: ControlApi; nudge: n
           )}
         </div>
       )}
-    </div>
+    </>
   );
 }

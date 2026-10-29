@@ -58,6 +58,7 @@ export function useDrive(allowed: boolean): DriveState {
   const [phase, setPhase] = useState<DrivePhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const socket = useRef<WebSocket | null>(null);
+  const taking = useRef(false);
   const sticks = useRef<Sticks>(CENTRED);
   const pose = useRef<Pose>(HOME);
   const sent = useRef<Pose | null>(null);
@@ -160,13 +161,16 @@ export function useDrive(allowed: boolean): DriveState {
     idleSince.current = 0;
     // A new grab gets the full retry window, even while one is pending.
     if (retry.current !== null) firstTry.current = performance.now();
-    if (socket.current || retry.current !== null) return;
+    if (socket.current || retry.current !== null || taking.current) return;
     setError(null);
     setPhase("connecting");
     firstTry.current = performance.now();
-    // Nobody in control: take it. A start refused meanwhile is retried below.
-    void takeControlIfFree(true);
-    connect();
+    // Nobody in control: take it before opening the socket, so a quick tap moves the robot.
+    taking.current = true;
+    void takeControlIfFree(true).finally(() => {
+      taking.current = false;
+      if (held.current.size) connect();
+    });
     last.current = performance.now();
     if (timer.current === null) timer.current = setInterval(tick, TICK_MS);
   }, [allowed, connect, tick]);

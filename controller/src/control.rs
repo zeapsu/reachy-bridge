@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::extract::{Path as UrlPath, Request, State};
+use axum::extract::{Path as UrlPath, Query, Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -385,13 +385,29 @@ async fn view(State(state): State<Shared>, Extension(ctx): Extension<AuthContext
     }))
 }
 
-async fn take(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>) -> ApiResult<Json<Value>> {
+#[derive(Deserialize)]
+struct TakeQuery {
+    /// Only when nobody is in control: the dashboard taking control for a
+    /// robot action (#221), which must never take it from someone, admin
+    /// or not, on a stale view of who has it.
+    #[serde(default)]
+    if_free: bool,
+}
+
+async fn take(
+    State(state): State<Shared>,
+    Extension(ctx): Extension<AuthContext>,
+    Query(query): Query<TakeQuery>,
+) -> ApiResult<Json<Value>> {
     let (device, person) = me(&ctx)?;
     let admin = ctx.role == Some(Role::Admin);
     state.control.with(|inner, now| {
         if let Some(holder) = &inner.holder {
             if holder.device == device {
                 return Ok(());
+            }
+            if query.if_free {
+                return Err(ApiError::new(409, format!("{} is in control of the robot", holder.person)));
             }
             if !admin && holder.person != person {
                 return Err(ApiError::new(409, format!("{} is in control of the robot", holder.person)));

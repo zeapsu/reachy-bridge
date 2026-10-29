@@ -776,6 +776,11 @@ async fn a_person_asks_gets_time_takes_control_and_the_admin_overrides() {
             state.control.lost(&state.auth, id).await
         }
     });
+    // The dashboard's take for a robot action never takes control from someone, even for an admin.
+    let r = h.control(LOOPBACK, &admin, "take?if_free=true", None).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert_eq!(r.body["detail"], "Sam is in control of the robot");
+    assert_eq!(h.view(LAN, &sam).await["holder"]["you"], true);
     assert_eq!(h.control(LOOPBACK, &admin, "take", None).await.status, StatusCode::OK);
     assert!(tokio::time::timeout(Duration::from_secs(2), lost).await.is_ok(), "Sam's sessions didn't end");
     let r = h.act(LAN, &sam).await;
@@ -784,7 +789,7 @@ async fn a_person_asks_gets_time_takes_control_and_the_admin_overrides() {
     assert_eq!(h.act(LOOPBACK, &admin).await.status, StatusCode::OK);
     // Released, Sam takes control back within the grant.
     assert_eq!(h.control(LOOPBACK, &admin, "release", None).await.status, StatusCode::OK);
-    assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+    assert_eq!(h.control(LAN, &sam, "take?if_free=true", None).await.status, StatusCode::OK);
     // The CLI's key isn't held back by control.
     let key = h.key();
     assert_eq!(h.call("POST", "/api/expressions/stop", LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await.status, StatusCode::OK);

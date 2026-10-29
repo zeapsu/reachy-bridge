@@ -17,11 +17,14 @@ export function AppView({
   busy,
   onClose,
   onStop,
+  onTake,
 }: {
   view: AppViewState;
   busy: boolean;
   onClose: () => void;
   onStop: () => void;
+  /** Nobody is in control and this browser may take it (#221): the app's own UI can't take it for you. */
+  onTake?: () => void;
 }) {
   return (
     <div className="app-view" role="dialog" aria-label={`${view.display} interface`}>
@@ -35,6 +38,11 @@ export function AppView({
             <a className="app-view-tab" href={view.url} target="_blank" rel="noopener" title="Open in a new tab">
               ↗
             </a>
+          ) : null}
+          {onTake ? (
+            <button type="button" className="app-view-stop" onClick={onTake}>
+              Take control
+            </button>
           ) : null}
           <button type="button" className="app-view-stop" onClick={onStop} disabled={busy}>
             Stop

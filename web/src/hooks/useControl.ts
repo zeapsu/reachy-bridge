@@ -64,7 +64,7 @@ export function useControl(visible: boolean): ControlApi {
       const state = controlState(latest.current);
       if (state.kind !== "free" || !state.canTake) return false;
       try {
-        await apiJson(paths.controlTake, { method: "POST" });
+        await apiJson(paths.controlTakeIfFree, { method: "POST" });
         return true;
       } catch {
         return false;

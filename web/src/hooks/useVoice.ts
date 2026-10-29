@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiJson, errorText, paths, type VoiceOffer, type VoiceRoute, type VoiceView } from "../api.ts";
+import { apiJson, errorText, paths, takeControlIfFree, type VoiceOffer, type VoiceRoute, type VoiceView } from "../api.ts";
 import { DISCONNECT_GRACE_MS, ICE_WAIT_MS, VOICE_POLL_MS } from "../logic/voice.ts";
 
 export type VoiceStatus = "off" | "connecting" | "live";
@@ -154,6 +154,8 @@ export function useVoice(visible: boolean): VoiceApi {
         void out.play().catch(() => {});
         let opened: string | null = null;
         try {
+          // Take control now: the mic prompt below can outlast the tap's activation.
+          await takeControlIfFree(true);
           // Ask for the mic first: a refusal shouldn't open the robot's.
           const track = next.talk ? await microphone() : null;
           mic.current = track;
@@ -175,7 +177,7 @@ export function useVoice(visible: boolean): VoiceApi {
           // badge clears now, not when the gateway notices.
           const dropped = () => {
             teardown("The audio connection dropped.");
-            void apiJson(paths.voiceEnd(sid), { method: "DELETE" }).catch(() => {});
+            void apiJson(paths.voiceEnd(sid), { method: "DELETE" }, { take: false }).catch(() => {});
           };
           let grace: ReturnType<typeof setTimeout> | undefined;
           peer.onconnectionstatechange = () => {
@@ -201,7 +203,7 @@ export function useVoice(visible: boolean): VoiceApi {
           await apiJson(paths.voiceAnswer(sid), { method: "POST", body: JSON.stringify({ sdp: peer.localDescription?.sdp }) });
         } catch (e) {
           teardown();
-          if (opened) void apiJson(paths.voiceEnd(opened), { method: "DELETE" }).catch(() => {});
+          if (opened) void apiJson(paths.voiceEnd(opened), { method: "DELETE" }, { take: false }).catch(() => {});
           setError(errorText(e, "Couldn't start the audio."));
         }
       }),
@@ -240,7 +242,7 @@ export function useVoice(visible: boolean): VoiceApi {
       run(async () => {
         const sid = id.current;
         teardown();
-        if (sid) await apiJson(paths.voiceEnd(sid), { method: "DELETE" }).catch(() => {});
+        if (sid) await apiJson(paths.voiceEnd(sid), { method: "DELETE" }, { take: false }).catch(() => {});
       }),
     [run, teardown],
   );
