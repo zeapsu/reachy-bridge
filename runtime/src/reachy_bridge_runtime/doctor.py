@@ -30,6 +30,10 @@ from reachy_bridge_runtime import platforms
 SERIAL = "1a86:55d3"
 AUDIO = "38fb:1001"
 CAMERA = "38fb:1002"
+# Older parts the daemon still accepts: the ReSpeaker audio firmware
+# (media/audio_control_utils.py) and the earlier camera (OlderRPiCamSpecs).
+OLD_AUDIO = "2886:001a"
+OLD_CAMERA = "1bcf:28c4"
 # JetPack 7 is L4T R38 and later.
 MIN_L4T = 38
 MIN_GSTREAMER = (1, 24)
@@ -48,7 +52,7 @@ class Result:
 def _run(args: list[str]) -> str | None:
     """stdout of a command, or None if it is missing or fails."""
     try:
-        done = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        done = subprocess.run(args, capture_output=True, text=True, timeout=90)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return done.stdout if done.returncode == 0 else None
@@ -70,7 +74,7 @@ def board(platform: platforms.Platform) -> Result:
 
 def jetpack(root: Path) -> Result:
     try:
-        first = (root / "etc/nv_tegra_release").read_text().splitlines()[0]
+        first = (root / "etc/nv_tegra_release").read_text(errors="replace").splitlines()[0]
     except (OSError, IndexError):
         return Result("JetPack", "warn", "no /etc/nv_tegra_release; can't tell the JetPack version")
     match = re.search(r"R(\d+) \(release\), REVISION: ([\d.]+)", first)
@@ -109,19 +113,27 @@ def usb_ids(root: Path) -> set[str]:
     ids = set()
     for device in (root / "sys/bus/usb/devices").glob("*"):
         try:
-            ids.add(f"{(device / 'idVendor').read_text().strip()}:{(device / 'idProduct').read_text().strip()}")
+            vendor = (device / "idVendor").read_text(errors="replace").strip()
+            ids.add(f"{vendor}:{(device / 'idProduct').read_text(errors='replace').strip()}")
         except OSError:
             continue
     return ids
 
 
 def robot_usb(ids: set[str]) -> list[Result]:
-    return [
-        Result(name, "pass", f"USB {usb_id}")
-        if usb_id in ids
-        else Result(name, "fail", f"USB {usb_id} not found; check the robot's USB cable")
-        for name, usb_id in (("Motor bus", SERIAL), ("Audio", AUDIO), ("Camera", CAMERA))
-    ]
+    results = []
+    for name, usb_id, old, old_note in (
+        ("Motor bus", SERIAL, None, ""),
+        ("Audio", AUDIO, OLD_AUDIO, "old ReSpeaker firmware; Pollen recommends updating it"),
+        ("Camera", CAMERA, OLD_CAMERA, "the older camera; it works"),
+    ):
+        if usb_id in ids:
+            results.append(Result(name, "pass", f"USB {usb_id}"))
+        elif old in ids:
+            results.append(Result(name, "warn", f"USB {old}: {old_note}"))
+        else:
+            results.append(Result(name, "fail", f"USB {usb_id} not found; check the robot's USB cable"))
+    return results
 
 
 def group(name: str, user: str, active: set[str], members: Callable[[str], list[str] | None], why: str) -> Result:
@@ -135,15 +147,26 @@ def group(name: str, user: str, active: set[str], members: Callable[[str], list[
     return Result(f"{name} group", "fail", f"{user} isn't a member ({why}): sudo usermod -aG {name} {user}")
 
 
+_VENDOR = re.compile(r'ATTRS?\{idVendor\}\s*==\s*"38fb"')
+_PRODUCT = re.compile(r'ATTRS?\{idProduct\}\s*==\s*"1001"')
+
+
 def udev_rule(root: Path) -> Result:
-    for rules in ("etc/udev/rules.d", "lib/udev/rules.d", "usr/lib/udev/rules.d"):
+    # udev reads one file per name, /etc first: a file there (even a
+    # /dev/null mask) hides the same name under /lib.
+    seen = set()
+    for rules in ("etc/udev/rules.d", "run/udev/rules.d", "lib/udev/rules.d", "usr/lib/udev/rules.d"):
         for rule in sorted((root / rules).glob("*.rules")):
+            if rule.name in seen:
+                continue
+            seen.add(rule.name)
             try:
-                text = rule.read_text()
+                lines = rule.read_text(errors="replace").splitlines()
             except OSError:
                 continue
-            if 'ATTR{idVendor}=="38fb"' in text and 'ATTR{idProduct}=="1001"' in text:
-                return Result("udev rule", "pass", f"/{rules}/{rule.name}")
+            for line in lines:
+                if not line.lstrip().startswith("#") and _VENDOR.search(line) and _PRODUCT.search(line):
+                    return Result("udev rule", "pass", f"/{rules}/{rule.name}")
     return Result(
         "udev rule",
         "fail",
@@ -166,7 +189,7 @@ def disk(home: Path) -> Result:
 
 def memory(root: Path) -> Result:
     try:
-        meminfo = (root / "proc/meminfo").read_text()
+        meminfo = (root / "proc/meminfo").read_text(errors="replace")
         total = int(re.search(r"MemTotal:\s+(\d+) kB", meminfo)[1]) / 1e6  # type: ignore[index]
     except (OSError, TypeError):
         return Result("Memory", "warn", "couldn't read /proc/meminfo")
@@ -182,11 +205,20 @@ def _members(name: str) -> list[str] | None:
         return None
     members = list(entry.gr_mem)
     try:
-        if pwd.getpwnam(os.environ.get("USER", "")).pw_gid == entry.gr_gid:
-            members.append(os.environ["USER"])
+        user = pwd.getpwuid(os.getuid())
     except KeyError:
-        pass
+        return members
+    if user.pw_gid == entry.gr_gid:
+        members.append(user.pw_name)
     return members
+
+
+def _user() -> str:
+    # The uid, not $USER, which sudo -E or su -m leave pointing at someone else.
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return str(os.getuid())
 
 
 def _active_groups() -> set[str]:
@@ -209,7 +241,7 @@ def run_checks(root: Path = Path("/"), run: Callable[[list[str]], str | None] = 
         results.append(jetpack(root))
     results += gstreamer(run)
     results += robot_usb(usb_ids(root))
-    user = os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
+    user = _user()
     active = _active_groups()
     results.append(group("dialout", user, active, _members, "the motor bus's serial port needs it"))
     results.append(group("plugdev", user, active, _members, "the udev rule gives it the audio device"))

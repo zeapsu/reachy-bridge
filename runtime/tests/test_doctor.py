@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from reachy_bridge_runtime import doctor, platforms
@@ -55,6 +56,7 @@ def test_jetpack_reads_the_l4t_release(tmp_path: Path):
     old = fake_root(tmp_path / "old", [], l4t="# R36 (release), REVISION: 4.0, GCID: 1\n")
     assert doctor.jetpack(old).status == "fail"
     assert doctor.jetpack(tmp_path / "none").status == "warn"
+    assert doctor.jetpack(fake_root(tmp_path / "odd", [], l4t="something else\n")).status == "warn"
 
 
 def test_gstreamer_and_webrtcsink():
@@ -73,6 +75,10 @@ def test_robot_usb_devices(tmp_path: Path):
     assert results["Motor bus"][0] == "pass"
     assert results["Audio"][0] == "pass"
     assert results["Camera"][0] == "fail"
+    # Older parts the daemon still runs with are a warning, not a cable problem.
+    old = by_name(doctor.robot_usb({doctor.SERIAL, doctor.OLD_AUDIO, doctor.OLD_CAMERA}))
+    assert old["Audio"][0] == "warn" and "firmware" in old["Audio"][1]
+    assert old["Camera"][0] == "warn"
 
 
 def test_group_membership():
@@ -89,6 +95,20 @@ def test_udev_rule(tmp_path: Path):
     rule = 'SUBSYSTEM=="usb", ATTR{idVendor}=="38fb", ATTR{idProduct}=="1001", MODE="0660", GROUP="plugdev"\n'
     assert doctor.udev_rule(fake_root(tmp_path, [], rule=rule)).status == "pass"
     assert doctor.udev_rule(tmp_path / "empty").status == "fail"
+    parent = 'SUBSYSTEM=="usb", ATTRS{idVendor} == "38fb", ATTRS{idProduct}=="1001", MODE="0660"\n'
+    assert doctor.udev_rule(fake_root(tmp_path / "attrs", [], rule=parent)).status == "pass"
+    assert doctor.udev_rule(fake_root(tmp_path / "commented", [], rule="# " + rule)).status == "fail"
+    split = 'ATTR{idVendor}=="38fb", MODE="0660"\nATTR{idProduct}=="1001", MODE="0660"\n'
+    assert doctor.udev_rule(fake_root(tmp_path / "split", [], rule=split)).status == "fail"
+    # A same-named file in /etc masks the one under /lib.
+    masked = fake_root(tmp_path / "masked", [], rule="")
+    (masked / "lib/udev/rules.d").mkdir(parents=True)
+    (masked / "lib/udev/rules.d/99-reachy-mini-doa.rules").write_text(rule)
+    assert doctor.udev_rule(masked).status == "fail"
+    latin1 = fake_root(tmp_path / "latin1", [], rule="")
+    (latin1 / "etc/udev/rules.d/10-vendor.rules").write_bytes(b"# caf\xe9\n")
+    (latin1 / "etc/udev/rules.d/99-reachy-mini-doa.rules").write_text(rule)
+    assert doctor.udev_rule(latin1).status == "pass"
 
 
 def test_memory(tmp_path: Path):
@@ -105,7 +125,7 @@ def test_main_exits_1_on_a_failure(monkeypatch, capsys):
     assert "fail  Camera" in capsys.readouterr().out
     monkeypatch.setattr(doctor, "run_checks", lambda: [doctor.Result("Disk", "warn", "low")])
     assert doctor.main(["--json"]) == 0
-    assert '"status": "warn"' in capsys.readouterr().out
+    assert json.loads(capsys.readouterr().out) == [{"name": "Disk", "status": "warn", "detail": "low"}]
 
 
 def test_run_checks_never_powers_the_robot(tmp_path: Path, monkeypatch):
@@ -117,7 +137,13 @@ def test_run_checks_never_powers_the_robot(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(doctor._platform, "system", lambda: "Linux")
     monkeypatch.setattr(doctor._platform, "machine", lambda: "aarch64")
-    results = by_name(doctor.run_checks(fake_root(tmp_path, [doctor.SERIAL]), run))
+    monkeypatch.setattr(doctor.platforms, "detect", lambda: platforms.Platform("jetson", "tested"))
+    monkeypatch.setenv("USER", "someone-else")
+    line = "# R39 (release), REVISION: 2.1, GCID: 1\n"
+    results = by_name(doctor.run_checks(fake_root(tmp_path, [doctor.SERIAL], l4t=line), run))
     assert {args[0] for args in calls} == {"gst-inspect-1.0"}
     assert results["Power supply"][0] == "skip"
     assert results["Motor bus"][0] == "pass"
+    assert results["JetPack"][0] == "pass"
+    # Groups are checked for the uid's account, not $USER.
+    assert "someone-else" not in results["dialout group"][1]

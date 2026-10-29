@@ -618,7 +618,7 @@ if 1 <= n <= len(devices):
         robot_power
         ;;
     -h|--help|help)
-        sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         die "unknown command '$cmd' (try: reachy-bridge help)"
