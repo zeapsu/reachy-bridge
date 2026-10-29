@@ -484,6 +484,8 @@ impl Auth {
             if let Err(error) = self.save(&devices) {
                 tracing::warn!("auth: cannot save {DEVICES_FILE} ({error})");
             }
+            // Its open streams and sockets end too.
+            self.revoked.send_modify(|n| *n += 1);
             return None;
         }
         let device = &mut devices[index];
@@ -830,6 +832,11 @@ async fn poll(
     }
     drop(devices);
     let request = pending.requests.remove(index);
+    if !was_admin_mode && approval.role == Role::Admin {
+        // Requests approved before the admin existed (by anyone) can't be
+        // collected any more; their browsers get a new code.
+        pending.requests.clear();
+    }
     drop(pending);
     tracing::info!("auth: device {device_id} paired from {} as {:?}", request.peer, approval.role);
     if !was_admin_mode && approval.role == Role::Admin {

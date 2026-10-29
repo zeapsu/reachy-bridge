@@ -670,3 +670,13 @@ async fn the_cli_approves_a_request_others_locked() {
     assert_eq!(h.call("POST", "/api/auth/approve", LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(body)).await.status, StatusCode::OK);
     assert_eq!(h.poll(&id, LOOPBACK, &pair_cookie).await.body["status"], "approved");
 }
+
+#[tokio::test]
+async fn approvals_from_before_the_admin_cant_be_collected_after() {
+    let h = harness(AuthConfig::default()).await;
+    // Before setup, a trusted visitor approves its own request and waits.
+    let (id, code, pair_cookie) = h.pair(LOOPBACK).await;
+    assert_eq!(h.approve(&code, LOOPBACK, &[]).await.status, StatusCode::OK);
+    h.admin(LOOPBACK).await;
+    assert_eq!(h.poll(&id, LOOPBACK, &pair_cookie).await.status, StatusCode::NOT_FOUND);
+}
