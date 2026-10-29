@@ -455,10 +455,10 @@ impl Harness {
         body
     }
 
-    /// The terminal's answer to the waiting admin request.
-    async fn confirm(&self, approve: bool) -> (StatusCode, Value) {
+    /// The terminal's answer to the waiting admin request: the code typed there.
+    async fn confirm(&self, code: &str) -> (StatusCode, Value) {
         let key = self.key();
-        self.api("POST", "/api/setup/confirm", LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(json!({"approve": approve}))).await
+        self.api("POST", "/api/setup/confirm", LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(json!({"code": code}))).await
     }
 }
 
@@ -488,7 +488,7 @@ async fn the_terminal_confirms_the_dashboard_the_setup_browser_names_as_admin() 
     let (code, page) = h.start().await;
     // The terminal's routes need the local key.
     for (method, path) in [("GET", "/api/setup/state"), ("POST", "/api/setup/confirm")] {
-        let (status, _) = h.api(method, path, LAN, &[], Some(json!({"approve": true}))).await;
+        let (status, _) = h.api(method, path, LAN, &[], Some(json!({"code": pair["code"]}))).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
     }
     let cookie = session(&login(&page, &code).await);
@@ -509,18 +509,25 @@ async fn the_terminal_confirms_the_dashboard_the_setup_browser_names_as_admin() 
     let terminal = h.terminal().await;
     assert_eq!(terminal["proposal"]["person"], "Andry");
     assert_eq!(terminal["proposal"]["peer"], "192.168.1.50", "the dashboard's address");
+    assert_eq!(terminal["proposal"]["from"], "127.0.0.1", "the setup browser's address");
 
-    let (status, body) = h.confirm(true).await;
+    let pair_code = pair["code"].as_str().unwrap();
+    let (status, body) = h.confirm(pair_code).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     assert_eq!(body["role"], "admin");
     assert_eq!(admin_status(&page, &cookie).await["status"], "approved");
     assert_eq!(h.terminal().await.get("proposal"), None);
-    let (status, _) = h.confirm(true).await;
+    let (status, _) = h.confirm(pair_code).await;
     assert_eq!(status, StatusCode::CONFLICT, "nothing waits");
     // One admin per page.
     let (another, _) = h.dashboard_pair().await;
     let (status, _) = propose(&page, &cookie, json!({"code": another["code"]})).await;
     assert_eq!(status, StatusCode::CONFLICT);
+    // A new code from the terminal doesn't allow a second one.
+    let (code2, _) = h.start().await;
+    let cookie2 = session(&login(&page, &code2).await);
+    let (status, _) = propose(&page, &cookie2, json!({"code": another["code"]})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "one admin per page");
 
     let id = pair["id"].as_str().unwrap();
     let (status, body) = h.api("GET", &format!("/api/auth/pair/{id}"), LAN, &[("cookie", &pair_cookie)], None).await;
@@ -536,21 +543,32 @@ async fn the_terminal_confirms_the_dashboard_the_setup_browser_names_as_admin() 
 }
 
 #[tokio::test]
-async fn a_refused_request_can_be_made_again() {
+async fn the_terminal_refuses_a_code_its_dashboard_does_not_show() {
     let h = harness().await;
-    let (pair, _) = h.dashboard_pair().await;
+    let (mine, _) = h.dashboard_pair().await;
+    let (theirs, _) = h.dashboard_pair().await;
     let (code, page) = h.start().await;
     let cookie = session(&login(&page, &code).await);
-    let (status, _) = propose(&page, &cookie, json!({"code": pair["code"], "person": "Mallory"})).await;
+    // Someone proposes their own dashboard, with a name meant to mislead.
+    let (status, _) = propose(&page, &cookie, json!({"code": theirs["code"], "person": "Andry\u{202e}\u{200b} (yes, this one)\n"})).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = h.confirm(false).await;
+    assert_eq!(h.terminal().await["proposal"]["person"], "Andry yes this one", "only plain text reaches the terminal");
+    // The person at the robot types the code their own dashboard shows.
+    let (status, body) = h.confirm(mine["code"].as_str().unwrap()).await;
     assert_eq!(status, StatusCode::OK);
-    let body = admin_status(&page, &cookie).await;
     assert_eq!(body["status"], "refused");
     assert!(!h.state.auth.admin_mode());
-    let (status, _) = propose(&page, &cookie, json!({"code": pair["code"], "person": "Andry"})).await;
+    assert_eq!(admin_status(&page, &cookie).await["status"], "refused");
+    // Enter alone refuses too; then the right proposal goes through.
+    let (status, _) = propose(&page, &cookie, json!({"code": mine["code"], "person": "Andry"})).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(h.terminal().await["proposal"]["person"], "Andry");
+    let (_, body) = h.confirm("").await;
+    assert_eq!(body["status"], "refused");
+    let (status, _) = propose(&page, &cookie, json!({"code": mine["code"], "person": "Andry"})).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = h.confirm(mine["code"].as_str().unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    assert_eq!(body["role"], "admin");
 }
 
 #[tokio::test]

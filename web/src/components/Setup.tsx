@@ -21,12 +21,19 @@ export function Setup({ initial }: { initial: SetupStatus }) {
   const [left, setLeft] = useState(initial.expires_in);
   const [closed, setClosed] = useState(false);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (retry = true): Promise<void> => {
     try {
       const next = await apiJson<SetupStatus>(paths.setupStatus);
       setStatus(next);
       setLeft(next.expires_in);
-    } catch {
+    } catch (e) {
+      if (e instanceof ApiError && e.status !== 410) return;
+      // 410, or nothing listening: the page closed. One dropped request isn't
+      // that, so ask once more first.
+      if (!(e instanceof ApiError) && retry) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        return refresh(false);
+      }
       setClosed(true);
     }
   }, []);
@@ -109,7 +116,7 @@ function CodeEntry({ status, onLoggedIn }: { status: SetupStatus; onLoggedIn: ()
   if (blocked) {
     return (
       <>
-        <p className="login-lead">{status.locked ? "Too many wrong codes." : "This code was already used."}</p>
+        <p className="login-lead">{status.locked ? "Too many wrong codes." : "This code was used, or its setup session ended."}</p>
         <p className="login-note">
           Press Enter in the robot's terminal (where <code>reachy-bridge setup</code> runs) for a new code, then reload
           this page.
@@ -183,6 +190,11 @@ function DeviceCheck({ onContinue, onError }: { onContinue: () => void } & StepP
       .then((body) => !cancelled && setResults(body.results))
       .catch((e) => {
         if (cancelled) return;
+        // Another check (an earlier load of this page) is still running: wait for it.
+        if (e instanceof ApiError && e.status === 409) {
+          setTimeout(() => !cancelled && setRun((n) => n + 1), 3000);
+          return;
+        }
         setError(errorText(e, "The device check failed."));
         onError(e);
       });
@@ -305,8 +317,8 @@ function MakeAdmin({ onContinue, onError }: { onContinue: () => void } & StepPro
         <p className="login-note setup-wait">
           <span className="spin" aria-hidden="true" />
           <span>
-            The terminal running <code>reachy-bridge setup</code> asks whether to make your dashboard the admin. Type{" "}
-            <code>y</code> there.
+            The terminal running <code>reachy-bridge setup</code> asks whether to make your dashboard the admin. Type
+            the code your dashboard shows there.
           </span>
         </p>
         <p className="login-note">

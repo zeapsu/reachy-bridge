@@ -24,8 +24,11 @@
 //! LAN over plain HTTP, so it can't be what grants admin. The browser only
 //! *proposes* the pairing code its dashboard shows; the terminal then shows
 //! who asked (the dashboard's address and the name typed) and the person at
-//! the robot types `y`, which approves it with the local key exactly as
-//! `reachy-bridge pair --admin` does. One admin per page; after
+//! the robot types the code their own dashboard shows. Only if it is the
+//! proposed code is it approved, with the local key, exactly as
+//! `reachy-bridge pair --admin` does: a proposal an attacker slipped in (a
+//! stolen cookie, a spoofed packet) names the attacker's code, which the
+//! person's dashboard doesn't show. One admin per page; after
 //! [`MAX_PROPOSALS`] proposals that match no pairing request, the setup
 //! session ends.
 
@@ -96,6 +99,8 @@ struct Live {
     session_peer: Option<IpAddr>,
     proposal: Option<Proposal>,
     missed_proposals: u32,
+    /// An admin was approved from this page; a new code doesn't reset it.
+    admin_made: bool,
     /// When the page closes, unless setup finishes first.
     ends: Instant,
     port: u16,
@@ -225,6 +230,7 @@ async fn start(State(state): State<Shared>, Extension(ctx): Extension<AuthContex
         session_peer: None,
         proposal: None,
         missed_proposals: 0,
+        admin_made: false,
         ends: now,
         port,
         names: host_names(),
@@ -260,18 +266,20 @@ async fn terminal_state(State(state): State<Shared>, Extension(ctx): Extension<A
     let Some(live) = live.as_ref() else { return Ok(Json(json!({"open": false}))) };
     let mut body = live.state();
     if let Some(p) = live.proposal.as_ref().filter(|p| p.outcome == Outcome::Waiting) {
-        body["proposal"] = json!({"person": p.person, "name": p.name, "peer": p.peer.to_string()});
+        body["proposal"] = json!({"person": p.person, "name": p.name, "peer": p.peer.to_string(), "from": live.session_peer.map(|a| a.to_string())});
     }
     Ok(Json(body))
 }
 
 #[derive(Deserialize)]
 struct ConfirmBody {
-    approve: bool,
+    /// The code the person's dashboard shows; empty or absent refuses.
+    code: Option<String>,
 }
 
-/// The terminal's answer to the waiting proposal. A yes approves it with the
-/// local key, as `reachy-bridge pair --admin` does.
+/// The terminal's answer to the waiting proposal: the code typed there must
+/// be the proposed one, still open from the address shown. Then it is
+/// approved with the local key, as `reachy-bridge pair --admin` does.
 async fn confirm(
     State(state): State<Shared>,
     Extension(ctx): Extension<AuthContext>,
@@ -282,15 +290,26 @@ async fn confirm(
     let mut slot = state.setup.live.lock().unwrap();
     let live = slot.as_mut().ok_or_else(|| ApiError::new(410, "setup is closed"))?;
     let proposal = live.proposal.as_mut().filter(|p| p.outcome == Outcome::Waiting).ok_or_else(|| ApiError::new(409, "no admin request is waiting"))?;
-    if !body.approve {
-        proposal.outcome = Outcome::Refused("refused on the robot's terminal".to_string());
-        tracing::warn!("setup: admin request for the browser at {} refused on the terminal", proposal.peer);
-        return Ok(Json(json!({"status": "refused"})));
+    let typed: String = body.code.unwrap_or_default().chars().filter(|c| !c.is_whitespace()).collect();
+    let refusal = if typed.is_empty() {
+        Some("refused on the robot's terminal")
+    } else if !ct_eq(typed.as_bytes(), proposal.code.as_bytes()) {
+        Some("the code typed on the robot's terminal is not the one this page sent")
+    } else if state.auth.pending_peer(&typed) != Some(proposal.peer) {
+        Some("that dashboard's code expired; get a new one on the dashboard")
+    } else {
+        None
+    };
+    if let Some(refusal) = refusal {
+        proposal.outcome = Outcome::Refused(refusal.to_string());
+        tracing::warn!("setup: admin request for the browser at {} refused: {refusal}", proposal.peer);
+        return Ok(Json(json!({"status": "refused", "detail": refusal})));
     }
     let result = state.auth.approve_code(&proposal.code, Some(&proposal.name), Some(&proposal.person), Role::Admin, "the setup page (confirmed on the terminal)", true);
     match result {
         Ok(reply) => {
             proposal.outcome = Outcome::Approved;
+            live.admin_made = true;
             tracing::info!("setup: the browser at {} is the admin (confirmed on the terminal)", proposal.peer);
             Ok(Json(reply))
         }
@@ -478,15 +497,21 @@ async fn propose_admin(State(state): State<Shared>, body: Result<Json<AdminBody>
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return Err(ApiError::new(400, "the code is 6 digits"));
     }
-    let clean = |text: Option<&str>| -> String { text.unwrap_or("").trim().chars().filter(|c| !c.is_control()).take(64).collect() };
+    // Printed on the robot's terminal: letters, digits, spaces and a little
+    // punctuation only (no bidi overrides or zero-width tricks).
+    let clean = |text: Option<&str>| -> String {
+        let text: String = text.unwrap_or("").chars().map(|c| if c.is_whitespace() { ' ' } else { c }).filter(|c| c.is_alphanumeric() || " .-_'@".contains(*c)).take(64).collect();
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
     let (person, name) = (clean(body.person.as_deref()), clean(body.name.as_deref()));
     let peer = state.auth.pending_peer(&code);
     let mut slot = state.setup.live.lock().unwrap();
     let live = slot.as_mut().ok_or_else(|| ApiError::new(410, "setup is closed"))?;
-    match live.proposal.as_ref().map(|p| &p.outcome) {
-        Some(Outcome::Approved) => return Err(ApiError::new(409, "an admin was already made from this page")),
-        Some(Outcome::Waiting) => return Err(ApiError::new(409, "waiting for the robot's terminal to answer")),
-        _ => {}
+    if live.admin_made {
+        return Err(ApiError::new(409, "an admin was already made from this page"));
+    }
+    if live.proposal.as_ref().is_some_and(|p| p.outcome == Outcome::Waiting) {
+        return Err(ApiError::new(409, "waiting for the robot's terminal to answer"));
     }
     let Some(peer) = peer else {
         live.missed_proposals += 1;

@@ -487,7 +487,7 @@ setup_close() {
 }
 
 setup_page() {
-    local reply code port host addresses i line rc state person name peer asked=""
+    local reply code port host addresses i line rc state person name peer from detail asked=""
     [[ -t 0 && -t 1 ]] || die "setup prints a one-time code and asks for confirmations; run it in a terminal"
     [[ -r $STATE_DIR/controller.key ]] ||
         die "can't read $STATE_DIR/controller.key: run this on the robot, as the user the bridge runs as"
@@ -551,23 +551,27 @@ setup_page() {
         person=$(json_field "${state#*\"proposal\":}" person)
         name=$(json_field "${state#*\"proposal\":}" name)
         peer=$(json_field "${state#*\"proposal\":}" peer)
+        from=$(json_field "${state#*\"proposal\":}" from)
         [[ $asked == "$peer/$person/$name" ]] && continue
         asked="$peer/$person/$name"
         echo
-        echo "The setup page asks to make the dashboard at $peer the admin."
-        echo "  person: ${person:-(not given)}   device: ${name:-(not given)}"
+        if [[ $peer == 127.* || $peer == ::1 ]]; then
+            echo "The setup page (from $from) asks to make a dashboard reached through Tailscale the admin."
+        else
+            echo "The setup page (from $from) asks to make the dashboard at $peer the admin."
+        fi
+        echo "  person: '${person:-}'   device: '${name:-}'"
         echo "The admin approves every other device and can take control of the robot."
         line=
-        read -r -p "Make it the admin? [y/N] " line || break
-        if [[ $line == [yY]* ]]; then
-            if reply=$( (controller_api POST /api/setup/confirm -H 'Content-Type: application/json' --data '{"approve": true}') 2>&1); then
-                echo "Done: the dashboard at $peer is the admin."
-            else
-                echo "Not approved: ${reply#reachy-bridge: }"
-            fi
+        read -r -p "To approve, type the code your dashboard shows (Enter refuses): " line || break
+        reply=$( (controller_api POST /api/setup/confirm -H 'Content-Type: application/json' --data "{\"code\": $(json_string "$line")}") 2>&1) || true
+        if [[ $reply == *'"role":"admin"'* ]]; then
+            echo "Done: that dashboard is the admin."
+        elif [[ $reply == *'"status":"refused"'* ]]; then
+            detail=$(json_field "$reply" detail)
+            echo "Not approved: ${detail:-refused}. The setup page can ask again."
         else
-            (controller_api POST /api/setup/confirm -H 'Content-Type: application/json' --data '{"approve": false}' >/dev/null) || true
-            echo "Refused. The setup page can ask again."
+            echo "Not approved: ${reply#reachy-bridge: }"
         fi
         asked=
     done

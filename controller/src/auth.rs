@@ -951,8 +951,8 @@ impl Auth {
     }
 
     /// Approve the open pair request with `code` as `role`. `holds_key`: the
-    /// caller proved it is on the robot (the local key, or the setup page's
-    /// terminal code, #135), so it can't be guessing: it may approve a
+    /// caller proved it is on the robot (the local key), so it can't be
+    /// guessing: it may approve a
     /// request others locked with wrong codes, and its typos lock nothing.
     /// Who may approve, and an admin, is the caller's check.
     pub fn approve_code(&self, code: &str, name: Option<&str>, person: Option<&str>, role: Role, by: &str, holds_key: bool) -> ApiResult<Value> {
