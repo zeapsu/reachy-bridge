@@ -104,6 +104,18 @@ unless you put TLS in front of the controller. The app proxy strips the cookie b
 reaches an app. Use LAN access on a home
 network you trust, and Tailscale (`reachy-bridge serve`, HTTPS) for anything beyond it.
 
+## Listen and talk
+
+The Robot tab's "Listen and talk" box plays the robot's microphone on your device and your
+device's microphone through the robot's speaker, either or both, switched while connected. One
+browser at a time; in admin mode, only the browser in control, and the session ends when control
+or the login does. Every dashboard shows a mic badge while a session is open.
+
+The controller starts `reachy-bridge-audio.service` on demand. Audio is WebRTC over UDP straight
+between the browser and the device, on tailnet addresses only (no STUN or TURN), using UDP ports
+47100-47199; a Tailscale ACL that limits ports must allow them. Talking needs the dashboard's
+HTTPS address, since browsers only share a microphone with a secure page. Sim mode has no audio.
+
 ## Development quick start
 
 ```bash
