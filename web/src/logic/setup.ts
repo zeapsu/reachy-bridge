@@ -2,7 +2,7 @@
 
 import type { CheckResult, SetupStatus } from "../api/setup.ts";
 
-export const SETUP_STEPS = ["Device check", "Admin", "Done"] as const;
+export const SETUP_STEPS = ["Device check", "Robot", "Admin", "Done"] as const;
 export type SetupStep = (typeof SETUP_STEPS)[number];
 
 /** Whether a status reply comes from the setup page (the dashboard has no such route). */

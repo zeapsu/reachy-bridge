@@ -5,6 +5,7 @@ export const setupPaths = {
   setupLogin: "/api/setup/login",
   setupCheck: "/api/setup/check",
   setupAdmin: "/api/setup/admin",
+  setupRobotTest: "/api/setup/robot-test",
   setupFinish: "/api/setup/finish",
 } as const;
 
@@ -22,6 +23,12 @@ export interface SetupStatus {
 /** Where the admin request stands; the robot's terminal answers it. */
 export interface AdminRequest {
   status: "none" | "waiting" | "approved" | "refused";
+  detail?: string;
+}
+
+/** The robot test; the robot's terminal says yes before it runs. */
+export interface RobotTestState {
+  status: "none" | "asked" | "running" | "passed" | "failed";
   detail?: string;
 }
 

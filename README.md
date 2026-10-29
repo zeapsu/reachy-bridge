@@ -32,21 +32,29 @@ goes through `runtime/src/reachy_bridge_runtime/upstream.py`, and
 
 ```bash
 deploy/install.sh        # runtime venv, controller, user units, the reachy-bridge command
-reachy-bridge serve      # publish on the tailnet (dashboard on HTTPS :10000, app UIs on :8043)
-reachy-bridge setup      # the setup page: device check, then make your dashboard the admin
+reachy-bridge setup      # dashboard access, HF login, then the setup page (device check, robot test, admin)
 reachy-bridge status
 ```
 
-`reachy-bridge setup` opens a temporary page on the local network (port 7870) and prints a
-one-time code in the terminal. Enter the code on the page from any computer or phone on the
-network: it shows the device check, then asks for the pairing code your dashboard shows. The
-terminal then names that dashboard and asks you to type the same code there; nothing is approved
-until the code typed on the robot matches. If someone on the network keeps locking the page with
-wrong codes, `reachy-bridge pair --admin <code>` on the robot does the same job without it. The code is single use and works for 15 minutes; five wrong
-tries lock the page until you press Enter in the terminal for a new code. The page is plain HTTP
-and listens on every network the device is on while it is open, even when the dashboard is
-tailnet-only, which is why it is short-lived. It closes when you finish, when you quit the command,
-or half an hour after the code was used.
+`reachy-bridge setup` first asks, on the terminal, how you'll reach the dashboard: over
+Tailscale (recommended; it offers to run `reachy-bridge serve`) or on the local network (LAN
+mode, which it turns on with a systemd drop-in that the uninstaller removes). It then asks for an
+optional Hugging Face token, which you type on the terminal rather than on the setup page.
+
+Next it opens a temporary page on the local network (port 7870) and prints a one-time code.
+Enter the code on the page from any computer or phone on the network. The page shows the device
+check, then offers the robot test: after you confirm on the terminal, the robot powers on without
+the wake-up move (the motors stay limp; nothing moves), its motors are read, and it powers off.
+The test runs only while the robot is off. Last, the page asks for the pairing code your
+dashboard shows; the terminal names that dashboard and asks you to type the same code there, and
+nothing is approved until the code typed on the robot matches.
+
+The setup code is single use and works for 15 minutes; five wrong tries lock the page until you
+press Enter in the terminal for a new code. If someone on the network keeps locking it,
+`reachy-bridge pair --admin <code>` on the robot makes your dashboard the admin without the page.
+The page is plain HTTP and listens on every network the device is on while it is open, even when
+the dashboard is tailnet-only, which is why it is short-lived. It closes when you finish, when you
+quit the command, or half an hour after the code was used.
 
 `reachy-bridge serve` adds two HTTPS ports with `tailscale serve`: :10000 for the dashboard and
 :8043 for the running app's own UI. App UIs listen on plain http (`:8042`, `:7860`, ...), where
@@ -69,12 +77,8 @@ devices for a reinstall.
 ## LAN access
 
 By default the dashboard listens on loopback only and is reached over Tailscale. To open it to
-the home network as well, set `CONTROLLER_LAN=1` for the controller:
-
-```bash
-systemctl --user edit reachy-bridge-controller.service   # add: [Service] Environment=CONTROLLER_LAN=1
-reachy-bridge restart controller
-```
+the home network as well, run `reachy-bridge setup` and choose `l`: it sets `CONTROLLER_LAN=1`
+for the controller in a systemd drop-in (removed by `reachy-bridge uninstall`) and restarts it.
 
 The dashboard then listens on every interface on port 7861, and the app UI proxy on port 7863;
 the daemon, the app UIs and WebRTC signalling stay on loopback.

@@ -17,6 +17,9 @@
 //!   (which shows the setup screen there) and nothing else: no controller
 //!   API, no app proxy, no daemon. It answers only under the robot's own
 //!   names and addresses, so a DNS-rebinding page can't reach it.
+//! - The robot test (power on without the wake-up move, read the motors,
+//!   power off) also runs only after a yes on the terminal: the page asks,
+//!   the terminal answers. It runs only from off, under `power_lock`.
 //! - It closes when setup finishes, when the terminal stops it, when the code
 //!   expires unused, or [`SESSION_TTL`] after the code was used.
 //!
@@ -90,6 +93,26 @@ enum Outcome {
     Refused(String),
 }
 
+/// The robot test, asked for by the page and answered on the terminal.
+#[derive(Clone, PartialEq)]
+enum RobotTest {
+    None,
+    Asked,
+    Running,
+    Done { passed: bool, detail: String },
+}
+
+impl RobotTest {
+    fn json(&self) -> Value {
+        match self {
+            RobotTest::None => json!({"status": "none"}),
+            RobotTest::Asked => json!({"status": "asked"}),
+            RobotTest::Running => json!({"status": "running"}),
+            RobotTest::Done { passed, detail } => json!({"status": if *passed { "passed" } else { "failed" }, "detail": detail}),
+        }
+    }
+}
+
 struct Live {
     /// Empty once used.
     code: String,
@@ -101,6 +124,7 @@ struct Live {
     missed_proposals: u32,
     /// An admin was approved from this page; a new code doesn't reset it.
     admin_made: bool,
+    robot_test: RobotTest,
     /// When the page closes, unless setup finishes first.
     ends: Instant,
     port: u16,
@@ -195,6 +219,7 @@ pub fn router() -> Router<Shared> {
         .route("/api/setup/stop", post(stop))
         .route("/api/setup/state", get(terminal_state))
         .route("/api/setup/confirm", post(confirm))
+        .route("/api/setup/robot-test/run", post(run_robot_test))
 }
 
 fn local_only(ctx: &AuthContext) -> ApiResult<()> {
@@ -231,6 +256,7 @@ async fn start(State(state): State<Shared>, Extension(ctx): Extension<AuthContex
         proposal: None,
         missed_proposals: 0,
         admin_made: false,
+        robot_test: RobotTest::None,
         ends: now,
         port,
         names: host_names(),
@@ -268,6 +294,8 @@ async fn terminal_state(State(state): State<Shared>, Extension(ctx): Extension<A
     if let Some(p) = live.proposal.as_ref().filter(|p| p.outcome == Outcome::Waiting) {
         body["proposal"] = json!({"person": p.person, "name": p.name, "peer": p.peer.to_string(), "from": live.session_peer.map(|a| a.to_string())});
     }
+    body["robot_test"] = json!(live.robot_test == RobotTest::Asked);
+    body["from"] = json!(live.session_peer.map(|a| a.to_string()));
     Ok(Json(body))
 }
 
@@ -303,6 +331,12 @@ async fn confirm(
     if let Some(refusal) = refusal {
         proposal.outcome = Outcome::Refused(refusal.to_string());
         tracing::warn!("setup: admin request for the browser at {} refused: {refusal}", proposal.peer);
+        // Refusals count too, so a hijacked session can't keep the terminal
+        // asking about its own dashboard.
+        live.missed_proposals += 1;
+        if live.missed_proposals >= MAX_PROPOSALS {
+            live.end_session();
+        }
         return Ok(Json(json!({"status": "refused", "detail": refusal})));
     }
     let result = state.auth.approve_code(&proposal.code, Some(&proposal.name), Some(&proposal.person), Role::Admin, "the setup page (confirmed on the terminal)", true);
@@ -345,6 +379,7 @@ fn page_router(state: Shared) -> Router {
         .route("/api/setup/login", post(login))
         .route("/api/setup/check", get(check))
         .route("/api/setup/admin", get(admin_status).post(propose_admin))
+        .route("/api/setup/robot-test", get(robot_test_status).post(ask_robot_test))
         .route("/api/setup/finish", post(finish))
         .fallback(page_fallback)
         .layer(middleware::from_fn_with_state(state.clone(), page_guard))
@@ -537,6 +572,161 @@ async fn admin_status(State(state): State<Shared>) -> Json<Value> {
         Some(Outcome::Approved) => json!({"status": "approved"}),
         Some(Outcome::Refused(detail)) => json!({"status": "refused", "detail": detail}),
     })
+}
+
+/// Ask the terminal to run the robot test.
+async fn ask_robot_test(State(state): State<Shared>) -> ApiResult<Json<Value>> {
+    let mut slot = state.setup.live.lock().unwrap();
+    let live = slot.as_mut().ok_or_else(|| ApiError::new(410, "setup is closed"))?;
+    if matches!(live.robot_test, RobotTest::Asked | RobotTest::Running) {
+        return Err(ApiError::new(409, "the robot test is already waiting or running"));
+    }
+    live.robot_test = RobotTest::Asked;
+    tracing::info!("setup: the page asks for the robot test");
+    Ok(Json(live.robot_test.json()))
+}
+
+async fn robot_test_status(State(state): State<Shared>) -> Json<Value> {
+    let live = state.setup.live.lock().unwrap();
+    Json(live.as_ref().map_or_else(|| RobotTest::None.json(), |l| l.robot_test.json()))
+}
+
+#[derive(Deserialize)]
+struct RunBody {
+    approve: bool,
+}
+
+/// The terminal's answer to the robot test; a yes runs it and answers when
+/// it is done.
+async fn run_robot_test(
+    State(state): State<Shared>,
+    Extension(ctx): Extension<AuthContext>,
+    body: Result<Json<RunBody>, axum::extract::rejection::JsonRejection>,
+) -> ApiResult<Json<Value>> {
+    local_only(&ctx)?;
+    let Json(body) = body.map_err(|_| ApiError::bad_body())?;
+    {
+        let mut slot = state.setup.live.lock().unwrap();
+        let live = slot.as_mut().ok_or_else(|| ApiError::new(410, "setup is closed"))?;
+        if live.robot_test != RobotTest::Asked {
+            return Err(ApiError::new(409, "the page hasn't asked for the robot test"));
+        }
+        if !body.approve {
+            live.robot_test = RobotTest::Done { passed: false, detail: "Not run: refused on the robot's terminal.".to_string() };
+            let reply = live.robot_test.json();
+            // Like refused admin requests: a hijacked page can't keep asking.
+            live.missed_proposals += 1;
+            if live.missed_proposals >= MAX_PROPOSALS {
+                live.end_session();
+            }
+            return Ok(Json(reply));
+        }
+        live.robot_test = RobotTest::Running;
+    }
+    // Its own task: a terminal that goes away mid-test (Ctrl-C, a timeout)
+    // drops this request, and the test must still end off and report.
+    let task = tokio::spawn(async move {
+        let (passed, detail) = match robot_test(&state).await {
+            Ok(detail) => (true, detail),
+            Err(detail) => (false, detail),
+        };
+        tracing::info!("setup: robot test {}: {detail}", if passed { "passed" } else { "failed" });
+        let result = RobotTest::Done { passed, detail };
+        if let Some(live) = state.setup.live.lock().unwrap().as_mut() {
+            live.robot_test = result.clone();
+        }
+        result
+    });
+    let result = task.await.map_err(|_| ApiError::new(500, "the robot test stopped unexpectedly; check the dashboard that the robot is off"))?;
+    Ok(Json(result.json()))
+}
+
+/// How long the backend gets to come up for the robot test.
+const TEST_START_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Power on without the wake-up move (the motors stay limp: no motion), read
+/// the motors, power off where it is (no sleep move). Only from off, so it never
+/// switches off a robot someone else switched on; it ends off.
+async fn robot_test(state: &Shared) -> Result<String, String> {
+    use crate::daemon::{backend_up, motor_mode, DaemonError};
+    use crate::routes::power::POWER_OFF_TIMEOUT;
+    let daemon = &state.daemon;
+    let _power = state.power_lock.lock().await;
+    let status = daemon.status().await.ok_or("The daemon isn't answering; check `reachy-bridge status` on the robot.")?;
+    let robot = crate::daemon::robot_state(&status);
+    // A daemon that never powered the robot on reports not_initialized: off too.
+    if !matches!(robot.as_str(), "stopped" | "not_initialized") || backend_up(&status) {
+        return Err(format!("Not run: the robot is {robot}. The test only runs from off; switch it off from the dashboard and ask again."));
+    }
+    // Off where it is: daemon/stop without the sleep move, which would move
+    // the robot. Torque is left as it is, since releasing it could let a held
+    // head drop. The dashboard's power-off (power_off_locked) plays the sleep
+    // move unless the motors are already off, so it isn't used here.
+    let off = || async {
+        state.player.set_needs_home(true);
+        // A stop sent while the daemon is still starting is refused as busy;
+        // keep at it until the backend is down.
+        let deadline = tokio::time::Instant::now() + POWER_OFF_TIMEOUT;
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            if let Some(status) = daemon.status().await {
+                let phase = status.get("state").and_then(Value::as_str);
+                if !backend_up(&status) && phase != Some("starting") {
+                    return true;
+                }
+                if backend_up(&status) && matches!(phase, Some("running" | "error")) {
+                    let _ = daemon.post("daemon/stop", &[("goto_sleep", "false")]).await;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    };
+    let still_on = " It may still be on: switch it off from the dashboard.";
+    match daemon.post("daemon/start", &[("wake_up", "false")]).await {
+        Ok(_) => {}
+        // Busy: someone else is starting or stopping it. Not ours to switch off.
+        Err(DaemonError::Refused { status: 409, .. }) => return Err("Not run: the daemon is busy starting or stopping the robot. Ask again in a moment.".to_string()),
+        Err(error) => {
+            let up = daemon.status().await.is_some_and(|s| backend_up(&s));
+            let ended_off = !up || off().await;
+            return Err(format!("The robot didn't power on: {}.{}", ApiError::from(error).detail, if ended_off { "" } else { still_on }));
+        }
+    }
+    let deadline = tokio::time::Instant::now() + TEST_START_TIMEOUT;
+    let (up, last) = loop {
+        let status = daemon.status().await.unwrap_or(Value::Null);
+        if status.get("state").and_then(Value::as_str) == Some("running") && backend_up(&status) {
+            break (true, status);
+        }
+        if tokio::time::Instant::now() >= deadline || status.get("state").and_then(Value::as_str) == Some("error") {
+            break (false, status);
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    if !up {
+        let error = last.get("error").and_then(Value::as_str).unwrap_or("it didn't come up in time").to_string();
+        let ended_off = off().await;
+        return Err(format!(
+            "The robot didn't power on ({error}). Check that its power supply is plugged in and switched on, and the USB cable.{}",
+            if ended_off { "" } else { still_on }
+        ));
+    }
+    let mode = motor_mode(&last).unwrap_or("unknown").to_string();
+    let pose = daemon.get_query("state/full", &[]).await.ok().and_then(|s| s.get("head_pose").cloned()).filter(|p| !p.is_null());
+    if !off().await {
+        return Err(format!("The robot powered on but didn't report off in time.{still_on}"));
+    }
+    if pose.is_none() {
+        return Err("The robot powered on and off, but its motors didn't report a position. Check the power supply.".to_string());
+    }
+    if mode != "disabled" {
+        return Err(format!(
+            "The robot powered on and off without moving, but its motors came up in mode {mode}, not with torque off, so torque may still be on. Switch it on and off from the dashboard to put it to sleep properly."
+        ));
+    }
+    Ok("The robot powered on without moving, its motors answered with torque off, as expected, and it powered off.".to_string())
 }
 
 async fn finish(State(state): State<Shared>) -> Json<Value> {
