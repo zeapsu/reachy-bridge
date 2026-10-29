@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { paths } from "../api.ts";
 import type { ControlApi } from "../hooks/useControl.ts";
-import { SLOTS, clock, controlState } from "../logic/control.ts";
+import { SLOTS, clock, controlState, type Asking } from "../logic/control.ts";
 import "./ControlBar.css";
 
 /**
@@ -15,40 +15,12 @@ export function ControlBar({ control }: { control: ControlApi }) {
   const { act, busy, error } = control;
   const take = () => void act(paths.controlTake);
 
-  let text: string;
-  let action: ReactNode = null;
-  switch (state.kind) {
-    case "mine":
-      text = state.until === null ? "You're in control." : `You're in control until ${clock(state.until)}.`;
-      if (state.endingSoon) text += " Your time ends in under a minute.";
-      action = (
-        <button className="btn press" type="button" disabled={busy} onClick={() => void act(paths.controlRelease)}>
-          Release
-        </button>
-      );
-      break;
-    case "other":
-      text = `${state.person} is in control${state.until === null ? "" : ` until ${clock(state.until)}`}. You can watch.`;
-      if (state.canTakeOver) {
-        action = (
-          <button className="btn press" type="button" disabled={busy} onClick={take}>
-            Take over
-          </button>
-        );
-      }
-      break;
-    case "free":
-      if (state.canTake) {
-        text = "Nobody is in control.";
-        action = (
-          <button className="btn primary press" type="button" disabled={busy} onClick={take}>
-            Take control
-          </button>
-        );
-      } else {
-        text = "Ask the admin for control time to drive the robot.";
-        action = (
-          <span className="control-ask">
+  const ask = (asking: Asking): [string, ReactNode] => {
+    switch (asking.kind) {
+      case "can_ask":
+        return [
+          "Ask the admin for control time to drive.",
+          <span className="control-ask" key="ask">
             <select className="field" aria-label="How long" value={slot} onChange={(e) => setSlot(Number(e.target.value))}>
               {SLOTS.map((s, i) => (
                 <option key={s.label} value={i}>
@@ -64,20 +36,60 @@ export function ControlBar({ control }: { control: ControlApi }) {
             >
               Ask for control
             </button>
-          </span>
-        );
-      }
-      break;
-    case "asked":
-      text = "You asked for control time. Waiting for the admin.";
+          </span>,
+        ];
+      case "asked":
+        return [
+          "You asked for control time. Waiting for the admin.",
+          <button className="btn press" type="button" key="cancel" disabled={busy} onClick={() => void act(paths.controlRequest, "DELETE")}>
+            Cancel
+          </button>,
+        ];
+      case "cooldown":
+        return [`You can ask for control again at ${clock(asking.until)}.`, null];
+      case "none":
+        return ["", null];
+    }
+  };
+
+  let text: string;
+  let action: ReactNode = null;
+  switch (state.kind) {
+    case "mine":
+      text = state.until === null ? "You're in control." : `You're in control until ${clock(state.until)}.`;
+      if (state.endingSoon) text += " Your time ends in under a minute.";
       action = (
-        <button className="btn press" type="button" disabled={busy} onClick={() => void act(paths.controlRequest, "DELETE")}>
-          Cancel
+        <button className="btn press" type="button" disabled={busy} onClick={() => void act(paths.controlRelease)}>
+          Release
         </button>
       );
       break;
-    case "cooldown":
-      text = `You can ask for control again at ${clock(state.until)}.`;
+    case "other": {
+      text = `${state.person} is in control${state.until === null ? "" : ` until ${clock(state.until)}`}. You can watch.`;
+      if (state.canTakeOver) {
+        action = (
+          <button className="btn press" type="button" disabled={busy} onClick={take}>
+            Take over
+          </button>
+        );
+      } else {
+        const [more, button] = ask(state.asking);
+        if (more) text += ` ${more}`;
+        action = button;
+      }
+      break;
+    }
+    case "free":
+      if (state.canTake) {
+        text = "Nobody is in control.";
+        action = (
+          <button className="btn primary press" type="button" disabled={busy} onClick={take}>
+            Take control
+          </button>
+        );
+      } else {
+        [text, action] = ask(state.asking);
+      }
       break;
   }
 

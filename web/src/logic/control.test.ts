@@ -26,16 +26,20 @@ describe("controlState", () => {
   });
   test("shows who else holds control, and lets an admin take over", () => {
     const other = { ...holder, person: "Andry", until: null, you: false };
-    expect(controlState(base({ holder: other }))).toEqual({ kind: "other", person: "Andry", until: null, canTakeOver: false });
+    expect(controlState(base({ holder: other }))).toEqual({ kind: "other", person: "Andry", until: null, canTakeOver: false, asking: { kind: "can_ask" } });
     const admin = base({ holder: other, you: { admin: true, person: "Andry", grant: null, can_take: true, cooldown_until: null } });
     expect(controlState(admin)).toMatchObject({ kind: "other", canTakeOver: true });
   });
   test("asks, waits, or cools down when nobody holds control", () => {
-    expect(controlState(base())).toEqual({ kind: "free", canTake: false });
-    expect(controlState(base({ you: { admin: false, person: "Sam", grant: null, can_take: true, cooldown_until: null } }))).toEqual({ kind: "free", canTake: true });
+    expect(controlState(base())).toEqual({ kind: "free", canTake: false, asking: { kind: "can_ask" } });
+    const grant = { id: "g", person: "Sam", from: 900, until: null, by: "a" };
+    expect(controlState(base({ you: { admin: false, person: "Sam", grant, can_take: true, cooldown_until: null } }))).toEqual({ kind: "free", canTake: true, asking: { kind: "none" } });
     const ask = { person: "Sam", device: "d1", at: 990, minutes: 30, note: "" };
-    expect(controlState(base({ requests: [ask] }))).toEqual({ kind: "asked" });
-    expect(controlState(base({ you: { admin: false, person: "Sam", grant: null, can_take: false, cooldown_until: 1600 } }))).toEqual({ kind: "cooldown", until: 1600 });
+    expect(controlState(base({ requests: [ask] }))).toMatchObject({ asking: { kind: "asked" } });
+    expect(controlState(base({ you: { admin: false, person: "Sam", grant: null, can_take: false, cooldown_until: 1600 } }))).toMatchObject({ asking: { kind: "cooldown", until: 1600 } });
+    // Asking works while someone else drives.
+    const other = { ...holder, person: "Kim", until: null, you: false };
+    expect(controlState(base({ holder: other, requests: [ask] }))).toMatchObject({ kind: "other", asking: { kind: "asked" } });
   });
 });
 

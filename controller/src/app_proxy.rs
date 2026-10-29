@@ -281,12 +281,12 @@ async fn websocket(
         // Dropping the pipe closes both sockets when the login stops counting.
         // In admin mode the device acting through the app holds control.
         let holder = match &credential {
-            Credential::Device(id) if state.auth.admin_mode() => Some(id.clone()),
+            Credential::Device(id) => Some(id.clone()),
             _ => None,
         };
         let lost = async {
             match holder {
-                Some(device) => state.control.lost(device).await,
+                Some(device) => state.control.lost(&state.auth, device).await,
                 None => std::future::pending().await,
             }
         };

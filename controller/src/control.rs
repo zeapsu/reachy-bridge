@@ -47,6 +47,9 @@ pub const CONTROL_FILE: &str = "control.json";
 /// A holder silent this long (no request, no open drive session) loses
 /// control; the dashboard polls every 2 s.
 pub const AWAY_AFTER: u64 = 10;
+/// An admin, who needs no grant, gets control back on return only within
+/// this long; a grantee within its grant.
+pub const ADMIN_AWAY_KEEP: u64 = 300;
 /// After the admin refuses a request, the person waits this long to ask again.
 pub const REFUSED_COOLDOWN: u64 = 600;
 /// After cancelling a request: long enough that cancel and ask again isn't a
@@ -126,7 +129,9 @@ impl Inner {
         self.grants.retain(|g| g.until.is_none_or(|u| now < u));
         self.cooldown.retain(|_, until| now < *until);
         let entitled = |h: &Holder, inner: &Inner| h.admin || inner.active_grant(&h.person, now).is_some();
-        if self.away.as_ref().is_some_and(|h| !entitled(h, self)) {
+        // `since` of an away holder is when it went away.
+        let stale = |h: &Holder| h.admin && now.saturating_sub(h.since) >= ADMIN_AWAY_KEEP;
+        if self.away.as_ref().is_some_and(|h| !entitled(h, self) || stale(h)) {
             self.away = None;
         }
         let Some(holder) = self.holder.clone() else { return false };
@@ -139,7 +144,7 @@ impl Inner {
         if now.saturating_sub(seen) >= AWAY_AFTER {
             tracing::info!("control: {} ({}) lost control: device silent", holder.person, holder.device);
             self.holder = None;
-            self.away = Some(holder);
+            self.away = Some(Holder { since: now, ..holder });
             return true;
         }
         false
@@ -238,12 +243,12 @@ impl Control {
         self.with(|inner, _| inner.holder.as_ref().map(|h| h.person.clone()))
     }
 
-    /// Resolves once `device` doesn't hold control. Checks at least every
-    /// second, so a grant ending or the device going silent is noticed
-    /// without an event.
-    pub async fn lost(&self, device: String) {
+    /// Resolves once `device` doesn't hold control in admin mode. Checks at
+    /// least every second, so a grant ending, the device going silent or
+    /// admin mode starting is noticed without an event.
+    pub async fn lost(&self, auth: &crate::auth::Auth, device: String) {
         let mut changed = self.changed.subscribe();
-        while self.holds(&device) {
+        while !auth.admin_mode() || self.holds(&device) {
             tokio::select! {
                 _ = changed.changed() => {}
                 () = tokio::time::sleep(Duration::from_secs(1)) => {}
@@ -270,6 +275,8 @@ fn needs_control(request: &Request) -> bool {
         && !path.starts_with("/api/auth/")
         && path != "/api/control"
         && !path.starts_with("/api/control/")
+        // A dashboard preference, not a robot action.
+        && path != "/api/apps/favorites"
         && !auth::admin_only(request.method(), path)
 }
 
@@ -515,7 +522,8 @@ async fn grant(
     }
     let control = &state.control;
     let granted = control.with(|inner, now| {
-        let from = body.from.unwrap_or(now).max(now);
+        // A slot starts at most MAX_MINUTES ahead; minutes is bounded above.
+        let from = body.from.unwrap_or(now).clamp(now, now + MAX_MINUTES * 60);
         let until = body.minutes.map(|m| from + m * 60);
         if let Some(other) = inner.grants.iter().find(|g| g.overlaps(from, until)) {
             return Err(ApiError::new(409, format!("that overlaps {}'s control time", other.person)));

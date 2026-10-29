@@ -496,7 +496,9 @@ impl Auth {
             return None;
         }
         let device = &mut devices[index];
-        let paired = Paired { id: device.id.clone(), person: device.person.clone(), role: device.role };
+        // Devices paired before #221 have no person: the name stands in.
+        let person = if device.person.is_empty() { device.name.clone() } else { device.person.clone() };
+        let paired = Paired { id: device.id.clone(), person, role: device.role };
         if now.saturating_sub(device.last_seen) >= LAST_SEEN_STEP {
             device.last_seen = now;
             if let Some(peer) = peer {

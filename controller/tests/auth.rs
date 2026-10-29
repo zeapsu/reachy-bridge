@@ -771,7 +771,7 @@ async fn a_person_asks_gets_time_takes_control_and_the_admin_overrides() {
         assert_eq!(device["holder"]["you"], true);
         async move {
             let id = state.auth.device_names().into_iter().find(|(_, name)| name == "phone").unwrap().0;
-            state.control.lost(id).await
+            state.control.lost(&state.auth, id).await
         }
     });
     assert_eq!(h.control(LOOPBACK, &admin, "take", None).await.status, StatusCode::OK);
@@ -851,4 +851,41 @@ async fn refusing_or_cancelling_a_request_starts_a_cooldown() {
     // A person with no paired device can't be granted time.
     let r = h.control(LOOPBACK, &admin, "grants", Some(json!({"person": "Nobody"}))).await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn control_details() {
+    let (h, admin, sam) = control_harness().await;
+    // Favorites are a preference, not a robot action.
+    let r = h.call("PUT", "/api/apps/favorites", LAN, &[("cookie", &sam)], Some(json!({"favorites": []}))).await;
+    assert_ne!(r.status, StatusCode::FORBIDDEN);
+    // A drive WebSocket upgrade needs control like any action.
+    let upgrade = [("cookie", sam.as_str()), ("connection", "upgrade"), ("upgrade", "websocket"), ("sec-websocket-version", "13"), ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")];
+    assert_eq!(h.call("GET", "/api/drive/ws", LAN, &upgrade, None).await.status, StatusCode::FORBIDDEN);
+    // A slot can't start absurdly far ahead (no overflow).
+    let r = h.control(LOOPBACK, &admin, "grants", Some(json!({"person": "Sam", "minutes": 10, "from": u64::MAX}))).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body["until"].as_u64().unwrap() > r.body["from"].as_u64().unwrap());
+    // An admin away too long doesn't silently get control back.
+    h.control(LOOPBACK, &admin, "take", None).await;
+    h.state.control.advance(11);
+    assert_eq!(h.view(LAN, &sam).await["holder"], Value::Null);
+    h.state.control.advance(300);
+    assert_eq!(h.view(LOOPBACK, &admin).await["holder"], Value::Null);
+}
+
+#[tokio::test]
+async fn devices_paired_before_people_use_their_name() {
+    let h = harness(lan()).await;
+    // A member paired in LAN mode before #221, then the admin.
+    let old = h.paired(LAN).await;
+    let mut file: Value = serde_json::from_str(&h.devices_file()).unwrap();
+    file["devices"][0]["person"] = json!("");
+    std::fs::write(h.dir.0.join("devices.json"), file.to_string()).unwrap();
+    let restarted = Harness {
+        state: AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), lan()),
+        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")),
+    };
+    let r = restarted.call("GET", "/api/auth/status", LAN, &[("cookie", &old)], None).await;
+    assert_eq!(r.body["person"], "phone");
 }

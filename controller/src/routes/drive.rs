@@ -152,8 +152,8 @@ async fn upgrade(
     // Requests built without the auth layer (unit tests) count as trusted.
     let ctx = ctx.map(|Extension(ctx)| ctx);
     // In admin mode only the holder gets here (control::guard); the session
-    // ends when it loses control.
-    let holder = ctx.as_ref().filter(|c| !c.local && state.auth.admin_mode()).and_then(|c| c.device.clone());
+    // ends when it loses control, or when admin mode starts later.
+    let holder = ctx.as_ref().filter(|c| !c.local).and_then(|c| c.device.clone());
     let credential = ctx.and_then(|ctx| ctx.credential).unwrap_or(Credential::Trusted);
     // Connect before claiming the robot, so a failure leaves nothing to undo.
     let url = state.daemon.ws_url("move/ws/set_target");
@@ -209,7 +209,7 @@ async fn drive(
     tokio::pin!(ended);
     let lost = async {
         match holder.clone() {
-            Some(device) => state.control.lost(device).await,
+            Some(device) => state.control.lost(&state.auth, device).await,
             None => std::future::pending().await,
         }
     };

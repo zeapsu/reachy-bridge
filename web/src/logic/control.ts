@@ -28,13 +28,14 @@ export function slotText(minutes: number | null): string {
   return Number.isInteger(hours) ? `${hours} h` : `${minutes} min`;
 }
 
+/** Where this person stands on asking the admin for control time. */
+export type Asking = { kind: "none" } | { kind: "can_ask" } | { kind: "asked" } | { kind: "cooldown"; until: number };
+
 export type ControlState =
   | { kind: "off" }
   | { kind: "mine"; until: number | null; endingSoon: boolean }
-  | { kind: "other"; person: string; until: number | null; canTakeOver: boolean }
-  | { kind: "free"; canTake: boolean }
-  | { kind: "asked" }
-  | { kind: "cooldown"; until: number };
+  | { kind: "other"; person: string; until: number | null; canTakeOver: boolean; asking: Asking }
+  | { kind: "free"; canTake: boolean; asking: Asking };
 
 /** What the control bar shows for this browser. */
 export function controlState(view: ControlView | null): ControlState {
@@ -44,12 +45,15 @@ export function controlState(view: ControlView | null): ControlState {
   if (holder?.you) {
     return { kind: "mine", until: holder.until, endingSoon: holder.until !== null && holder.until - now <= WARN_BEFORE_S };
   }
-  if (holder) {
-    return { kind: "other", person: holder.person, until: holder.until, canTakeOver: view.you.admin || view.you.can_take };
-  }
-  if (view.you.can_take) return { kind: "free", canTake: true };
+  // Anyone without a grant (the admin needs none) can ask, while someone
+  // else drives too.
   const person = view.you.person;
-  if (person && (view.requests ?? []).some((r) => r.person === person)) return { kind: "asked" };
-  if (view.you.cooldown_until) return { kind: "cooldown", until: view.you.cooldown_until };
-  return { kind: "free", canTake: false };
+  let asking: Asking = { kind: "can_ask" };
+  if (view.you.admin || view.you.grant) asking = { kind: "none" };
+  else if (person && (view.requests ?? []).some((r) => r.person === person)) asking = { kind: "asked" };
+  else if (view.you.cooldown_until) asking = { kind: "cooldown", until: view.you.cooldown_until };
+  if (holder) {
+    return { kind: "other", person: holder.person, until: holder.until, canTakeOver: view.you.admin || view.you.can_take, asking };
+  }
+  return { kind: "free", canTake: view.you.can_take, asking };
 }
