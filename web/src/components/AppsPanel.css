@@ -93,9 +93,18 @@
   gap: 6px;
   min-width: 0;
   color: var(--danger);
+}
+/* Text in a flex line only gets its "…" inside an element of its own. */
+.app-copy small span:not(.dot, .spin, .err) {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Open, the row shows its whole line (a description or an error). */
+.app-copy[aria-expanded="true"] small { white-space: normal; }
+.app-copy[aria-expanded="true"] small,
+.app-copy[aria-expanded="true"] .err { align-items: flex-start; }
+.app-copy[aria-expanded="true"] small :is(.dot, .spin) { margin-top: 4px; }
 
 .app-actions {
   display: flex;

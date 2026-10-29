@@ -15,7 +15,7 @@ export function JobText({ job }: { job: RowJob }) {
     return (
       <span className="err" title={job.line}>
         <span className="dot error"></span>
-        {job.line}
+        <span>{job.line}</span>
       </span>
     );
   }
@@ -38,7 +38,9 @@ export function AppCopy({ title, state, details }: { title: ReactNode; state: Re
           {title}
           <span className="more" aria-hidden="true"></span>
         </b>
-        <small title={typeof state === "string" ? state : undefined}>{state}</small>
+        <small title={typeof state === "string" ? state : undefined}>
+          {typeof state === "string" ? <span>{state}</span> : state}
+        </small>
       </button>
       {open ? (
         <div className="app-details" id={id}>
