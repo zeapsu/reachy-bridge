@@ -1,13 +1,12 @@
-"""Audio gateway (#219): which ICE candidates it accepts."""
+"""Audio gateway policy (#219): which ICE candidates pass, one-time nonces."""
 
 import os
 
 import pytest
 
-pytest.importorskip("gi")
 os.environ.setdefault("AUDIO_GATEWAY_KEY_FILE", "/nonexistent/audio.key")
 
-from reachy_bridge_runtime.audio_gateway import candidate_allowed, filter_candidates  # noqa: E402
+from reachy_bridge_runtime.audio_policy import candidate_allowed, filter_candidates  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -42,7 +41,7 @@ def test_candidate_lines_in_any_other_shape_are_dropped() -> None:
 def test_a_nonce_is_good_once_and_only_while_fresh() -> None:
     import time
 
-    from reachy_bridge_runtime.audio_gateway import fresh
+    from reachy_bridge_runtime.audio_policy import fresh
 
     now = int(time.time())
     assert fresh("a" * 32, now)

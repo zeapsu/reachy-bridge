@@ -17,8 +17,9 @@ ICE candidates are limited to UDP host candidates on ``AUDIO_GATEWAY_NETS``
 (the tailnet by default) in both directions, there's no STUN or TURN, and
 UDP ports come from ``AUDIO_GATEWAY_PORTS`` so one firewall rule covers them.
 
-Only the controller can use it. It writes a fresh ``audio.key`` (0600) to
-its state dir at start; every request carries ``X-Audio-Auth:
+Only the controller can use it. The controller writes a fresh ``audio.key``
+(0600) to its state dir when it starts, and the gateway reads it per
+request (``audio_policy``). Every request carries ``X-Audio-Auth:
 <seconds>.<nonce>.<HMAC(key, "request:<seconds>:<nonce>:<method>:<path>:<sha256(body)>")>``
 (fresh within 30 s, each nonce once) and every reply
 ``X-Audio-Proof: HMAC(key, "reply:<nonce>")``. The key itself never goes
@@ -40,17 +41,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import ipaddress
 import json
 import logging
 import os
-import re
 import secrets
 import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Any, Callable
 
 import gi
@@ -60,60 +58,17 @@ gi.require_version("GstSdp", "1.0")
 gi.require_version("GstWebRTC", "1.0")
 from gi.repository import GLib, Gst, GstSdp, GstWebRTC  # noqa: E402
 
+from .audio_policy import AUTH_HEADER, KEY_FILE, NETS, NONCE, PROOF_HEADER, filter_candidates, fresh, sign  # noqa: E402
+
 logger = logging.getLogger("reachy_bridge_runtime.audio_gateway")
 
 PORT = int(os.environ.get("AUDIO_GATEWAY_PORT", "8002"))
 SOURCE = os.environ.get("AUDIO_GATEWAY_SOURCE", "alsasrc device=reachymini_audio_src")
 SINK = os.environ.get("AUDIO_GATEWAY_SINK", "alsasink device=reachymini_audio_sink sync=false")
-# The tailnet: IPv4 CGNAT range and Tailscale's IPv6 prefix.
-NETS = [
-    ipaddress.ip_network(n.strip())
-    for n in os.environ.get("AUDIO_GATEWAY_NETS", "100.64.0.0/10,fd7a:115c:a1e0::/48").split(",")
-    if n.strip()
-]
-
-
-def _key_file() -> Path:
-    """The controller's ``audio.key``: in its state dir, found the same way."""
-    configured = os.environ.get("AUDIO_GATEWAY_KEY_FILE")
-    if configured:
-        return Path(configured)
-    state = os.environ.get("REACHY_BRIDGE_STATE_DIR")
-    if not state:
-        state = str(Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "reachy-bridge")
-    return Path(state) / "audio.key"
-
-
-KEY_FILE = _key_file()
-AUTH_HEADER = "X-Audio-Auth"
-PROOF_HEADER = "X-Audio-Proof"
-NONCE = re.compile(r"[0-9a-f]{32}")
-# A signed request is good this long, and its nonce only once.
-SIGNED_WINDOW = 30
-SEEN: dict[str, float] = {}
-SEEN_LOCK = threading.Lock()
-
-
-def fresh(nonce: str, seconds: int) -> bool:
-    """The request is recent and its nonce unused; remember it."""
-    now = time.time()
-    if abs(now - seconds) > SIGNED_WINDOW:
-        return False
-    with SEEN_LOCK:
-        for old in [n for n, at in SEEN.items() if now - at > 2 * SIGNED_WINDOW]:
-            del SEEN[old]
-        if nonce in SEEN:
-            return False
-        SEEN[nonce] = now
-        return True
 # A session whose controller hasn't asked for its status this long ends: the
 # controller watches every session (it polls every 2 s) and may be gone.
 UNWATCHED_TIMEOUT = 30.0
 
-
-def sign(key: str, what: str, data: str) -> str:
-    """HMAC-SHA256 of ``"<what>:<data>"``, in hex (the controller's ``audio::sign``)."""
-    return hmac.new(key.encode(), f"{what}:{data}".encode(), hashlib.sha256).hexdigest()
 PORTS = os.environ.get("AUDIO_GATEWAY_PORTS", "47100-47199")
 GATHER_TIMEOUT = 5.0
 CALL_TIMEOUT = 10.0
@@ -125,39 +80,6 @@ REQUIRED = ["webrtcbin", "opusenc", "opusdec", "rtpopuspay", "rtpopusdepay", "va
 
 def missing_elements() -> list[str]:
     return [name for name in REQUIRED if Gst.ElementFactory.find(name) is None]
-
-
-# foundation component transport priority address port "typ" type [extensions],
-# single spaces as libnice splits them.
-CANDIDATE = re.compile(r"candidate:[!-~]{1,32} \d{1,3} (?i:udp) \d{1,10} ([0-9A-Fa-f.:]{2,45}) \d{1,5} typ host( [!-~]+ [!-~]+)*")
-
-
-def candidate_allowed(line: str) -> bool:
-    """A UDP host candidate (``candidate:...``, without ``a=``) whose
-    address is in ``NETS``. Others (LAN, public, loopback, mDNS names, TCP,
-    relayed) are dropped."""
-    match = CANDIDATE.fullmatch(line)
-    if not match:
-        return False
-    try:
-        address = ipaddress.ip_address(match.group(1))
-    except ValueError:
-        return False
-    return any(address in net for net in NETS)
-
-
-def filter_candidates(sdp: str) -> str:
-    """Keep only allowed candidates. A line that mentions a candidate in any
-    other shape (leading space, ``a=remote-candidates``) is dropped too."""
-    lines = sdp.replace("\r\n", "\n").split("\n")
-    kept = [
-        ln
-        for ln in lines
-        if "candidate" not in ln
-        or ln == "a=end-of-candidates"
-        or (ln.startswith("a=candidate:") and candidate_allowed(ln[2:]))
-    ]
-    return "\r\n".join(kept)
 
 
 def on_main(func: Callable[[], Any]) -> Any:
