@@ -104,29 +104,23 @@ unless you put TLS in front of the controller. The app proxy strips the cookie b
 reaches an app. Use LAN access on a home
 network you trust, and Tailscale (`reachy-bridge serve`, HTTPS) for anything beyond it.
 
-## Development quick start
+## Listen and talk
 
-```bash
-uv sync
-uv run reachy-bridge-runtime --sim --headless --fastapi-port 8000   # simulator daemon
-(cd web && bun install && bun run build)                             # dashboard into web/dist
-(cd controller && cargo run --release)                                # controller on :7861
-```
+The Robot tab's "Listen and talk" box plays the robot's microphone on your device and your
+device's microphone through the robot's speaker, either or both, switched while connected. One
+browser at a time; in admin mode, only the browser in control, and the session ends when control
+or the login does. Every dashboard shows a mic badge while a session is open.
 
-Then open <http://127.0.0.1:7861/>. For UI work, `bun run dev` in `web/` serves the dashboard
-with hot reload and proxies the API to the controller. Tests: `cargo test` in `controller/`,
-`bun test` in `web/`, `uv run pytest` (runtime), and the sim integration tests,
-`uv run python tools/sim/run.py` (after the release build; see `tools/sim/README.md`).
-CI runs all of them on each PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPack 7).
+The controller starts `reachy-bridge-audio.service` on demand. Audio is WebRTC over UDP straight
+between the browser and the device, on tailnet addresses only (no STUN or TURN), using UDP ports
+47100-47199; a Tailscale ACL that limits ports must allow them. Use the dashboard's HTTPS
+(Tailscale) address: audio can't connect from a plain-http LAN page, and browsers only share a
+microphone with a secure page. Sim mode has no audio.
 
-What the controller may assume about the daemon (power, motor modes, the idle reset, app
-lifecycle) is in [`docs/daemon-contract.md`](docs/daemon-contract.md). Read it before changing
-how the controller drives the daemon, and re-check it when the locked `reachy-mini` changes. Pushing a `vX.Y.Z` tag runs CI and then publishes a GitHub Release with the
-source archive, `uv.lock`, `SHA256SUMS` and, once the repo is public, a build attestation; `-rc`
-tags are nightly prereleases. Notes come from `docs/releases/<tag>.md` when that file exists.
+## Development
 
-A user-facing install guide and the full `CONTRIBUTING.md` arrive with the public release
-(#135, #136).
+Setup, running against the simulator, tests, the daemon seam and how releases work are in
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 

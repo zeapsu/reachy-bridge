@@ -14,6 +14,7 @@ import { AuthGate } from "./components/Login.tsx";
 import { Segmented } from "./components/Segmented.tsx";
 import { PhoneTabs, TopBar } from "./components/Shell.tsx";
 import { SimPanel } from "./components/SimPanel.tsx";
+import { VoicePanel } from "./components/VoicePanel.tsx";
 import { LogsPanel, StatsPanel } from "./components/SystemPanel.tsx";
 import { Viewport, type PoseSink } from "./components/Viewport.tsx";
 import { useLens } from "./glass.ts";
@@ -30,11 +31,14 @@ import { usePoll } from "./hooks/usePoll.ts";
 import { usePower } from "./hooks/usePower.ts";
 import { useSim } from "./hooks/useSim.ts";
 import { useSimSounds } from "./hooks/useSimSounds.ts";
+import { useVoice } from "./hooks/useVoice.ts";
 import { activeApp } from "./logic/apps.ts";
 import { read, write } from "./logic/appearance.ts";
+import { controlState } from "./logic/control.ts";
 import { CONTROL_HINT_OFFLINE } from "./logic/controls.ts";
 import { driveBlocked } from "./logic/drive.ts";
 import { TAB_KEY, parseTab, stageNote, type Tab } from "./logic/shell.ts";
+import { voiceBadge } from "./logic/voice.ts";
 
 const POLL_MS = 1000;
 
@@ -76,6 +80,7 @@ function Dashboard() {
   }, []);
 
   const control = useControl(visible);
+  const voice = useVoice(visible);
   const apps = useApps();
   const active = activeApp(apps.statuses);
   const appActive = Boolean(active);
@@ -155,12 +160,14 @@ function Dashboard() {
           daemonOnline={daemonOnline}
           activeApp={active ? active.display || active.name : null}
           sim={sim.target === "sim"}
+          voice={voiceBadge(voice.view, voice.mine)}
         />
 
         <main className={`view robot${pane === "drive" ? " driving" : ""}`} id="view-robot" role="tabpanel" hidden={tab !== "robot"} aria-label="Robot">
           <Viewport daemonOnline={daemonOnline} note={stageNote(power.view, daemonOnline)} visible={visible && tab === "robot"} poseSink={poseSink} />
           <section className="glass sheet side" data-lens ref={side} aria-label="Robot controls">
             <ControlBar control={control} />
+            <VoicePanel voice={voice} control={controlState(control.view)} />
             <Segmented
               label="Robot controls"
               options={[

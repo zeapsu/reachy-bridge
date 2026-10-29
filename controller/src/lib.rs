@@ -1,5 +1,6 @@
 pub mod app_proxy;
 pub mod apps;
+pub mod audio;
 pub mod auth;
 pub mod control;
 pub mod daemon;
@@ -38,6 +39,7 @@ pub fn app(state: Shared) -> Router {
     Router::new()
         .merge(routes::power::router())
         .merge(routes::apps::router())
+        .merge(audio::router())
         .merge(routes::controls::router())
         .merge(routes::expressions::router())
         .merge(routes::telemetry::router())

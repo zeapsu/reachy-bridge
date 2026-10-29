@@ -10,7 +10,8 @@
 #   bin/reachy-controller
 #   sim/             the sim daemon's working directory (sim mode, #149)
 # and the reachy-bridge and reachy-bridge-controller user units, the
-# reachy-bridge-sim unit (not enabled: the controller starts it on demand),
+# reachy-bridge-sim and reachy-bridge-audio units (not enabled: the controller
+# starts them on demand),
 # plus the reachy-bridge command in ~/.local/bin. Everything it adds is listed
 # in install-manifest there, which `reachy-bridge uninstall` reads (#142).
 #
@@ -30,6 +31,7 @@ CLI=$REPO/deploy/reachy-bridge
 DAEMON=reachy-bridge.service
 CONTROLLER=reachy-bridge-controller.service
 SIM=reachy-bridge-sim.service
+AUDIO=reachy-bridge-audio.service
 MANIFEST=$DEST/install-manifest
 
 # record KIND VALUE: note something this install added, for the uninstaller.
@@ -80,7 +82,7 @@ require_robot_off() {
 
 step "Preflight"
 require_robot_off
-if [[ -d $UNIT_DIR/$DAEMON.d || -d $UNIT_DIR/$CONTROLLER.d || -d $UNIT_DIR/$SIM.d ]]; then
+if [[ -d $UNIT_DIR/$DAEMON.d || -d $UNIT_DIR/$CONTROLLER.d || -d $UNIT_DIR/$SIM.d || -d $UNIT_DIR/$AUDIO.d ]]; then
     echo "warning: drop-ins in $UNIT_DIR/*.service.d override the installed units"
 fi
 staging=$(mktemp -d)
@@ -108,6 +110,8 @@ changed=1
 systemctl --user stop "$DAEMON" 2>/dev/null || true
 # Separately: on the first install with sim mode the unit doesn't exist yet.
 systemctl --user stop "$SIM" 2>/dev/null || true
+# Its venv is replaced too; the next listen or talk starts it again.
+systemctl --user stop "$AUDIO" 2>/dev/null || true
 mkdir -p "$DEST/bin" "$DEST/sim"
 # --no-editable, so the service doesn't depend on this checkout. The sim extra
 # (MuJoCo) is for the sim daemon.
@@ -118,15 +122,16 @@ mv -f "$DEST/bin/reachy-controller.new" "$DEST/bin/reachy-controller"
 install -D -m 755 "$CLI" "$BIN_DIR/reachy-bridge"
 mkdir -p "$UNIT_DIR"
 # rm first: never write through a symlinked unit file to its target.
-rm -f "$UNIT_DIR/$DAEMON" "$UNIT_DIR/$CONTROLLER" "$UNIT_DIR/$SIM"
+rm -f "$UNIT_DIR/$DAEMON" "$UNIT_DIR/$CONTROLLER" "$UNIT_DIR/$SIM" "$UNIT_DIR/$AUDIO"
 sed "s|@UV_DIR@|$uv_dir|" "$REPO/deploy/systemd/$DAEMON" >"$UNIT_DIR/$DAEMON"
 install -m 644 "$REPO/deploy/systemd/$CONTROLLER" "$UNIT_DIR/$CONTROLLER"
 sed "s|@UV_DIR@|$uv_dir|" "$REPO/deploy/systemd/$SIM" >"$UNIT_DIR/$SIM"
+install -m 644 "$REPO/deploy/systemd/$AUDIO" "$UNIT_DIR/$AUDIO"
 systemctl --user daemon-reload
 systemctl --user enable "$DAEMON" "$CONTROLLER"
 record dir "$DEST"
 record file "$BIN_DIR/reachy-bridge"
-for unit in "$DAEMON" "$CONTROLLER" "$SIM"; do record unit "$unit"; done
+for unit in "$DAEMON" "$CONTROLLER" "$SIM" "$AUDIO"; do record unit "$unit"; done
 
 step "Start"
 systemctl --user start "$DAEMON"
