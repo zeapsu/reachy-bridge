@@ -813,8 +813,8 @@ async fn the_robot_test_never_touches_a_robot_that_is_on() {
 
 #[tokio::test]
 async fn the_robot_test_never_plays_the_sleep_move() {
-    // Torque came up on: the test fails, and powers off without the sleep
-    // move (torque off first, then a stop where it is).
+    // Torque came up on: the test fails and stops the robot where it is,
+    // with neither the sleep move nor a torque release (a held head would drop).
     let robot = FakeRobot::default();
     *robot.mode.lock().unwrap() = "enabled";
     let h = harness_with(robot.router()).await;
@@ -824,7 +824,7 @@ async fn the_robot_test_never_plays_the_sleep_move() {
     let (_, body) = h.run_robot_test(true).await;
     assert_eq!(body["status"], "failed", "{body:?}");
     assert!(body["detail"].as_str().unwrap().contains("mode enabled"), "{body:?}");
-    assert_eq!(robot.calls(), ["start?wake_up=false", "set_mode/disabled", "stop?goto_sleep=false"]);
+    assert_eq!(robot.calls(), ["start?wake_up=false", "stop?goto_sleep=false"]);
     assert!(!*robot.on.lock().unwrap());
 }
 

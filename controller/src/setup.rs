@@ -645,7 +645,7 @@ async fn run_robot_test(
 const TEST_START_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Power on without the wake-up move (the motors stay limp: no motion), read
-/// the motors, power off without the sleep move. Only from off, so it never
+/// the motors, power off where it is (no sleep move). Only from off, so it never
 /// switches off a robot someone else switched on; it ends off.
 async fn robot_test(state: &Shared) -> Result<String, String> {
     use crate::daemon::{backend_up, motor_mode, DaemonError};
@@ -658,28 +658,27 @@ async fn robot_test(state: &Shared) -> Result<String, String> {
     if !matches!(robot.as_str(), "stopped" | "not_initialized") || backend_up(&status) {
         return Err(format!("Not run: the robot is {robot}. The test only runs from off; switch it off from the dashboard and ask again."));
     }
-    // Off without the sleep move, which would move the robot: torque off
-    // first if it came up on (it's at rest, so nothing moves), then stop
-    // where it is. The power-off for the dashboard (power_off_locked) plays
-    // the sleep move unless the motors are already off.
+    // Off where it is: daemon/stop without the sleep move, which would move
+    // the robot. Torque is left as it is, since releasing it could let a held
+    // head drop. The dashboard's power-off (power_off_locked) plays the sleep
+    // move unless the motors are already off, so it isn't used here.
     let off = || async {
         state.player.set_needs_home(true);
         // A stop sent while the daemon is still starting is refused as busy;
         // keep at it until the backend is down.
         let deadline = tokio::time::Instant::now() + POWER_OFF_TIMEOUT;
         loop {
-            let Some(status) = daemon.status().await else { return false };
-            if !backend_up(&status) && status.get("state").and_then(Value::as_str) != Some("starting") {
-                return true;
-            }
             if tokio::time::Instant::now() >= deadline {
                 return false;
             }
-            if backend_up(&status) && status.get("state").and_then(Value::as_str) == Some("running") {
-                if motor_mode(&status).is_some_and(|m| m != "disabled") {
-                    let _ = daemon.post("motors/set_mode/disabled", &[]).await;
+            if let Some(status) = daemon.status().await {
+                let phase = status.get("state").and_then(Value::as_str);
+                if !backend_up(&status) && phase != Some("starting") {
+                    return true;
                 }
-                let _ = daemon.post("daemon/stop", &[("goto_sleep", "false")]).await;
+                if backend_up(&status) && matches!(phase, Some("running" | "error")) {
+                    let _ = daemon.post("daemon/stop", &[("goto_sleep", "false")]).await;
+                }
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -723,7 +722,9 @@ async fn robot_test(state: &Shared) -> Result<String, String> {
         return Err("The robot powered on and off, but its motors didn't report a position. Check the power supply.".to_string());
     }
     if mode != "disabled" {
-        return Err(format!("The robot powered on and off, but its motors came up in mode {mode}, not with torque off. Tell the bridge's maintainers; switch the robot on from the dashboard only after checking it."));
+        return Err(format!(
+            "The robot powered on and off without moving, but its motors came up in mode {mode}, not with torque off, so torque may still be on. Switch it on and off from the dashboard to put it to sleep properly."
+        ));
     }
     Ok("The robot powered on without moving, its motors answered with torque off, as expected, and it powered off.".to_string())
 }

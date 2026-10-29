@@ -524,7 +524,7 @@ setup_access() {
         return 0
     fi
     local lan=0
-    systemctl --user show -p Environment "$CONTROLLER" 2>/dev/null | grep -qw 'CONTROLLER_LAN=1' && lan=1
+    [[ " $(systemctl --user show -p Environment --value "$CONTROLLER" 2>/dev/null) " == *" CONTROLLER_LAN=1 "* ]] && lan=1
     (( lan )) && now+=("the local network (LAN mode)")
     ports=$(bridge_serve_ports | tr '\n' ' ')
     [[ -n $ports ]] && now+=("Tailscale (tailnet ports ${ports% })")
