@@ -611,6 +611,26 @@ fn is_api(path: &str) -> bool {
     path == "/api" || path.starts_with("/api/") || path == "/telemetry" || path.starts_with("/telemetry/")
 }
 
+/// Changes only an admin (or the CLI) may make in admin mode: installing
+/// code (an app runs as the bridge's user and can read the local key, so a
+/// member installing one could make itself admin), the Hugging Face token,
+/// and the robot's calibration.
+fn admin_only(method: &axum::http::Method, path: &str) -> bool {
+    if method.is_safe() {
+        return false;
+    }
+    [
+        "/api/apps/install",
+        "/api/apps/install-private",
+        "/api/apps/update/",
+        "/api/apps/remove/",
+        "/api/hf/token",
+        "/api/daemon/kinematics",
+    ]
+    .iter()
+    .any(|p| if p.ends_with('/') { path.starts_with(p) } else { path == *p })
+}
+
 fn is_open(path: &str) -> bool {
     path == "/api/auth/status" || path == "/api/auth/pair" || path.starts_with("/api/auth/pair/")
 }
@@ -659,6 +679,10 @@ pub async fn guard(State(state): State<Shared>, mut request: Request, next: Next
     }
     if !authenticated && is_api(&path) && !is_open(&path) {
         return ApiError::new(401, "login required").into_response();
+    }
+    if auth.admin_mode() && !local && device.as_ref().is_none_or(|d| d.role != Role::Admin) && admin_only(request.method(), &path) {
+        tracing::warn!("auth: refused {path} from {}: admin only", peer_text(peer));
+        return ApiError::new(403, "only an admin can do this").into_response();
     }
     request.extensions_mut().insert(AuthContext {
         peer,
