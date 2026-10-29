@@ -308,7 +308,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Equal-length comparison whose time doesn't depend on where bytes differ.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

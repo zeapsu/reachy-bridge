@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::apps::DaemonApps;
+use crate::audio::Audio;
 use crate::auth::{Auth, AuthConfig};
 use crate::control::Control;
 use crate::daemon::Daemon;
@@ -38,6 +39,8 @@ pub struct AppState {
     pub sim: SimMode,
     /// Who drives the robot in admin mode (#221).
     pub control: Control,
+    /// Listen and talk sessions on the audio gateway (#219).
+    pub audio: Audio,
 }
 
 impl AppState {
@@ -59,10 +62,13 @@ impl AppState {
         sim: SimMode,
     ) -> Shared {
         let player = ExpressionPlayer::new(daemon.clone(), poll);
+        let auth = Auth::new(auth, &state_dir);
+        let audio = Audio::from_env().with_key_file(&state_dir);
         Arc::new(Self {
             sim,
-            auth: Auth::new(auth, &state_dir),
+            auth,
             control: Control::new(&state_dir, player.clone()),
+            audio,
             apps: DaemonApps::new(daemon.clone()),
             catalog: Catalog::default(),
             player,

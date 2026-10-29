@@ -41,10 +41,12 @@ interface Props {
   activeApp: string | null;
   /** The controller drives the simulated robot (#149). */
   sim: boolean;
+  /** Whose mic is live, when a listen or talk session is open (#219). */
+  voice: string | null;
 }
 
 /** Brand, the section tabs (a bottom bar on phones), robot status and power. */
-export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, sim }: Props) {
+export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, sim, voice }: Props) {
   const tabs = useLens<HTMLDivElement>();
   const status = robotStatus(power, daemonOnline, activeApp);
   return (
@@ -62,6 +64,15 @@ export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, si
         />
       </div>
       <div className="top-right">
+        {voice ? (
+          <span className="glass voice-badge" role="status" title={voice} aria-label={voice}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+            </svg>
+            <span className="voice-badge-text">{voice}</span>
+          </span>
+        ) : null}
         <span className="glass status" role="status">
           <span className={`dot ${status.dot}`}></span>
           {sim ? <span className="sim-badge">Sim</span> : null}
