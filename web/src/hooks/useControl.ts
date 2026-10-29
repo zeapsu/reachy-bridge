@@ -23,13 +23,16 @@ export function useControl(visible: boolean): ControlApi {
   const [busy, setBusy] = useState(false);
   const latest = useRef<ControlView | null>(null);
   const asked = useRef(0);
+  const applied = useRef(0);
 
   const reload = useCallback(async () => {
-    // A poll sent before a take can land after it: keep the newest answer.
+    // A poll sent before a take can land after it: never apply an answer
+    // older than one already shown (a slow link still gets every newer one).
     const seq = ++asked.current;
     try {
       const next = await apiJson<ControlView>(paths.control);
-      if (seq !== asked.current) return;
+      if (seq < applied.current) return;
+      applied.current = seq;
       latest.current = next;
       setView(next);
     } catch {
