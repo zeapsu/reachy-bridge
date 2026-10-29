@@ -110,12 +110,12 @@ export function PairCode({ admin = false }: { admin?: boolean }) {
           </p>
           {admin ? (
             <p className="login-note">
-              Run <code>reachy-bridge pair --admin --person=&lt;your name&gt; {phase.code}</code> on the robot. The code
+              Run <code className="login-cmd">reachy-bridge pair --admin --person=&lt;your name&gt; {phase.code}</code> on the robot. The code
               is valid for 5 minutes.
             </p>
           ) : (
             <p className="login-note">
-              Run <code>reachy-bridge pair {phase.code}</code> on the robot, or ask an admin to approve this code
+              Run <code className="login-cmd">reachy-bridge pair {phase.code}</code> on the robot, or ask an admin to approve this code
               from their dashboard (System · devices). The code is valid for 5 minutes.
             </p>
           )}
