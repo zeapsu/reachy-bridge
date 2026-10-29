@@ -952,7 +952,7 @@ async fn fake_gateway(deleted: Arc<AtomicU64>, key: Option<String>) -> String {
             async move {
                 let auth = request.headers().get(audio::AUTH_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
                 let mut response = next.run(request).await;
-                if let (Some(key), Some((nonce, _))) = (key, auth.split_once('.')) {
+                if let (Some(key), Some(nonce)) = (key, auth.split('.').nth(1)) {
                     response.headers_mut().insert(audio::PROOF_HEADER, audio::sign(&key, "reply", nonce).parse().unwrap());
                 }
                 response

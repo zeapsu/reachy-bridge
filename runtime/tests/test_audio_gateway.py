@@ -37,3 +37,14 @@ def test_candidate_lines_in_any_other_shape_are_dropped() -> None:
         "a=end-of-candidates\r\n"
     )
     assert filter_candidates(sdp) == "v=0\r\na=candidate:1 1 udp 1 100.64.1.2 2 typ host\r\na=end-of-candidates\r\n"
+
+
+def test_a_nonce_is_good_once_and_only_while_fresh() -> None:
+    import time
+
+    from reachy_bridge_runtime.audio_gateway import fresh
+
+    now = int(time.time())
+    assert fresh("a" * 32, now)
+    assert not fresh("a" * 32, now), "replayed"
+    assert not fresh("b" * 32, now - 120), "stale"

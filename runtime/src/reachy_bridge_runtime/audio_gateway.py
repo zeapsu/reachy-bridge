@@ -19,7 +19,8 @@ UDP ports come from ``AUDIO_GATEWAY_PORTS`` so one firewall rule covers them.
 
 Only the controller can use it. It writes a fresh ``audio.key`` (0600) to
 its state dir at start; every request carries ``X-Audio-Auth:
-<nonce>.<HMAC(key, "request:<nonce>")>`` and every reply
+<seconds>.<nonce>.<HMAC(key, "request:<seconds>:<nonce>:<method>:<path>:<sha256(body)>")>``
+(fresh within 30 s, each nonce once) and every reply
 ``X-Audio-Proof: HMAC(key, "reply:<nonce>")``. The key itself never goes
 over the socket, so neither another local user, nor an app UI proxied by the
 controller, nor something squatting this port can open the mic or pass for
@@ -87,13 +88,32 @@ KEY_FILE = _key_file()
 AUTH_HEADER = "X-Audio-Auth"
 PROOF_HEADER = "X-Audio-Proof"
 NONCE = re.compile(r"[0-9a-f]{32}")
+# A signed request is good this long, and its nonce only once.
+SIGNED_WINDOW = 30
+SEEN: dict[str, float] = {}
+SEEN_LOCK = threading.Lock()
+
+
+def fresh(nonce: str, seconds: int) -> bool:
+    """The request is recent and its nonce unused; remember it."""
+    now = time.time()
+    if abs(now - seconds) > SIGNED_WINDOW:
+        return False
+    with SEEN_LOCK:
+        for old in [n for n, at in SEEN.items() if now - at > 2 * SIGNED_WINDOW]:
+            del SEEN[old]
+        if nonce in SEEN:
+            return False
+        SEEN[nonce] = now
+        return True
 # A session whose controller hasn't asked for its status this long ends: the
 # controller watches every session (it polls every 2 s) and may be gone.
 UNWATCHED_TIMEOUT = 30.0
 
 
-def sign(key: str, what: str, nonce: str) -> str:
-    return hmac.new(key.encode(), f"{what}:{nonce}".encode(), hashlib.sha256).hexdigest()
+def sign(key: str, what: str, data: str) -> str:
+    """HMAC-SHA256 of ``"<what>:<data>"``, in hex (the controller's ``audio::sign``)."""
+    return hmac.new(key.encode(), f"{what}:{data}".encode(), hashlib.sha256).hexdigest()
 PORTS = os.environ.get("AUDIO_GATEWAY_PORTS", "47100-47199")
 GATHER_TIMEOUT = 5.0
 CALL_TIMEOUT = 10.0
@@ -386,24 +406,34 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    raw = b""
+
     def _body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length") or 0)
-        if not 0 <= length <= 65536:
-            raise ValueError("body too large")
-        value = json.loads(self.rfile.read(length) or b"{}")
+        value = json.loads(self.raw or b"{}")
         if not isinstance(value, dict):
             raise ValueError("expected an object")
         return value
 
     def _authorized(self) -> bool:
-        """Check the request's signature; sign the reply with the same nonce."""
+        """Check the request's signature (which covers its method, path and
+        body), freshness and nonce; sign the reply with the same nonce."""
         self.proof = ""
         try:
+            length = int(self.headers.get("Content-Length") or 0)
             key = KEY_FILE.read_text().strip()
-        except OSError:
+        except (OSError, ValueError):
             return False
-        nonce, _, mac = (self.headers.get(AUTH_HEADER) or "").partition(".")
-        if not key or not NONCE.fullmatch(nonce) or not hmac.compare_digest(mac.encode(), sign(key, "request", nonce).encode()):
+        if not 0 <= length <= 65536:
+            return False
+        self.raw = self.rfile.read(length)
+        parts = (self.headers.get(AUTH_HEADER) or "").split(".")
+        if not key or len(parts) != 3 or not parts[0].isdigit() or not NONCE.fullmatch(parts[1]):
+            return False
+        seconds, nonce, mac = parts
+        signed = f"{seconds}:{nonce}:{self.command}:{self.path}:{hashlib.sha256(self.raw).hexdigest()}"
+        if not hmac.compare_digest(mac.encode(), sign(key, "request", signed).encode()):
+            return False
+        if not fresh(nonce, int(seconds)):
             return False
         self.proof = sign(key, "reply", nonce)
         return True

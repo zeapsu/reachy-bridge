@@ -29,7 +29,10 @@ use crate::state::Shared;
 
 pub const DEFAULT_URL: &str = "http://127.0.0.1:8002";
 pub const KEY_FILE: &str = "audio.key";
-/// `<nonce>.<sign(key, "request", nonce)>` on every request.
+/// `<unix seconds>.<nonce>.<mac>` on every request, where mac is
+/// `sign(key, "request", "<seconds>:<nonce>:<METHOD>:<path>:<sha256(body)>")`:
+/// bound to the request, and the gateway takes each nonce once within a
+/// short window, so a captured header can't be reused.
 pub const AUTH_HEADER: &str = "x-audio-auth";
 /// `sign(key, "reply", nonce)` on every reply.
 pub const PROOF_HEADER: &str = "x-audio-proof";
@@ -129,9 +132,16 @@ impl Audio {
             return Err(ApiError::new(503, format!("No {KEY_FILE}; listen and talk are off")));
         };
         let nonce = crate::auth::random_hex(16);
-        let mut request = self.http.request(method, url).header(AUTH_HEADER, format!("{nonce}.{}", sign(key, "request", &nonce)));
-        if let Some(body) = body {
-            request = request.json(&body);
+        let bytes = body.map(|b| serde_json::to_vec(&b).expect("json")).unwrap_or_default();
+        let digest: String = {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect()
+        };
+        let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let mac = sign(key, "request", &format!("{seconds}:{nonce}:{method}:{path}:{digest}"));
+        let mut request = self.http.request(method, url).header(AUTH_HEADER, format!("{seconds}.{nonce}.{mac}"));
+        if !bytes.is_empty() {
+            request = request.header(reqwest::header::CONTENT_TYPE, "application/json").body(bytes);
         }
         let response = request.send().await.map_err(|_| ApiError::new(503, "The audio gateway isn't answering"))?;
         let proof = response.headers().get(PROOF_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("");
@@ -171,8 +181,9 @@ impl Audio {
             .map_err(|error| ApiError::new(503, format!("Couldn't start the audio gateway: {error}")))?;
         let deadline = tokio::time::Instant::now() + START_WAIT;
         while tokio::time::Instant::now() < deadline {
-            if self.status().await.is_ok() {
-                return Ok(());
+            // Up: its answer decides (a wrong key is reported as such).
+            if self.listening().await {
+                return self.status().await.map(|_| ());
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
