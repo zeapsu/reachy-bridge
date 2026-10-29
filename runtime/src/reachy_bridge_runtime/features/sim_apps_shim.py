@@ -61,13 +61,20 @@ def _is_loopback(host):
 
 
 def sim_address(family, address):
-    """``address`` with the robot daemon's port swapped for the sim's."""
+    """``address`` with the robot daemon's port swapped for the sim's.
+
+    Any other host on that port is refused: the SDK falls back to
+    ``reachy-mini.local:8000`` when localhost doesn't answer, which could be
+    a robot on the network.
+    """
     if family not in (socket.AF_INET, socket.AF_INET6):
         return address
     if not isinstance(address, tuple) or len(address) < 2:
         return address
-    if address[1] != ROBOT_PORT or not _is_loopback(address[0]):
+    if address[1] != ROBOT_PORT:
         return address
+    if not _is_loopback(address[0]):
+        raise ConnectionRefusedError(f"sim mode: no robot daemon at {address[0]}:{ROBOT_PORT}")
     return (address[0], SIM_PORT, *address[2:])
 
 

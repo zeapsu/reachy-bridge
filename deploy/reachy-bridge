@@ -54,6 +54,20 @@ units_for() {
     esac
 }
 
+# Sim mode (#149) is the controller's to start and end: the sim unit
+# conflicts with the robot's daemon, so starting either from here would stop
+# the other under the controller. Refuses the sim always, and the daemon
+# while the controller reports sim mode on.
+refuse_during_sim() {
+    if [[ " ${UNITS[*]} " == *" $SIM "* ]]; then
+        die "the sim is started from the dashboard (System > Simulation), which checks the robot is off first"
+    fi
+    if [[ " ${UNITS[*]} " == *" $DAEMON "* ]] &&
+        [[ $(curl -s -m 3 "$CONTROLLER_URL/api/sim" 2>/dev/null) == *'"active":true'* ]]; then
+        die "sim mode is on; leave it from the dashboard (System > Simulation) first"
+    fi
+}
+
 # Prints off, on or unknown. Fails closed: only a refused connection (no
 # daemon listening) or a daemon reporting no backend counts as off. A slow or
 # busy daemon is unknown, never off, so nothing restarts it mid-motion.
@@ -451,6 +465,7 @@ case "$cmd" in
         ;;
     start)
         units_for "${args[0]:-all}"
+        refuse_during_sim
         systemctl --user start "${UNITS[@]}"
         ;;
     stop)
@@ -459,6 +474,7 @@ case "$cmd" in
         ;;
     restart)
         units_for "${args[0]:-all}"
+        refuse_during_sim
         if [[ " ${UNITS[*]} " == *" $DAEMON "* ]] && (( ! force )) && [[ $(robot_power) != off ]]; then
             die "the robot isn't confirmed off ($(robot_state)); turn it off first, or pass --force"
         fi

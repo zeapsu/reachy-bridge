@@ -1,10 +1,15 @@
 [Unit]
 Description=Reachy Mini sim daemon for the controller's sim mode (MuJoCo; started on demand)
+Conflicts=reachy-bridge.service
+After=reachy-bridge.service
 # Not enabled: the controller starts it when sim mode is switched on (#149)
 # and stops it when sim mode ends or the controller starts. For the whole of
 # sim mode the controller stops the robot's daemon (reachy-bridge.service,
 # robot confirmed off first) and starts it again after, so nothing a sim app
 # does can reach the robot.
+# Conflicts= makes systemd enforce it whatever starts the robot's daemon (a
+# controller restart through its Wants=, the CLI, install.sh): the sim, its
+# apps included, is stopped first.
 
 [Service]
 Type=simple

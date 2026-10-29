@@ -69,7 +69,9 @@ def test_sim_address_only_moves_loopback_on_the_robot_port() -> None:
     move = namespace["sim_address"]
     assert move(socket.AF_INET, ("127.0.0.1", 8000)) == ("127.0.0.1", 8001)
     assert move(socket.AF_INET6, ("::1", 8000, 0, 0)) == ("::1", 8001, 0, 0)
-    assert move(socket.AF_INET, ("192.0.2.7", 8000)) == ("192.0.2.7", 8000)
+    with pytest.raises(ConnectionRefusedError):
+        move(socket.AF_INET, ("192.0.2.7", 8000))
+    assert move(socket.AF_INET, ("192.0.2.7", 8042)) == ("192.0.2.7", 8042)
     assert move(socket.AF_INET, ("127.0.0.1", 8042)) == ("127.0.0.1", 8042)
     assert move(socket.AF_UNIX, "/tmp/x") == "/tmp/x"
 

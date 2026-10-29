@@ -95,13 +95,19 @@ async fn a_tab_that_missed_the_switch_is_refused() {
 #[tokio::test]
 async fn apps_run_on_the_sim_with_their_own_pins() {
     let s = sim_harness(|_| {}).await;
-    s.h.call("PUT", "/api/apps/favorites", Some(json!({"favorites": []}))).await;
+    let (status, _) = s.h.call("PUT", "/api/apps/favorites", Some(json!({"favorites": ["hello_world"]}))).await;
+    assert_eq!(status, StatusCode::OK);
     s.h.call("POST", "/api/sim/enter", None).await;
     let (status, _) = s.h.call("POST", "/api/apps/start/reachy_mini_radio", None).await;
     assert_ne!(status, StatusCode::CONFLICT, "apps aren't refused in sim mode");
     assert!(calls(&s.robot).is_empty(), "nothing reached the robot: {:?}", calls(&s.robot));
-    assert!(s.h._dir.path().join("favorites.json").exists());
-    assert!(!s.h._dir.path().join("favorites-sim.json").exists());
+    let (status, _) = s.h.call("PUT", "/api/apps/favorites", Some(json!({"favorites": ["reachy_mini_radio"]}))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, sim_pins) = s.h.call("GET", "/api/apps/favorites", None).await;
+    assert_eq!(sim_pins["favorites"], json!(["reachy_mini_radio"]));
+    s.h.call("POST", "/api/sim/exit", None).await;
+    let (_, robot_pins) = s.h.call("GET", "/api/apps/favorites", None).await;
+    assert_eq!(robot_pins["favorites"], json!(["hello_world"]), "the robot's pins are its own");
 }
 
 #[tokio::test]
@@ -151,16 +157,15 @@ async fn the_sim_never_sets_the_hosts_sound() {
     assert_eq!(body["detail"], "Sound is off in sim mode");
 }
 
-/// A `systemctl` on PATH that logs its arguments and, for the sim unit,
-/// leaves the sim daemon to the test.
-fn fake_systemctl(dir: &std::path::Path) -> std::path::PathBuf {
+/// A fake `systemctl` that logs its arguments.
+fn fake_systemctl(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).unwrap();
     let log = dir.join("systemctl.log");
     let script = dir.join("systemctl");
     std::fs::write(&script, format!("#!/bin/sh\necho \"$*\" >> '{}'\n", log.display())).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    log
+    (script, log)
 }
 
 #[tokio::test]
@@ -169,19 +174,15 @@ async fn the_robots_daemon_is_stopped_for_the_whole_of_sim_mode() {
     let sim = Arc::new(Mutex::new(Fake { state: "stopped".into(), ..Default::default() }));
     let sim_url = fake_daemon(sim.clone()).await;
     let robot_url = h.state.daemon.base_url();
-    let bin = h._dir.path().join("bin");
-    let log = fake_systemctl(&bin);
-    // SAFETY: only this test spawns systemctl, and no test here reads PATH
-    // concurrently in a way a torn update would break.
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
-    unsafe { std::env::set_var("PATH", path) };
+    let (systemctl, log) = fake_systemctl(&h._dir.path().join("bin"));
     let state = AppState::with_sim(
         Daemon::new(&robot_url, Duration::from_secs(2)),
         LogBroker::new(),
         h._dir.path().to_path_buf(),
         Duration::from_millis(10),
         AuthConfig::default(),
-        SimMode::new(&robot_url, &sim_url, Some("sim.service".into()), Some("robot.service".into())),
+        SimMode::new(&robot_url, &sim_url, Some("sim.service".into()), Some("robot.service".into()))
+            .with_systemctl(systemctl.to_str().unwrap()),
     );
     let s = Harness { state, ..h };
     let (status, body) = s.call("POST", "/api/sim/enter", None).await;

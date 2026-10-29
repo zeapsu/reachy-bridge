@@ -65,6 +65,8 @@ pub struct SimMode {
     /// The robot daemon's unit, stopped for the whole of sim mode; only set
     /// together with `unit`.
     robot_unit: Option<String>,
+    /// The `systemctl` to run (tests point it at a fake).
+    systemctl: String,
     active: AtomicBool,
     /// Actions hold it shared, a switch exclusively.
     switch: tokio::sync::RwLock<()>,
@@ -79,6 +81,7 @@ impl SimMode {
             sim_url: sim_url.to_string(),
             robot_unit: robot_unit.filter(|u| !u.is_empty() && unit.is_some()),
             unit,
+            systemctl: "systemctl".into(),
             active: AtomicBool::new(false),
             switch: tokio::sync::RwLock::new(()),
         }
@@ -94,6 +97,16 @@ impl SimMode {
         let robot_unit = std::env::var("REACHY_DAEMON_UNIT").ok().filter(|u| !u.is_empty());
         let robot_unit = robot_unit.unwrap_or_else(|| "reachy-bridge.service".into());
         Self::new(robot_url, sim_url.as_deref().unwrap_or("http://127.0.0.1:8001"), Some(unit), Some(robot_unit))
+    }
+
+    /// Run this program instead of `systemctl` (tests).
+    pub fn with_systemctl(mut self, program: &str) -> Self {
+        self.systemctl = program.to_string();
+        self
+    }
+
+    async fn systemctl(&self, action: &str, unit: &str) -> Result<(), String> {
+        systemctl(&self.systemctl, action, unit).await
     }
 
     pub fn active(&self) -> bool {
@@ -119,19 +132,19 @@ pub async fn stop_leftover(state: Shared) {
         return;
     }
     if let Some(unit) = &state.sim.unit
-        && let Err(error) = systemctl("stop", unit).await
+        && let Err(error) = state.sim.systemctl("stop", unit).await
     {
         tracing::debug!(%error, "sim daemon not stopped");
     }
     if let Some(robot) = &state.sim.robot_unit
-        && let Err(error) = systemctl("start", robot).await
+        && let Err(error) = state.sim.systemctl("start", robot).await
     {
         tracing::error!(%error, "the robot's daemon didn't start");
     }
 }
 
-async fn systemctl(action: &str, unit: &str) -> Result<(), String> {
-    let run = tokio::process::Command::new("systemctl")
+async fn systemctl(program: &str, action: &str, unit: &str) -> Result<(), String> {
+    let run = tokio::process::Command::new(program)
         .args(["--user", action, unit])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -187,13 +200,15 @@ async fn enter(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     // sim app's connection the port shim misses finds no robot. The robot is
     // off (checked above, under power_lock), so stopping its daemon moves
     // nothing.
-    if let Some(robot) = &sim.robot_unit {
-        systemctl("stop", robot)
-            .await
-            .map_err(|error| ApiError::new(502, format!("Couldn't stop the robot's daemon: {error}")))?;
+    if let Some(robot) = &sim.robot_unit
+        && let Err(error) = sim.systemctl("stop", robot).await
+    {
+        // It may have stopped anyway: don't leave the robot without one.
+        let _ = restart_robot_daemon(&state).await;
+        return Err(ApiError::new(502, format!("Couldn't stop the robot's daemon: {error}")));
     }
     let started = match &sim.unit {
-        Some(unit) => systemctl("start", unit).await.map_err(|error| format!("Couldn't start the simulation: {error}")),
+        Some(unit) => sim.systemctl("start", unit).await.map_err(|error| format!("Couldn't start the simulation: {error}")),
         None => Ok(()),
     };
     let probe = Daemon::new(&sim.sim_url, Duration::from_secs(2));
@@ -206,7 +221,7 @@ async fn enter(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     };
     if let Some(error) = failure {
         if let Some(unit) = &sim.unit {
-            let _ = systemctl("stop", unit).await;
+            let _ = state.sim.systemctl("stop", unit).await;
         }
         let _ = restart_robot_daemon(&state).await;
         return Err(error);
@@ -225,6 +240,10 @@ async fn exit(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     let power = state.power_lock.lock().await;
     let sim = &state.sim;
     if !sim.active() {
+        // A previous exit whose restart failed is retried here.
+        if sim.robot_unit.is_some() && state.daemon.status().await.is_none() {
+            restart_robot_daemon(&state).await?;
+        }
         return Ok(Json(json!({"active": false, "target": "robot"})));
     }
     // Nothing started on the sim may carry on against the robot. Its app
@@ -247,7 +266,7 @@ async fn exit(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     // can't start on a daemon this stop is about to kill.
     drop(switch);
     if let Some(unit) = &sim.unit
-        && let Err(error) = systemctl("stop", unit).await
+        && let Err(error) = state.sim.systemctl("stop", unit).await
     {
         tracing::warn!(%error, "sim daemon not stopped");
     }
@@ -263,7 +282,7 @@ async fn restart_robot_daemon(state: &Shared) -> ApiResult<()> {
     let Some(robot) = &state.sim.robot_unit else {
         return Ok(());
     };
-    if let Err(error) = systemctl("start", robot).await {
+    if let Err(error) = state.sim.systemctl("start", robot).await {
         tracing::error!(%error, "the robot's daemon didn't start");
         return Err(ApiError::new(502, format!("The robot's daemon didn't start: {error}")));
     }
