@@ -75,7 +75,20 @@ CALL_TIMEOUT = 10.0
 # A session whose browser never answers, or whose ICE never connects, ends.
 CONNECT_TIMEOUT = 30.0
 
-REQUIRED = ["webrtcbin", "opusenc", "opusdec", "rtpopuspay", "rtpopusdepay", "valve", "audioconvert", "audioresample"]
+# webrtcbin needs libnice's elements (Ubuntu: gstreamer1.0-nice) or refuses
+# every stream, which only shows as "webrtc can't handle caps" when linking.
+REQUIRED = [
+    "webrtcbin",
+    "nicesrc",
+    "nicesink",
+    "opusenc",
+    "opusdec",
+    "rtpopuspay",
+    "rtpopusdepay",
+    "valve",
+    "audioconvert",
+    "audioresample",
+]
 
 
 def missing_elements() -> list[str]:
@@ -425,7 +438,8 @@ def main() -> None:
     Gst.init(None)
     missing = missing_elements()
     if missing:
-        raise SystemExit(f"audio gateway: missing GStreamer elements: {', '.join(missing)}")
+        hint = " (sudo apt install gstreamer1.0-nice)" if {"nicesrc", "nicesink"} & set(missing) else ""
+        raise SystemExit(f"audio gateway: missing GStreamer elements: {', '.join(missing)}{hint}")
     loop = GLib.MainLoop()
     threading.Thread(target=loop.run, name="glib", daemon=True).start()
     threading.Thread(target=reap, name="reap", daemon=True).start()
