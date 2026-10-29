@@ -872,6 +872,14 @@ async fn control_details() {
     assert_eq!(h.view(LAN, &sam).await["holder"], Value::Null);
     h.state.control.advance(300);
     assert_eq!(h.view(LOOPBACK, &admin).await["holder"], Value::Null);
+    // The same with no request at all while the admin was gone.
+    h.control(LOOPBACK, &admin, "take", None).await;
+    h.state.control.advance(400);
+    assert_eq!(h.view(LOOPBACK, &admin).await["holder"], Value::Null);
+    // A short absence is forgiven.
+    h.control(LOOPBACK, &admin, "take", None).await;
+    h.state.control.advance(60);
+    assert_eq!(h.view(LOOPBACK, &admin).await["holder"]["you"], true);
 }
 
 #[tokio::test]

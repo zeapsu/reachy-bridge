@@ -144,7 +144,10 @@ impl Inner {
         if now.saturating_sub(seen) >= AWAY_AFTER {
             tracing::info!("control: {} ({}) lost control: device silent", holder.person, holder.device);
             self.holder = None;
-            self.away = Some(Holder { since: now, ..holder });
+            // Away since it was last seen, which may be long ago when nothing
+            // ran a refresh meanwhile: an admin gone that long isn't restored.
+            let away = Holder { since: seen, ..holder };
+            self.away = (!stale(&away)).then_some(away);
             return true;
         }
         false
