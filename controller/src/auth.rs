@@ -1,13 +1,23 @@
-//! Controller login for LAN access (#141).
+//! Controller login for LAN access (#141) and the admin (#221).
 //!
-//! Off by default: with `CONTROLLER_LAN` unset there is no login, and the
-//! guard only refuses cross-site state changes. In LAN mode a request is authenticated when its TCP
-//! peer is loopback (`tailscale serve` and local tools; `CONTROLLER_TRUST_TAILNET=0`
-//! turns that off), when it carries a paired device's `rb_device` cookie, or
-//! when a loopback peer sends the local key the controller writes to
+//! Off by default: with `CONTROLLER_LAN` unset and no admin there is no
+//! login, and the guard only refuses cross-site state changes. In LAN mode a
+//! request is authenticated when its TCP peer is loopback (`tailscale serve`
+//! and local tools; `CONTROLLER_TRUST_TAILNET=0` turns that off), when it
+//! carries a paired device's `rb_device` cookie, or when a loopback peer
+//! sends the local key the controller writes to
 //! `$REACHY_BRIDGE_STATE_DIR/controller.key` (how `reachy-bridge pair` works
 //! when loopback isn't trusted). Unauthenticated API calls get 401; pages are
 //! served so the dashboard can show its login screen.
+//!
+//! Admin mode (#221) starts when the first admin device pairs, which only the
+//! local key can approve (`reachy-bridge pair --admin`). From then on every
+//! browser logs in, LAN mode or not, and loopback is no longer trusted: a
+//! request through `tailscale serve` carries no identity, and control time is
+//! granted per person. Only an admin (or the local key) approves and revokes
+//! devices; a member can log out its own. Admin mode is kept in
+//! `devices.json`, so it stays on when the last admin device expires or is
+//! revoked; the CLI pairs a new one.
 //!
 //! The peer is always the socket address from `ConnectInfo`, never a header.
 //!
@@ -101,10 +111,26 @@ impl AuthConfig {
     }
 }
 
+/// What a paired device may do (#221).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    /// Approves and revokes devices, and (with #221) grants control time.
+    Admin,
+    #[default]
+    Member,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Device {
     id: String,
     name: String,
+    /// Who uses the device: control time is granted per person, and one
+    /// person can have several devices. Older files have none: the name.
+    #[serde(default)]
+    person: String,
+    #[serde(default)]
+    role: Role,
     /// Hex SHA-256 of the cookie token; the token itself is never stored.
     token_sha256: String,
     created: u64,
@@ -115,7 +141,18 @@ struct Device {
 
 #[derive(Default, Serialize, Deserialize)]
 struct DevicesFile {
+    /// Set once an admin has paired; never cleared by the controller.
+    #[serde(default)]
+    admin_mode: bool,
     devices: Vec<Device>,
+}
+
+/// An approved pairing request, waiting for its browser to collect the token.
+#[derive(Clone)]
+struct Approval {
+    name: String,
+    person: String,
+    role: Role,
 }
 
 struct PairRequest {
@@ -125,8 +162,7 @@ struct PairRequest {
     peer: IpAddr,
     expires: Instant,
     attempts: u32,
-    /// Device name, once approved.
-    approved: Option<String>,
+    approved: Option<Approval>,
 }
 
 impl PairRequest {
@@ -173,6 +209,7 @@ pub struct Auth {
     devices: Mutex<Vec<Device>>,
     pending: Mutex<Pending>,
     local_key: Option<String>,
+    admin_mode: std::sync::atomic::AtomicBool,
     /// Bumped on every revocation; long-lived streams watch it.
     revoked: tokio::sync::watch::Sender<u64>,
 }
@@ -184,8 +221,36 @@ pub struct AuthContext {
     pub authenticated: bool,
     /// The paired device, when the cookie authenticated the request.
     pub device: Option<String>,
+    /// That device's person and role.
+    pub person: Option<String>,
+    pub role: Option<Role>,
+    /// A loopback peer sent the local key (the CLI on the robot).
+    pub local: bool,
     /// The request reached `tailscale serve` over HTTPS.
     pub https: bool,
+}
+
+impl AuthContext {
+    /// May approve and revoke devices: the CLI, an admin device, or anyone
+    /// authenticated before an admin exists (the #141 rule).
+    fn manages_devices(&self, admin_mode: bool) -> bool {
+        self.local || self.role == Some(Role::Admin) || (!admin_mode && self.authenticated)
+    }
+
+    fn by(&self) -> String {
+        match (&self.device, self.local) {
+            (Some(d), _) => format!("device {d}"),
+            (None, true) => "the local key".to_string(),
+            (None, false) => peer_text(self.peer),
+        }
+    }
+}
+
+/// A paired device, as a request's cookie identifies it.
+struct Paired {
+    id: String,
+    person: String,
+    role: Role,
 }
 
 fn now_unix() -> u64 {
@@ -320,9 +385,9 @@ fn cookie_header(name: &str, value: &str, path: &str, max_age: u64, https: bool)
 impl Auth {
     pub fn new(config: AuthConfig, state_dir: &Path) -> Self {
         let devices_path = state_dir.join(DEVICES_FILE);
-        let devices = match std::fs::read(&devices_path) {
+        let file = match std::fs::read(&devices_path) {
             Ok(bytes) => match serde_json::from_slice::<DevicesFile>(&bytes) {
-                Ok(file) => file.devices,
+                Ok(file) => file,
                 Err(error) => {
                     let aside = devices_path.with_extension("json.bad");
                     let _ = std::fs::rename(&devices_path, &aside);
@@ -331,39 +396,54 @@ impl Auth {
                         devices_path.display(),
                         aside.display()
                     );
-                    Vec::new()
+                    // A file that may have held an admin keeps admin mode on.
+                    DevicesFile { admin_mode: bytes.windows(5).any(|w| w == b"admin"), devices: Vec::new() }
                 }
             },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => DevicesFile::default(),
             Err(error) => {
                 tracing::error!("auth: cannot read {} ({error}); starting with no paired devices", devices_path.display());
-                Vec::new()
+                DevicesFile { admin_mode: true, devices: Vec::new() }
             }
         };
-        let local_key = config.lan.then(|| {
-            let key = random_token::<32>();
-            if let Err(error) = write_private(&state_dir.join(LOCAL_KEY_FILE), format!("{key}\n").as_bytes()) {
+        let admin_mode = file.admin_mode || file.devices.iter().any(|d| d.role == Role::Admin);
+        // Written in every mode: `reachy-bridge pair --admin` needs it.
+        let key = random_token::<32>();
+        let local_key = match write_private(&state_dir.join(LOCAL_KEY_FILE), format!("{key}\n").as_bytes()) {
+            Ok(()) => Some(key),
+            Err(error) => {
                 tracing::error!("auth: cannot write {LOCAL_KEY_FILE} ({error}); `reachy-bridge pair` needs a trusted loopback");
+                None
             }
-            key
-        });
+        };
         Self {
             config,
             devices_path,
-            devices: Mutex::new(devices),
+            devices: Mutex::new(file.devices),
             pending: Mutex::new(Pending::default()),
             local_key,
+            admin_mode: admin_mode.into(),
             revoked: tokio::sync::watch::channel(0).0,
         }
     }
 
+    /// An admin has paired (see the module docs).
+    pub fn admin_mode(&self) -> bool {
+        self.admin_mode.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Every request logs in: LAN mode, or admin mode.
+    pub fn login_required(&self) -> bool {
+        self.config.lan || self.admin_mode()
+    }
+
     fn save(&self, devices: &[Device]) -> std::io::Result<()> {
-        let body = serde_json::to_vec_pretty(&json!({"devices": devices})).expect("devices serialize");
+        let body = serde_json::to_vec_pretty(&json!({"admin_mode": self.admin_mode(), "devices": devices})).expect("devices serialize");
         write_private(&self.devices_path, &body)
     }
 
     /// The device a cookie token belongs to; refreshes its `last_seen`.
-    fn device_for(&self, token: &str, peer: Option<IpAddr>) -> Option<String> {
+    fn device_for(&self, token: &str, peer: Option<IpAddr>) -> Option<Paired> {
         if token.is_empty() || token.len() > 128 {
             return None;
         }
@@ -387,7 +467,7 @@ impl Auth {
             return None;
         }
         let device = &mut devices[index];
-        let id = device.id.clone();
+        let paired = Paired { id: device.id.clone(), person: device.person.clone(), role: device.role };
         if now.saturating_sub(device.last_seen) >= LAST_SEEN_STEP {
             device.last_seen = now;
             if let Some(peer) = peer {
@@ -397,11 +477,17 @@ impl Auth {
                 tracing::warn!("auth: cannot record last_seen ({error})");
             }
         }
-        Some(id)
+        Some(paired)
     }
 
     fn has_device(&self, id: &str) -> bool {
         self.devices.lock().unwrap().iter().any(|d| d.id == id)
+    }
+
+    /// Loopback (tailscale serve) logs in without a device: only before an
+    /// admin exists, and unless `CONTROLLER_TRUST_TAILNET=0`.
+    fn trusts_loopback(&self) -> bool {
+        self.config.trust_loopback && !self.admin_mode()
     }
 
     fn local_key_matches(&self, headers: &HeaderMap) -> bool {
@@ -412,17 +498,18 @@ impl Auth {
     }
 
     /// Whether the app UI proxy may serve a request, by the dashboard's rule.
-    /// Without LAN mode its listener is loopback only and everyone is
-    /// trusted. In LAN mode it listens on every interface (#186): loopback
-    /// peers (tailscale serve) are trusted unless `CONTROLLER_TRUST_TAILNET=0`
-    /// and only under a loopback or tailnet Host; everyone else needs a
-    /// paired device, or the local key from loopback.
+    /// Without LAN mode its listener is loopback only and, before an admin
+    /// exists, everyone is trusted. In LAN mode it listens on every interface
+    /// (#186): loopback peers (tailscale serve) are trusted unless
+    /// `CONTROLLER_TRUST_TAILNET=0` or admin mode is on, and only under a
+    /// loopback or tailnet Host; everyone else needs a paired device, or the
+    /// local key from loopback.
     pub fn app_proxy_allowed(&self, headers: &HeaderMap, peer: Option<IpAddr>) -> bool {
-        if !self.config.lan {
+        if !self.login_required() {
             return true;
         }
         let loopback = peer.is_some_and(|p| p.is_loopback());
-        (loopback && self.config.trust_loopback && loopback_host(headers))
+        (loopback && self.trusts_loopback() && loopback_host(headers))
             || (loopback && self.local_key_matches(headers))
             || cookies(headers, DEVICE_COOKIE).take(MAX_COOKIE_VALUES).any(|token| self.device_for(token, peer).is_some())
     }
@@ -489,7 +576,8 @@ pub async fn guard(State(state): State<Shared>, mut request: Request, next: Next
         && headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case("https"));
     let path = request.uri().path().to_string();
 
-    if !auth.config.lan {
+    let local = loopback && auth.local_key_matches(headers);
+    if !auth.login_required() {
         // No login, but another site still can't make a tailnet browser act
         // on the robot (a plain form POST to /api/daemon/start).
         if (!request.method().is_safe() || headers.contains_key(header::UPGRADE)) && cross_site(headers, loopback) {
@@ -501,13 +589,13 @@ pub async fn guard(State(state): State<Shared>, mut request: Request, next: Next
         if loopback && headers.contains_key(header::HOST) && !loopback_host(headers) && (is_api(&path) || headers.contains_key(header::UPGRADE)) {
             return forbidden(&path, peer);
         }
-        request.extensions_mut().insert(AuthContext { peer, authenticated: true, device: None, https });
+        let ctx = AuthContext { peer, authenticated: true, device: None, person: None, role: None, local, https };
+        request.extensions_mut().insert(ctx);
         return next.run(request).await;
     }
 
     let device = cookies(headers, DEVICE_COOKIE).take(MAX_COOKIE_VALUES).find_map(|token| auth.device_for(token, peer));
-    let local = loopback && auth.local_key_matches(headers);
-    let authenticated = (loopback && auth.config.trust_loopback && loopback_host(headers)) || local || device.is_some();
+    let authenticated = (loopback && auth.trusts_loopback() && loopback_host(headers)) || local || device.is_some();
     let upgrade = headers.contains_key(header::UPGRADE);
     if (!request.method().is_safe() || upgrade) && cross_site(headers, loopback) {
         return forbidden(&path, peer);
@@ -515,13 +603,22 @@ pub async fn guard(State(state): State<Shared>, mut request: Request, next: Next
     if !authenticated && is_api(&path) && !is_open(&path) {
         return ApiError::new(401, "login required").into_response();
     }
-    request.extensions_mut().insert(AuthContext { peer, authenticated, device: device.clone(), https });
+    let id = device.as_ref().map(|d| d.id.clone());
+    request.extensions_mut().insert(AuthContext {
+        peer,
+        authenticated,
+        device: id.clone(),
+        person: device.as_ref().map(|d| d.person.clone()),
+        role: device.as_ref().map(|d| d.role),
+        local,
+        https,
+    });
     let mut response = next.run(request).await;
     // Other ports on this host (app UIs) are same-site: don't let them frame the dashboard.
     let headers = response.headers_mut();
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("frame-ancestors 'none'"));
-    match device {
+    match id {
         Some(id) if is_stream(&response) => end_on_revoke(state.clone(), id, response),
         _ => response,
     }
@@ -567,14 +664,21 @@ pub fn router() -> Router<Shared> {
 }
 
 async fn status(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>) -> Json<Value> {
-    Json(json!({"lan": state.auth.config.lan, "authenticated": ctx.authenticated, "device": ctx.device}))
+    let auth = &state.auth;
+    Json(json!({
+        "lan": auth.config.lan,
+        "login_required": auth.login_required(),
+        "admin_mode": auth.admin_mode(),
+        "authenticated": ctx.authenticated,
+        "device": ctx.device,
+        "person": ctx.person,
+        "role": ctx.role,
+    }))
 }
 
 async fn pair(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>) -> ApiResult<Response> {
+    // Open in every mode: the admin pairs first, before any login (#221).
     let auth = &state.auth;
-    if !auth.config.lan {
-        return Err(ApiError::new(409, "LAN access is off"));
-    }
     let peer = ctx.peer.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
     let loopback = peer.is_loopback();
     let limit = if loopback { LOOPBACK_PEER_LIMIT } else { PER_PEER_LIMIT };
@@ -638,6 +742,7 @@ async fn poll(
     // First poll after approval: issue the device token to this browser. The
     // pending lock is held until the device is saved, so one token at most.
     let request = &pending.requests[index];
+    let approval = request.approved.clone().expect("approved");
     let token = random_token::<32>();
     let created = now_unix();
     let mut devices = auth.devices.lock().unwrap();
@@ -649,21 +754,29 @@ async fn poll(
     };
     devices.push(Device {
         id: device_id.clone(),
-        name: request.approved.clone().unwrap_or_default(),
+        name: approval.name,
+        person: approval.person,
+        role: approval.role,
         token_sha256: hex(&sha256(token.as_bytes())),
         created,
         last_seen: created,
         peer: request.peer.to_string(),
     });
+    // The first admin turns admin mode on, for good (see the module docs).
+    let was_admin_mode = auth.admin_mode.swap(auth.admin_mode() || approval.role == Role::Admin, std::sync::atomic::Ordering::SeqCst);
     if let Err(error) = auth.save(&devices) {
         devices.pop();
+        auth.admin_mode.store(was_admin_mode, std::sync::atomic::Ordering::SeqCst);
         tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
         return Err(ApiError::new(500, "could not save the paired device"));
     }
     drop(devices);
     let request = pending.requests.remove(index);
     drop(pending);
-    tracing::info!("auth: device {device_id} paired from {}", request.peer);
+    tracing::info!("auth: device {device_id} paired from {} as {:?}", request.peer, approval.role);
+    if !was_admin_mode && approval.role == Role::Admin {
+        tracing::warn!("auth: admin mode is on: every browser now logs in, tailnet included");
+    }
     let mut response = Json(json!({"status": "approved", "device": device_id})).into_response();
     let cookies = response.headers_mut();
     cookies.append(header::SET_COOKIE, cookie_header(DEVICE_COOKIE, &token, "/", DEVICE_MAX_AGE, ctx.https));
@@ -675,6 +788,15 @@ async fn poll(
 struct ApproveBody {
     code: String,
     name: Option<String>,
+    /// Defaults to the device name.
+    person: Option<String>,
+    #[serde(default)]
+    role: Role,
+}
+
+/// A name or person as typed: trimmed, no control characters, at most 64.
+fn label(text: Option<&str>) -> String {
+    text.map(str::trim).unwrap_or("").chars().filter(|c| !c.is_control()).take(64).collect()
 }
 
 async fn approve(
@@ -683,7 +805,17 @@ async fn approve(
     body: Result<Json<ApproveBody>, axum::extract::rejection::JsonRejection>,
 ) -> ApiResult<Json<Value>> {
     let Json(body) = body.map_err(|_| ApiError::bad_body())?;
-    let by = ctx.device.as_deref().map_or_else(|| peer_text(ctx.peer), |d| format!("device {d}"));
+    let by = ctx.by();
+    // An admin only through the CLI on the robot: a stolen admin browser
+    // can't mint more admins, and the first admin needs the robot's shell.
+    if body.role == Role::Admin && !ctx.local {
+        tracing::warn!("auth: admin approval refused for {by}: needs the local key");
+        return Err(ApiError::new(403, "only `reachy-bridge pair --admin` on the robot can approve an admin"));
+    }
+    if !ctx.manages_devices(state.auth.admin_mode()) {
+        tracing::warn!("auth: approval refused for {by}: not an admin");
+        return Err(ApiError::new(403, "only an admin can approve devices"));
+    }
     let code = body.code.trim();
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return Err(ApiError::new(400, "the code is 6 digits"));
@@ -710,22 +842,30 @@ async fn approve(
         return Err(ApiError::new(400, "no pending pairing request has that code"));
     };
     let request = &mut pending.requests[index];
-    let name: String = body.name.as_deref().map(str::trim).unwrap_or("").chars().filter(|c| !c.is_control()).take(64).collect();
+    let name = label(body.name.as_deref());
     let name = if name.is_empty() { format!("device at {}", request.peer) } else { name };
-    request.approved = Some(name.clone());
+    let person = label(body.person.as_deref());
+    let person = if person.is_empty() { name.clone() } else { person };
+    let role = body.role;
+    request.approved = Some(Approval { name: name.clone(), person: person.clone(), role });
     request.expires = request.expires.max(now + APPROVED_GRACE);
-    tracing::info!("auth: pair request {} from {} approved by {by} as {name:?}", request.id, request.peer);
-    Ok(Json(json!({"status": "approved", "name": name, "peer": request.peer.to_string()})))
+    tracing::info!("auth: pair request {} from {} approved by {by} as {name:?} ({person:?}, {role:?})", request.id, request.peer);
+    Ok(Json(json!({"status": "approved", "name": name, "person": person, "role": role, "peer": request.peer.to_string()})))
 }
 
 async fn list_devices(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>) -> Json<Value> {
+    // A member sees its own device only: the list carries peer addresses.
+    let all = ctx.manages_devices(state.auth.admin_mode());
     let devices = state.auth.devices.lock().unwrap();
     let list: Vec<Value> = devices
         .iter()
+        .filter(|d| all || ctx.device.as_deref() == Some(d.id.as_str()))
         .map(|d| {
             json!({
                 "id": d.id,
                 "name": d.name,
+                "person": if d.person.is_empty() { &d.name } else { &d.person },
+                "role": d.role,
                 "created": d.created,
                 "last_seen": d.last_seen,
                 "peer": d.peer,
@@ -742,10 +882,20 @@ async fn revoke(
     UrlPath(id): UrlPath<String>,
 ) -> ApiResult<StatusCode> {
     let auth = &state.auth;
+    let admin_mode = auth.admin_mode();
+    let own = ctx.device.as_deref() == Some(id.as_str());
+    if !own && !ctx.manages_devices(admin_mode) {
+        return Err(ApiError::new(403, "only an admin can revoke other devices"));
+    }
     let mut devices = auth.devices.lock().unwrap();
     let Some(index) = devices.iter().position(|d| d.id == id) else {
         return Err(ApiError::new(404, "unknown device"));
     };
+    // The dashboard can't lock everyone out; the CLI can (and re-pairs).
+    let admins = devices.iter().filter(|d| d.role == Role::Admin).count();
+    if devices[index].role == Role::Admin && admins == 1 && !ctx.local {
+        return Err(ApiError::new(409, "this is the last admin device; pair another admin first, or revoke it with `reachy-bridge devices revoke` on the robot"));
+    }
     let removed = devices.remove(index);
     if let Err(error) = auth.save(&devices) {
         devices.insert(index, removed);
@@ -754,7 +904,7 @@ async fn revoke(
     }
     drop(devices);
     auth.revoked.send_modify(|n| *n += 1);
-    let by = ctx.device.as_deref().map_or_else(|| peer_text(ctx.peer), |d| format!("device {d}"));
+    let by = ctx.by();
     tracing::info!("auth: device {id} ({}) revoked by {by}", removed.name);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -771,6 +921,8 @@ mod tests {
         auth.devices.lock().unwrap().push(Device {
             id: "d1".into(),
             name: "phone".into(),
+            person: "phone".into(),
+            role: Role::Member,
             token_sha256: hex(&sha256(b"paired")),
             created: now_unix(),
             last_seen: now_unix(),

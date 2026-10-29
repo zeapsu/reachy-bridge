@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatCode, needsLogin, normalizeCode, pairEndedText, pairOutcome, seenText } from "./auth.ts";
+import { devicesView, formatCode, needsLogin, normalizeCode, pairEndedText, pairOutcome, seenText } from "./auth.ts";
 
 describe("needsLogin", () => {
   test("only in LAN mode without a login", () => {
@@ -49,5 +49,32 @@ describe("seenText", () => {
     expect(ago(20 * 60)).toBe("20 min ago");
     expect(ago(3 * 3600)).toBe("3 h ago");
     expect(ago(5 * 86400)).toBe("5 d ago");
+  });
+});
+
+describe("needsLogin in admin mode", () => {
+  test("follows login_required over lan", () => {
+    expect(needsLogin({ lan: false, login_required: true, authenticated: false })).toBe(true);
+    expect(needsLogin({ lan: false, login_required: true, authenticated: true })).toBe(false);
+    expect(needsLogin({ lan: false, login_required: false, authenticated: true })).toBe(false);
+  });
+});
+
+describe("devicesView", () => {
+  test("offers admin setup until an admin pairs", () => {
+    expect(devicesView({ lan: false, admin_mode: false, authenticated: true })).toBe("setup");
+    expect(devicesView({ lan: true, admin_mode: false, authenticated: true })).toBe("manage");
+  });
+  test("lets only admins manage in admin mode", () => {
+    const base = { lan: false, admin_mode: true, authenticated: true, device: "d1" };
+    expect(devicesView({ ...base, role: "admin" })).toBe("manage");
+    expect(devicesView({ ...base, role: "member" })).toBe("own");
+    // The CLI's key: authenticated, no device.
+    expect(devicesView({ ...base, device: null, role: null })).toBe("hidden");
+  });
+  test("keeps the #141 panel on an older controller", () => {
+    expect(devicesView({ lan: true, authenticated: true })).toBe("manage");
+    expect(devicesView({ lan: false, authenticated: true })).toBe("hidden");
+    expect(devicesView(null)).toBe("hidden");
   });
 });

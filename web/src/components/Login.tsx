@@ -14,8 +14,9 @@ import "./Login.css";
 type Gate = "checking" | "login" | "open";
 
 /**
- * Shows the dashboard, or the login screen when LAN mode is on and this
- * browser isn't paired (#141). Any 401 from the API re-checks.
+ * Shows the dashboard, or the login screen when a login is required (LAN
+ * mode, #141, or admin mode, #221) and this browser isn't paired. Any 401
+ * from the API re-checks.
  */
 export function AuthGate({ children }: { children: ReactNode }) {
   const [gate, setGate] = useState<Gate>("checking");
@@ -48,7 +49,8 @@ type Phase =
   | { kind: "ended"; reason: "expired" | "locked" }
   | { kind: "error"; text: string };
 
-export function Login() {
+/** Asks the controller for a pairing code and reloads once it's approved. */
+function usePairing(): { phase: Phase; retry: () => void } {
   const [phase, setPhase] = useState<Phase>({ kind: "starting" });
   const [attempt, setAttempt] = useState(0);
 
@@ -86,48 +88,69 @@ export function Login() {
     return () => clearInterval(timer);
   }, [waitingId]);
 
-  const retry = () => setAttempt((n) => n + 1);
+  return { phase, retry: () => setAttempt((n) => n + 1) };
+}
 
+/**
+ * A pairing code and how to approve it. `admin`: the first admin's code,
+ * which only `reachy-bridge pair --admin` on the robot approves (#221).
+ */
+export function PairCode({ admin = false }: { admin?: boolean }) {
+  const { phase, retry } = usePairing();
+  return (
+    <>
+      {phase.kind === "starting" && <p className="login-note">Getting a code…</p>}
+      {phase.kind === "waiting" && (
+        <>
+          <p className="login-code" id="login-code" aria-label={`Pairing code ${phase.code.split("").join(" ")}`}>
+            {formatCode(phase.code)}
+          </p>
+          {admin ? (
+            <p className="login-note">
+              Run <code>reachy-bridge pair --admin {phase.code}</code> on the robot. The code is valid for 5 minutes.
+            </p>
+          ) : (
+            <p className="login-note">
+              Run <code>reachy-bridge pair {phase.code}</code> on the robot, or ask an admin to approve this code
+              from their dashboard (System · devices). The code is valid for 5 minutes.
+            </p>
+          )}
+          <p className="login-wait" aria-live="polite">
+            waiting for approval…
+          </p>
+        </>
+      )}
+      {phase.kind === "ended" && (
+        <>
+          <p className="login-note login-error" role="alert">
+            {pairEndedText(phase.reason)}
+          </p>
+          <button className="btn primary press" type="button" onClick={retry}>
+            get a new code
+          </button>
+        </>
+      )}
+      {phase.kind === "error" && (
+        <>
+          <p className="login-note login-error" role="alert">
+            {phase.text}
+          </p>
+          <button className="btn primary press" type="button" onClick={retry}>
+            try again
+          </button>
+        </>
+      )}
+    </>
+  );
+}
+
+export function Login() {
   return (
     <main className="login-screen">
       <section className="glass login-card" aria-labelledby="login-title">
         <h1 id="login-title">reachy-bridge</h1>
         <p className="login-lead">This browser isn't paired with the robot yet.</p>
-        {phase.kind === "starting" && <p className="login-note">Getting a code…</p>}
-        {phase.kind === "waiting" && (
-          <>
-            <p className="login-code" id="login-code" aria-label={`Pairing code ${phase.code.split("").join(" ")}`}>
-              {formatCode(phase.code)}
-            </p>
-            <p className="login-note">
-              Run <code>reachy-bridge pair {phase.code}</code> on the robot, or approve this code from a paired
-              dashboard (System · devices). The code is valid for 5 minutes.
-            </p>
-            <p className="login-wait" aria-live="polite">
-              waiting for approval…
-            </p>
-          </>
-        )}
-        {phase.kind === "ended" && (
-          <>
-            <p className="login-note login-error" role="alert">
-              {pairEndedText(phase.reason)}
-            </p>
-            <button className="btn primary press" type="button" onClick={retry}>
-              get a new code
-            </button>
-          </>
-        )}
-        {phase.kind === "error" && (
-          <>
-            <p className="login-note login-error" role="alert">
-              {phase.text}
-            </p>
-            <button className="btn primary press" type="button" onClick={retry}>
-              try again
-            </button>
-          </>
-        )}
+        <PairCode />
       </section>
     </main>
   );
