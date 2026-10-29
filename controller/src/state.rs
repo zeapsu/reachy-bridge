@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::apps::DaemonApps;
 use crate::auth::{Auth, AuthConfig};
+use crate::control::Control;
 use crate::daemon::Daemon;
 use crate::datasets::DatasetCache;
 use crate::expressions::ExpressionPlayer;
@@ -35,6 +36,8 @@ pub struct AppState {
     pub auth: Auth,
     /// Which daemon `daemon` drives: the robot's or the sim's (#149).
     pub sim: SimMode,
+    /// Who drives the robot in admin mode (#221).
+    pub control: Control,
 }
 
 impl AppState {
@@ -55,12 +58,14 @@ impl AppState {
         auth: AuthConfig,
         sim: SimMode,
     ) -> Shared {
+        let player = ExpressionPlayer::new(daemon.clone(), poll);
         Arc::new(Self {
             sim,
             auth: Auth::new(auth, &state_dir),
+            control: Control::new(&state_dir, player.clone()),
             apps: DaemonApps::new(daemon.clone()),
             catalog: Catalog::default(),
-            player: ExpressionPlayer::new(daemon.clone(), poll),
+            player,
             daemon,
             power_lock: tokio::sync::Mutex::new(()),
             streams: Streams::default(),

@@ -1,6 +1,7 @@
 pub mod app_proxy;
 pub mod apps;
 pub mod auth;
+pub mod control;
 pub mod daemon;
 pub mod datasets;
 pub mod error;
@@ -45,10 +46,13 @@ pub fn app(state: Shared) -> Router {
         .merge(routes::drive::router())
         .merge(routes::store::router())
         .merge(auth::router())
+        .merge(control::router())
         .merge(sim::router())
         .merge(routes::sounds::router())
         .fallback(routes::assets::serve)
         .layer(middleware::from_fn_with_state(state.clone(), sim::guard))
+        // After auth::guard (layers run outermost first): needs its AuthContext.
+        .layer(middleware::from_fn_with_state(state.clone(), control::guard))
         .layer(middleware::from_fn_with_state(state.clone(), auth::guard))
         .layer(middleware::from_fn(log_actions))
         .with_state(state)

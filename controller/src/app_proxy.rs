@@ -36,6 +36,7 @@ use serde_json::Value;
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
+use crate::control;
 use crate::auth::{cross_site, end_with, strip_credential_cookies, strip_credentials, Credential};
 use crate::state::Shared;
 
@@ -160,6 +161,15 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
     let Some(credential) = proxy.state.auth.app_proxy_credential(&parts.headers, peer.map(|p| p.ip().to_canonical())) else {
         return login_required(dashboard.as_deref());
     };
+    // Control time (#221): watchers load the app's pages, only the holder acts.
+    let (device, local) = match &credential {
+        Credential::Device(id) => (Some(id.clone()), false),
+        Credential::Local => (None, true),
+        Credential::Trusted => (None, false),
+    };
+    if let Err(detail) = control::app_proxy_allows(&proxy.state, &parts.method, is_upgrade(&parts.headers), device.as_deref(), local) {
+        return (StatusCode::FORBIDDEN, detail).into_response();
+    }
     // Another site can't make a tailnet browser act through the app (a plain
     // form POST); the app's own page is same-origin. tailscale serve keeps
     // Host, so X-Forwarded-Host isn't needed (and isn't believed).
@@ -269,9 +279,21 @@ async fn websocket(
     let state = proxy.state.clone();
     upgrade.on_upgrade(move |browser| async move {
         // Dropping the pipe closes both sockets when the login stops counting.
+        // In admin mode the device acting through the app holds control.
+        let holder = match &credential {
+            Credential::Device(id) if state.auth.admin_mode() => Some(id.clone()),
+            _ => None,
+        };
+        let lost = async {
+            match holder {
+                Some(device) => state.control.lost(device).await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             () = pipe(browser, app) => {}
             () = state.auth.ended(credential) => tracing::info!("app proxy: WebSocket closed, its login ended"),
+            () = lost => tracing::info!("app proxy: WebSocket closed, its device lost control"),
         }
     })
 }

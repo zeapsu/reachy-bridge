@@ -110,7 +110,8 @@ export function PairCode({ admin = false }: { admin?: boolean }) {
           </p>
           {admin ? (
             <p className="login-note">
-              Run <code>reachy-bridge pair --admin {phase.code}</code> on the robot. The code is valid for 5 minutes.
+              Run <code>reachy-bridge pair --admin --person=&lt;your name&gt; {phase.code}</code> on the robot. The code
+              is valid for 5 minutes.
             </p>
           ) : (
             <p className="login-note">

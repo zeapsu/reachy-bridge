@@ -703,3 +703,152 @@ async fn only_an_admin_installs_apps_or_changes_the_token() {
     // Reads stay open to members.
     assert_eq!(h.call("GET", "/api/logs/sources", LAN, &[("cookie", &member)], None).await.status, StatusCode::OK);
 }
+
+// Control time (#221) -------------------------------------------------------
+
+/// Admin mode with the admin's browser (LOOPBACK) and Sam's phone (LAN).
+async fn control_harness() -> (Harness, String, String) {
+    let h = harness(AuthConfig::default()).await;
+    let admin = h.admin(LOOPBACK).await;
+    let sam = h.paired_as(LAN, &[("cookie", &admin)], json!({"name": "phone", "person": "Sam"})).await;
+    (h, admin, sam)
+}
+
+impl Harness {
+    async fn act(&self, peer: &str, cookie: &str) -> Reply {
+        self.call("POST", "/api/expressions/stop", peer, &[("cookie", cookie)], None).await
+    }
+
+    async fn control(&self, peer: &str, cookie: &str, action: &str, body: Option<Value>) -> Reply {
+        self.call("POST", &format!("/api/control/{action}"), peer, &[("cookie", cookie)], body).await
+    }
+
+    async fn view(&self, peer: &str, cookie: &str) -> Value {
+        self.call("GET", "/api/control", peer, &[("cookie", cookie)], None).await.body
+    }
+}
+
+#[tokio::test]
+async fn without_admin_mode_nobody_needs_control() {
+    let h = harness(AuthConfig::default()).await;
+    assert_eq!(h.call("POST", "/api/expressions/stop", LOOPBACK, &[], None).await.status, StatusCode::OK);
+    assert_eq!(h.call("GET", "/api/control", LOOPBACK, &[], None).await.body, json!({"admin_mode": false}));
+}
+
+#[tokio::test]
+async fn a_person_asks_gets_time_takes_control_and_the_admin_overrides() {
+    let (h, admin, sam) = control_harness().await;
+    // Nobody drives without control, the admin included; reads stay open.
+    let r = h.act(LAN, &sam).await;
+    assert_eq!((r.status, r.body["detail"].clone()), (StatusCode::FORBIDDEN, json!("take control of the robot first")));
+    assert_eq!(h.act(LOOPBACK, &admin).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(h.call("GET", "/api/logs/sources", LAN, &[("cookie", &sam)], None).await.status, StatusCode::OK);
+    // Without a grant Sam can only ask, once.
+    assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(h.control(LAN, &sam, "request", Some(json!({"minutes": 30, "note": "demo"}))).await.status, StatusCode::OK);
+    assert_eq!(h.control(LAN, &sam, "request", Some(json!({"minutes": 30}))).await.status, StatusCode::CONFLICT);
+    // Sam can't grant itself time; the admin sees the request and grants it.
+    let grant = json!({"person": "Sam", "minutes": 30});
+    assert_eq!(h.control(LAN, &sam, "grants", Some(grant.clone())).await.status, StatusCode::FORBIDDEN);
+    let view = h.view(LOOPBACK, &admin).await;
+    assert_eq!(view["requests"][0]["person"], "Sam");
+    assert_eq!(view["requests"][0]["note"], "demo");
+    assert_eq!(h.control(LOOPBACK, &admin, "grants", Some(grant)).await.status, StatusCode::OK);
+    assert_eq!(h.view(LOOPBACK, &admin).await["requests"], json!([]));
+    // Sam takes control and acts; the admin, watching, can't.
+    assert_eq!(h.view(LAN, &sam).await["you"]["can_take"], true);
+    assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+    assert_eq!(h.act(LAN, &sam).await.status, StatusCode::OK);
+    let r = h.act(LOOPBACK, &admin).await;
+    assert_eq!((r.status, r.body["detail"].clone()), (StatusCode::FORBIDDEN, json!("Sam is in control of the robot")));
+    let view = h.view(LOOPBACK, &admin).await;
+    assert_eq!((view["holder"]["person"].clone(), view["holder"]["you"].clone()), (json!("Sam"), json!(false)));
+    assert!(view["holder"]["until"].is_u64());
+    // The admin overrides; Sam's next action is refused, and Sam's grant stays.
+    let lost = tokio::spawn({
+        let state = h.state.clone();
+        let device = h.view(LAN, &sam).await;
+        assert_eq!(device["holder"]["you"], true);
+        async move {
+            let id = state.auth.device_names().into_iter().find(|(_, name)| name == "phone").unwrap().0;
+            state.control.lost(id).await
+        }
+    });
+    assert_eq!(h.control(LOOPBACK, &admin, "take", None).await.status, StatusCode::OK);
+    assert!(tokio::time::timeout(Duration::from_secs(2), lost).await.is_ok(), "Sam's sessions didn't end");
+    let r = h.act(LAN, &sam).await;
+    assert_eq!(r.body["detail"], "Andry is in control of the robot");
+    assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::CONFLICT);
+    assert_eq!(h.act(LOOPBACK, &admin).await.status, StatusCode::OK);
+    // Released, Sam takes control back within the grant.
+    assert_eq!(h.control(LOOPBACK, &admin, "release", None).await.status, StatusCode::OK);
+    assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+    // The CLI's key isn't held back by control.
+    let key = h.key();
+    assert_eq!(h.call("POST", "/api/expressions/stop", LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn control_ends_with_the_grant_or_its_revocation() {
+    let (h, admin, sam) = control_harness().await;
+    let r = h.control(LOOPBACK, &admin, "grants", Some(json!({"person": "Sam", "minutes": 1}))).await;
+    let id = r.body["id"].as_str().unwrap().to_string();
+    // Grants can't overlap.
+    let r = h.control(LOOPBACK, &admin, "grants", Some(json!({"person": "Andry", "minutes": 5}))).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    h.control(LAN, &sam, "take", None).await;
+    h.state.control.advance(61);
+    assert_eq!(h.act(LAN, &sam).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(h.view(LAN, &sam).await["holder"], Value::Null);
+    let r = h.call("DELETE", &format!("/api/control/grants/{id}"), LOOPBACK, &[("cookie", &admin)], None).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "the ended grant is gone");
+    // A grant with no end, revoked while Sam holds control.
+    let r = h.control(LOOPBACK, &admin, "grants", Some(json!({"person": "Sam"}))).await;
+    let id = r.body["id"].as_str().unwrap().to_string();
+    assert_eq!(r.body["until"], Value::Null);
+    h.control(LAN, &sam, "take", None).await;
+    assert_eq!(h.act(LAN, &sam).await.status, StatusCode::OK);
+    let r = h.call("DELETE", &format!("/api/control/grants/{id}"), LOOPBACK, &[("cookie", &admin)], None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.act(LAN, &sam).await.status, StatusCode::FORBIDDEN);
+    // Grants survive a restart.
+    h.control(LOOPBACK, &admin, "grants", Some(json!({"person": "Sam", "minutes": 60}))).await;
+    assert!(std::fs::read_to_string(h.dir.0.join("control.json")).unwrap().contains("Sam"));
+}
+
+#[tokio::test]
+async fn a_silent_holder_steps_away_and_comes_back() {
+    let (h, admin, sam) = control_harness().await;
+    h.control(LOOPBACK, &admin, "grants", Some(json!({"person": "Sam", "minutes": 60}))).await;
+    h.control(LAN, &sam, "take", None).await;
+    // The phone's screen goes off: no requests for 10 s.
+    h.state.control.advance(11);
+    assert_eq!(h.view(LOOPBACK, &admin).await["holder"], Value::Null);
+    // It comes back within the grant and has control again.
+    assert_eq!(h.view(LAN, &sam).await["holder"]["you"], true);
+    assert_eq!(h.act(LAN, &sam).await.status, StatusCode::OK);
+    // Unless the admin took it meanwhile.
+    h.state.control.advance(11);
+    h.control(LOOPBACK, &admin, "take", None).await;
+    assert_eq!(h.view(LAN, &sam).await["holder"]["person"], "Andry");
+}
+
+#[tokio::test]
+async fn refusing_or_cancelling_a_request_starts_a_cooldown() {
+    let (h, admin, sam) = control_harness().await;
+    h.control(LAN, &sam, "request", Some(json!({}))).await;
+    let r = h.call("POST", "/api/control/requests/Sam/refuse", LAN, &[("cookie", &sam)], None).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    let r = h.call("POST", "/api/control/requests/Sam/refuse", LOOPBACK, &[("cookie", &admin)], None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.control(LAN, &sam, "request", Some(json!({}))).await.status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(h.view(LAN, &sam).await["you"]["cooldown_until"].is_u64());
+    h.state.control.advance(601);
+    assert_eq!(h.control(LAN, &sam, "request", Some(json!({}))).await.status, StatusCode::OK);
+    let r = h.call("DELETE", "/api/control/request", LAN, &[("cookie", &sam)], None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.control(LAN, &sam, "request", Some(json!({}))).await.status, StatusCode::TOO_MANY_REQUESTS);
+    // A person with no paired device can't be granted time.
+    let r = h.control(LOOPBACK, &admin, "grants", Some(json!({"person": "Nobody"}))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+}

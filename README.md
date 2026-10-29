@@ -87,7 +87,7 @@ A paired browser can approve and revoke other browsers, so approve only codes yo
 Until an admin exists, anyone who reaches the dashboard can drive the robot. To lock it to the
 browsers you approve, LAN mode or not, make your own browser the admin: open the devices panel
 (System), choose "Make this browser the admin", and run the command it shows on the robot,
-`reachy-bridge pair --admin <code> [name]`. Only the CLI on the robot can approve an admin.
+`reachy-bridge pair --admin --person=<you> <code> [name]`. Only the CLI on the robot can approve an admin.
 
 Browsers paired before that are logged out, since anyone could approve them. From then on
 every browser logs in, Tailscale visitors included, and open streams and drive sessions from

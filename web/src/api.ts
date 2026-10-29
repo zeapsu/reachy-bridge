@@ -3,6 +3,7 @@
 
 import { appsPaths } from "./api/apps.ts";
 import { authPaths } from "./api/auth.ts";
+import { controlPaths } from "./api/control.ts";
 import { expressionsPaths } from "./api/expressions.ts";
 import { hfPaths } from "./api/hf.ts";
 import { mediaPaths } from "./api/media.ts";
@@ -12,6 +13,7 @@ import { systemPaths } from "./api/system.ts";
 
 export * from "./api/apps.ts";
 export * from "./api/client.ts";
+export * from "./api/control.ts";
 export * from "./api/expressions.ts";
 export * from "./api/hf.ts";
 export * from "./api/media.ts";
@@ -27,5 +29,6 @@ export const paths = {
   ...mediaPaths,
   ...systemPaths,
   ...authPaths,
+  ...controlPaths,
   ...hfPaths,
 } as const;
