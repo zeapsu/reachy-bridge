@@ -10,6 +10,7 @@ pub mod expressions;
 pub mod host;
 pub mod logs;
 pub mod routes;
+pub mod setup;
 pub mod sim;
 pub mod state;
 pub mod streams;
@@ -51,6 +52,7 @@ pub fn app(state: Shared) -> Router {
         .merge(control::router())
         .merge(sim::router())
         .merge(routes::sounds::router())
+        .merge(setup::router())
         .fallback(routes::assets::serve)
         .layer(middleware::from_fn_with_state(state.clone(), sim::guard))
         // After auth::guard (layers run outermost first): needs its AuthContext.

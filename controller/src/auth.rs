@@ -277,12 +277,12 @@ fn random_bytes<const N: usize>() -> [u8; N] {
     bytes
 }
 
-fn random_token<const N: usize>() -> String {
+pub(crate) fn random_token<const N: usize>() -> String {
     URL_SAFE_NO_PAD.encode(random_bytes::<N>())
 }
 
 /// A uniform 6-digit code (rejection sampling avoids modulo bias).
-fn random_code() -> String {
+pub(crate) fn random_code() -> String {
     const LIMIT: u32 = u32::MAX - u32::MAX % 1_000_000;
     loop {
         let n = u32::from_le_bytes(random_bytes::<4>());
@@ -299,7 +299,7 @@ pub fn random_hex(n: usize) -> String {
     hex(&bytes)
 }
 
-fn sha256(data: &[u8]) -> [u8; 32] {
+pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
@@ -344,7 +344,7 @@ fn mentions_admin(bytes: &[u8]) -> bool {
 }
 
 /// Every value of cookie `name` across the request's `Cookie` headers.
-fn cookies<'a>(headers: &'a HeaderMap, name: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+pub(crate) fn cookies<'a>(headers: &'a HeaderMap, name: &'a str) -> impl Iterator<Item = &'a str> + 'a {
     headers
         .get_all(header::COOKIE)
         .iter()
@@ -368,7 +368,7 @@ pub fn strip_credential_cookies(headers: &mut HeaderMap) {
         .filter(|v| {
             let pair = v.to_str().ok().and_then(|v| v.split(';').next()).unwrap_or("");
             let name = pair.split_once('=').map_or("", |(name, _)| name).trim();
-            !name.is_empty() && name != DEVICE_COOKIE && name != PAIR_COOKIE
+            !name.is_empty() && name != DEVICE_COOKIE && name != PAIR_COOKIE && name != crate::setup::SETUP_COOKIE
         })
         .cloned()
         .collect();
@@ -391,7 +391,7 @@ pub fn strip_credentials(headers: &mut HeaderMap) {
         .map(str::trim)
         .filter(|pair| {
             let name = pair.split_once('=').map_or(*pair, |(name, _)| name).trim();
-            !pair.is_empty() && name != DEVICE_COOKIE && name != PAIR_COOKIE
+            !pair.is_empty() && name != DEVICE_COOKIE && name != PAIR_COOKIE && name != crate::setup::SETUP_COOKIE
         })
         .map(str::to_string)
         .collect();
@@ -403,7 +403,7 @@ pub fn strip_credentials(headers: &mut HeaderMap) {
     }
 }
 
-fn cookie_header(name: &str, value: &str, path: &str, max_age: u64, https: bool) -> HeaderValue {
+pub(crate) fn cookie_header(name: &str, value: &str, path: &str, max_age: u64, https: bool) -> HeaderValue {
     let secure = if https { "; Secure" } else { "" };
     HeaderValue::from_str(&format!("{name}={value}; HttpOnly; SameSite=Strict; Path={path}; Max-Age={max_age}{secure}"))
         .expect("cookie values are base64url")
@@ -930,48 +930,72 @@ async fn approve(
         tracing::warn!("auth: approval refused for {by}: not an admin");
         return Err(ApiError::new(403, "only an admin can approve devices"));
     }
-    let code = body.code.trim();
-    if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(ApiError::new(400, "the code is 6 digits"));
-    }
-    let now = Instant::now();
-    let mut pending = state.auth.pending.lock().unwrap();
-    pending.prune(now);
-    // Check every open request, without stopping early, against the code.
-    let mut matched = None;
-    // The CLI holds the key, so it can't be guessing: it may approve a
-    // request others locked with wrong codes, and its typos lock nothing.
-    let open = |r: &PairRequest| matches!(r.status(now), "pending") || (ctx.local && r.status(now) == "locked");
-    for (index, request) in pending.requests.iter().enumerate() {
-        if ct_eq(request.code.as_bytes(), code.as_bytes()) && open(request) {
-            matched = Some(index);
-        }
-    }
-    let Some(index) = matched else {
-        if ctx.local {
-            return Err(ApiError::new(400, "no pending pairing request has that code"));
-        }
-        // The code could have been meant for any open request: count it against all.
-        for request in pending.requests.iter_mut().filter(|r| r.status(now) == "pending") {
-            request.attempts += 1;
-            if request.attempts >= MAX_ATTEMPTS {
-                tracing::warn!("auth: pair request {} locked after {MAX_ATTEMPTS} wrong codes", request.id);
+    state.auth.approve_code(&body.code, body.name.as_deref(), body.person.as_deref(), body.role, &by, ctx.local).map(Json)
+}
+
+impl Auth {
+    /// The address of the open (pending, or locked by wrong codes) pair
+    /// request with `code`, without approving it or counting a try: the
+    /// setup page shows it on the terminal before anyone approves (#135).
+    pub fn pending_peer(&self, code: &str) -> Option<IpAddr> {
+        let now = Instant::now();
+        let mut pending = self.pending.lock().unwrap();
+        pending.prune(now);
+        let mut found = None;
+        for request in &pending.requests {
+            if ct_eq(request.code.as_bytes(), code.trim().as_bytes()) && matches!(request.status(now), "pending" | "locked") {
+                found = Some(request.peer);
             }
         }
-        tracing::warn!("auth: wrong pairing code from {by}");
-        return Err(ApiError::new(400, "no pending pairing request has that code"));
-    };
-    let request = &mut pending.requests[index];
-    let name = label(body.name.as_deref());
-    let name = if name.is_empty() { format!("device at {}", request.peer) } else { name };
-    let person = label(body.person.as_deref());
-    let person = if person.is_empty() { name.clone() } else { person };
-    let role = body.role;
-    request.approved = Some(Approval { name: name.clone(), person: person.clone(), role });
-    request.attempts = 0;
-    request.expires = request.expires.max(now + APPROVED_GRACE);
-    tracing::info!("auth: pair request {} from {} approved by {by} as {name:?} ({person:?}, {role:?})", request.id, request.peer);
-    Ok(Json(json!({"status": "approved", "name": name, "person": person, "role": role, "peer": request.peer.to_string()})))
+        found
+    }
+
+    /// Approve the open pair request with `code` as `role`. `holds_key`: the
+    /// caller proved it is on the robot (the local key), so it can't be
+    /// guessing: it may approve a
+    /// request others locked with wrong codes, and its typos lock nothing.
+    /// Who may approve, and an admin, is the caller's check.
+    pub fn approve_code(&self, code: &str, name: Option<&str>, person: Option<&str>, role: Role, by: &str, holds_key: bool) -> ApiResult<Value> {
+        let code = code.trim();
+        if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(ApiError::new(400, "the code is 6 digits"));
+        }
+        let now = Instant::now();
+        let mut pending = self.pending.lock().unwrap();
+        pending.prune(now);
+        // Check every open request, without stopping early, against the code.
+        let mut matched = None;
+        let open = |r: &PairRequest| matches!(r.status(now), "pending") || (holds_key && r.status(now) == "locked");
+        for (index, request) in pending.requests.iter().enumerate() {
+            if ct_eq(request.code.as_bytes(), code.as_bytes()) && open(request) {
+                matched = Some(index);
+            }
+        }
+        let Some(index) = matched else {
+            if holds_key {
+                return Err(ApiError::new(400, "no pending pairing request has that code"));
+            }
+            // The code could have been meant for any open request: count it against all.
+            for request in pending.requests.iter_mut().filter(|r| r.status(now) == "pending") {
+                request.attempts += 1;
+                if request.attempts >= MAX_ATTEMPTS {
+                    tracing::warn!("auth: pair request {} locked after {MAX_ATTEMPTS} wrong codes", request.id);
+                }
+            }
+            tracing::warn!("auth: wrong pairing code from {by}");
+            return Err(ApiError::new(400, "no pending pairing request has that code"));
+        };
+        let request = &mut pending.requests[index];
+        let name = label(name);
+        let name = if name.is_empty() { format!("device at {}", request.peer) } else { name };
+        let person = label(person);
+        let person = if person.is_empty() { name.clone() } else { person };
+        request.approved = Some(Approval { name: name.clone(), person: person.clone(), role });
+        request.attempts = 0;
+        request.expires = request.expires.max(now + APPROVED_GRACE);
+        tracing::info!("auth: pair request {} from {} approved by {by} as {name:?} ({person:?}, {role:?})", request.id, request.peer);
+        Ok(json!({"status": "approved", "name": name, "person": person, "role": role, "peer": request.peer.to_string()}))
+    }
 }
 
 async fn list_devices(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>) -> Json<Value> {

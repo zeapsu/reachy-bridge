@@ -1,0 +1,120 @@
+/* The setup page (#135): the login card, wider, with steps. */
+.setup-screen {
+  position: relative;
+  z-index: 1;
+}
+
+.setup-card {
+  width: min(560px, 100%);
+  text-align: left;
+}
+
+.setup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.setup-card h1 {
+  margin: 0;
+}
+
+.setup-code {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+  align-items: center;
+}
+
+.setup-code-field {
+  width: min(220px, 100%);
+  font-size: 22px;
+  text-align: center;
+  letter-spacing: 0.08em;
+}
+
+.setup-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 8px;
+  list-style: none;
+  padding: 0;
+  margin: 0 0 18px;
+}
+
+.setup-steps li {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.setup-bar {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--well);
+}
+
+.setup-steps li.done .setup-bar { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.setup-steps li.current .setup-bar { background: var(--accent); }
+.setup-steps li.current { color: var(--ink); font-weight: 600; }
+
+.setup-step .login-lead { margin: 0; }
+.setup-step .login-note { margin: 0; }
+
+.setup-wait {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setup-checks {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.setup-check {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: var(--r-row);
+  background: var(--well);
+  font-size: 14px;
+}
+
+.setup-check .chip {
+  background: none;
+  padding: 0;
+}
+
+.setup-check-detail {
+  grid-column: 1 / -1;
+  color: var(--ink-3);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.setup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.setup-result {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}

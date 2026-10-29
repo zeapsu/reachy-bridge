@@ -2,7 +2,15 @@
 
 import { LOGIN_REQUIRED_EVENT } from "../logic/auth.ts";
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  /** The HTTP status, when the error came from a response. */
+  constructor(
+    message: string,
+    readonly status = 0,
+  ) {
+    super(message);
+  }
+}
 
 let believedTarget: string | null = null;
 
@@ -88,7 +96,7 @@ export async function apiJson<T = unknown>(
       if (await takeControlIfFree()) return apiJson<T>(path, options, { ...flags, retried: true });
       if (typeof window !== "undefined") window.dispatchEvent(new Event(CONTROL_NEEDED_EVENT));
     }
-    throw new ApiError(String(detail));
+    throw new ApiError(String(detail), response.status);
   }
   return payload as T;
 }
