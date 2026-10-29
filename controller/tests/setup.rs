@@ -7,7 +7,7 @@
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -65,10 +65,41 @@ impl Drop for Harness {
     }
 }
 
+/// A stand-in for `reachy-bridge-runtime --doctor --json`.
+fn runtime_script() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("rc-setup-runtime-{}.sh", std::process::id()))
+}
+
+/// The environment, set once before any test starts the page.
+fn environment() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let script = runtime_script();
+        std::fs::write(&script, "#!/bin/sh\n[ \"$1 $2\" = \"--doctor --json\" ] || exit 9\necho '[{\"name\": \"OS\", \"status\": \"pass\", \"detail\": \"Linux\"}]'\nexit 1\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // SAFETY: set once, before any test reads them.
+        unsafe {
+            std::env::set_var("SETUP_PORT", "0");
+            std::env::set_var("REACHY_BRIDGE_RUNTIME", &script);
+        }
+    });
+}
+
+/// Wait until the setup listener at `page` stops answering.
+async fn gone(page: &str) -> bool {
+    for _ in 0..100 {
+        if client().get(format!("{page}/api/setup/status")).send().await.is_err() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
 async fn harness() -> Harness {
     log();
-    // SAFETY: every test sets the same value; nothing reads it concurrently in a conflicting way.
-    unsafe { std::env::set_var("SETUP_PORT", "0") };
+    environment();
     let app = Router::new().route(
         "/api/daemon/status",
         get(|| async { Json(json!({"state": "stopped", "backend_status": null})) }),
@@ -314,8 +345,8 @@ async fn the_code_works_once_and_the_session_gates_the_setup_routes() {
         .unwrap();
     assert_eq!(status["authenticated"], true);
     assert!(
-        status["expires_in"].as_u64().unwrap() > 3000,
-        "an hour once used"
+        status["expires_in"].as_u64().unwrap() > 1700,
+        "half an hour once used"
     );
     let status: Value = c
         .get(format!("{page}/api/setup/status"))
@@ -400,108 +431,159 @@ async fn the_page_serves_only_setup() {
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
 }
 
+impl Harness {
+    /// A dashboard on the LAN asks for a pairing code: (pair reply, its cookie).
+    async fn dashboard_pair(&self) -> (Value, String) {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/auth/pair")
+            .header("host", "127.0.0.1:7861")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(LAN.parse::<SocketAddr>().unwrap()));
+        let response = reachy_controller::app(self.state.clone()).oneshot(request).await.unwrap();
+        let cookie = response.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (serde_json::from_slice(&bytes).unwrap(), cookie)
+    }
+
+    /// What `reachy-bridge setup` sees.
+    async fn terminal(&self) -> Value {
+        let key = self.key();
+        let (status, body) = self.api("GET", "/api/setup/state", LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        body
+    }
+
+    /// The terminal's answer to the waiting admin request.
+    async fn confirm(&self, approve: bool) -> (StatusCode, Value) {
+        let key = self.key();
+        self.api("POST", "/api/setup/confirm", LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(json!({"approve": approve}))).await
+    }
+}
+
+async fn propose(page: &str, cookie: &str, body: Value) -> (StatusCode, Value) {
+    let r = client().post(format!("{page}/api/setup/admin")).header("cookie", cookie).json(&body).send().await.unwrap();
+    let status = r.status();
+    (status, r.json().await.unwrap_or(Value::Null))
+}
+
+async fn admin_status(page: &str, cookie: &str) -> Value {
+    client().get(format!("{page}/api/setup/admin")).header("cookie", cookie).send().await.unwrap().json().await.unwrap()
+}
+
 #[tokio::test]
-async fn the_setup_browser_approves_the_dashboards_code_as_the_admin() {
+async fn the_terminal_confirms_the_dashboard_the_setup_browser_names_as_admin() {
     let h = harness().await;
     // A browser paired before the admin is logged out when the admin pairs.
     let (status, earlier) = h.api("POST", "/api/auth/pair", LAN, &[], None).await;
     assert_eq!(status, StatusCode::OK);
     let key = h.key();
     let (status, _) = h
-        .api(
-            "POST",
-            "/api/auth/approve",
-            LOOPBACK,
-            &[("x-reachy-bridge-key", &key)],
-            Some(json!({"code": earlier["code"]})),
-        )
+        .api("POST", "/api/auth/approve", LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(json!({"code": earlier["code"]})))
         .await;
     assert_eq!(status, StatusCode::OK);
 
-    // The dashboard asks for a code...
-    let mut request = Request::builder()
-        .method("POST")
-        .uri("/api/auth/pair")
-        .header("host", "127.0.0.1:7861")
-        .body(Body::empty())
-        .unwrap();
-    request
-        .extensions_mut()
-        .insert(ConnectInfo(LAN.parse::<SocketAddr>().unwrap()));
-    let response = reachy_controller::app(h.state.clone())
-        .oneshot(request)
-        .await
-        .unwrap();
-    let pair_cookie = response.headers()["set-cookie"]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_string();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let pair: Value = serde_json::from_slice(&bytes).unwrap();
-
-    // ...and the setup page approves it as the admin.
+    let (pair, pair_cookie) = h.dashboard_pair().await;
     let (code, page) = h.start().await;
+    // The terminal's routes need the local key.
+    for (method, path) in [("GET", "/api/setup/state"), ("POST", "/api/setup/confirm")] {
+        let (status, _) = h.api(method, path, LAN, &[], Some(json!({"approve": true}))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+    }
     let cookie = session(&login(&page, &code).await);
-    let c = client();
-    let r = c
-        .post(format!("{page}/api/setup/admin"))
-        .json(&json!({"code": pair["code"], "person": "Andry"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status(),
-        StatusCode::UNAUTHORIZED,
-        "needs the setup session"
-    );
-    let r = c
-        .post(format!("{page}/api/setup/admin"))
-        .header("cookie", &cookie)
-        .json(&json!({"code": "000000", "person": "Andry"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
-    let r = c
-        .post(format!("{page}/api/setup/admin"))
-        .header("cookie", &cookie)
-        .json(&json!({"code": pair["code"], "person": "Andry", "name": "laptop"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), StatusCode::OK);
-    let body: Value = r.json().await.unwrap();
+    let r = client().post(format!("{page}/api/setup/admin")).json(&json!({"code": pair["code"]})).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "needs the setup session");
+    let (status, _) = propose(&page, &cookie, json!({"code": wrong(pair["code"].as_str().unwrap()), "person": "Andry"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "no dashboard shows that code");
+    assert_eq!(h.terminal().await.get("proposal"), None);
+
+    let (status, body) = propose(&page, &cookie, json!({"code": pair["code"], "person": "Andry", "name": "laptop"})).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    assert_eq!(body["status"], "waiting");
+    assert_eq!(admin_status(&page, &cookie).await["status"], "waiting");
+    // Nothing is approved until the terminal says so.
+    assert!(!h.state.auth.admin_mode());
+    let (status, _) = propose(&page, &cookie, json!({"code": pair["code"]})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "one request at a time");
+    let terminal = h.terminal().await;
+    assert_eq!(terminal["proposal"]["person"], "Andry");
+    assert_eq!(terminal["proposal"]["peer"], "192.168.1.50", "the dashboard's address");
+
+    let (status, body) = h.confirm(true).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
     assert_eq!(body["role"], "admin");
+    assert_eq!(admin_status(&page, &cookie).await["status"], "approved");
+    assert_eq!(h.terminal().await.get("proposal"), None);
+    let (status, _) = h.confirm(true).await;
+    assert_eq!(status, StatusCode::CONFLICT, "nothing waits");
+    // One admin per page.
+    let (another, _) = h.dashboard_pair().await;
+    let (status, _) = propose(&page, &cookie, json!({"code": another["code"]})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
 
     let id = pair["id"].as_str().unwrap();
-    let (status, body) = h
-        .api(
-            "GET",
-            &format!("/api/auth/pair/{id}"),
-            LAN,
-            &[("cookie", &pair_cookie)],
-            None,
-        )
-        .await;
+    let (status, body) = h.api("GET", &format!("/api/auth/pair/{id}"), LAN, &[("cookie", &pair_cookie)], None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "approved");
     assert!(h.state.auth.admin_mode());
     let devices = std::fs::read_to_string(h.dir.join("devices.json")).unwrap();
-    assert!(
-        devices.contains("\"role\":\"admin\"") || devices.contains("\"role\": \"admin\""),
-        "{devices}"
-    );
+    assert!(devices.contains("\"role\":\"admin\"") || devices.contains("\"role\": \"admin\""), "{devices}");
     assert!(devices.contains("Andry"));
-    assert_eq!(
-        devices.matches("token_sha256").count(),
-        1,
-        "the earlier device is logged out"
-    );
+    assert_eq!(devices.matches("token_sha256").count(), 1, "the earlier device is logged out");
+    let logged = String::from_utf8_lossy(&log().lock().unwrap()).to_string();
+    assert!(!logged.contains(pair["code"].as_str().unwrap()), "pairing code in the log");
+}
+
+#[tokio::test]
+async fn a_refused_request_can_be_made_again() {
+    let h = harness().await;
+    let (pair, _) = h.dashboard_pair().await;
+    let (code, page) = h.start().await;
+    let cookie = session(&login(&page, &code).await);
+    let (status, _) = propose(&page, &cookie, json!({"code": pair["code"], "person": "Mallory"})).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = h.confirm(false).await;
+    assert_eq!(status, StatusCode::OK);
+    let body = admin_status(&page, &cookie).await;
+    assert_eq!(body["status"], "refused");
+    assert!(!h.state.auth.admin_mode());
+    let (status, _) = propose(&page, &cookie, json!({"code": pair["code"], "person": "Andry"})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(h.terminal().await["proposal"]["person"], "Andry");
+}
+
+#[tokio::test]
+async fn codes_that_match_no_dashboard_end_the_session() {
+    let h = harness().await;
+    let (code, page) = h.start().await;
+    let cookie = session(&login(&page, &code).await);
+    for _ in 0..4 {
+        let (status, _) = propose(&page, &cookie, json!({"code": "123456"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let (status, _) = propose(&page, &cookie, json!({"code": "123456"})).await;
+    assert_eq!(status, StatusCode::LOCKED);
+    let r = client().get(format!("{page}/api/setup/admin")).header("cookie", &cookie).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "the session is over");
+}
+
+#[tokio::test]
+async fn the_page_answers_only_to_the_robots_own_names() {
+    let h = harness().await;
+    let (_, page) = h.start().await;
+    let port = page.rsplit(':').next().unwrap();
+    for host in ["evil.example", "rebind.example:80"] {
+        let r = client().get(format!("{page}/api/setup/status")).header("host", host).send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::MISDIRECTED_REQUEST, "{host}");
+    }
+    for host in [format!("127.0.0.1:{port}"), format!("localhost:{port}"), format!("[::1]:{port}"), "192.168.1.9".to_string()] {
+        let r = client().get(format!("{page}/api/setup/status")).header("host", &host).send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "{host}");
+    }
+    // Cross-site reads of the setup API are refused too.
+    let r = client().get(format!("{page}/api/setup/status")).header("sec-fetch-site", "cross-site").send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -517,15 +599,7 @@ async fn finishing_closes_the_page() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
     assert!(!h.state.setup.is_open());
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        client()
-            .get(format!("{page}/api/setup/status"))
-            .send()
-            .await
-            .is_err(),
-        "the listener is gone"
-    );
+    assert!(gone(&page).await, "the listener is gone");
     // The terminal can open it again.
     let (_, page2) = h.start().await;
     assert!(
@@ -556,26 +630,12 @@ async fn stopping_from_the_terminal_closes_the_page() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        client()
-            .get(format!("{page}/api/setup/status"))
-            .send()
-            .await
-            .is_err()
-    );
+    assert!(gone(&page).await);
 }
 
 #[tokio::test]
 async fn the_device_check_reports_the_runtimes_json() {
     let h = harness().await;
-    let script = h.dir.join("runtime.sh");
-    std::fs::create_dir_all(&h.dir).unwrap();
-    std::fs::write(&script, "#!/bin/sh\n[ \"$1 $2\" = \"--doctor --json\" ] || exit 9\necho '[{\"name\": \"OS\", \"status\": \"pass\", \"detail\": \"Linux\"}]'\nexit 1\n").unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // SAFETY: only this test reads it, through the check route.
-    unsafe { std::env::set_var("REACHY_BRIDGE_RUNTIME", &script) };
     let (code, page) = h.start().await;
     let cookie = session(&login(&page, &code).await);
     let r = client()

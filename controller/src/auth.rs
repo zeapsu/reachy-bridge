@@ -934,6 +934,22 @@ async fn approve(
 }
 
 impl Auth {
+    /// The address of the open (pending, or locked by wrong codes) pair
+    /// request with `code`, without approving it or counting a try: the
+    /// setup page shows it on the terminal before anyone approves (#135).
+    pub fn pending_peer(&self, code: &str) -> Option<IpAddr> {
+        let now = Instant::now();
+        let mut pending = self.pending.lock().unwrap();
+        pending.prune(now);
+        let mut found = None;
+        for request in &pending.requests {
+            if ct_eq(request.code.as_bytes(), code.trim().as_bytes()) && matches!(request.status(now), "pending" | "locked") {
+                found = Some(request.peer);
+            }
+        }
+        found
+    }
+
     /// Approve the open pair request with `code` as `role`. `holds_key`: the
     /// caller proved it is on the robot (the local key, or the setup page's
     /// terminal code, #135), so it can't be guessing: it may approve a

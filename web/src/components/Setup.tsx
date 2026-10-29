@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { apiJson, errorText, paths, type CheckResult, type SetupStatus } from "../api.ts";
+import { ApiError, apiJson, errorText, paths, type AdminRequest, type CheckResult, type SetupStatus } from "../api.ts";
 import { useAppearance } from "../hooks/useAppearance.ts";
-import { formatCode, normalizeCode } from "../logic/auth.ts";
+import { normalizeCode } from "../logic/auth.ts";
 import { SETUP_STEPS, checkDot, checkSummary, timeLeft } from "../logic/setup.ts";
 import { Wallpaper } from "./Appearance.tsx";
 import "./Login.css";
@@ -12,6 +12,9 @@ import "./Setup.css";
  * runs on the robot. The terminal's one-time code opens it; then a few steps
  * check the device and make the user's dashboard the admin.
  */
+
+/** The page closed or this browser's setup session ended: re-read the status. */
+const lostSession = (e: unknown) => e instanceof ApiError && [401, 410, 423].includes(e.status);
 export function Setup({ initial }: { initial: SetupStatus }) {
   const look = useAppearance();
   const [status, setStatus] = useState(initial);
@@ -27,14 +30,25 @@ export function Setup({ initial }: { initial: SetupStatus }) {
       setClosed(true);
     }
   }, []);
+  const onError = useCallback(
+    (e: unknown) => {
+      if (lostSession(e)) void refresh();
+    },
+    [refresh],
+  );
 
   useEffect(() => {
     const timer = setInterval(() => setLeft((s) => Math.max(0, s - 1)), 1000);
-    return () => clearInterval(timer);
-  }, []);
+    // The terminal can issue a new code or close the page; keep in step with it.
+    const sync = setInterval(() => void refresh(), 15000);
+    return () => {
+      clearInterval(timer);
+      clearInterval(sync);
+    };
+  }, [refresh]);
   useEffect(() => {
-    if (left === 0) setClosed(true);
-  }, [left]);
+    if (left === 0) void refresh();
+  }, [left, refresh]);
 
   return (
     <>
@@ -48,7 +62,7 @@ export function Setup({ initial }: { initial: SetupStatus }) {
           {closed ? (
             <Closed />
           ) : status.authenticated ? (
-            <Wizard onFinished={() => setClosed(true)} />
+            <Wizard onFinished={() => setClosed(true)} onError={onError} />
           ) : (
             <CodeEntry status={status} onLoggedIn={() => void refresh()} />
           )}
@@ -131,7 +145,12 @@ function CodeEntry({ status, onLoggedIn }: { status: SetupStatus; onLoggedIn: ()
   );
 }
 
-function Wizard({ onFinished }: { onFinished: () => void }) {
+interface StepProps {
+  /** Every failed call goes here too, so a closed page or lost session is noticed. */
+  onError: (e: unknown) => void;
+}
+
+function Wizard({ onFinished, onError }: { onFinished: () => void } & StepProps) {
   const [step, setStep] = useState(0);
   const next = () => setStep((s) => Math.min(s + 1, SETUP_STEPS.length - 1));
   return (
@@ -144,14 +163,14 @@ function Wizard({ onFinished }: { onFinished: () => void }) {
           </li>
         ))}
       </ol>
-      {step === 0 && <DeviceCheck onContinue={next} />}
-      {step === 1 && <MakeAdmin onContinue={next} />}
-      {step === 2 && <Finish onFinished={onFinished} />}
+      {step === 0 && <DeviceCheck onContinue={next} onError={onError} />}
+      {step === 1 && <MakeAdmin onContinue={next} onError={onError} />}
+      {step === 2 && <Finish onFinished={onFinished} onError={onError} />}
     </div>
   );
 }
 
-function DeviceCheck({ onContinue }: { onContinue: () => void }) {
+function DeviceCheck({ onContinue, onError }: { onContinue: () => void } & StepProps) {
   const [results, setResults] = useState<CheckResult[] | null>(null);
   const [error, setError] = useState("");
   const [run, setRun] = useState(0);
@@ -162,11 +181,15 @@ function DeviceCheck({ onContinue }: { onContinue: () => void }) {
     setError("");
     apiJson<{ results: CheckResult[] }>(paths.setupCheck)
       .then((body) => !cancelled && setResults(body.results))
-      .catch((e) => !cancelled && setError(errorText(e, "The device check failed.")));
+      .catch((e) => {
+        if (cancelled) return;
+        setError(errorText(e, "The device check failed."));
+        onError(e);
+      });
     return () => {
       cancelled = true;
     };
-  }, [run]);
+  }, [run, onError]);
 
   const failed = results?.some((r) => r.status === "fail") ?? false;
   return (
@@ -212,12 +235,32 @@ function DeviceCheck({ onContinue }: { onContinue: () => void }) {
   );
 }
 
-function MakeAdmin({ onContinue }: { onContinue: () => void }) {
+function MakeAdmin({ onContinue, onError }: { onContinue: () => void } & StepProps) {
   const [person, setPerson] = useState("");
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [approved, setApproved] = useState("");
+  const [request, setRequest] = useState<AdminRequest["status"]>("none");
+
+  const poll = useCallback(async () => {
+    try {
+      const body = await apiJson<AdminRequest>(paths.setupAdmin);
+      setRequest(body.status);
+      if (body.status === "refused") setError(body.detail ? `Not approved: ${body.detail}.` : "Not approved.");
+    } catch (e) {
+      onError(e);
+    }
+  }, [onError]);
+
+  // A reload while the terminal is asked picks the request up again.
+  useEffect(() => {
+    void poll();
+  }, [poll]);
+  useEffect(() => {
+    if (request !== "waiting") return;
+    const timer = setInterval(() => void poll(), 2000);
+    return () => clearInterval(timer);
+  }, [request, poll]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -230,21 +273,22 @@ function MakeAdmin({ onContinue }: { onContinue: () => void }) {
     setError("");
     try {
       await apiJson(paths.setupAdmin, { method: "POST", body: JSON.stringify({ code: typed, person: person.trim() }) });
-      setApproved(formatCode(typed));
+      setRequest("waiting");
     } catch (e) {
-      setError(errorText(e, "Couldn't approve that code."));
+      setError(errorText(e, "Couldn't send that code."));
+      onError(e);
     } finally {
       setBusy(false);
     }
   };
 
-  if (approved) {
+  if (request === "approved") {
     return (
       <div className="group setup-step">
         <p className="login-lead">Your dashboard is the admin.</p>
         <p className="login-note">
-          The browser that showed {approved} logs in within a few seconds. From now on every other browser needs a code
-          you approve from that dashboard (System · devices).
+          It logs in within a few seconds. From now on every other browser needs a code you approve from that dashboard
+          (System · devices).
         </p>
         <div className="setup-actions">
           <button className="btn primary press" type="button" onClick={onContinue}>
@@ -254,13 +298,31 @@ function MakeAdmin({ onContinue }: { onContinue: () => void }) {
       </div>
     );
   }
+  if (request === "waiting") {
+    return (
+      <div className="group setup-step">
+        <p className="login-lead">Confirm on the robot.</p>
+        <p className="login-note setup-wait">
+          <span className="spin" aria-hidden="true" />
+          <span>
+            The terminal running <code>reachy-bridge setup</code> asks whether to make your dashboard the admin. Type{" "}
+            <code>y</code> there.
+          </span>
+        </p>
+        <p className="login-note">
+          This step happens on the robot because this page crosses your network unencrypted.
+        </p>
+      </div>
+    );
+  }
   return (
     <form className="group setup-step" onSubmit={(event) => void submit(event)}>
       <p className="login-lead">Make your dashboard the admin.</p>
       <p className="login-note">
         On the computer or phone you'll use, open the dashboard: over Tailscale after{" "}
         <code>reachy-bridge serve</code> on the robot, or on this network with LAN access on. It shows a pairing code
-        (on its login screen, or under System · devices · Make this browser the admin). Type that code here.
+        (on its login screen, or under System · devices · Make this browser the admin). Type that code here, then
+        confirm on the robot's terminal.
       </p>
       <input
         className="field"
@@ -296,7 +358,7 @@ function MakeAdmin({ onContinue }: { onContinue: () => void }) {
   );
 }
 
-function Finish({ onFinished }: { onFinished: () => void }) {
+function Finish({ onFinished, onError }: { onFinished: () => void } & StepProps) {
   const [error, setError] = useState("");
   const finish = async () => {
     try {
@@ -304,6 +366,7 @@ function Finish({ onFinished }: { onFinished: () => void }) {
       onFinished();
     } catch (e) {
       setError(errorText(e, "Couldn't close the setup page."));
+      onError(e);
     }
   };
   return (

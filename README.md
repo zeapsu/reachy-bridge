@@ -39,11 +39,13 @@ reachy-bridge status
 
 `reachy-bridge setup` opens a temporary page on the local network (port 7870) and prints a
 one-time code in the terminal. Enter the code on the page from any computer or phone on the
-network: it shows the device check, then approves the pairing code your dashboard shows as the
-admin. The code is single use and works for 15 minutes; five wrong tries lock the page until you
-press Enter in the terminal for a new code. It crosses the network over plain HTTP, which is why
-it is short-lived. The page closes when you finish, when you quit the command, or an hour after
-the code was used.
+network: it shows the device check, then asks for the pairing code your dashboard shows. The
+terminal then names that dashboard's address and asks you to confirm it as the admin; nothing is
+approved until you type `y` there. The code is single use and works for 15 minutes; five wrong
+tries lock the page until you press Enter in the terminal for a new code. The page is plain HTTP
+and listens on every network the device is on while it is open, even when the dashboard is
+tailnet-only, which is why it is short-lived. It closes when you finish, when you quit the command,
+or half an hour after the code was used.
 
 `reachy-bridge serve` adds two HTTPS ports with `tailscale serve`: :10000 for the dashboard and
 :8043 for the running app's own UI. App UIs listen on plain http (`:8042`, `:7860`, ...), where

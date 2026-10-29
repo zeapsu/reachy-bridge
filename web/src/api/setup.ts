@@ -19,6 +19,12 @@ export interface SetupStatus {
   expires_in: number;
 }
 
+/** Where the admin request stands; the robot's terminal answers it. */
+export interface AdminRequest {
+  status: "none" | "waiting" | "approved" | "refused";
+  detail?: string;
+}
+
 export interface CheckResult {
   name: string;
   status: "pass" | "warn" | "fail" | "skip";
