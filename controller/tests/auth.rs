@@ -1011,6 +1011,7 @@ async fn only_the_holder_listens_and_talks_and_loses_it_with_control() {
         ),
         (json!("Sam"), Value::Null)
     );
+    assert_eq!(theirs["session"]["ref"], r.body["ref"], "the public ref, for telling sessions apart");
     // Only Sam answers it.
     let answer = json!({"sdp": "v=0\r\n"});
     let r = h

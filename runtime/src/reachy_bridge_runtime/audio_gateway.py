@@ -13,9 +13,14 @@ pipeline, so switching either never renegotiates:
     robot mic -> valve(listen) -> opus -> webrtcbin -> browser
     browser -> webrtcbin -> opus -> valve(talk) -> robot speaker
 
-ICE candidates are limited to ``AUDIO_GATEWAY_NETS`` (the tailnet and
-loopback by default) in both directions, there's no STUN or TURN, and UDP
-ports come from ``AUDIO_GATEWAY_PORTS`` so one firewall rule covers them.
+ICE candidates are limited to UDP host candidates on ``AUDIO_GATEWAY_NETS``
+(the tailnet by default) in both directions, there's no STUN or TURN, and
+UDP ports come from ``AUDIO_GATEWAY_PORTS`` so one firewall rule covers them.
+
+Every request needs the controller's local key (``controller.key`` in its
+state dir, sent as ``X-Reachy-Bridge-Key``), so neither another local user
+nor an app's UI proxied by the controller can open the mic behind the
+controller's back.
 
 HTTP API (loopback, JSON):
 
@@ -29,15 +34,18 @@ HTTP API (loopback, JSON):
 
 from __future__ import annotations
 
+import hmac
 import ipaddress
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Callable
 
 import gi
@@ -52,12 +60,27 @@ logger = logging.getLogger("reachy_bridge_runtime.audio_gateway")
 PORT = int(os.environ.get("AUDIO_GATEWAY_PORT", "8002"))
 SOURCE = os.environ.get("AUDIO_GATEWAY_SOURCE", "alsasrc device=reachymini_audio_src")
 SINK = os.environ.get("AUDIO_GATEWAY_SINK", "alsasink device=reachymini_audio_sink sync=false")
-# The tailnet (IPv4 CGNAT range and Tailscale's IPv6 prefix) and loopback.
+# The tailnet: IPv4 CGNAT range and Tailscale's IPv6 prefix.
 NETS = [
     ipaddress.ip_network(n.strip())
-    for n in os.environ.get("AUDIO_GATEWAY_NETS", "100.64.0.0/10,fd7a:115c:a1e0::/48,127.0.0.0/8,::1/128").split(",")
+    for n in os.environ.get("AUDIO_GATEWAY_NETS", "100.64.0.0/10,fd7a:115c:a1e0::/48").split(",")
     if n.strip()
 ]
+
+
+def _key_file() -> Path | None:
+    configured = os.environ.get("AUDIO_GATEWAY_KEY_FILE")
+    if configured is not None:
+        # Empty: no key (tests and local development only).
+        return Path(configured) if configured else None
+    state = os.environ.get("REACHY_BRIDGE_STATE_DIR")
+    if not state:
+        state = str(Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "reachy-bridge")
+    return Path(state) / "controller.key"
+
+
+KEY_FILE = _key_file()
+KEY_HEADER = "X-Reachy-Bridge-Key"
 PORTS = os.environ.get("AUDIO_GATEWAY_PORTS", "47100-47199")
 GATHER_TIMEOUT = 5.0
 CALL_TIMEOUT = 10.0
@@ -71,22 +94,36 @@ def missing_elements() -> list[str]:
     return [name for name in REQUIRED if Gst.ElementFactory.find(name) is None]
 
 
+# foundation component transport priority address port "typ" type [extensions],
+# single spaces as libnice splits them.
+CANDIDATE = re.compile(r"candidate:[!-~]{1,32} \d{1,3} (?i:udp) \d{1,10} ([0-9A-Fa-f.:]{2,45}) \d{1,5} typ host( [!-~]+ [!-~]+)*")
+
+
 def candidate_allowed(line: str) -> bool:
-    """An ``a=candidate`` line whose address is in ``NETS``. Others (LAN,
-    public, mDNS names) are dropped."""
-    parts = line.split()
-    if len(parts) < 6:
+    """A UDP host candidate (``candidate:...``, without ``a=``) whose
+    address is in ``NETS``. Others (LAN, public, loopback, mDNS names, TCP,
+    relayed) are dropped."""
+    match = CANDIDATE.fullmatch(line)
+    if not match:
         return False
     try:
-        address = ipaddress.ip_address(parts[4])
+        address = ipaddress.ip_address(match.group(1))
     except ValueError:
         return False
     return any(address in net for net in NETS)
 
 
 def filter_candidates(sdp: str) -> str:
+    """Keep only allowed candidates. A line that mentions a candidate in any
+    other shape (leading space, ``a=remote-candidates``) is dropped too."""
     lines = sdp.replace("\r\n", "\n").split("\n")
-    kept = [ln for ln in lines if not ln.startswith("a=candidate:") or candidate_allowed(ln[2:])]
+    kept = [
+        ln
+        for ln in lines
+        if "candidate" not in ln
+        or ln == "a=end-of-candidates"
+        or (ln.startswith("a=candidate:") and candidate_allowed(ln[2:]))
+    ]
     return "\r\n".join(kept)
 
 
@@ -198,13 +235,19 @@ class Session:
             raise RuntimeError("no offer yet")
         return filter_candidates(description.sdp.as_text())
 
-    def answer(self, sdp: str) -> None:
+    def answer(self, sdp: str) -> Gst.Promise:
+        """Apply the browser's answer (once); the caller waits on the promise
+        off the main loop."""
+        if self.answered:
+            raise ValueError("this session already has an answer")
         result, message = GstSdp.SDPMessage.new_from_text(filter_candidates(sdp))
         if result != GstSdp.SDPResult.OK:
             raise ValueError("unreadable answer")
         answer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.ANSWER, message)
-        self.webrtc.emit("set-remote-description", answer, Gst.Promise.new())
+        promise = Gst.Promise.new()
+        self.webrtc.emit("set-remote-description", answer, promise)
         self.answered = True
+        return promise
 
     def route(self, listen: bool, talk: bool) -> None:
         self.listen, self.talk = listen, talk
@@ -311,15 +354,27 @@ class Handler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
-        if length > 65536:
+        if not 0 <= length <= 65536:
             raise ValueError("body too large")
         value = json.loads(self.rfile.read(length) or b"{}")
         if not isinstance(value, dict):
             raise ValueError("expected an object")
         return value
 
+    def _authorized(self) -> bool:
+        if KEY_FILE is None:
+            return True
+        try:
+            key = KEY_FILE.read_text().strip()
+        except OSError:
+            return False
+        sent = self.headers.get(KEY_HEADER) or ""
+        return bool(key) and hmac.compare_digest(sent.encode(), key.encode())
+
     def _route(self, method: str) -> None:
         parts = [p for p in self.path.split("?")[0].split("/") if p]
+        if not self._authorized():
+            return self._reply(HTTPStatus.FORBIDDEN, {"detail": "only the controller can use the audio gateway"})
         try:
             if method == "GET" and parts == ["status"]:
                 return self._reply(HTTPStatus.OK, GATEWAY.status())
@@ -335,7 +390,12 @@ class Handler(BaseHTTPRequestHandler):
                     sdp = body.get("sdp")
                     if not isinstance(sdp, str) or len(sdp) > 32768:
                         return self._reply(HTTPStatus.BAD_REQUEST, {"detail": "sdp is required"})
-                    GATEWAY.with_session(parts[1], lambda s: s.answer(sdp))
+                    promise = GATEWAY.with_session(parts[1], lambda s: s.answer(sdp))
+                    if promise.wait() != Gst.PromiseResult.REPLIED:
+                        raise ValueError("the answer wasn't applied")
+                    reply = promise.get_reply()
+                    if reply is not None and reply.has_field("error"):
+                        raise ValueError(f"the answer was refused: {reply.get_value('error').message}")
                     return self._reply(HTTPStatus.NO_CONTENT)
                 if parts[2] == "route":
                     listen, talk = bool(body.get("listen")), bool(body.get("talk"))

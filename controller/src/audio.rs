@@ -27,15 +27,22 @@ use crate::auth::{AuthContext, Credential};
 use crate::error::{ApiError, ApiResult};
 use crate::state::Shared;
 
+pub const DEFAULT_URL: &str = "http://127.0.0.1:8002";
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// How often a session's watcher checks the gateway.
 const WATCH: Duration = Duration::from_secs(2);
+/// Failed checks in a row after which the gateway counts as gone (10 s).
+const GATEWAY_GONE: u32 = 5;
 /// How long a freshly started gateway gets to answer.
 const START_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 struct Owner {
+    /// The gateway's id: only the owner's browser learns it.
     id: String,
+    /// Shown to every browser, so the owner can tell its session apart
+    /// without logins (where browsers have no device).
+    public: String,
     device: Option<String>,
     person: Option<String>,
     listen: bool,
@@ -50,6 +57,8 @@ pub struct Audio {
     unit: Option<String>,
     systemctl: String,
     http: reqwest::Client,
+    /// The controller's local key: the gateway refuses requests without it.
+    key: Option<String>,
     owner: Mutex<Option<Owner>>,
     /// One open at a time, so `owner` names the gateway's latest session.
     opening: tokio::sync::Mutex<()>,
@@ -62,6 +71,7 @@ impl Audio {
             unit: unit.filter(|u| !u.is_empty()),
             systemctl: "systemctl".into(),
             http: reqwest::Client::builder().timeout(TIMEOUT).build().expect("http client"),
+            key: None,
             owner: Mutex::new(None),
             opening: tokio::sync::Mutex::new(()),
         }
@@ -72,7 +82,12 @@ impl Audio {
     pub fn from_env() -> Self {
         let url = std::env::var("AUDIO_GATEWAY_URL").ok().filter(|u| !u.is_empty());
         let unit = std::env::var("AUDIO_GATEWAY_UNIT").unwrap_or_else(|_| "reachy-bridge-audio.service".into());
-        Self::new(url.as_deref().unwrap_or("http://127.0.0.1:8002"), Some(unit))
+        Self::new(url.as_deref().unwrap_or(DEFAULT_URL), Some(unit))
+    }
+
+    pub fn with_key(mut self, key: Option<&str>) -> Self {
+        self.key = key.map(str::to_owned);
+        self
     }
 
     /// Use the gateway at `url` (tests).
@@ -83,6 +98,9 @@ impl Audio {
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Option<Value>, ApiError> {
         let url = format!("{}{path}", self.url.lock().unwrap());
         let mut request = self.http.request(method, url);
+        if let Some(key) = &self.key {
+            request = request.header(crate::auth::LOCAL_KEY_HEADER, key);
+        }
         if let Some(body) = body {
             request = request.json(&body);
         }
@@ -158,13 +176,14 @@ pub fn router() -> Router<Shared> {
 }
 
 /// The open session, for every dashboard's mic-live indicator. Only its
-/// owner gets the id; without logins (no device) every browser is equally
-/// trusted, so all get it and each tells its own by the id it opened.
+/// owner's login gets the id; without logins (no device) each browser tells
+/// its own by the `ref` it was given when it opened it.
 async fn view(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>) -> Json<Value> {
     let session = state.audio.owner().map(|o| {
         let you = o.device.is_some() && o.device == ctx.device;
         json!({
-            "id": if you || o.device.is_none() { Some(o.id.clone()) } else { None },
+            "id": if you { Some(o.id.clone()) } else { None },
+            "ref": o.public,
             "person": o.person,
             "listen": o.listen,
             "talk": o.talk,
@@ -207,6 +226,7 @@ async fn open(
     };
     let owner = Owner {
         id: id.to_string(),
+        public: crate::auth::random_hex(8),
         device: ctx.device.clone(),
         person: ctx.person.clone(),
         listen: body.listen,
@@ -225,8 +245,9 @@ async fn open(
         body.talk
     );
     let credential = ctx.credential.clone().unwrap_or(Credential::Trusted);
+    let public = owner.public.clone();
     tokio::spawn(watch(state.clone(), owner, credential, ctx.local));
-    Ok(Json(json!({"id": id, "offer": offer})))
+    Ok(Json(json!({"id": id, "ref": public, "offer": offer})))
 }
 
 /// Keep a session tied to its browser: end it when the browser's login or
@@ -242,12 +263,15 @@ async fn watch(state: Shared, owner: Owner, credential: Credential, local: bool)
         }
     };
     let ticks = async {
+        let mut errors = 0;
         loop {
             tokio::time::sleep(WATCH).await;
             if state.sim.active() {
                 return "sim mode started";
             }
-            match audio.status().await {
+            let status = audio.status().await;
+            errors = if status.is_err() { errors + 1 } else { 0 };
+            match status {
                 Ok(session) if session["id"].as_str() == Some(id.as_str()) => {
                     if session["connected"] == true
                         && let Some(device) = &owner.device
@@ -256,7 +280,8 @@ async fn watch(state: Shared, owner: Owner, credential: Credential, local: bool)
                     }
                 }
                 Ok(_) => return "gone from the gateway",
-                // A blip; the gateway drops a session that never connects.
+                // A blip, unless it lasts: then the gateway is gone, and its session with it.
+                Err(_) if errors >= GATEWAY_GONE => return "the gateway stopped answering",
                 Err(_) => {}
             }
         }

@@ -17,12 +17,14 @@ export interface VoiceRoute {
 
 /** The open session, as every dashboard sees it. */
 export interface VoiceSession extends VoiceRoute {
-  /** Only the owner's browser gets the id (every browser, without logins). */
+  /** Only the owner's login gets the id. */
   id: string | null;
+  /** Public: the browser that opened it tells it apart by this, even without logins. */
+  ref: string;
   person: string | null;
   /** Unix seconds. */
   since: number;
-  /** This browser's login owns it (false without logins: compare the id). */
+  /** This browser's login owns it (false without logins: compare `ref`). */
   you: boolean;
 }
 
@@ -36,5 +38,6 @@ export interface VoiceView {
 /** POST /api/audio/session */
 export interface VoiceOffer {
   id: string;
+  ref: string;
   offer: string;
 }

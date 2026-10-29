@@ -531,6 +531,11 @@ impl Auth {
         self.config.trust_loopback && !self.admin_mode()
     }
 
+    /// The CLI's key, which the audio gateway also requires (#219).
+    pub fn local_key(&self) -> Option<&str> {
+        self.local_key.as_deref()
+    }
+
     fn local_key_matches(&self, headers: &HeaderMap) -> bool {
         let (Some(key), Some(sent)) = (&self.local_key, headers.get(LOCAL_KEY_HEADER)) else {
             return false;

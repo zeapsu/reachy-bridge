@@ -126,6 +126,12 @@ async fn main() -> std::io::Result<()> {
     // Nor the daemon's WebRTC signalling: it is on loopback so the LAN can't
     // reach it, and an app's manifest mustn't re-expose it through here (#186).
     own_ports.push(reachy_controller::app_proxy::SIGNALLING_PORT);
+    // Nor the audio gateway (#219), which would open the robot's mic for
+    // whoever reaches it.
+    let audio_url = std::env::var("AUDIO_GATEWAY_URL").ok().filter(|u| !u.is_empty());
+    own_ports.extend(
+        reqwest::Url::parse(audio_url.as_deref().unwrap_or(reachy_controller::audio::DEFAULT_URL)).ok().and_then(|url| url.port_or_known_default()),
+    );
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
         let _ = rx.wait_for(|stop| *stop).await;

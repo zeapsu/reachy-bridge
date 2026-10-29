@@ -4,6 +4,8 @@ import type { VoiceSession, VoiceView } from "../api/voice.ts";
 import type { ControlState } from "./control.ts";
 
 export const VOICE_POLL_MS = 2000;
+/** How long a disconnected session gets to come back before this browser ends it. */
+export const DISCONNECT_GRACE_MS = 8000;
 /** How long the browser gathers its ICE candidates before answering. */
 export const ICE_WAIT_MS = 3000;
 
@@ -25,8 +27,8 @@ export function talkBlocked(secure: boolean, hasMic: boolean): string | null {
 const doing = (s: VoiceSession) =>
   s.listen && s.talk ? "listening and talking" : s.talk ? "talking" : s.listen ? "listening" : "connected, muted";
 
-/** The open session is this browser's: its login's, or the one it opened (`mine`). */
-export const isMine = (s: VoiceSession, mine: string | null) => s.you || (mine !== null && s.id === mine);
+/** The open session is this browser's: its login's, or the one it opened (`mine`, its ref). */
+export const isMine = (s: VoiceSession, mine: string | null) => s.you || (mine !== null && s.ref === mine);
 
 /** The mic-live badge every dashboard shows, or null with no session. */
 export function voiceBadge(view: VoiceView | null, mine: string | null): string | null {

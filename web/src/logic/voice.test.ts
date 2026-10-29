@@ -4,6 +4,7 @@ import { talkBlocked, voiceBadge, voiceBlocked } from "./voice.ts";
 
 const session = (over: Partial<VoiceSession> = {}): VoiceSession => ({
   id: null,
+  ref: "r1",
   person: "Sam",
   listen: true,
   talk: false,
@@ -42,10 +43,10 @@ describe("voiceBadge", () => {
     expect(voiceBadge({ available: true, session: session({ listen: false, talk: true, person: null }) }, null)).toBe("Someone is talking");
     expect(voiceBadge({ available: true, session: session({ listen: false }) }, null)).toBe("Sam is connected, muted");
   });
-  test("without logins, tells this browser's session by its id", () => {
-    const open = session({ id: "s1", person: null });
-    expect(voiceBadge({ available: true, session: open }, "s1")).toBe("You're listening");
+  test("without logins, tells this browser's session by its ref", () => {
+    const open = session({ person: null });
+    expect(voiceBadge({ available: true, session: open }, "r1")).toBe("You're listening");
     expect(voiceBadge({ available: true, session: open }, null)).toBe("Someone is listening");
-    expect(voiceBadge({ available: true, session: open }, "s0")).toBe("Someone is listening");
+    expect(voiceBadge({ available: true, session: open }, "r0")).toBe("Someone is listening");
   });
 });

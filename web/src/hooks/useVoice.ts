@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson, errorText, paths, type VoiceOffer, type VoiceRoute, type VoiceView } from "../api.ts";
-import { ICE_WAIT_MS, VOICE_POLL_MS } from "../logic/voice.ts";
+import { DISCONNECT_GRACE_MS, ICE_WAIT_MS, VOICE_POLL_MS } from "../logic/voice.ts";
 
 export type VoiceStatus = "off" | "connecting" | "live";
 
 export interface VoiceApi {
   view: VoiceView | null;
-  /** The id of the session this browser opened, or null. */
+  /** The public ref of the session this browser opened, or null. */
   mine: string | null;
   /** The browser wouldn't start playing the robot's audio without a tap. */
   needsTap: boolean;
@@ -62,6 +62,7 @@ export function useVoice(visible: boolean): VoiceApi {
   const id = useRef<string | null>(null);
   // When `id` was set: a poll sent before then can't know the session.
   const openedAt = useRef(0);
+  const mineRef = useRef<string | null>(null);
   const mic = useRef<MediaStreamTrack | null>(null);
   const speaker = useRef<HTMLAudioElement | null>(null);
 
@@ -73,6 +74,7 @@ export function useVoice(visible: boolean): VoiceApi {
     if (speaker.current) speaker.current.srcObject = null;
     setNeedsTap(false);
     id.current = null;
+    mineRef.current = null;
     setMine(null);
     setStatus("off");
     setRouteState(OFF);
@@ -84,7 +86,7 @@ export function useVoice(visible: boolean): VoiceApi {
     try {
       const next = await apiJson<VoiceView>(paths.voice);
       setView(next);
-      if (id.current && sent > openedAt.current && next.session?.id !== id.current) {
+      if (id.current && sent > openedAt.current && next.session?.ref !== mineRef.current) {
         teardown("Your audio session ended: this browser no longer has control of the robot.");
       }
     } catch {
@@ -155,10 +157,11 @@ export function useVoice(visible: boolean): VoiceApi {
           // Ask for the mic first: a refusal shouldn't open the robot's.
           const track = next.talk ? await microphone() : null;
           mic.current = track;
-          const { id: sid, offer } = await apiJson<VoiceOffer>(paths.voiceSession, { method: "POST", body: JSON.stringify(next) });
+          const { id: sid, ref, offer } = await apiJson<VoiceOffer>(paths.voiceSession, { method: "POST", body: JSON.stringify(next) });
           opened = sid;
           id.current = sid;
-          setMine(sid);
+          mineRef.current = ref;
+          setMine(ref);
           openedAt.current = performance.now();
           setStatus("connecting");
           setRouteState(next);
@@ -168,10 +171,19 @@ export function useVoice(visible: boolean): VoiceApi {
             out.srcObject = event.streams[0] ?? new MediaStream([event.track]);
             out.play().catch(() => setNeedsTap(true));
           };
+          let grace: ReturnType<typeof setTimeout> | undefined;
           peer.onconnectionstatechange = () => {
             if (pc.current !== peer) return;
+            clearTimeout(grace);
             if (peer.connectionState === "connected") setStatus("live");
             else if (peer.connectionState === "failed") teardown("The audio connection dropped.");
+            // The controller may have ended it while this page was hidden:
+            // don't keep the mic until ICE gives up, but allow a network blip.
+            else if (peer.connectionState === "disconnected") {
+              grace = setTimeout(() => {
+                if (pc.current === peer && peer.connectionState !== "connected") teardown("The audio connection dropped.");
+              }, DISCONNECT_GRACE_MS);
+            }
           };
           await peer.setRemoteDescription({ type: "offer", sdp: offer });
           // Always sendrecv, so talking can start later without renegotiating.
