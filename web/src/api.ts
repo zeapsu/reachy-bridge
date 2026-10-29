@@ -10,6 +10,7 @@ import { mediaPaths } from "./api/media.ts";
 import { powerPaths } from "./api/power.ts";
 import { simPaths } from "./api/sim.ts";
 import { systemPaths } from "./api/system.ts";
+import { voicePaths } from "./api/voice.ts";
 
 export * from "./api/apps.ts";
 export * from "./api/client.ts";
@@ -20,6 +21,7 @@ export * from "./api/media.ts";
 export * from "./api/power.ts";
 export * from "./api/sim.ts";
 export * from "./api/system.ts";
+export * from "./api/voice.ts";
 
 export const paths = {
   ...powerPaths,
@@ -31,4 +33,5 @@ export const paths = {
   ...authPaths,
   ...controlPaths,
   ...hfPaths,
+  ...voicePaths,
 } as const;

@@ -118,6 +118,8 @@ class Session:
     def __init__(self, listen: bool, talk: bool) -> None:
         self.id = secrets.token_hex(8)
         self.created = time.monotonic()
+        # Last seen connected (or created): a session quiet this long ends.
+        self.seen = self.created
         self.listen = listen
         self.talk = talk
         self.packets_in = 0
@@ -212,15 +214,19 @@ class Session:
 
     def state(self) -> dict[str, Any]:
         ice = self.webrtc.get_property("ice-connection-state")
+        connected = ice in (GstWebRTC.WebRTCICEConnectionState.CONNECTED, GstWebRTC.WebRTCICEConnectionState.COMPLETED)
+        if connected:
+            self.seen = time.monotonic()
         return {
             "id": self.id,
             "listen": self.listen,
             "talk": self.talk,
             "answered": self.answered,
-            "connected": ice in (GstWebRTC.WebRTCICEConnectionState.CONNECTED, GstWebRTC.WebRTCICEConnectionState.COMPLETED),
+            "connected": connected,
             "ice": ice.value_nick,
             "packets_in": self.packets_in,
             "age": round(time.monotonic() - self.created, 1),
+            "quiet": round(time.monotonic() - self.seen, 1),
         }
 
     def stop(self) -> None:
@@ -269,9 +275,9 @@ class Gateway:
             if session is None:
                 return {"session": None}
             state = on_main(session.state)
-            # Never answered or never connected: give the port back.
-            if not state["connected"] and state["age"] > CONNECT_TIMEOUT:
-                logger.info("Audio session %s never connected; ending it", session.id)
+            # Never connected, or its browser went away: give the port back.
+            if not state["connected"] and state["quiet"] > CONNECT_TIMEOUT:
+                logger.info("Audio session %s not connected for %ss; ending it", session.id, CONNECT_TIMEOUT)
                 self._end()
                 return {"session": None}
             return {"session": state}

@@ -1,0 +1,20 @@
+[Unit]
+Description=reachy-bridge audio gateway (listen and talk from the dashboard; started on demand)
+After=reachy-bridge.service
+# Not enabled: the controller starts it when a browser starts listening or
+# talking (#219). It serves one WebRTC session at a time on loopback HTTP
+# (only the controller talks to it); the audio itself is UDP between the
+# browser and this device, on the ports below, offered on tailnet addresses
+# only. It opens the robot's mic and speaker through the same shared ALSA
+# devices as the daemon, so both can use them at once.
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/reachy-bridge/.venv/bin/reachy-bridge-audio-gateway
+Environment=AUDIO_GATEWAY_PORT=8002
+Environment=AUDIO_GATEWAY_PORTS=47100-47199
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGINT
+TimeoutStopSec=10
