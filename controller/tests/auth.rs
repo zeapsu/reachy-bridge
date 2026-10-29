@@ -747,6 +747,7 @@ async fn a_person_asks_gets_time_takes_control_and_the_admin_overrides() {
     assert_eq!(h.call("GET", "/api/logs/sources", LAN, &[("cookie", &sam)], None).await.status, StatusCode::OK);
     // Without a grant Sam can only ask, once.
     assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(h.control(LAN, &sam, "take?if_free=true", None).await.status, StatusCode::FORBIDDEN);
     assert_eq!(h.control(LAN, &sam, "request", Some(json!({"minutes": 30, "note": "demo"}))).await.status, StatusCode::OK);
     assert_eq!(h.control(LAN, &sam, "request", Some(json!({"minutes": 30}))).await.status, StatusCode::CONFLICT);
     // Sam can't grant itself time; the admin sees the request and grants it.
@@ -760,6 +761,8 @@ async fn a_person_asks_gets_time_takes_control_and_the_admin_overrides() {
     // Sam takes control and acts; the admin, watching, can't.
     assert_eq!(h.view(LAN, &sam).await["you"]["can_take"], true);
     assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+    // Taking it again from the holding device is a no-op, conditional or not.
+    assert_eq!(h.control(LAN, &sam, "take?if_free=true", None).await.status, StatusCode::OK);
     assert_eq!(h.act(LAN, &sam).await.status, StatusCode::OK);
     let r = h.act(LOOPBACK, &admin).await;
     assert_eq!((r.status, r.body["detail"].clone()), (StatusCode::FORBIDDEN, json!("Sam is in control of the robot")));

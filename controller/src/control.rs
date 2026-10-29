@@ -389,7 +389,9 @@ async fn view(State(state): State<Shared>, Extension(ctx): Extension<AuthContext
 struct TakeQuery {
     /// Only when nobody is in control: the dashboard taking control for a
     /// robot action (#221), which must never take it from someone, admin
-    /// or not, on a stale view of who has it.
+    /// or not, on a stale view of who has it. A holder who stepped away
+    /// isn't in control: like a plain take, this one ends their claim to
+    /// come back, as the dashboard shows the robot free meanwhile.
     #[serde(default)]
     if_free: bool,
 }

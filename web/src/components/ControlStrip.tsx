@@ -28,8 +28,9 @@ export function ControlStrip({ control }: { control: ControlApi }) {
   }, [free]);
 
   const { act, busy } = control;
-  const takeButton = (label: string, primary = false) => (
-    <button className={`btn press${primary ? " primary" : ""}`} type="button" disabled={busy} onClick={() => void act(paths.controlTake)}>
+  // Take over means it; Take control (nobody has it, as far as this view knows) must not, if someone just did.
+  const takeButton = (label: string, primary = false, path: string = paths.controlTake) => (
+    <button className={`btn press${primary ? " primary" : ""}`} type="button" disabled={busy} onClick={() => void act(path)}>
       {label}
     </button>
   );
@@ -86,7 +87,7 @@ export function ControlStrip({ control }: { control: ControlApi }) {
     [text, action] = ask(state.asking);
   } else if (state.kind === "free" && refused) {
     text = "Nobody is in control.";
-    action = takeButton("Take control", true);
+    action = takeButton("Take control", true, paths.controlTakeIfFree);
   }
   if (!text && !action) return null;
 
@@ -99,6 +100,8 @@ export function ControlStrip({ control }: { control: ControlApi }) {
 }
 
 const TOAST_MS = 4000;
+// A tap fires mouseenter on touch screens and no mouseleave until the next tap elsewhere.
+const hover = typeof window !== "undefined" && window.matchMedia?.("(hover: hover)").matches;
 
 /**
  * A notice for a few seconds when who drives changes (#221): you took
@@ -144,7 +147,7 @@ export function ControlToast({ control, nudge }: { control: ControlApi; nudge: n
       {toast && (
         <div
           className={`glass control-toast${toast.error ? " error" : ""}`}
-          onMouseEnter={() => setHeld(true)}
+          onMouseEnter={() => hover && setHeld(true)}
           onMouseLeave={() => setHeld(false)}
           onFocus={() => setHeld(true)}
           onBlur={() => setHeld(false)}

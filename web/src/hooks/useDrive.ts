@@ -170,6 +170,7 @@ export function useDrive(allowed: boolean): DriveState {
     void takeControlIfFree(true).finally(() => {
       taking.current = false;
       if (held.current.size) connect();
+      else close();
     });
     last.current = performance.now();
     if (timer.current === null) timer.current = setInterval(tick, TICK_MS);

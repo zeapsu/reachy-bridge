@@ -22,10 +22,14 @@ export function useControl(visible: boolean): ControlApi {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const latest = useRef<ControlView | null>(null);
+  const asked = useRef(0);
 
   const reload = useCallback(async () => {
+    // A poll sent before a take can land after it: keep the newest answer.
+    const seq = ++asked.current;
     try {
       const next = await apiJson<ControlView>(paths.control);
+      if (seq !== asked.current) return;
       latest.current = next;
       setView(next);
     } catch {

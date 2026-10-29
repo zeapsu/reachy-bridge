@@ -40,7 +40,7 @@ export function AppView({
             </a>
           ) : null}
           {onTake ? (
-            <button type="button" className="app-view-stop" onClick={onTake}>
+            <button type="button" className="app-view-stop" onClick={onTake} disabled={busy}>
               Take control
             </button>
           ) : null}
