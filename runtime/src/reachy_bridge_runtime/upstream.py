@@ -579,10 +579,17 @@ def sound_roots() -> tuple[Path, ...]:
     from reachy_mini.daemon.app.routers.media import SOUNDS_TMP_DIR
     from reachy_mini.utils.constants import ASSETS_ROOT_PATH
 
-    roots = (ASSETS_ROOT_PATH, SOUNDS_TMP_DIR, Path(tempfile.gettempdir()) / _UPLOADS_DIR / "audio", HF_HUB_CACHE)
+    uploads = Path(tempfile.gettempdir()) / _UPLOADS_DIR
     # The upload folders sit in the shared temp dir: one another user made
-    # first (or a link there) would widen what counts as a sound folder.
-    return tuple(Path(root).resolve() for root in roots if _own_folder(Path(root)))
+    # first (or a link there) would widen what counts as a sound folder. The
+    # assets and the Hugging Face cache may well be links (a cache on another
+    # disk), so they aren't held to this.
+    shared = [
+        folder
+        for folder, checked in ((Path(SOUNDS_TMP_DIR), [Path(SOUNDS_TMP_DIR)]), (uploads / "audio", [uploads, uploads / "audio"]))
+        if all(_own_folder(f) for f in checked)
+    ]
+    return tuple(Path(root).resolve() for root in (ASSETS_ROOT_PATH, HF_HUB_CACHE, *shared))
 
 
 def _own_folder(path: Path) -> bool:
