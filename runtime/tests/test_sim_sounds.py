@@ -60,7 +60,7 @@ def test_a_bare_name_resolves_under_the_assets_folder(assets: Path, _log: sim_so
     assert _play("wake_up.wav") == ["wake_up.wav"]
     [event] = _log.snapshot()["events"]
     assert event["kind"] == "play" and event["name"] == "wake_up.wav"
-    assert _log.file(event["token"]) == (assets / "wake_up.wav").resolve()
+    assert _log.file(event["token"]) == ((assets / "wake_up.wav").resolve(), "audio/wav")
 
 
 def test_an_absolute_path_is_kept(tmp_path: Path, assets: Path, _log: sim_sounds.SoundLog) -> None:
@@ -69,7 +69,21 @@ def test_an_absolute_path_is_kept(tmp_path: Path, assets: Path, _log: sim_sounds
     move_sound.write_bytes(b"RIFF")
     _play(str(move_sound))
     [event] = _log.snapshot()["events"]
-    assert _log.file(event["token"]) == move_sound.resolve()
+    assert _log.file(event["token"]) == (move_sound.resolve(), "audio/wav")
+
+
+def test_a_cached_move_sound_keeps_the_type_of_its_name(tmp_path: Path, assets: Path, _log: sim_sounds.SoundLog) -> None:
+    # The Hugging Face cache links snapshots/<rev>/x.wav to blobs/<sha>.
+    blob = tmp_path / "dataset" / "blobs" / "3f2a"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"RIFF")
+    link = tmp_path / "dataset" / "snapshots" / "rev" / "cheerful1.wav"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(blob)
+    _play(str(link))
+    [event] = _log.snapshot()["events"]
+    assert event["name"] == "cheerful1.wav"
+    assert _log.file(event["token"]) == (blob.resolve(), "audio/wav")
 
 
 def test_missing_and_non_audio_files_are_not_recorded(
@@ -80,7 +94,7 @@ def test_missing_and_non_audio_files_are_not_recorded(
     # The original still runs: the daemon decides what a bad name means.
     assert _play("nope.wav") == ["nope.wav"]
     _play(str(secret))
-    assert _log.snapshot() == {"seq": 0, "events": []}
+    assert _log.snapshot()["seq"] == 0 and _log.snapshot()["events"] == []
 
 
 def test_files_outside_the_daemons_sound_folders_are_not_recorded(
@@ -92,7 +106,7 @@ def test_files_outside_the_daemons_sound_folders_are_not_recorded(
     # Absolute, or climbing out of the assets folder: both refused.
     _play(str(private))
     _play("../home/voicemail.m4a")
-    assert _log.snapshot() == {"seq": 0, "events": []}
+    assert _log.snapshot()["seq"] == 0 and _log.snapshot()["events"] == []
 
 
 def test_a_failing_lookup_never_breaks_the_caller(assets: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -131,7 +145,26 @@ async def test_routes_list_events_and_serve_only_recorded_files(
         unknown = await client.get("/api/bridge/sounds/" + "0" * 32)
         traversal = await client.get("/api/bridge/sounds/..%2F..%2Fetc%2Fpasswd")
     assert listing["seq"] == 1
+    assert listing["boot"] != sim_sounds.SoundLog().snapshot()["boot"]
     assert served.status_code == 200 and served.content == b"RIFF....WAVE"
     assert served.headers["content-type"] == "audio/wav"
+    assert served.headers["x-content-type-options"] == "nosniff"
     assert unknown.status_code == 404
     assert traversal.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_file_swapped_for_a_link_out_after_playing_is_not_served(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, assets: Path, _log: sim_sounds.SoundLog
+) -> None:
+    app = _app(monkeypatch)
+    _play("wake_up.wav")
+    token = _log.snapshot()["events"][0]["token"]
+    secret = tmp_path / "secret.txt"
+    secret.write_text("private")
+    sound = assets / "wake_up.wav"
+    sound.unlink()
+    sound.symlink_to(secret)
+    async with _client(app) as client:
+        response = await client.get(f"/api/bridge/sounds/{token}")
+    assert response.status_code == 404

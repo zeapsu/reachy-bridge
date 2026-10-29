@@ -142,8 +142,8 @@ Backend: `daemon/backend/abstract.py`; endpoints:
   dataset's Hugging Face cache; an uploaded move's audio is deleted when the
   move ends. A new sound stops the one playing. With `--no-media` there is no
   media server and nothing plays. **Bridge feature** (`features/sim_sounds.py`,
-  sim daemons only, #219): every `play_sound` of a file in those folders, and
-  every `stop_sound`, is recorded; `GET /api/bridge/sounds` lists the latest
+  sim daemons only, #219): every `play_sound` of a file in those folders
+  (checked again when served), and every `stop_sound`, is recorded; `GET /api/bridge/sounds` lists the latest
   events and `GET /api/bridge/sounds/{token}` serves a played file by the
   random token its event names. The controller relays them to the dashboard in sim
   mode (`/api/sim/sounds-stream`, `/api/sim/sounds/{token}`).

@@ -56,9 +56,11 @@ const SIM_REFUSED: [(&str, &str); 3] = [
     ("/api/hf/token", "Sign in to Hugging Face from the robot, not the simulation"),
 ];
 
-/// Sound routes that only play or stop a sound: with no media the sim daemon
-/// plays nothing on the host, and the dashboard plays it instead (#219).
-const SIM_SOUNDS: [&str; 3] = ["/api/volume/test-sound", "/api/media/play_sound", "/api/media/stop-sound"];
+/// Sound routes that only play or stop a built-in sound: with no media the
+/// sim daemon plays nothing on the host, and the dashboard plays it instead
+/// (#219). `media/play_sound` stays refused: it takes any path, and in sim
+/// mode the file would come back to the browser.
+const SIM_SOUNDS: [&str; 2] = ["/api/volume/test-sound", "/api/media/stop-sound"];
 
 pub struct SimMode {
     robot_url: String,

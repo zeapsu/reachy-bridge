@@ -43,6 +43,7 @@ fn token_ok(token: &str) -> bool {
 /// Keep a well-formed `bridge/sounds` answer, reduced to the fields the
 /// dashboard reads.
 pub fn valid_sounds(value: &Value) -> Option<Value> {
+    let boot = value.get("boot")?.as_str().filter(|b| !b.is_empty() && b.len() <= 32 && b.bytes().all(|c| c.is_ascii_hexdigit()))?;
     let seq = value.get("seq")?.as_u64()?;
     let events = value.get("events")?.as_array()?;
     let events: Vec<Value> = events
@@ -60,7 +61,7 @@ pub fn valid_sounds(value: &Value) -> Option<Value> {
             }
         })
         .collect();
-    Some(json!({"seq": seq, "events": events}))
+    Some(json!({"boot": boot, "seq": seq, "events": events}))
 }
 
 /// The sim daemon's sound log while sim mode is on; a new sample only when
@@ -129,6 +130,7 @@ async fn file(State(state): State<Shared>, Path(token): Path<String>) -> Respons
         headers.insert(header::CONTENT_LENGTH, length);
     }
     headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("private, max-age=300"));
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, header::HeaderValue::from_static("nosniff"));
     response
 }
 
@@ -140,6 +142,7 @@ mod tests {
     fn sounds_keep_known_events_only() {
         let token = "a".repeat(32);
         let kept = valid_sounds(&json!({
+            "boot": "ab12",
             "seq": 3,
             "events": [
                 {"seq": 1, "kind": "play", "token": token, "name": "wake_up.wav", "path": "/secret"},
@@ -151,7 +154,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             kept,
-            json!({"seq": 3, "events": [
+            json!({"boot": "ab12", "seq": 3, "events": [
                 {"seq": 1, "kind": "play", "token": token, "name": "wake_up.wav"},
                 {"seq": 3, "kind": "stop"},
             ]})
@@ -160,8 +163,10 @@ mod tests {
 
     #[test]
     fn sounds_reject_a_malformed_answer() {
-        assert!(valid_sounds(&json!({"events": []})).is_none());
-        assert!(valid_sounds(&json!({"seq": 1})).is_none());
+        assert!(valid_sounds(&json!({"boot": "ab", "events": []})).is_none());
+        assert!(valid_sounds(&json!({"boot": "ab", "seq": 1})).is_none());
+        assert!(valid_sounds(&json!({"seq": 1, "events": []})).is_none());
+        assert!(valid_sounds(&json!({"boot": "<b>", "seq": 1, "events": []})).is_none());
     }
 
     #[test]

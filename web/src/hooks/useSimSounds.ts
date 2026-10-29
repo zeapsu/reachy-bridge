@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { paths } from "../api.ts";
 import { read, write } from "../logic/appearance.ts";
-import { SIM_SOUND_KEY, isSimSounds, newSimSounds, type SimSoundAction } from "../logic/simSounds.ts";
+import { SIM_SOUND_KEY, isSimSounds, newSimSounds, type SimSoundAction, type SimSoundCursor } from "../logic/simSounds.ts";
 import { readEventPayload, useEventSource } from "./useEventSource.ts";
 
 export interface SimSoundsState {
@@ -23,8 +23,10 @@ export function useSimSounds(active: boolean): SimSoundsState {
   const playing = useRef(new Set<AudioBufferSourceNode>());
   // Bumped by a stop, so a sound still downloading doesn't start after it.
   const generation = useRef(0);
+  // The newest play asked for: an older one still downloading never starts.
+  const ticket = useRef(0);
   // The newest event this stream has acted on; null until its first payload.
-  const last = useRef<number | null>(null);
+  const last = useRef<SimSoundCursor | null>(null);
   const listening = active && on;
 
   const audio = useCallback((): AudioContext | null => {
@@ -52,10 +54,11 @@ export function useSimSounds(active: boolean): SimSoundsState {
       const ctx = audio();
       if (!ctx || ctx.state !== "running") return;
       const started = generation.current;
+      const mine = ++ticket.current;
       const response = await fetch(paths.simSound(token), { credentials: "same-origin" });
       if (!response.ok) return;
       const buffer = await ctx.decodeAudioData(await response.arrayBuffer());
-      if (generation.current !== started) return;
+      if (generation.current !== started || ticket.current !== mine) return;
       // Like the robot's speaker: a new sound cuts off the one playing.
       for (const previous of playing.current) {
         try {

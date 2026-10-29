@@ -185,7 +185,7 @@ pub async fn fake_daemon(fake: FakeState) -> String {
         )
         .route(
             "/api/bridge/sounds",
-            get(|| async { Json(json!({"seq": 1, "events": [{"seq": 1, "kind": "play", "token": SOUND_TOKEN, "name": "wake_up.wav"}]})) }),
+            get(|| async { Json(json!({"boot": "b007", "seq": 1, "events": [{"seq": 1, "kind": "play", "token": SOUND_TOKEN, "name": "wake_up.wav"}]})) }),
         )
         .route(
             "/api/bridge/sounds/{token}",

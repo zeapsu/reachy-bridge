@@ -234,4 +234,7 @@ async fn the_test_sound_plays_in_the_browser_in_sim_mode() {
     // Setting the volume still is refused: it would set the host's speaker.
     let (status, _) = s.h.call("POST", "/api/volume/set", Some(json!({"volume": 10}))).await;
     assert_eq!(status, StatusCode::CONFLICT);
+    // So is playing a named file: it would come back to the browser.
+    let (status, _) = s.h.call("POST", "/api/media/play_sound", Some(json!({"file": "/home/x/a.wav"}))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
 }
