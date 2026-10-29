@@ -580,4 +580,15 @@ def sound_roots() -> tuple[Path, ...]:
     from reachy_mini.utils.constants import ASSETS_ROOT_PATH
 
     roots = (ASSETS_ROOT_PATH, SOUNDS_TMP_DIR, Path(tempfile.gettempdir()) / _UPLOADS_DIR / "audio", HF_HUB_CACHE)
-    return tuple(Path(root).resolve() for root in roots)
+    # The upload folders sit in the shared temp dir: one another user made
+    # first (or a link there) would widen what counts as a sound folder.
+    return tuple(Path(root).resolve() for root in roots if _own_folder(Path(root)))
+
+
+def _own_folder(path: Path) -> bool:
+    import os
+
+    try:
+        return not path.is_symlink() and path.stat().st_uid == os.getuid()
+    except OSError:
+        return False
