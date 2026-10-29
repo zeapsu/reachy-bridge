@@ -124,7 +124,7 @@ def main() -> int:
                 ],
                 cwd=ROOT,
                 env={**os.environ, "REACHY_BRIDGE_STATE_DIR": str(work / "daemon-state"),
-                     "SIM_APPS_ROOT": str(work / "apps")},
+                     "REACHY_BRIDGE_APPS_ROOT": str(work / "apps")},
                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
