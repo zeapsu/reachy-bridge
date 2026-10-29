@@ -16,7 +16,9 @@ export function voiceBlocked(view: VoiceView | null, control: ControlState, secu
   if (!secure) return "Listening and talking work from the dashboard's https (Tailscale) address.";
   if (!view) return "Checking the robot's audio…";
   if (!view.available) return "Listening and talking work with the real robot, not the simulation.";
-  if (control.kind === "other" || control.kind === "free") return "Take control of the robot to listen or talk.";
+  if (control.kind === "other") return `${control.person} is in control of the robot.`;
+  // Free with control to take: starting takes it (api/client.ts).
+  if (control.kind === "free" && !control.canTake) return "Ask for control to listen or talk.";
   return null;
 }
 

@@ -25,8 +25,10 @@ describe("voiceBlocked", () => {
     const view = { available: true, session: null };
     expect(voiceBlocked(view, { kind: "off" })).toBeNull();
     expect(voiceBlocked(view, { kind: "mine", until: null, endingSoon: false })).toBeNull();
-    expect(voiceBlocked(view, { kind: "free", canTake: true, asking })).toContain("Take control");
-    expect(voiceBlocked(view, { kind: "other", person: "Kim", until: null, canTakeOver: false, asking })).toContain("Take control");
+    // Free with control to take: starting takes it.
+    expect(voiceBlocked(view, { kind: "free", canTake: true, asking })).toBeNull();
+    expect(voiceBlocked(view, { kind: "free", canTake: false, asking })).toContain("Ask for control");
+    expect(voiceBlocked(view, { kind: "other", person: "Kim", until: null, canTakeOver: false, asking })).toContain("Kim is in control");
   });
 });
 

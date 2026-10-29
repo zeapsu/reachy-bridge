@@ -89,7 +89,7 @@ export function ControlPanel({ control }: { control: ControlApi }) {
       </form>
       {error && <p className="note error">{error}</p>}
       {grants.length === 0 ? (
-        <p className="note">No control time granted. You can always take control yourself.</p>
+        <p className="note">No control time granted. Your first robot action takes control when nobody has it.</p>
       ) : (
         <ul className="devices-list" aria-label="Grants">
           {grants.map((g) => (

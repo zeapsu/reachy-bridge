@@ -1,0 +1,71 @@
+/* Who drives the robot (#221), when this browser can't just act. */
+.control-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 6px 6px 14px;
+  margin-bottom: 12px;
+  border-radius: 22px;
+  background: var(--well);
+}
+.control-text {
+  flex: 1 1 140px;
+  margin: 0;
+  font-size: 14px;
+}
+.control-strip .btn { padding: 7px 14px; }
+.control-ask { display: flex; gap: 6px; }
+.control-ask .field { padding-block: 6px; }
+.control-error { flex-basis: 100%; margin: 0 8px 4px 0; }
+
+/* A short notice when who drives changes. */
+.control-toast {
+  position: fixed;
+  /* Above the app view (50), whose Take control reports here. */
+  z-index: 60;
+  left: 50%;
+  top: 84px;
+  transform: translateX(-50%);
+  --r: 999px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100% - 32px);
+  padding: 8px 8px 8px 16px;
+  font-size: 14px;
+  box-shadow: 0 12px 30px -12px rgba(0, 0, 0, 0.35);
+  animation: toast-in 0.2s ease-out;
+}
+.control-toast:not(:has(.btn)) { padding-right: 16px; }
+.control-toast .btn { padding: 6px 14px; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, -6px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .control-toast { animation: none; }
+}
+@media (max-width: 860px) {
+  .control-toast { top: calc(max(16px, env(safe-area-inset-top, 0px)) + 60px); }
+}
+
+/* The holder's name in the status pill; "you" opens the notice again. */
+.control-who { color: var(--ink-3); }
+button.control-who {
+  font: inherit;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+.control-toast.error { color: var(--danger); }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

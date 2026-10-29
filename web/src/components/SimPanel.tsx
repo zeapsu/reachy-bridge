@@ -1,7 +1,9 @@
 import { useLens } from "../glass.ts";
+import type { ControlApi } from "../hooks/useControl.ts";
 import type { SimState } from "../hooks/useSim.ts";
 import type { SimSoundsState } from "../hooks/useSimSounds.ts";
 import { simView } from "../logic/sim.ts";
+import { ControlStrip } from "./ControlStrip.tsx";
 
 const OFF = ["stopped", "not_initialized", "error", "offline"];
 
@@ -10,10 +12,12 @@ export function SimPanel({
   sim,
   sounds,
   powerStatus,
+  control,
 }: {
   sim: SimState;
   sounds: SimSoundsState;
   powerStatus: string | null;
+  control: ControlApi;
 }) {
   const sheet = useLens<HTMLElement>();
   const view = simView(sim.target, sim.switching, powerStatus !== null && OFF.includes(powerStatus));
@@ -22,6 +26,8 @@ export function SimPanel({
       <header>
         <h2 id="sim-title">Simulation</h2>
       </header>
+      {/* Switching acts on the robot: take control here, not on the Robot tab. */}
+      <ControlStrip control={control} />
       <div className="row">
         <p className="note" id="sim-hint">{view.hint}</p>
         <button

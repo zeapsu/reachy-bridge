@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { apiJson, errorText, paths, type Kinematics, type MotorStatus, type Volume } from "../api.ts";
+import { apiJson, errorText, paths, takeControlIfFree, type Kinematics, type MotorStatus, type Volume } from "../api.ts";
 import { CONTROL_HINT_OFFLINE, clampVolume, kinematicsSwitch, kinematicsView } from "../logic/controls.ts";
 import { Segmented } from "./Segmented.tsx";
 import "./ControlsPanel.css";
@@ -215,6 +215,8 @@ export function ControlsPanel(props: Props) {
   const onMotor = (mode: "enabled" | "disabled") => {
     if (mode === "disabled" && !window.confirm("Disable motors? The robot will go limp. Use Wake to recover.")) return;
     void performControl("motor", async () => {
+      // After the confirm dialog the tap's activation may have run out.
+      if (mode === "disabled") await takeControlIfFree(true);
       const result = await apiJson(paths.motorSetMode(mode), { method: "POST" });
       setRobotControlMode(mode);
       // The backend kicked a return-home session (#67); mirror it as a busy

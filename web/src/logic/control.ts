@@ -57,3 +57,34 @@ export function controlState(view: ControlView | null): ControlState {
   }
   return { kind: "free", canTake: view.you.can_take, asking };
 }
+
+/** Who has control, for the status pill: "you", a person, or null. */
+export function holderLabel(state: ControlState): string | null {
+  if (state.kind === "mine") return "you";
+  if (state.kind === "other") return state.person;
+  return null;
+}
+
+/**
+ * Whether a view that acts on the robot shows the take/ask strip. Not while
+ * this browser is in control, nor when nobody is and it may take control:
+ * its first robot action takes it then (api/client.ts).
+ */
+export const showStrip = (state: ControlState): boolean =>
+  state.kind === "other" || (state.kind === "free" && !state.canTake);
+
+/** A short notice when who drives changes; null when nothing worth one did (or on first load). */
+export function controlNotice(prev: ControlState, next: ControlState): string | null {
+  if (prev.kind === "off" || next.kind === "off") return null;
+  switch (next.kind) {
+    case "mine":
+      if (prev.kind !== "mine") return next.until === null ? "You're in control" : `You're in control until ${clock(next.until)}`;
+      return next.endingSoon && !prev.endingSoon ? "Your control time ends in under a minute" : null;
+    case "other":
+      if (prev.kind === "mine") return `${next.person} took over`;
+      return prev.kind === "other" && prev.person === next.person ? null : `${next.person} took control`;
+    case "free":
+      if (prev.kind === "mine") return "You're no longer in control";
+      return prev.kind === "other" ? `${prev.person} let go of control` : null;
+  }
+}

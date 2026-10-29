@@ -122,7 +122,7 @@ network you trust, and Tailscale (`reachy-bridge serve`, HTTPS) for anything bey
 
 ## Listen and talk
 
-The Robot tab's "Listen and talk" box plays the robot's microphone on your device and your
+The Robot tab's Voice pane plays the robot's microphone on your device and your
 device's microphone through the robot's speaker, either or both, switched while connected. One
 browser at a time; in admin mode, only the browser in control, and the session ends when control
 or the login does. Every dashboard shows a mic badge while a session is open.

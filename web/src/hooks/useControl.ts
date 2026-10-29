@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
-import { apiJson, errorText, paths, type ControlView } from "../api.ts";
-import { CONTROL_POLL_MS } from "../logic/control.ts";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { apiJson, errorText, paths, setControlTaker, type ControlView } from "../api.ts";
+import { CONTROL_POLL_MS, controlState } from "../logic/control.ts";
 
 export interface ControlApi {
   view: ControlView | null;
@@ -21,10 +21,20 @@ export function useControl(visible: boolean): ControlApi {
   const [view, setView] = useState<ControlView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const latest = useRef<ControlView | null>(null);
+  const asked = useRef(0);
+  const applied = useRef(0);
 
   const reload = useCallback(async () => {
+    // A poll sent before a take can land after it: never apply an answer
+    // older than one already shown (a slow link still gets every newer one).
+    const seq = ++asked.current;
     try {
-      setView(await apiJson<ControlView>(paths.control));
+      const next = await apiJson<ControlView>(paths.control);
+      if (seq < applied.current) return;
+      applied.current = seq;
+      latest.current = next;
+      setView(next);
     } catch {
       // An older controller has no control routes; a blip retries next tick.
     }
@@ -54,6 +64,23 @@ export function useControl(visible: boolean): ControlApi {
     },
     [reload],
   );
+
+  // A robot action while nobody is in control takes it first (api/client.ts).
+  useEffect(() => {
+    setControlTaker(async () => {
+      const state = controlState(latest.current);
+      if (state.kind !== "free" || !state.canTake) return false;
+      try {
+        await apiJson(paths.controlTakeIfFree, { method: "POST" });
+        return true;
+      } catch {
+        return false;
+      } finally {
+        await reload();
+      }
+    });
+    return () => setControlTaker(null);
+  }, [reload]);
 
   return { view, error, busy, act, reload };
 }

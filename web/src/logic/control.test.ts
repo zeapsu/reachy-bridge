@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ControlView } from "../api/control.ts";
-import { controlState, slotText } from "./control.ts";
+import { controlNotice, controlState, holderLabel, showStrip, slotText, type ControlState } from "./control.ts";
 
 const base = (over: Partial<ControlView> = {}): ControlView => ({
   admin_mode: true,
@@ -49,5 +49,46 @@ describe("slotText", () => {
     expect(slotText(60)).toBe("1 h");
     expect(slotText(90)).toBe("90 min");
     expect(slotText(null)).toBe("no end");
+  });
+});
+
+describe("control notices, label and strip", () => {
+  const asking = { kind: "none" } as const;
+  const off: ControlState = { kind: "off" };
+  const mine: ControlState = { kind: "mine", until: null, endingSoon: false };
+  const free: ControlState = { kind: "free", canTake: true, asking };
+  const kim: ControlState = { kind: "other", person: "Kim", until: null, canTakeOver: true, asking };
+  const lee: ControlState = { kind: "other", person: "Lee", until: null, canTakeOver: true, asking };
+  test("says nothing on first load or outside admin mode", () => {
+    expect(controlNotice(off, mine)).toBeNull();
+    expect(controlNotice(off, kim)).toBeNull();
+    expect(controlNotice(mine, off)).toBeNull();
+  });
+  test("names each change of holder", () => {
+    expect(controlNotice(free, mine)).toBe("You're in control");
+    expect(controlNotice(kim, mine)).toBe("You're in control");
+    expect(controlNotice(mine, kim)).toBe("Kim took over");
+    expect(controlNotice(free, kim)).toBe("Kim took control");
+    expect(controlNotice(kim, lee)).toBe("Lee took control");
+    expect(controlNotice(mine, free)).toBe("You're no longer in control");
+    expect(controlNotice(kim, free)).toBe("Kim let go of control");
+  });
+  test("stays quiet while nothing changes, and warns once before time ends", () => {
+    expect(controlNotice(mine, mine)).toBeNull();
+    expect(controlNotice(kim, kim)).toBeNull();
+    expect(controlNotice(free, free)).toBeNull();
+    const ending: ControlState = { kind: "mine", until: 1060, endingSoon: true };
+    expect(controlNotice({ kind: "mine", until: 1060, endingSoon: false }, ending)).toContain("under a minute");
+    expect(controlNotice(ending, ending)).toBeNull();
+  });
+  test("labels the holder and shows the strip only when a tap can't just take control", () => {
+    expect(holderLabel(mine)).toBe("you");
+    expect(holderLabel(kim)).toBe("Kim");
+    expect(holderLabel(free)).toBeNull();
+    expect(showStrip(mine)).toBe(false);
+    expect(showStrip(free)).toBe(false);
+    expect(showStrip(off)).toBe(false);
+    expect(showStrip(kim)).toBe(true);
+    expect(showStrip({ kind: "free", canTake: false, asking: { kind: "can_ask" } })).toBe(true);
   });
 });
