@@ -58,6 +58,8 @@
   padding: 6px 8px;
   white-space: normal;
   overflow-wrap: anywhere;
+  text-align: left;
+  -webkit-user-select: all;
   user-select: all;
 }
 
