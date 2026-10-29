@@ -52,7 +52,7 @@ def for_daemon_args(platform: platforms.Platform, args: list[str]) -> platforms.
     has no media for the media features to read."""
     if "--sim" in args or "--mockup-sim" in args:
         platform = dataclasses.replace(platform, host_setup=())
-        if "--desktop-app-daemon" in args:
+        if "--desktop-app-daemon" in args or "--wireless-version" in args:
             platform = dataclasses.replace(platform, features=platform.features | {sim_apps.FEATURE})
     if "--no-media" in args:
         platform = dataclasses.replace(platform, features=platform.features - MEDIA_FEATURES)

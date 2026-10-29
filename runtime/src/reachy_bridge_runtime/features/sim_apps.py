@@ -7,10 +7,17 @@ drive the real robot. So in a sim daemon started with ``--desktop-app-daemon``:
 
 - apps live in their own venv under ``REACHY_BRIDGE_APPS_ROOT`` (the sim's
   working directory), never in the robot's ``apps_venv``;
-- before each app start, a shim is written into that venv
+- at startup and before each app start, a shim is written into that venv
   (``sim_apps_shim.py``) that sends every loopback connection on the robot
-  daemon's port to the sim daemon's port. An app is refused, not started, if
-  the shim can't be written or its interpreter isn't in the sim's venv.
+  daemon's port to the sim daemon's port, so apps written for the robot drive
+  the sim. An app is refused, not started, if the shim can't be written or
+  its interpreter isn't in the sim's venv.
+
+The shim covers an app's ordinary daemon connections, not hostile code (the
+app runs as the same user as the robot's daemon). What keeps a missed
+connection off the robot is the controller: it stops the robot's daemon for
+the whole of sim mode (controller/src/sim.rs), so nothing listens on its
+port.
 
 The robot daemon's port is ``REACHY_BRIDGE_ROBOT_DAEMON_PORT`` (8000). The
 sim daemon reports no media, so apps get no camera or audio in sim mode.
@@ -35,7 +42,8 @@ FEATURE = "sim_apps"
 
 SHIM = Path(__file__).with_name("sim_apps_shim.py")
 MODULE = "reachy_bridge_sim_port"
-PTH = f"{MODULE}.pth"
+# Sorts before other .pth files, so it is in place before their code runs.
+PTH = f"00_{MODULE}.pth"
 
 
 def _flag(args: list[str], name: str) -> str | None:
@@ -87,6 +95,9 @@ def apply(args: list[str]) -> None:
     robot_port, sim_port = ports(args)
     root = apps_root()
     upstream.set_apps_root(root)
+    existing = root / "apps_venv" / "bin" / "python"
+    if existing.exists():
+        install_shim(existing, robot_port, sim_port)
     logger.info("sim apps in %s, sent to the sim daemon on :%d instead of :%d", root, sim_port, robot_port)
 
     async def start_app(original: Any, manager: Any, app_name: str, *a: Any, **kw: Any) -> Any:

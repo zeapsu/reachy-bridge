@@ -43,7 +43,7 @@ impl AppState {
     }
 
     pub fn with_auth(daemon: Daemon, logs: Arc<LogBroker>, state_dir: PathBuf, poll: Duration, auth: AuthConfig) -> Shared {
-        let sim = SimMode::new(&daemon.base_url(), "http://127.0.0.1:8001", None);
+        let sim = SimMode::new(&daemon.base_url(), "http://127.0.0.1:8001", None, None);
         Self::with_sim(daemon, logs, state_dir, poll, auth, sim)
     }
 

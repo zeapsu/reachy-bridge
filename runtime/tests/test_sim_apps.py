@@ -148,3 +148,38 @@ def test_set_apps_root_moves_apps_venv_and_keeps_the_default(tmp_path: Path, mon
     upstream.set_apps_root(tmp_path)
     assert local_common_venv._get_app_venv_path("radio", False, True) == tmp_path / "apps_venv"
     assert upstream.default_apps_root() == default != tmp_path
+
+
+def reached_with_uvloop(site_packages: Path, port: int) -> str:
+    code = (
+        "import site, asyncio\n"
+        f"site.addsitedir({str(site_packages)!r})\n"
+        "try:\n"
+        "    import uvloop\n"
+        "except ImportError:\n"
+        "    print('no-uvloop'); raise SystemExit\n"
+        "async def main():\n"
+        f"    r, w = await asyncio.open_connection('localhost', {port})\n"
+        "    print((await r.read(16)).decode())\n"
+        "uvloop.run(main())\n"
+    )
+    result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True)
+    return result.stdout.strip()
+
+
+def test_shim_keeps_uvloop_out_and_resolves_names(tmp_path: Path) -> None:
+    robot = tagged_server(b"robot")
+    sim = tagged_server(b"sim")
+    site_packages = sim_apps.install_shim(fake_venv(tmp_path / "apps_venv"), robot, sim)
+    assert reached_with_uvloop(site_packages, robot) == "no-uvloop"
+    for host in ("127.1", "LOCALHOST", "localhost."):
+        code = (
+            "import site, socket\n"
+            f"site.addsitedir({str(site_packages)!r})\n"
+            "s = socket.socket()\n"
+            f"s.connect(({host!r}, {robot}))\n"
+            "print(s.recv(16).decode())\n"
+        )
+        out = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True)
+        assert out.stdout.strip() == "sim", host
+    assert sorted(p.name for p in site_packages.glob("*.pth"))[0] == sim_apps.PTH

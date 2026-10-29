@@ -1,8 +1,10 @@
 //! Sim mode (#149): try the controller on a simulated robot, with no hardware.
 //!
 //! An on-demand second daemon (`reachy-bridge-sim.service`: MuJoCo, no media,
-//! its own apps folder and loopback port) runs beside the robot's. Its apps
-//! are pointed at it by the runtime (sim_apps, #218). Entering sim mode
+//! its own apps folder and loopback port) takes the robot daemon's place.
+//! Entering sim mode stops the robot's daemon (the robot is confirmed off
+//! first), so nothing a sim app does can reach the robot even past the
+//! runtime's port shim (sim_apps, #218); leaving starts it again. Entering sim mode
 //! starts it and points the controller's [`Daemon`] client at it; leaving
 //! points the client back at the robot and stops it.
 //!
@@ -38,13 +40,21 @@ const SIM_START_TIMEOUT: Duration = Duration::from_secs(90);
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(40);
 /// How long leaving waits for sim moves to stop.
 const MOVES_STOP_TIMEOUT: Duration = Duration::from_secs(2);
+/// The robot's daemon after a restart, as on the Jetson.
+const ROBOT_START_TIMEOUT: Duration = Duration::from_secs(60);
+/// Stopping the sim's app on exit, which holds both locks.
+const APP_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a switch waits for actions in flight before answering busy:
 /// queued, it would hold every new action (power off included) behind them.
 const SWITCH_WAIT: Duration = Duration::from_secs(3);
 /// The volume and sound routes: the sim daemon would set the host's real
 /// speaker and microphone.
-const SIM_REFUSED: [(&str, &str); 2] =
-    [("/api/volume/", "Sound is off in sim mode"), ("/api/media/", "Sound is off in sim mode")];
+/// The Hugging Face login is the host's, shared with the robot's daemon.
+const SIM_REFUSED: [(&str, &str); 3] = [
+    ("/api/volume/", "Sound is off in sim mode"),
+    ("/api/media/", "Sound is off in sim mode"),
+    ("/api/hf/token", "Sign in to Hugging Face from the robot, not the simulation"),
+];
 
 pub struct SimMode {
     robot_url: String,
@@ -52,28 +62,38 @@ pub struct SimMode {
     /// The systemd user unit to start and stop; `None` when something else
     /// runs the sim daemon (tests, `tools/sim`).
     unit: Option<String>,
+    /// The robot daemon's unit, stopped for the whole of sim mode; only set
+    /// together with `unit`.
+    robot_unit: Option<String>,
     active: AtomicBool,
     /// Actions hold it shared, a switch exclusively.
     switch: tokio::sync::RwLock<()>,
 }
 
 impl SimMode {
-    pub fn new(robot_url: &str, sim_url: &str, unit: Option<String>) -> Self {
+    /// `robot_unit` only counts together with `unit`.
+    pub fn new(robot_url: &str, sim_url: &str, unit: Option<String>, robot_unit: Option<String>) -> Self {
+        let unit = unit.filter(|u| !u.is_empty());
         Self {
             robot_url: robot_url.to_string(),
             sim_url: sim_url.to_string(),
-            unit: unit.filter(|u| !u.is_empty()),
+            robot_unit: robot_unit.filter(|u| !u.is_empty() && unit.is_some()),
+            unit,
             active: AtomicBool::new(false),
             switch: tokio::sync::RwLock::new(()),
         }
     }
 
     /// `SIM_DAEMON_URL` (default `http://127.0.0.1:8001`) and `SIM_DAEMON_UNIT`
-    /// (`reachy-bridge-sim.service`; empty leaves starting it to someone else).
+    /// (`reachy-bridge-sim.service`; empty leaves starting it, and stopping
+    /// the robot's daemon, to someone else). The robot daemon's unit is
+    /// `REACHY_DAEMON_UNIT` (`reachy-bridge.service`).
     pub fn from_env(robot_url: &str) -> Self {
         let sim_url = std::env::var("SIM_DAEMON_URL").ok().filter(|v| !v.is_empty());
         let unit = std::env::var("SIM_DAEMON_UNIT").unwrap_or_else(|_| "reachy-bridge-sim.service".into());
-        Self::new(robot_url, sim_url.as_deref().unwrap_or("http://127.0.0.1:8001"), Some(unit))
+        let robot_unit = std::env::var("REACHY_DAEMON_UNIT").ok().filter(|u| !u.is_empty());
+        let robot_unit = robot_unit.unwrap_or_else(|| "reachy-bridge.service".into());
+        Self::new(robot_url, sim_url.as_deref().unwrap_or("http://127.0.0.1:8001"), Some(unit), Some(robot_unit))
     }
 
     pub fn active(&self) -> bool {
@@ -90,16 +110,23 @@ impl SimMode {
 
 }
 
-/// Stop a sim daemon left running by an earlier controller, which would
-/// otherwise use the CPU with nothing pointed at it. Under `power_lock`, so a
-/// sim mode entered meanwhile isn't stopped under it.
+/// Undo a sim mode an earlier controller left behind (a crash or restart
+/// mid-sim): stop the sim daemon and start the robot's again. Under
+/// `power_lock`, so a sim mode entered meanwhile isn't undone under it.
 pub async fn stop_leftover(state: Shared) {
     let _power = state.power_lock.lock().await;
-    if !state.sim.active()
-        && let Some(unit) = &state.sim.unit
+    if state.sim.active() {
+        return;
+    }
+    if let Some(unit) = &state.sim.unit
         && let Err(error) = systemctl("stop", unit).await
     {
         tracing::debug!(%error, "sim daemon not stopped");
+    }
+    if let Some(robot) = &state.sim.robot_unit
+        && let Err(error) = systemctl("start", robot).await
+    {
+        tracing::error!(%error, "the robot's daemon didn't start");
     }
 }
 
@@ -156,17 +183,33 @@ async fn enter(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     if state.player.active() || state.apps.refresh_active().await {
         return Err(ApiError::new(409, "Stop the app or expression before starting the simulation"));
     }
-    if let Some(unit) = &sim.unit {
-        systemctl("start", unit)
+    // Nothing listens on the robot daemon's port while the sim runs, so a
+    // sim app's connection the port shim misses finds no robot. The robot is
+    // off (checked above, under power_lock), so stopping its daemon moves
+    // nothing.
+    if let Some(robot) = &sim.robot_unit {
+        systemctl("stop", robot)
             .await
-            .map_err(|error| ApiError::new(502, format!("Couldn't start the simulation: {error}")))?;
+            .map_err(|error| ApiError::new(502, format!("Couldn't stop the robot's daemon: {error}")))?;
     }
+    let started = match &sim.unit {
+        Some(unit) => systemctl("start", unit).await.map_err(|error| format!("Couldn't start the simulation: {error}")),
+        None => Ok(()),
+    };
     let probe = Daemon::new(&sim.sim_url, Duration::from_secs(2));
-    if !wait_until(SIM_START_TIMEOUT, || async { probe.status().await.is_some() }).await {
+    let failure = match started {
+        Err(error) => Some(ApiError::new(502, error)),
+        Ok(()) if !wait_until(SIM_START_TIMEOUT, || async { probe.status().await.is_some() }).await => {
+            Some(ApiError::new(504, "The simulation didn't start in time"))
+        }
+        Ok(()) => None,
+    };
+    if let Some(error) = failure {
         if let Some(unit) = &sim.unit {
             let _ = systemctl("stop", unit).await;
         }
-        return Err(ApiError::new(504, "The simulation didn't start in time"));
+        let _ = restart_robot_daemon(&state).await;
+        return Err(error);
     }
     state.player.abort_drive();
     state.daemon.retarget(&sim.sim_url);
@@ -188,7 +231,7 @@ async fn exit(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     // stops with the sim daemon too; stopping it here also covers a sim
     // daemon that isn't a unit, and frees the app UI port first.
     if state.apps.refresh_active().await {
-        let _ = state.daemon.post_slow("apps/stop-current-app", crate::apps::APP_CONTROL_TIMEOUT).await;
+        let _ = state.daemon.post_slow("apps/stop-current-app", APP_STOP_TIMEOUT).await;
     }
     state.player.abort_drive();
     state.player.halt(MOVES_STOP_TIMEOUT).await;
@@ -208,8 +251,27 @@ async fn exit(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     {
         tracing::warn!(%error, "sim daemon not stopped");
     }
+    let restarted = restart_robot_daemon(&state).await;
     drop(power);
+    restarted?;
     Ok(Json(json!({"active": false, "target": "robot"})))
+}
+
+/// Start the robot's daemon (robot off: it starts with --no-autostart) and
+/// wait for it to answer.
+async fn restart_robot_daemon(state: &Shared) -> ApiResult<()> {
+    let Some(robot) = &state.sim.robot_unit else {
+        return Ok(());
+    };
+    if let Err(error) = systemctl("start", robot).await {
+        tracing::error!(%error, "the robot's daemon didn't start");
+        return Err(ApiError::new(502, format!("The robot's daemon didn't start: {error}")));
+    }
+    let robot_daemon = Daemon::new(&state.sim.robot_url, Duration::from_secs(2));
+    if !wait_until(ROBOT_START_TIMEOUT, || async { robot_daemon.status().await.is_some() }).await {
+        return Err(ApiError::new(504, "The robot's daemon didn't answer in time"));
+    }
+    Ok(())
 }
 
 /// The target a request believes in: the header, or `?target=` on the drive

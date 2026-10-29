@@ -26,7 +26,7 @@ async fn sim_harness(init: impl FnOnce(&mut Fake)) -> Sim {
         h._dir.path().to_path_buf(),
         Duration::from_millis(10),
         AuthConfig::default(),
-        SimMode::new(&robot_url, &sim_url, None),
+        SimMode::new(&robot_url, &sim_url, None, None),
     );
     let robot = h.fake.clone();
     Sim { robot, sim, h: Harness { state, ..h } }
@@ -115,7 +115,7 @@ async fn entering_needs_the_robot_confirmed_off() {
         std::env::temp_dir().join("rc-test-sim-unreachable"),
         Duration::from_millis(10),
         AuthConfig::default(),
-        SimMode::new(robot_url, &sim_url, None),
+        SimMode::new(robot_url, &sim_url, None, None),
     );
     let response = reachy_controller::app(state.clone())
         .oneshot(Request::post("/api/sim/enter").body(Body::empty()).unwrap())
@@ -149,4 +149,48 @@ async fn the_sim_never_sets_the_hosts_sound() {
     let (status, body) = s.h.call("POST", "/api/volume/set", Some(json!({"volume": 10}))).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["detail"], "Sound is off in sim mode");
+}
+
+/// A `systemctl` on PATH that logs its arguments and, for the sim unit,
+/// leaves the sim daemon to the test.
+fn fake_systemctl(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).unwrap();
+    let log = dir.join("systemctl.log");
+    let script = dir.join("systemctl");
+    std::fs::write(&script, format!("#!/bin/sh\necho \"$*\" >> '{}'\n", log.display())).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    log
+}
+
+#[tokio::test]
+async fn the_robots_daemon_is_stopped_for_the_whole_of_sim_mode() {
+    let h = harness(|_| {}).await;
+    let sim = Arc::new(Mutex::new(Fake { state: "stopped".into(), ..Default::default() }));
+    let sim_url = fake_daemon(sim.clone()).await;
+    let robot_url = h.state.daemon.base_url();
+    let bin = h._dir.path().join("bin");
+    let log = fake_systemctl(&bin);
+    // SAFETY: only this test spawns systemctl, and no test here reads PATH
+    // concurrently in a way a torn update would break.
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    unsafe { std::env::set_var("PATH", path) };
+    let state = AppState::with_sim(
+        Daemon::new(&robot_url, Duration::from_secs(2)),
+        LogBroker::new(),
+        h._dir.path().to_path_buf(),
+        Duration::from_millis(10),
+        AuthConfig::default(),
+        SimMode::new(&robot_url, &sim_url, Some("sim.service".into()), Some("robot.service".into())),
+    );
+    let s = Harness { state, ..h };
+    let (status, body) = s.call("POST", "/api/sim/enter", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = s.call("POST", "/api/sim/exit", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let calls = std::fs::read_to_string(log).unwrap();
+    assert_eq!(
+        calls.lines().collect::<Vec<_>>(),
+        vec!["--user stop robot.service", "--user start sim.service", "--user stop sim.service", "--user start robot.service"]
+    );
 }

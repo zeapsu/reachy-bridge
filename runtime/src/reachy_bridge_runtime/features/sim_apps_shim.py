@@ -9,7 +9,12 @@ connection to a loopback address on ``ROBOT_PORT`` goes to ``SIM_PORT``
 instead.
 
 It covers Python's ``socket`` module only (which the SDK, its HTTP clients
-and asyncio go through); a connection opened by native code is not moved.
+and asyncio go through). uvloop connects in native code, so it is kept out:
+asyncio falls back to its own loop (uvicorn's "auto" loop does), and an app
+that imports uvloop itself fails to start rather than reach the robot. Other
+native code, other interpreters and subprocesses are not covered; that is
+why the robot's daemon is stopped for the whole of sim mode, so nothing
+listens on its port.
 
 It must not import anything outside the standard library: it runs in the
 apps venv, not the bridge's.
@@ -17,9 +22,16 @@ apps venv, not the bridge's.
 
 import ipaddress
 import socket
+import sys
 
 ROBOT_PORT = 8000
 SIM_PORT = 8001
+
+
+def _local(ip):
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_unspecified
 
 
 def _is_loopback(host):
@@ -27,15 +39,25 @@ def _is_loopback(host):
         host = bytes(host).decode("ascii", "replace")
     if not isinstance(host, str):
         return False
-    if host in ("localhost", ""):
+    if host == "":
         return True
     try:
-        ip = ipaddress.ip_address(host.split("%")[0])
+        return _local(ipaddress.ip_address(host.split("%")[0]))
     except ValueError:
+        pass
+    # A name, or a form the kernel accepts but ipaddress doesn't ("127.1"):
+    # resolve it the way connect will.
+    try:
+        infos = _getaddrinfo(host, None)
+    except OSError:
         return False
-    if ip.version == 6 and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    return ip.is_loopback or ip.is_unspecified
+    for info in infos:
+        try:
+            if _local(ipaddress.ip_address(str(info[4][0]).split("%")[0])):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def sim_address(family, address):
@@ -49,7 +71,12 @@ def sim_address(family, address):
     return (address[0], SIM_PORT, *address[2:])
 
 
+_getaddrinfo = socket.getaddrinfo
+
+
 def install():
+    # uvloop connects natively, past the patch below.
+    sys.modules.setdefault("uvloop", None)
     if getattr(socket.socket.connect, "_reachy_bridge_sim", False):
         return
     connect = socket.socket.connect
