@@ -115,7 +115,8 @@ The controller starts `reachy-bridge-audio.service` on demand. Audio is WebRTC o
 between the browser and the device, on tailnet addresses only (no STUN or TURN), using UDP ports
 47100-47199; a Tailscale ACL that limits ports must allow them. Use the dashboard's HTTPS
 (Tailscale) address: audio can't connect from a plain-http LAN page, and browsers only share a
-microphone with a secure page. Sim mode has no audio.
+microphone with a secure page. Sim mode has no audio. The device needs GStreamer's libnice plugin
+(`sudo apt install gstreamer1.0-nice`); `reachy-bridge check` reports it.
 
 ## Development
 
