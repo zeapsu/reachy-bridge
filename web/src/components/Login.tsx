@@ -45,7 +45,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
 type Phase =
   | { kind: "starting" }
-  | { kind: "waiting"; id: string; code: string }
+  | { kind: "waiting"; id: string; code: string; locked?: boolean }
   | { kind: "ended"; reason: "expired" | "locked" }
   | { kind: "error"; text: string };
 
@@ -77,7 +77,10 @@ function usePairing(): { phase: Phase; retry: () => void } {
         const body: unknown = await response.json().catch(() => null);
         const outcome = pairOutcome(response.status, body);
         if (outcome === "approved") window.location.reload();
-        else if (outcome === "expired" || outcome === "locked") setPhase({ kind: "ended", reason: outcome });
+        else if (outcome === "expired") setPhase({ kind: "ended", reason: outcome });
+        // Locked by wrong codes: only the CLI on the robot can still approve
+        // it (#221), so keep polling until it expires.
+        else if (outcome === "locked") setPhase((p) => (p.kind === "waiting" && !p.locked ? { ...p, locked: true } : p));
       } catch {
         // Network blip: try again on the next tick.
       } finally {
@@ -115,9 +118,19 @@ export function PairCode({ admin = false }: { admin?: boolean }) {
               from their dashboard (System · devices). The code is valid for 5 minutes.
             </p>
           )}
+          {phase.locked && (
+            <p className="login-note login-error" role="alert">
+              {pairEndedText("locked")} Only <code>reachy-bridge pair</code> on the robot can approve this code now.
+            </p>
+          )}
           <p className="login-wait" aria-live="polite">
             waiting for approval…
           </p>
+          {phase.locked && (
+            <button className="btn primary press" type="button" onClick={retry}>
+              get a new code
+            </button>
+          )}
         </>
       )}
       {phase.kind === "ended" && (
