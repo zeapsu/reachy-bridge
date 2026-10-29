@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { ApiError, apiJson, errorText, paths, type AdminRequest, type CheckResult, type SetupStatus } from "../api.ts";
+import { ApiError, apiJson, errorText, paths, type AdminRequest, type CheckResult, type RobotTestState, type SetupStatus } from "../api.ts";
 import { useAppearance } from "../hooks/useAppearance.ts";
 import { normalizeCode } from "../logic/auth.ts";
 import { SETUP_STEPS, checkDot, checkSummary, timeLeft } from "../logic/setup.ts";
@@ -171,8 +171,9 @@ function Wizard({ onFinished, onError }: { onFinished: () => void } & StepProps)
         ))}
       </ol>
       {step === 0 && <DeviceCheck onContinue={next} onError={onError} />}
-      {step === 1 && <MakeAdmin onContinue={next} onError={onError} />}
-      {step === 2 && <Finish onFinished={onFinished} onError={onError} />}
+      {step === 1 && <RobotTest onContinue={next} onError={onError} />}
+      {step === 2 && <MakeAdmin onContinue={next} onError={onError} />}
+      {step === 3 && <Finish onFinished={onFinished} onError={onError} />}
     </div>
   );
 }
@@ -242,6 +243,93 @@ function DeviceCheck({ onContinue, onError }: { onContinue: () => void } & StepP
         <button className="btn primary press" type="button" onClick={onContinue} disabled={!results}>
           Continue
         </button>
+      </div>
+    </div>
+  );
+}
+
+function RobotTest({ onContinue, onError }: { onContinue: () => void } & StepProps) {
+  const [test, setTest] = useState<RobotTestState>({ status: "none" });
+  const [error, setError] = useState("");
+
+  const poll = useCallback(async () => {
+    try {
+      setTest(await apiJson<RobotTestState>(paths.setupRobotTest));
+    } catch (e) {
+      onError(e);
+    }
+  }, [onError]);
+  useEffect(() => {
+    void poll();
+  }, [poll]);
+  useEffect(() => {
+    if (test.status !== "asked" && test.status !== "running") return;
+    const timer = setInterval(() => void poll(), 2000);
+    return () => clearInterval(timer);
+  }, [test.status, poll]);
+
+  const ask = async () => {
+    setError("");
+    try {
+      setTest(await apiJson<RobotTestState>(paths.setupRobotTest, { method: "POST" }));
+    } catch (e) {
+      setError(errorText(e, "Couldn't ask for the robot test."));
+      onError(e);
+    }
+  };
+
+  const waiting = test.status === "asked" || test.status === "running";
+  return (
+    <div className="group setup-step">
+      <p className="login-lead">Does the robot answer?</p>
+      {test.status === "none" && (
+        <p className="login-note">
+          The test powers the robot on without the wake-up move, so the motors stay limp and nothing moves, reads the
+          motors, then powers it off. Plug in the robot's power supply first. It runs only while the robot is off.
+        </p>
+      )}
+      {waiting && (
+        <p className="login-note setup-wait">
+          <span className="spin" aria-hidden="true" />
+          <span>
+            {test.status === "asked" ? (
+              <>
+                Confirm on the robot: the terminal running <code>reachy-bridge setup</code> asks whether to run the
+                test.
+              </>
+            ) : (
+              "Testing the robot. This takes a few seconds."
+            )}
+          </span>
+        </p>
+      )}
+      {(test.status === "passed" || test.status === "failed") && (
+        <p className={`login-note setup-result ${test.status}`} role="status">
+          <span className={`dot ${test.status === "passed" ? "ok" : "error"}`} aria-hidden="true" />
+          <span>{test.detail}</span>
+        </p>
+      )}
+      {error && (
+        <p className="login-note login-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="setup-actions">
+        {test.status === "passed" ? null : (
+          <button className="btn quiet press" type="button" onClick={onContinue} disabled={test.status === "running"}>
+            Skip
+          </button>
+        )}
+        {!waiting && test.status !== "passed" && (
+          <button className="btn quiet press" type="button" onClick={() => void ask()}>
+            {test.status === "failed" ? "Test again" : "Test the robot"}
+          </button>
+        )}
+        {test.status === "passed" && (
+          <button className="btn primary press" type="button" onClick={onContinue}>
+            Continue
+          </button>
+        )}
       </div>
     </div>
   );
@@ -331,8 +419,8 @@ function MakeAdmin({ onContinue, onError }: { onContinue: () => void } & StepPro
     <form className="group setup-step" onSubmit={(event) => void submit(event)}>
       <p className="login-lead">Make your dashboard the admin.</p>
       <p className="login-note">
-        On the computer or phone you'll use, open the dashboard: over Tailscale after{" "}
-        <code>reachy-bridge serve</code> on the robot, or on this network with LAN access on. It shows a pairing code
+        On the computer or phone you'll use, open the dashboard at the address the robot's terminal printed (your
+        tailnet, or this network in LAN mode). It shows a pairing code
         (on its login screen, or under System · devices · Make this browser the admin). Type that code here, then
         confirm on the robot's terminal.
       </p>

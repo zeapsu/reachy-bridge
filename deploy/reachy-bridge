@@ -4,7 +4,8 @@
 #
 #   reachy-bridge status
 #   reachy-bridge check [--json]          can this device run the bridge and the robot?
-#   reachy-bridge setup                   open the setup page on the LAN (#135)
+#   reachy-bridge setup                   first-run setup: dashboard access, HF login, then a
+#                                        setup page on the LAN (device check, robot test, admin) (#135)
 #   reachy-bridge start | stop | restart [daemon|controller|sim|audio]   (default: daemon and controller)
 #   reachy-bridge logs [daemon|controller|sim|audio]
 #   reachy-bridge serve [on|off|status]
@@ -486,8 +487,116 @@ setup_close() {
     (controller_api POST /api/setup/stop >/dev/null 2>&1) || true
 }
 
+# LAN access is a drop-in this command writes; the uninstaller removes it
+# through the install manifest.
+LAN_DROPIN=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$CONTROLLER.d/lan.conf
+
+# record_install KIND VALUE: the install manifest's format (see install.sh).
+record_install() {
+    local manifest=$HOME/.local/share/reachy-bridge/install-manifest line
+    [[ -d ${manifest%/*} ]] || return 0
+    line=$(printf '%s\t%s' "$1" "$2")
+    grep -qxF "$line" "$manifest" 2>/dev/null || printf '%s\n' "$line" >>"$manifest"
+}
+
+restart_controller() {
+    local i
+    systemctl --user daemon-reload
+    systemctl --user restart "$CONTROLLER"
+    for (( i = 0; i < 30; i++ )); do
+        curl -s -m 2 -o /dev/null "$CONTROLLER_URL/api/auth/status" && return 0
+        sleep 1
+    done
+    die "the controller didn't come back after the restart; see: reachy-bridge logs controller"
+}
+
+# How the dashboard is reached: Tailscale (recommended) or the local network.
+# Asked on the terminal, before the setup page opens: switching LAN mode
+# restarts the controller, which serves the page.
+setup_access() {
+    local now=() ports line
+    if ! command -v systemctl >/dev/null || ! systemctl --user show-environment >/dev/null 2>&1; then
+        echo "Can't reach your user systemd here; skipping the access question."
+        return 0
+    fi
+    [[ -e $LAN_DROPIN ]] && now+=("the local network (LAN mode)")
+    ports=$(bridge_serve_ports | tr '\n' ' ')
+    [[ -n $ports ]] && now+=("Tailscale (tailnet ports ${ports% })")
+    (( ${#now[@]} )) || now=("only this device")
+    line=${now[*]:0:1}
+    (( ${#now[@]} > 1 )) && line+=" and ${now[1]}"
+    echo "How will you reach the dashboard? Now: $line"
+    echo "  t      Tailscale (recommended): HTTPS on your tailnet; nothing opens on the local network"
+    echo "  l      this local network: plain HTTP, and every device logs in with a code"
+    echo "  Enter  keep it as it is"
+    line=
+    read -r -p "> " line || return 0
+    case $line in
+        [tT]*)
+            if [[ -e $LAN_DROPIN ]]; then
+                read -r -p "Also turn LAN access off? [y/N] " line || return 0
+                if [[ $line == [yY]* ]]; then
+                    rm -f "$LAN_DROPIN"
+                    restart_controller
+                    echo "LAN access is off."
+                fi
+            fi
+            if ! command -v tailscale >/dev/null; then
+                echo "Tailscale isn't installed. Install it (https://tailscale.com/download), sign in,"
+                echo "then run: reachy-bridge serve"
+            elif [[ -z $ports ]]; then
+                echo "reachy-bridge serve puts the dashboard on your tailnet (it needs sudo)."
+                read -r -p "Run it now? [Y/n] " line || return 0
+                if [[ $line != [nN]* ]]; then
+                    ("$0" serve on) || echo "That didn't work; run reachy-bridge serve again later."
+                fi
+            else
+                echo "The dashboard is already on your tailnet (ports ${ports% })."
+            fi
+            ;;
+        [lL]*)
+            if [[ ! -e $LAN_DROPIN ]]; then
+                mkdir -p "${LAN_DROPIN%/*}"
+                printf '%s\n' "# Written by reachy-bridge setup: the dashboard on the local network, with a login." \
+                    "[Service]" "Environment=CONTROLLER_LAN=1" >"$LAN_DROPIN"
+                record_install file "$LAN_DROPIN"
+                restart_controller
+            fi
+            echo "The dashboard is on the local network: http://$(hostname 2>/dev/null | cut -d. -f1).local:${CONTROLLER_PORT:-7861}"
+            ;;
+    esac
+}
+
+# The Hugging Face token, for private Spaces: typed on the terminal, never on
+# the setup page (plain HTTP).
+setup_hf() {
+    local status token tmp reply
+    if ! status=$( (controller_api GET /api/hf/status) 2>/dev/null); then
+        echo "Hugging Face: can't check the login now; sign in later from the dashboard (System)."
+        return 0
+    fi
+    if [[ $status == *'"logged_in":true'* ]]; then
+        echo "Hugging Face: signed in as $(json_field "$status" username)."
+        return 0
+    fi
+    echo "Hugging Face login (optional): needed for private Spaces."
+    token=
+    read -r -s -p "Paste an access token, or press Enter to skip: " token || token=
+    echo
+    [[ -n $token ]] || return 0
+    # A file, not the command line, so the token isn't in the process list.
+    tmp=$(mktemp)
+    printf '{"token": %s}' "$(json_string "$token")" >"$tmp"
+    if reply=$( (controller_api PUT /api/hf/token -H 'Content-Type: application/json' --data-binary "@$tmp") 2>&1); then
+        echo "Hugging Face: signed in as $(json_field "$reply" username)."
+    else
+        echo "Hugging Face: ${reply#reachy-bridge: }. You can try again from the dashboard."
+    fi
+    rm -f "$tmp"
+}
+
 setup_page() {
-    local reply code port host addresses i line rc state person name peer from detail asked=""
+    local reply code port host addresses i line rc state person name peer from detail approve asked=""
     [[ -t 0 && -t 1 ]] || die "setup prints a one-time code and asks for confirmations; run it in a terminal"
     [[ -r $STATE_DIR/controller.key ]] ||
         die "can't read $STATE_DIR/controller.key: run this on the robot, as the user the bridge runs as"
@@ -496,6 +605,9 @@ setup_page() {
         curl -s -m 2 -o /dev/null "$CONTROLLER_URL/api/auth/status" && break
         sleep 2
     done
+    setup_access
+    setup_hf
+    echo
     reply=$(controller_api POST /api/setup/start)
     trap 'setup_close' EXIT
     trap 'echo; echo "setup page closed"; exit 0' HUP INT TERM
@@ -547,6 +659,23 @@ setup_page() {
             trap - EXIT
             return 0
         fi
+        if [[ $state == *'"robot_test":true'* ]]; then
+            echo
+            echo "The setup page asks to test the robot. It powers the robot on WITHOUT the"
+            echo "wake-up move (the motors stay limp; nothing moves), reads the motors, and powers"
+            echo "it off. It runs only while the robot is off. Plug in the robot's power supply first."
+            line=
+            read -r -p "Run the robot test? [y/N] " line || break
+            approve=false
+            [[ $line == [yY]* ]] && { approve=true; echo "Testing the robot..."; }
+            if reply=$( (controller_api POST /api/setup/robot-test/run -m 120 -H 'Content-Type: application/json' --data "{\"approve\": $approve}") 2>&1); then
+                detail=$(json_field "$reply" detail)
+                echo "${detail:-done}"
+            else
+                echo "${reply#reachy-bridge: }"
+            fi
+            continue
+        fi
         [[ $state == *'"proposal":{'* ]] || { asked=; continue; }
         person=$(json_field "${state#*\"proposal\":}" person)
         name=$(json_field "${state#*\"proposal\":}" name)
@@ -555,14 +684,16 @@ setup_page() {
         [[ $asked == "$peer/$person/$name" ]] && continue
         asked="$peer/$person/$name"
         echo
+        from=${from:+ (from $from)}
         if [[ $peer == 127.* || $peer == ::1 ]]; then
-            echo "The setup page (from $from) asks to make a dashboard reached through Tailscale the admin."
+            echo "The setup page$from asks to make a dashboard reached through Tailscale the admin."
         else
-            echo "The setup page (from $from) asks to make the dashboard at $peer the admin."
+            echo "The setup page$from asks to make the dashboard at $peer the admin."
         fi
         echo "  person: '${person:-}'   device: '${name:-}'"
         echo "The admin approves every other device and can take control of the robot."
         line=
+        echo "Read the code from your dashboard itself, not from the setup page."
         read -r -p "To approve, type the code your dashboard shows (Enter refuses): " line || break
         reply=$( (controller_api POST /api/setup/confirm -H 'Content-Type: application/json' --data "{\"code\": $(json_string "$line")}") 2>&1) || true
         if [[ $reply == *'"role":"admin"'* ]]; then
@@ -736,7 +867,7 @@ if 1 <= n <= len(devices):
         robot_power
         ;;
     -h|--help|help)
-        sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         die "unknown command '$cmd' (try: reachy-bridge help)"

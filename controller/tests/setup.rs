@@ -98,12 +98,67 @@ async fn gone(page: &str) -> bool {
 }
 
 async fn harness() -> Harness {
-    log();
-    environment();
     let app = Router::new().route(
         "/api/daemon/status",
         get(|| async { Json(json!({"state": "stopped", "backend_status": null})) }),
     );
+    harness_with(app).await
+}
+
+/// A daemon that powers on and off, with the motors limp after a start
+/// without the wake-up move (daemon-contract.md); `calls` records each POST.
+#[derive(Clone, Default)]
+struct FakeRobot {
+    on: Arc<Mutex<bool>>,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl FakeRobot {
+    fn router(&self) -> Router {
+        use axum::extract::RawQuery;
+        use axum::routing::post;
+        let (a, b, c) = (self.clone(), self.clone(), self.clone());
+        Router::new()
+            .route(
+                "/api/daemon/status",
+                get(move || {
+                    let on = *a.on.lock().unwrap();
+                    async move {
+                        Json(if on {
+                            json!({"state": "running", "backend_status": {"motor_control_mode": "disabled"}})
+                        } else {
+                            json!({"state": "not_initialized", "backend_status": null})
+                        })
+                    }
+                }),
+            )
+            .route(
+                "/api/daemon/start",
+                post(move |RawQuery(q): RawQuery| {
+                    b.calls.lock().unwrap().push(format!("start?{}", q.unwrap_or_default()));
+                    *b.on.lock().unwrap() = true;
+                    async { Json(json!({"job_id": "1"})) }
+                }),
+            )
+            .route(
+                "/api/daemon/stop",
+                post(move |RawQuery(q): RawQuery| {
+                    c.calls.lock().unwrap().push(format!("stop?{}", q.unwrap_or_default()));
+                    *c.on.lock().unwrap() = false;
+                    async { Json(json!({"job_id": "2"})) }
+                }),
+            )
+            .route("/api/apps/current-app-status", get(|| async { Json(Value::Null) }))
+            .route("/api/state/full", get(|| async { Json(json!({"head_pose": {"pitch": 0.1}})) }))
+    }
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+async fn harness_with(app: Router) -> Harness {
+    log();
+    environment();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -572,6 +627,22 @@ async fn the_terminal_refuses_a_code_its_dashboard_does_not_show() {
 }
 
 #[tokio::test]
+async fn refused_requests_end_the_session_too() {
+    let h = harness().await;
+    let (pair, _) = h.dashboard_pair().await;
+    let (code, page) = h.start().await;
+    let cookie = session(&login(&page, &code).await);
+    for _ in 0..5 {
+        let (status, _) = propose(&page, &cookie, json!({"code": pair["code"]})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = h.confirm("").await;
+        assert_eq!(body["status"], "refused");
+    }
+    let r = client().get(format!("{page}/api/setup/admin")).header("cookie", &cookie).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "the session is over");
+}
+
+#[tokio::test]
 async fn codes_that_match_no_dashboard_end_the_session() {
     let h = harness().await;
     let (code, page) = h.start().await;
@@ -649,6 +720,67 @@ async fn stopping_from_the_terminal_closes_the_page() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert!(gone(&page).await);
+}
+
+impl Harness {
+    /// The terminal's answer to the robot test.
+    async fn run_robot_test(&self, approve: bool) -> (StatusCode, Value) {
+        let key = self.key();
+        self.api("POST", "/api/setup/robot-test/run", LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(json!({"approve": approve}))).await
+    }
+}
+
+async fn ask_robot_test(page: &str, cookie: &str) -> StatusCode {
+    client().post(format!("{page}/api/setup/robot-test")).header("cookie", cookie).send().await.unwrap().status()
+}
+
+#[tokio::test]
+async fn the_robot_test_runs_only_after_a_yes_on_the_terminal_and_ends_off() {
+    let robot = FakeRobot::default();
+    let h = harness_with(robot.router()).await;
+    let (code, page) = h.start().await;
+    let cookie = session(&login(&page, &code).await);
+    let (status, _) = h.run_robot_test(true).await;
+    assert_eq!(status, StatusCode::CONFLICT, "the page hasn't asked");
+    let (status, _) = h.api("POST", "/api/setup/robot-test/run", LAN, &[], Some(json!({"approve": true}))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "the terminal's route");
+    assert_eq!(ask_robot_test(&page, &cookie).await, StatusCode::OK);
+    assert_eq!(ask_robot_test(&page, &cookie).await, StatusCode::CONFLICT, "already waiting");
+    assert_eq!(h.terminal().await["robot_test"], true);
+    assert!(robot.calls().is_empty(), "nothing runs before the terminal answers");
+
+    let (status, body) = h.run_robot_test(true).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    assert_eq!(body["status"], "passed", "{body:?}");
+    assert!(body["detail"].as_str().unwrap().contains("torque off"), "{body:?}");
+    // No wake-up move on, no sleep move off: the motors stay limp throughout.
+    assert_eq!(robot.calls(), ["start?wake_up=false", "stop?goto_sleep=false"]);
+    assert!(!*robot.on.lock().unwrap());
+    let r: Value = client().get(format!("{page}/api/setup/robot-test")).header("cookie", &cookie).send().await.unwrap().json().await.unwrap();
+    assert_eq!(r["status"], "passed");
+    assert_eq!(h.terminal().await["robot_test"], false);
+}
+
+#[tokio::test]
+async fn the_robot_test_never_touches_a_robot_that_is_on() {
+    let robot = FakeRobot::default();
+    *robot.on.lock().unwrap() = true;
+    let h = harness_with(robot.router()).await;
+    let (code, page) = h.start().await;
+    let cookie = session(&login(&page, &code).await);
+    assert_eq!(ask_robot_test(&page, &cookie).await, StatusCode::OK);
+    let (_, body) = h.run_robot_test(true).await;
+    assert_eq!(body["status"], "failed");
+    assert!(body["detail"].as_str().unwrap().starts_with("Not run"), "{body:?}");
+    assert!(robot.calls().is_empty(), "{:?}", robot.calls());
+    assert!(*robot.on.lock().unwrap(), "left on");
+    // A refusal on the terminal runs nothing either; the page can ask again.
+    *robot.on.lock().unwrap() = false;
+    assert_eq!(ask_robot_test(&page, &cookie).await, StatusCode::OK);
+    let (_, body) = h.run_robot_test(false).await;
+    assert_eq!(body["status"], "failed");
+    assert!(robot.calls().is_empty());
+    assert_eq!(ask_robot_test(&page, &cookie).await, StatusCode::OK);
 }
 
 #[tokio::test]
