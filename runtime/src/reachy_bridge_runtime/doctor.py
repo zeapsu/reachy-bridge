@@ -90,7 +90,11 @@ def gstreamer(run: Callable[[list[str]], str | None]) -> list[Result]:
     version = run(["gst-inspect-1.0", "--version"])
     if version is None:
         hint = "install gstreamer1.0-tools and the GStreamer plugins"
-        return [Result("GStreamer", "fail", f"gst-inspect-1.0 not found; {hint}"), Result("webrtcsink", "skip", "needs GStreamer")]
+        return [
+            Result("GStreamer", "fail", f"gst-inspect-1.0 not found; {hint}"),
+            Result("webrtcsink", "skip", "needs GStreamer"),
+            Result("libnice", "skip", "needs GStreamer"),
+        ]
     match = re.search(r"GStreamer (\d+)\.(\d+)\.(\d+)", version)
     if not match:
         found = Result("GStreamer", "warn", "couldn't read the version")
@@ -106,7 +110,13 @@ def gstreamer(run: Callable[[list[str]], str | None]) -> list[Result]:
         webrtc = Result("webrtcsink", "fail", f"too old (no run-signalling-server); gst-plugins-rs 0.14 is needed ({build})")
     else:
         webrtc = Result("webrtcsink", "pass", "gst-plugins-rs with run-signalling-server")
-    return [found, webrtc]
+    # WebRTC (webrtcbin, inside webrtcsink and the audio gateway) refuses every
+    # stream without libnice's GStreamer elements.
+    if run(["gst-inspect-1.0", "nicesrc"]) is None:
+        nice = Result("libnice", "fail", "GStreamer's libnice plugin is missing; WebRTC needs it (sudo apt install gstreamer1.0-nice)")
+    else:
+        nice = Result("libnice", "pass", "nicesrc")
+    return [found, webrtc, nice]
 
 
 def usb_ids(root: Path) -> set[str]:

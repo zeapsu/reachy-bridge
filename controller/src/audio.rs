@@ -187,7 +187,7 @@ impl Audio {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        Err(ApiError::new(503, "The audio gateway didn't start"))
+        Err(ApiError::new(503, "The audio gateway didn't start; see `reachy-bridge logs audio` (and `reachy-bridge check`)"))
     }
 
     async fn listening(&self) -> bool {
