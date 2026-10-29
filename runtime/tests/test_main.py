@@ -19,9 +19,12 @@ def test_the_robot_daemon_keeps_everything():
 def test_a_sim_daemon_leaves_the_host_and_media_alone():
     board = for_daemon_args(_board(), ["--sim", "--headless", "--no-media"])
     assert board.host_setup == ()
-    assert board.features == frozenset()
+    # Its sounds go to the dashboard instead (#219).
+    assert board.features == frozenset({"sim_sounds"})
     assert board.name == "jetson"
 
 
 def test_a_mockup_sim_daemon_leaves_the_host_alone():
-    assert for_daemon_args(_board(), ["--mockup-sim"]).host_setup == ()
+    board = for_daemon_args(_board(), ["--mockup-sim"])
+    assert board.host_setup == ()
+    assert "sim_sounds" in board.features

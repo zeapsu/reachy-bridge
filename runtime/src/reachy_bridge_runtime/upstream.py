@@ -101,6 +101,8 @@ _BACKEND = "reachy_mini.daemon.backend.abstract"
 _MEDIA_SERVER = "reachy_mini.media.media_server"
 _APPS_VENV = "reachy_mini.apps.sources.local_common_venv"
 _ROBOT_BACKEND = "reachy_mini.daemon.backend.robot.backend"
+# Backend.__init__ keeps uploaded move audio in <tempdir>/<this>/audio.
+_UPLOADS_DIR = "reachy-mini-uploads"
 
 REQUIREMENTS: tuple[Requirement, ...] = (
     Requirement("daemon", "daemon entry point", _function(_APP_MAIN, "main")),
@@ -255,6 +257,28 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         lambda: (
             _function("reachy_mini.media.audio_utils", "check_reachymini_asoundrc")(),
             _function("reachy_mini.media.audio_utils", "write_asoundrc_to_home")(),
+        ),
+    ),
+    Requirement(
+        "sim_sounds",
+        "Backend.play_sound(sound_file) and Backend.stop_sound()",
+        lambda: (
+            _function(_BACKEND, "Backend.play_sound", "sound_file")(),
+            _function(_BACKEND, "Backend.stop_sound")(),
+        ),
+    ),
+    Requirement(
+        "sim_sounds",
+        "ASSETS_ROOT_PATH, where play_sound looks up a bare file name",
+        lambda: _attr("reachy_mini.utils.constants", "ASSETS_ROOT_PATH"),
+    ),
+    Requirement(
+        "sim_sounds",
+        "where the daemon keeps uploaded sounds and move audio",
+        lambda: (
+            _attr("reachy_mini.daemon.app.routers.media", "SOUNDS_TMP_DIR"),
+            _source_mentions(_BACKEND, "Backend", f'"{_UPLOADS_DIR}"', '"audio"')(),
+            _attr("huggingface_hub.constants", "HF_HUB_CACHE"),
         ),
     ),
 )
@@ -517,3 +541,61 @@ def ensure_reachymini_asoundrc() -> bool:
         return False
     write_asoundrc_to_home()
     return True
+
+
+def wrap_play_sound(wrapper: Callable[..., None]) -> None:
+    """Replace ``Backend.play_sound`` with ``wrapper(original, backend, sound_file)``."""
+    from reachy_mini.daemon.backend.abstract import Backend
+
+    _wrap(Backend, "play_sound", wrapper)
+
+
+def wrap_stop_sound(wrapper: Callable[..., None]) -> None:
+    """Replace ``Backend.stop_sound`` with ``wrapper(original, backend)``."""
+    from reachy_mini.daemon.backend.abstract import Backend
+
+    _wrap(Backend, "stop_sound", wrapper)
+
+
+def sound_path(sound_file: str) -> Path | None:
+    """The file ``play_sound(sound_file)`` plays, resolved as the media server
+    does (the path as given, else the name under the assets folder); None if
+    neither exists."""
+    from reachy_mini.utils.constants import ASSETS_ROOT_PATH
+
+    for candidate in (Path(sound_file), Path(ASSETS_ROOT_PATH) / sound_file):
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def sound_roots() -> tuple[Path, ...]:
+    """The folders the daemon's own sounds come from: its assets, uploaded
+    sounds, uploaded move audio, and the Hugging Face cache that move
+    datasets (and their sounds) download into."""
+    import tempfile
+
+    from huggingface_hub.constants import HF_HUB_CACHE
+    from reachy_mini.daemon.app.routers.media import SOUNDS_TMP_DIR
+    from reachy_mini.utils.constants import ASSETS_ROOT_PATH
+
+    uploads = Path(tempfile.gettempdir()) / _UPLOADS_DIR
+    # The upload folders sit in the shared temp dir: one another user made
+    # first (or a link there) would widen what counts as a sound folder. The
+    # assets and the Hugging Face cache may well be links (a cache on another
+    # disk), so they aren't held to this.
+    shared = [
+        folder
+        for folder, checked in ((Path(SOUNDS_TMP_DIR), [Path(SOUNDS_TMP_DIR)]), (uploads / "audio", [uploads, uploads / "audio"]))
+        if all(_own_folder(f) for f in checked)
+    ]
+    return tuple(Path(root).resolve() for root in (ASSETS_ROOT_PATH, HF_HUB_CACHE, *shared))
+
+
+def _own_folder(path: Path) -> bool:
+    import os
+
+    try:
+        return not path.is_symlink() and path.stat().st_uid == os.getuid()
+    except OSError:
+        return False
