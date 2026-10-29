@@ -6,7 +6,8 @@
 #   reachy-bridge start | stop | restart [daemon|controller|sim]   (default: daemon and controller)
 #   reachy-bridge logs [daemon|controller|sim]
 #   reachy-bridge serve [on|off|status]
-#   reachy-bridge pair <code> [name]     approve a browser's LAN login code
+#   reachy-bridge pair [--admin] <code> [name]  approve a browser's login code
+#                                        (--admin: as the admin, #221)
 #   reachy-bridge devices [revoke <n|id>]  list or revoke paired browsers
 #   reachy-bridge deploy <tag>           install a tag; reinstall the previous version if it fails
 #   reachy-bridge uninstall [--keep-data] [--dry-run] [--yes]
@@ -464,9 +465,12 @@ uninstall_bridge() {
 cmd=${1:-status}
 shift || true
 force=0
+admin=0
 args=()
 for arg in "$@"; do
-    if [[ $arg == --force ]]; then force=1; else args+=("$arg"); fi
+    if [[ $arg == --force ]]; then force=1
+    elif [[ $arg == --admin && $cmd == pair ]]; then admin=1
+    else args+=("$arg"); fi
 done
 
 case "$cmd" in
@@ -523,13 +527,25 @@ case "$cmd" in
         esac
         ;;
     pair)
-        [[ ${args[0]:-} =~ ^[0-9]{6}$ ]] || die "usage: reachy-bridge pair <6-digit code> [name]"
+        [[ ${args[0]:-} =~ ^[0-9]{6}$ ]] || die "usage: reachy-bridge pair [--admin] <6-digit code> [name]"
         body="{\"code\": \"${args[0]}\""
         [[ -n ${args[1]:-} ]] && body+=", \"name\": $(json_string "${args[*]:1}")"
+        if (( admin )); then
+            # Only the local key approves an admin.
+            [[ -r $STATE_DIR/controller.key ]] ||
+                die "can't read $STATE_DIR/controller.key: run this on the robot, as the user the bridge runs as"
+            body+=', "role": "admin"'
+        fi
         reply=$(controller_api POST /api/auth/approve -H 'Content-Type: application/json' --data "$body}")
         peer=${reply#*\"peer\":\"}
         [[ $peer == "$reply" ]] && peer="?" || peer=${peer%%\"*}
-        echo "approved the browser at $peer; it logs in within a few seconds"
+        if (( admin )); then
+            echo "approved the browser at $peer as the admin; it logs in within a few seconds"
+            echo "every other browser, tailnet included, now needs a code approved by you;"
+            echo "browsers paired before an admin existed were logged out"
+        else
+            echo "approved the browser at $peer; it logs in within a few seconds"
+        fi
         ;;
     devices)
         case "${args[0]:-list}" in
@@ -543,7 +559,9 @@ if not devices:
     print("no paired devices")
 for n, d in enumerate(devices, 1):
     seen = time.strftime("%Y-%m-%d %H:%M", time.localtime(d["last_seen"]))
-    print("%d  %s  %s  (last seen %s from %s)" % (n, d["id"], d["name"], seen, d["peer"]))
+    who = d.get("person") or d["name"]
+    role = " [admin]" if d.get("role") == "admin" else ""
+    print("%d  %s  %s, %s%s  (last seen %s from %s)" % (n, d["id"], d["name"], who, role, seen, d["peer"]))
 ' "$list"
                 else
                     echo "$list"

@@ -71,7 +71,7 @@ on the device with `reachy-bridge pair <code> [name]`, or from an already-paired
 (devices panel). The browser then keeps a device cookie for a year. `reachy-bridge devices`
 lists paired browsers and `reachy-bridge devices revoke <n>` logs one out at once (`<n>` is its number in that list; the id works too).
 Visitors through `tailscale serve` and local tools are trusted without pairing; set
-`CONTROLLER_TRUST_TAILNET=0` to make them pair too. The same login covers the app UIs, on :7863
+`CONTROLLER_TRUST_TAILNET=0` to make them pair too (an admin, below, does that as well). The same login covers the app UIs, on :7863
 from the LAN and on :8043 through `tailscale serve`.
 
 Apps are code you install from Hugging Face, and they run as the bridge's own user. The bridge
@@ -81,6 +81,22 @@ public `share` link. An app can also read the controller's local key. Install ap
 
 A paired browser can approve and revoke other browsers, so approve only codes you expect
 (`reachy-bridge pair` prints the address that asked). A browser unused for 30 days is logged out.
+
+## Admin
+
+Until an admin exists, anyone who reaches the dashboard can drive the robot. To lock it to the
+browsers you approve, LAN mode or not, make your own browser the admin: open the devices panel
+(System), choose "Make this browser the admin", and run the command it shows on the robot,
+`reachy-bridge pair --admin <code> [name]`. Only the CLI on the robot can approve an admin.
+
+Browsers paired before that are logged out, since anyone could approve them. From then on
+every browser logs in, Tailscale visitors included, and open streams and drive sessions from
+browsers without a login end at once. Only the admin approves new browsers (with a device name
+and the person using it) and revokes them. Other people's browsers
+can log themselves out. The dashboard won't revoke the last admin device; to recover a lost one,
+pair a new admin from the robot and revoke the old one with `reachy-bridge devices revoke <n>`.
+Admin mode stays on even with no admin device left. An installed app runs as the bridge's user
+and can read the local key, so it could approve an admin too; install apps you trust.
 
 LAN traffic is plain HTTP, so anyone on the network can read it, including the device cookie,
 unless you put TLS in front of the controller. The app proxy strips the cookie before a request
