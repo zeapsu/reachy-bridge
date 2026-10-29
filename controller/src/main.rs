@@ -79,6 +79,7 @@ async fn main() -> std::io::Result<()> {
     let sim_url = sim.sim_url().to_string();
     let state = AppState::with_sim(daemon, logs.clone(), state_dir, Duration::from_millis(300), auth, sim);
     tokio::spawn(reachy_controller::sim::stop_leftover(state.clone()));
+    tokio::spawn(reachy_controller::audio::end_leftover(state.clone()));
     tokio::spawn(reachy_controller::datasets::prefetch(state.clone()));
     tokio::spawn(follow_journal(logs, env_or("REACHY_DAEMON_UNIT", "reachy-bridge.service")));
 

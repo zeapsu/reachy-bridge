@@ -1,6 +1,10 @@
 [Unit]
 Description=reachy-bridge audio gateway (listen and talk from the dashboard; started on demand)
 After=reachy-bridge.service
+# Stopped and restarted with the controller: only the controller watches a
+# session (and ends it when its browser loses control), so a session must
+# not outlive it.
+PartOf=reachy-bridge-controller.service
 # Not enabled: the controller starts it when a browser starts listening or
 # talking (#219). It serves one WebRTC session at a time on loopback HTTP
 # (only the controller talks to it); the audio itself is UDP between the

@@ -145,7 +145,8 @@ class Session:
         # The linked send pad makes a sendrecv transceiver; the browser's
         # audio comes back on it (pad-added).
         self.webrtc.connect("pad-added", self._on_pad)
-        bus = self.pipeline.get_bus()
+        self.bus = self.pipeline.get_bus()
+        bus = self.bus
         bus.add_signal_watch()
         bus.connect("message::error", self._on_error)
         self.gathered = threading.Event()
@@ -231,6 +232,8 @@ class Session:
 
     def stop(self) -> None:
         self.pipeline.set_state(Gst.State.NULL)
+        # The watch holds this session (and its pipeline) alive otherwise.
+        self.bus.remove_signal_watch()
 
 
 class Gateway:
@@ -248,10 +251,15 @@ class Gateway:
         with self.lock:
             self._end()
             session = on_main(lambda: Session(listen, talk))
-            on_main(session.start)
-            if not session.gathered.wait(GATHER_TIMEOUT):
-                logger.warning("Audio session %s: ICE gathering didn't finish; offering what we have", session.id)
-            offer = on_main(session.local_offer)
+            try:
+                on_main(session.start)
+                if not session.gathered.wait(GATHER_TIMEOUT):
+                    logger.warning("Audio session %s: ICE gathering didn't finish; offering what we have", session.id)
+                offer = on_main(session.local_offer)
+            except Exception:
+                # Don't leave its pipeline holding the mic, speaker and ports.
+                on_main(session.stop)
+                raise
             self.session = session
             logger.info("Audio session %s opened (listen=%s, talk=%s)", session.id, listen, talk)
             return {"id": session.id, "offer": offer}
@@ -352,6 +360,17 @@ class Handler(BaseHTTPRequestHandler):
         self._route("DELETE")
 
 
+def reap() -> None:
+    """End a disconnected session even when nobody asks for the status (the
+    controller polls it, but may be gone)."""
+    while True:
+        time.sleep(5)
+        try:
+            GATEWAY.status()
+        except Exception:
+            logger.exception("Audio gateway: status check failed")
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     Gst.init(None)
@@ -360,6 +379,7 @@ def main() -> None:
         raise SystemExit(f"audio gateway: missing GStreamer elements: {', '.join(missing)}")
     loop = GLib.MainLoop()
     threading.Thread(target=loop.run, name="glib", daemon=True).start()
+    threading.Thread(target=reap, name="reap", daemon=True).start()
     # Loopback only: the controller is the only client.
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     logger.info("Audio gateway on 127.0.0.1:%d (ICE nets %s, UDP %s)", PORT, ",".join(map(str, NETS)), PORTS)

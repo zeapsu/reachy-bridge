@@ -66,6 +66,11 @@ export function VoicePanel({ voice, control }: { voice: VoiceApi; control: Contr
           {noTalk}
         </p>
       ) : null}
+      {open && voice.needsTap ? (
+        <button className="btn primary press" type="button" id="voice-hear" onClick={voice.hear}>
+          Tap to hear the robot
+        </button>
+      ) : null}
       {open ? (
         <button className="btn press" type="button" id="voice-stop" disabled={voice.busy} onClick={() => void voice.stop()}>
           Stop

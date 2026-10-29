@@ -8,6 +8,10 @@ export interface VoiceApi {
   view: VoiceView | null;
   /** The id of the session this browser opened, or null. */
   mine: string | null;
+  /** The browser wouldn't start playing the robot's audio without a tap. */
+  needsTap: boolean;
+  /** Play the robot's audio (from a tap). */
+  hear: () => void;
   status: VoiceStatus;
   /** What this browser asked for; meaningful while a session is open. */
   route: VoiceRoute;
@@ -53,6 +57,7 @@ export function useVoice(visible: boolean): VoiceApi {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [mine, setMine] = useState<string | null>(null);
+  const [needsTap, setNeedsTap] = useState(false);
   const pc = useRef<RTCPeerConnection | null>(null);
   const id = useRef<string | null>(null);
   // When `id` was set: a poll sent before then can't know the session.
@@ -66,6 +71,7 @@ export function useVoice(visible: boolean): VoiceApi {
     mic.current?.stop();
     mic.current = null;
     if (speaker.current) speaker.current.srcObject = null;
+    setNeedsTap(false);
     id.current = null;
     setMine(null);
     setStatus("off");
@@ -94,7 +100,29 @@ export function useVoice(visible: boolean): VoiceApi {
   }, [visible, reload]);
 
   // Leaving the page ends the session; the gateway also drops one whose browser vanished.
-  useEffect(() => () => teardown(), [teardown]);
+  useEffect(() => {
+    // keepalive: the request outlives the page.
+    const end = () => {
+      if (id.current) void fetch(paths.voiceEnd(id.current), { method: "DELETE", keepalive: true }).catch(() => {});
+    };
+    // Closing or leaving the page, not hiding it: a phone with its screen off keeps going.
+    const leave = (event: PageTransitionEvent) => {
+      if (!event.persisted) end();
+    };
+    window.addEventListener("pagehide", leave);
+    return () => {
+      window.removeEventListener("pagehide", leave);
+      end();
+      teardown();
+    };
+  }, [teardown]);
+
+  const hear = useCallback(() => {
+    void speaker.current
+      ?.play()
+      .then(() => setNeedsTap(false))
+      .catch(() => {});
+  }, []);
 
   const run = useCallback(
     async (work: () => Promise<void>) => {
@@ -114,6 +142,14 @@ export function useVoice(visible: boolean): VoiceApi {
     (next: VoiceRoute) =>
       run(async () => {
         teardown();
+        // Safari plays the robot's audio later only if this element first
+        // played during the tap that started it (listening captures no mic,
+        // which would also allow it).
+        speaker.current ??= new Audio();
+        const out = speaker.current;
+        out.autoplay = true;
+        out.muted = !next.listen;
+        void out.play().catch(() => {});
         let opened: string | null = null;
         try {
           // Ask for the mic first: a refusal shouldn't open the robot's.
@@ -128,13 +164,9 @@ export function useVoice(visible: boolean): VoiceApi {
           setRouteState(next);
           const peer = new RTCPeerConnection();
           pc.current = peer;
-          speaker.current ??= new Audio();
-          const out = speaker.current;
-          out.autoplay = true;
-          out.muted = !next.listen;
           peer.ontrack = (event) => {
             out.srcObject = event.streams[0] ?? new MediaStream([event.track]);
-            void out.play().catch(() => {});
+            out.play().catch(() => setNeedsTap(true));
           };
           peer.onconnectionstatechange = () => {
             if (pc.current !== peer) return;
@@ -175,8 +207,9 @@ export function useVoice(visible: boolean): VoiceApi {
             mic.current = null;
           }
           if (speaker.current) speaker.current.muted = !next.listen;
-          await apiJson(paths.voiceRoute(sid), { method: "POST", body: JSON.stringify(next) });
+          // The switches show what this browser does now, even if the gateway refuses.
           setRouteState(next);
+          await apiJson(paths.voiceRoute(sid), { method: "POST", body: JSON.stringify(next) });
         } catch (e) {
           setError(errorText(e, "Couldn't switch the audio."));
         }
@@ -194,5 +227,5 @@ export function useVoice(visible: boolean): VoiceApi {
     [run, teardown],
   );
 
-  return { view, mine, status, route, error, busy, start, setRoute, stop };
+  return { view, mine, needsTap, hear, status, route, error, busy, start, setRoute, stop };
 }

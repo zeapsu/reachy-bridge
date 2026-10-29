@@ -23,7 +23,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
-use crate::auth::{AuthContext, Credential, Role};
+use crate::auth::{AuthContext, Credential};
 use crate::error::{ApiError, ApiResult};
 use crate::state::Shared;
 
@@ -51,6 +51,8 @@ pub struct Audio {
     systemctl: String,
     http: reqwest::Client,
     owner: Mutex<Option<Owner>>,
+    /// One open at a time, so `owner` names the gateway's latest session.
+    opening: tokio::sync::Mutex<()>,
 }
 
 impl Audio {
@@ -61,6 +63,7 @@ impl Audio {
             systemctl: "systemctl".into(),
             http: reqwest::Client::builder().timeout(TIMEOUT).build().expect("http client"),
             owner: Mutex::new(None),
+            opening: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -132,6 +135,19 @@ impl Audio {
     }
 }
 
+/// At startup: end a session a previous controller left open. Nothing
+/// watches it any more, so nothing would end it on logout or lost control,
+/// and no dashboard would show its mic as live.
+pub async fn end_leftover(state: Shared) {
+    let audio = &state.audio;
+    if let Ok(session) = audio.status().await
+        && let Some(id) = session["id"].as_str()
+    {
+        tracing::info!("audio: ending session {id} left by an earlier controller");
+        let _ = audio.call(reqwest::Method::DELETE, &format!("/session/{id}"), None).await;
+    }
+}
+
 pub fn router() -> Router<Shared> {
     Router::new()
         .route("/api/audio", get(view))
@@ -180,6 +196,7 @@ async fn open(
     let Json(body) = body.map_err(|_| ApiError::bad_body())?;
     not_sim(&state)?;
     let audio = &state.audio;
+    let _opening = audio.opening.lock().await;
     audio.ensure_running().await?;
     let opened = audio
         .call(reqwest::Method::POST, "/session", Some(json!({"listen": body.listen, "talk": body.talk})))
@@ -302,13 +319,9 @@ async fn route(
     Ok(Json(json!({"listen": body.listen, "talk": body.talk})))
 }
 
-/// End a session: its own browser, or an admin.
+/// End a session: its own browser. (An admin ends someone else's by taking
+/// control.)
 async fn close(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    let owner = match owned(&state, &ctx, &id) {
-        Ok(owner) => owner,
-        Err(error) if error.status.as_u16() == 403 && ctx.role == Some(Role::Admin) => state.audio.owner().expect("checked"),
-        Err(error) => return Err(error),
-    };
-    owner.end.notify_one();
+    owned(&state, &ctx, &id)?.end.notify_one();
     Ok(Json(json!({"status": "closed"})))
 }
