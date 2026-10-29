@@ -77,12 +77,8 @@ devices for a reinstall.
 ## LAN access
 
 By default the dashboard listens on loopback only and is reached over Tailscale. To open it to
-the home network as well, set `CONTROLLER_LAN=1` for the controller:
-
-```bash
-systemctl --user edit reachy-bridge-controller.service   # add: [Service] Environment=CONTROLLER_LAN=1
-reachy-bridge restart controller
-```
+the home network as well, run `reachy-bridge setup` and choose `l`: it sets `CONTROLLER_LAN=1`
+for the controller in a systemd drop-in (removed by `reachy-bridge uninstall`) and restarts it.
 
 The dashboard then listens on every interface on port 7861, and the app UI proxy on port 7863;
 the daemon, the app UIs and WebRTC signalling stay on loopback.

@@ -316,7 +316,7 @@ function RobotTest({ onContinue, onError }: { onContinue: () => void } & StepPro
       )}
       <div className="setup-actions">
         {test.status === "passed" ? null : (
-          <button className="btn quiet press" type="button" onClick={onContinue} disabled={test.status === "running"}>
+          <button className="btn quiet press" type="button" onClick={onContinue} disabled={waiting}>
             Skip
           </button>
         )}

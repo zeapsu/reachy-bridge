@@ -409,7 +409,7 @@ uninstall_bridge() {
         systemctl --user disable --now "$value" 2>/dev/null ||
             echo "warning: couldn't stop or disable $value" >&2
         rm -f "$unit_dir/$value"
-        [[ -d $unit_dir/$value.d ]] && echo "note: left your drop-ins in $unit_dir/$value.d"
+        [[ -d $unit_dir/$value.d && $unit_dir/$value.d != "${LAN_DROPIN%/*}" ]] && echo "note: left your drop-ins in $unit_dir/$value.d"
     done
     systemctl --user daemon-reload || echo "warning: systemctl --user daemon-reload failed" >&2
     systemctl --user reset-failed "${units[@]}" 2>/dev/null || true
@@ -458,6 +458,10 @@ uninstall_bridge() {
     for value in "${files[@]}"; do
         safe_path "$value" && rm -f "$value"
     done
+    # The LAN drop-in's directory, unless the user added drop-ins of their own.
+    if [[ -d ${LAN_DROPIN%/*} ]]; then
+        rmdir "${LAN_DROPIN%/*}" 2>/dev/null || echo "note: left your drop-ins in ${LAN_DROPIN%/*}"
+    fi
 
     echo
     echo "reachy-bridge is uninstalled. Left in place, to remove by hand if you want:"
@@ -519,7 +523,9 @@ setup_access() {
         echo "Can't reach your user systemd here; skipping the access question."
         return 0
     fi
-    [[ -e $LAN_DROPIN ]] && now+=("the local network (LAN mode)")
+    local lan=0
+    systemctl --user show -p Environment "$CONTROLLER" 2>/dev/null | grep -qw 'CONTROLLER_LAN=1' && lan=1
+    (( lan )) && now+=("the local network (LAN mode)")
     ports=$(bridge_serve_ports | tr '\n' ' ')
     [[ -n $ports ]] && now+=("Tailscale (tailnet ports ${ports% })")
     (( ${#now[@]} )) || now=("only this device")
@@ -530,14 +536,18 @@ setup_access() {
     echo "  l      this local network: plain HTTP, and every device logs in with a code"
     echo "  Enter  keep it as it is"
     line=
-    read -r -p "> " line || return 0
+    read -r -p "> " line || line=
     case $line in
         [tT]*)
-            if [[ -e $LAN_DROPIN ]]; then
+            if (( lan )) && [[ ! -e $LAN_DROPIN ]]; then
+                echo "LAN mode is set outside reachy-bridge setup (systemctl --user edit $CONTROLLER);"
+                echo "remove CONTROLLER_LAN=1 there to turn it off."
+            elif (( lan )); then
                 read -r -p "Also turn LAN access off? [y/N] " line || return 0
                 if [[ $line == [yY]* ]]; then
                     rm -f "$LAN_DROPIN"
                     restart_controller
+                    lan=0
                     echo "LAN access is off."
                 fi
             fi
@@ -550,27 +560,40 @@ setup_access() {
                 if [[ $line != [nN]* ]]; then
                     ("$0" serve on) || echo "That didn't work; run reachy-bridge serve again later."
                 fi
-            else
-                echo "The dashboard is already on your tailnet (ports ${ports% })."
             fi
             ;;
         [lL]*)
-            if [[ ! -e $LAN_DROPIN ]]; then
+            if (( ! lan )); then
                 mkdir -p "${LAN_DROPIN%/*}"
                 printf '%s\n' "# Written by reachy-bridge setup: the dashboard on the local network, with a login." \
                     "[Service]" "Environment=CONTROLLER_LAN=1" >"$LAN_DROPIN"
                 record_install file "$LAN_DROPIN"
                 restart_controller
+                lan=1
             fi
-            echo "The dashboard is on the local network: http://$(hostname 2>/dev/null | cut -d. -f1).local:${CONTROLLER_PORT:-7861}"
             ;;
     esac
+    dashboard_addresses "$lan"
+}
+
+# Where to open the dashboard now: the tailnet name if Tailscale serves it,
+# the local name with LAN mode on.
+dashboard_addresses() {
+    local name
+    echo "Open the dashboard at:"
+    if [[ -n $(bridge_serve_ports) ]] && name=$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null) && [[ -n $name ]]; then
+        echo "  https://$name:$SERVE_CONTROLLER_PORT  (your tailnet)"
+    fi
+    if (( $1 )); then
+        echo "  http://$(hostname 2>/dev/null | cut -d. -f1).local:${CONTROLLER_PORT:-7861}  (this network)"
+    fi
+    echo "  http://127.0.0.1:${CONTROLLER_PORT:-7861}  (on this device)"
 }
 
 # The Hugging Face token, for private Spaces: typed on the terminal, never on
 # the setup page (plain HTTP).
 setup_hf() {
-    local status token tmp reply
+    local status token reply
     if ! status=$( (controller_api GET /api/hf/status) 2>/dev/null); then
         echo "Hugging Face: can't check the login now; sign in later from the dashboard (System)."
         return 0
@@ -584,15 +607,13 @@ setup_hf() {
     read -r -s -p "Paste an access token, or press Enter to skip: " token || token=
     echo
     [[ -n $token ]] || return 0
-    # A file, not the command line, so the token isn't in the process list.
-    tmp=$(mktemp)
-    printf '{"token": %s}' "$(json_string "$token")" >"$tmp"
-    if reply=$( (controller_api PUT /api/hf/token -H 'Content-Type: application/json' --data-binary "@$tmp") 2>&1); then
+    # On fd 3, not the command line (the process list) or a file. The key
+    # header already uses stdin.
+    if reply=$( (controller_api PUT /api/hf/token -H 'Content-Type: application/json' --data-binary @/dev/fd/3) 3<<<"{\"token\": $(json_string "$token")}" 2>&1); then
         echo "Hugging Face: signed in as $(json_field "$reply" username)."
     else
         echo "Hugging Face: ${reply#reachy-bridge: }. You can try again from the dashboard."
     fi
-    rm -f "$tmp"
 }
 
 setup_page() {
@@ -661,7 +682,8 @@ setup_page() {
         fi
         if [[ $state == *'"robot_test":true'* ]]; then
             echo
-            echo "The setup page asks to test the robot. It powers the robot on WITHOUT the"
+            from=$(json_field "$state" from)
+            echo "The setup page${from:+ (from $from)} asks to test the robot. It powers the robot on WITHOUT the"
             echo "wake-up move (the motors stay limp; nothing moves), reads the motors, and powers"
             echo "it off. It runs only while the robot is off. Plug in the robot's power supply first."
             line=

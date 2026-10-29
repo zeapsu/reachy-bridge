@@ -295,6 +295,7 @@ async fn terminal_state(State(state): State<Shared>, Extension(ctx): Extension<A
         body["proposal"] = json!({"person": p.person, "name": p.name, "peer": p.peer.to_string(), "from": live.session_peer.map(|a| a.to_string())});
     }
     body["robot_test"] = json!(live.robot_test == RobotTest::Asked);
+    body["from"] = json!(live.session_peer.map(|a| a.to_string()));
     Ok(Json(body))
 }
 
@@ -612,19 +613,31 @@ async fn run_robot_test(
         }
         if !body.approve {
             live.robot_test = RobotTest::Done { passed: false, detail: "Not run: refused on the robot's terminal.".to_string() };
-            return Ok(Json(live.robot_test.json()));
+            let reply = live.robot_test.json();
+            // Like refused admin requests: a hijacked page can't keep asking.
+            live.missed_proposals += 1;
+            if live.missed_proposals >= MAX_PROPOSALS {
+                live.end_session();
+            }
+            return Ok(Json(reply));
         }
         live.robot_test = RobotTest::Running;
     }
-    let (passed, detail) = match robot_test(&state).await {
-        Ok(detail) => (true, detail),
-        Err(detail) => (false, detail),
-    };
-    tracing::info!("setup: robot test {}: {detail}", if passed { "passed" } else { "failed" });
-    let result = RobotTest::Done { passed, detail };
-    if let Some(live) = state.setup.live.lock().unwrap().as_mut() {
-        live.robot_test = result.clone();
-    }
+    // Its own task: a terminal that goes away mid-test (Ctrl-C, a timeout)
+    // drops this request, and the test must still end off and report.
+    let task = tokio::spawn(async move {
+        let (passed, detail) = match robot_test(&state).await {
+            Ok(detail) => (true, detail),
+            Err(detail) => (false, detail),
+        };
+        tracing::info!("setup: robot test {}: {detail}", if passed { "passed" } else { "failed" });
+        let result = RobotTest::Done { passed, detail };
+        if let Some(live) = state.setup.live.lock().unwrap().as_mut() {
+            live.robot_test = result.clone();
+        }
+        result
+    });
+    let result = task.await.map_err(|_| ApiError::new(500, "the robot test stopped unexpectedly; check the dashboard that the robot is off"))?;
     Ok(Json(result.json()))
 }
 
@@ -632,11 +645,11 @@ async fn run_robot_test(
 const TEST_START_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Power on without the wake-up move (the motors stay limp: no motion), read
-/// the motors, power off. Only from off, so it never switches off a robot
-/// someone else switched on; it always ends off.
+/// the motors, power off without the sleep move. Only from off, so it never
+/// switches off a robot someone else switched on; it ends off.
 async fn robot_test(state: &Shared) -> Result<String, String> {
-    use crate::daemon::{backend_up, motor_mode};
-    use crate::routes::power::{power_off_locked, wait_until, POWER_OFF_TIMEOUT};
+    use crate::daemon::{backend_up, motor_mode, DaemonError};
+    use crate::routes::power::POWER_OFF_TIMEOUT;
     let daemon = &state.daemon;
     let _power = state.power_lock.lock().await;
     let status = daemon.status().await.ok_or("The daemon isn't answering; check `reachy-bridge status` on the robot.")?;
@@ -645,13 +658,42 @@ async fn robot_test(state: &Shared) -> Result<String, String> {
     if !matches!(robot.as_str(), "stopped" | "not_initialized") || backend_up(&status) {
         return Err(format!("Not run: the robot is {robot}. The test only runs from off; switch it off from the dashboard and ask again."));
     }
-    let off = |why: String| async move {
-        let _ = power_off_locked(state).await;
-        wait_until(POWER_OFF_TIMEOUT, || async { daemon.status().await.is_some_and(|s| !backend_up(&s)) }).await;
-        why
+    // Off without the sleep move, which would move the robot: torque off
+    // first if it came up on (it's at rest, so nothing moves), then stop
+    // where it is. The power-off for the dashboard (power_off_locked) plays
+    // the sleep move unless the motors are already off.
+    let off = || async {
+        state.player.set_needs_home(true);
+        // A stop sent while the daemon is still starting is refused as busy;
+        // keep at it until the backend is down.
+        let deadline = tokio::time::Instant::now() + POWER_OFF_TIMEOUT;
+        loop {
+            let Some(status) = daemon.status().await else { return false };
+            if !backend_up(&status) && status.get("state").and_then(Value::as_str) != Some("starting") {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            if backend_up(&status) && status.get("state").and_then(Value::as_str) == Some("running") {
+                if motor_mode(&status).is_some_and(|m| m != "disabled") {
+                    let _ = daemon.post("motors/set_mode/disabled", &[]).await;
+                }
+                let _ = daemon.post("daemon/stop", &[("goto_sleep", "false")]).await;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
     };
-    if let Err(error) = daemon.post("daemon/start", &[("wake_up", "false")]).await {
-        return Err(off(format!("The robot didn't power on: {}.", ApiError::from(error).detail)).await);
+    let still_on = " It may still be on: switch it off from the dashboard.";
+    match daemon.post("daemon/start", &[("wake_up", "false")]).await {
+        Ok(_) => {}
+        // Busy: someone else is starting or stopping it. Not ours to switch off.
+        Err(DaemonError::Refused { status: 409, .. }) => return Err("Not run: the daemon is busy starting or stopping the robot. Ask again in a moment.".to_string()),
+        Err(error) => {
+            let up = daemon.status().await.is_some_and(|s| backend_up(&s));
+            let ended_off = !up || off().await;
+            return Err(format!("The robot didn't power on: {}.{}", ApiError::from(error).detail, if ended_off { "" } else { still_on }));
+        }
     }
     let deadline = tokio::time::Instant::now() + TEST_START_TIMEOUT;
     let (up, last) = loop {
@@ -666,26 +708,24 @@ async fn robot_test(state: &Shared) -> Result<String, String> {
     };
     if !up {
         let error = last.get("error").and_then(Value::as_str).unwrap_or("it didn't come up in time").to_string();
-        return Err(off(format!("The robot didn't power on ({error}). Check that its power supply is plugged in and switched on, and the USB cable.")).await);
+        let ended_off = off().await;
+        return Err(format!(
+            "The robot didn't power on ({error}). Check that its power supply is plugged in and switched on, and the USB cable.{}",
+            if ended_off { "" } else { still_on }
+        ));
     }
     let mode = motor_mode(&last).unwrap_or("unknown").to_string();
     let pose = daemon.get_query("state/full", &[]).await.ok().and_then(|s| s.get("head_pose").cloned()).filter(|p| !p.is_null());
-    let off_result = power_off_locked(state).await;
-    let down = wait_until(POWER_OFF_TIMEOUT, || async { daemon.status().await.is_some_and(|s| !backend_up(&s)) }).await;
-    if let Err(error) = off_result {
-        return Err(format!("The robot powered on but didn't power off: {}. Switch it off from the dashboard.", error.detail));
-    }
-    if !down {
-        return Err("The robot powered on but didn't report off in time. Check the dashboard and switch it off there.".to_string());
+    if !off().await {
+        return Err(format!("The robot powered on but didn't report off in time.{still_on}"));
     }
     if pose.is_none() {
         return Err("The robot powered on and off, but its motors didn't report a position. Check the power supply.".to_string());
     }
-    let torque = match mode.as_str() {
-        "disabled" => "motors answered with torque off, as expected".to_string(),
-        other => format!("motors answered, but in mode {other} (torque was expected off)"),
-    };
-    Ok(format!("The robot powered on without moving, its {torque}, and it powered off."))
+    if mode != "disabled" {
+        return Err(format!("The robot powered on and off, but its motors came up in mode {mode}, not with torque off. Tell the bridge's maintainers; switch the robot on from the dashboard only after checking it."));
+    }
+    Ok("The robot powered on without moving, its motors answered with torque off, as expected, and it powered off.".to_string())
 }
 
 async fn finish(State(state): State<Shared>) -> Json<Value> {

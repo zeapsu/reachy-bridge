@@ -105,27 +105,37 @@ async fn harness() -> Harness {
     harness_with(app).await
 }
 
-/// A daemon that powers on and off, with the motors limp after a start
-/// without the wake-up move (daemon-contract.md); `calls` records each POST.
-#[derive(Clone, Default)]
+/// A daemon that powers on and off; after a start without the wake-up move
+/// the motors report `mode` (limp, `disabled`, on the real robot:
+/// daemon-contract.md). `calls` records each POST; `refuse_start` answers
+/// starts with that status instead.
+#[derive(Clone)]
 struct FakeRobot {
     on: Arc<Mutex<bool>>,
+    mode: Arc<Mutex<&'static str>>,
+    refuse_start: Arc<Mutex<Option<u16>>>,
     calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl Default for FakeRobot {
+    fn default() -> Self {
+        Self { on: Default::default(), mode: Arc::new(Mutex::new("disabled")), refuse_start: Default::default(), calls: Default::default() }
+    }
 }
 
 impl FakeRobot {
     fn router(&self) -> Router {
-        use axum::extract::RawQuery;
+        use axum::extract::{Path, RawQuery};
         use axum::routing::post;
-        let (a, b, c) = (self.clone(), self.clone(), self.clone());
+        let (a, b, c, d) = (self.clone(), self.clone(), self.clone(), self.clone());
         Router::new()
             .route(
                 "/api/daemon/status",
                 get(move || {
-                    let on = *a.on.lock().unwrap();
+                    let (on, mode) = (*a.on.lock().unwrap(), *a.mode.lock().unwrap());
                     async move {
                         Json(if on {
-                            json!({"state": "running", "backend_status": {"motor_control_mode": "disabled"}})
+                            json!({"state": "running", "backend_status": {"motor_control_mode": mode}})
                         } else {
                             json!({"state": "not_initialized", "backend_status": null})
                         })
@@ -136,8 +146,16 @@ impl FakeRobot {
                 "/api/daemon/start",
                 post(move |RawQuery(q): RawQuery| {
                     b.calls.lock().unwrap().push(format!("start?{}", q.unwrap_or_default()));
-                    *b.on.lock().unwrap() = true;
-                    async { Json(json!({"job_id": "1"})) }
+                    let refused = *b.refuse_start.lock().unwrap();
+                    if refused.is_none() {
+                        *b.on.lock().unwrap() = true;
+                    }
+                    async move {
+                        match refused {
+                            Some(code) => (StatusCode::from_u16(code).unwrap(), Json(json!({"detail": "Daemon is busy."}))),
+                            None => (StatusCode::OK, Json(json!({"job_id": "1"}))),
+                        }
+                    }
                 }),
             )
             .route(
@@ -146,6 +164,16 @@ impl FakeRobot {
                     c.calls.lock().unwrap().push(format!("stop?{}", q.unwrap_or_default()));
                     *c.on.lock().unwrap() = false;
                     async { Json(json!({"job_id": "2"})) }
+                }),
+            )
+            .route(
+                "/api/motors/set_mode/{mode}",
+                post(move |Path(mode): Path<String>| {
+                    d.calls.lock().unwrap().push(format!("set_mode/{mode}"));
+                    if mode == "disabled" {
+                        *d.mode.lock().unwrap() = "disabled";
+                    }
+                    async { Json(json!({"status": "ok"})) }
                 }),
             )
             .route("/api/apps/current-app-status", get(|| async { Json(Value::Null) }))
@@ -781,6 +809,37 @@ async fn the_robot_test_never_touches_a_robot_that_is_on() {
     assert_eq!(body["status"], "failed");
     assert!(robot.calls().is_empty());
     assert_eq!(ask_robot_test(&page, &cookie).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_robot_test_never_plays_the_sleep_move() {
+    // Torque came up on: the test fails, and powers off without the sleep
+    // move (torque off first, then a stop where it is).
+    let robot = FakeRobot::default();
+    *robot.mode.lock().unwrap() = "enabled";
+    let h = harness_with(robot.router()).await;
+    let (code, page) = h.start().await;
+    let cookie = session(&login(&page, &code).await);
+    assert_eq!(ask_robot_test(&page, &cookie).await, StatusCode::OK);
+    let (_, body) = h.run_robot_test(true).await;
+    assert_eq!(body["status"], "failed", "{body:?}");
+    assert!(body["detail"].as_str().unwrap().contains("mode enabled"), "{body:?}");
+    assert_eq!(robot.calls(), ["start?wake_up=false", "set_mode/disabled", "stop?goto_sleep=false"]);
+    assert!(!*robot.on.lock().unwrap());
+}
+
+#[tokio::test]
+async fn a_busy_daemon_is_left_alone() {
+    let robot = FakeRobot::default();
+    *robot.refuse_start.lock().unwrap() = Some(409);
+    let h = harness_with(robot.router()).await;
+    let (code, page) = h.start().await;
+    let cookie = session(&login(&page, &code).await);
+    assert_eq!(ask_robot_test(&page, &cookie).await, StatusCode::OK);
+    let (_, body) = h.run_robot_test(true).await;
+    assert_eq!(body["status"], "failed");
+    assert!(body["detail"].as_str().unwrap().contains("busy"), "{body:?}");
+    assert_eq!(robot.calls(), ["start?wake_up=false"], "no stop for a start that isn't the test's");
 }
 
 #[tokio::test]
