@@ -78,7 +78,8 @@ async fn set_motor_mode(State(state): State<Shared>, Path(mode): Path<String>) -
                 "Stop the app first: the robot ignores moves under gravity compensation",
             ));
         }
-        // The daemon refuses it under any other engine, with a bare 500.
+        // The daemon refuses it under any other engine (409 since 1.13.0, a
+        // bare 500 before); check first for a clearer message.
         let engines = kinematics(&state).await?;
         if engines.get("active").and_then(Value::as_str) != Some("Placo") {
             return Err(ApiError::new(409, "Gravity compensation needs Placo kinematics"));

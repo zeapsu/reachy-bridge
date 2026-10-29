@@ -1,6 +1,6 @@
 # Daemon behaviour contract
 
-What the bridge can rely on from Pollen's daemon (`reachy-mini` 1.12.0), as
+What the bridge can rely on from Pollen's daemon (`reachy-mini` 1.13.0), as
 found in its source and confirmed on a Reachy Mini Lite. The controller is
 built against this document, not against assumptions. When the pinned daemon
 version changes, re-check every section against the new source.
@@ -25,6 +25,14 @@ every symbol it relies on; `reachy-bridge-runtime --check` verifies them.
   relay over HTTPS (`media.central_signaling_relay`). `:8443` serves the
   daemon's local relay and LAN desktop clients only, so the bridge doesn't
   publish it.
+- Telemetry (since 1.13.0, `daemon/telemetry.py`): on by default, the
+  daemon posts usage events every 60 s to PostHog EU
+  (`eu.i.posthog.com`): daemon start, a daily heartbeat, app start, stop,
+  install and removal with the public Space id, update results and client
+  connections, tagged with a random install id, versions, OS and arch.
+  `REACHY_MINI_TELEMETRY=0` (or `DO_NOT_TRACK=1`) turns it off before it
+  writes any file, and overrides the WebRTC `set_telemetry` command and
+  `PUT /api/telemetry`. The bridge's units set `REACHY_MINI_TELEMETRY=0`.
 - Local camera sharing: the daemon publishes BGR frames at 10 fps through
   `unixfdsink` on `/tmp/reachymini_camera_socket`, and apps read them with
   `unixfdsrc` (`media/media_server.py`, `media/camera_gstreamer.py`). The
@@ -87,8 +95,9 @@ The controller derives its robot state from these two fields
   refuses it while an app runs and switches back to `enabled` before starting
   one (#150).
 - Gravity compensation needs Placo. Under any other engine,
-  `motors/set_mode/gravity_compensation` raises and the daemon answers a bare
-  HTTP 500.
+  `motors/set_mode/gravity_compensation` is refused with `409` (`Gravity
+  compensation requires the Placo kinematics engine.`) and nothing changes.
+  1.12.0 answered a bare 500.
 - `Daemon.restart` (REST `daemon/restart` and the WebRTC restart command)
   calls `start` without the engine, so upstream falls back to the default.
   The runtime's kinematics feature (`runtime/.../features/kinematics.py`)
@@ -168,6 +177,11 @@ The current state is exposed at `GET /api/daemon/robot-app-lock-status`.
 - SDK clients talking to the daemon directly (HTTP, WebSocket) bypass the
   lock entirely. The bridge's expressions and manual controls are such
   clients, so the controller must not send them while an app runs.
+- Since 1.13.0 a remote session can also install, remove, update and restart
+  apps over the WebRTC data channel (the `apps.*` JSON-RPC verbs in
+  `daemon/jsonrpc_relay.py`), without the controller. The relay refuses while
+  one of its own jobs runs, but the REST app routes don't see those jobs, so
+  a controller install can overlap a remote one.
 
 ## Idle reset
 
@@ -260,7 +274,7 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   (:8043 inside :10000, or :7863 inside :7861 over plain http). An app that sends
   `X-Frame-Options` or a CSP `frame-ancestors` that leaves out the dashboard
   shows a blank frame; ↗ opens it in its own tab. Checked 2026-10-28: the
-  app base class in reachy-mini 1.12.0, Radio, Conversation App and Gradio's
+  app base class in reachy-mini 1.12.0 (unchanged in 1.13.0), Radio, Conversation App and Gradio's
   Python server send neither, and the proxy passes app headers through as
   they are. It strips the controller's own cookies (both ways), the local
   key header and hop-by-hop headers, and refuses cross-site writes and

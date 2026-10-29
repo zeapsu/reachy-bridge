@@ -27,6 +27,9 @@ Environment=REACHY_BRIDGE_ROBOT_DAEMON_PORT=8000
 # uv must be on PATH: the daemon shells out to it to install apps.
 Environment=PATH=@UV_DIR@:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONUNBUFFERED=1
+# reachy-mini 1.13.0 sends usage telemetry to PostHog by default
+# (docs/daemon-contract.md); the bridge opts out.
+Environment=REACHY_MINI_TELEMETRY=0
 # Loopback only, like the robot's daemon. No media (WebRTC signalling would
 # clash with the robot daemon's :8443), so apps get no camera or audio.
 # Its own robot name, so its mDNS entry isn't mistaken for the robot (a name
