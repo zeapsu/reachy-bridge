@@ -117,7 +117,7 @@ mkdir -p "$UNIT_DIR"
 rm -f "$UNIT_DIR/$DAEMON" "$UNIT_DIR/$CONTROLLER" "$UNIT_DIR/$SIM"
 sed "s|@UV_DIR@|$uv_dir|" "$REPO/deploy/systemd/$DAEMON" >"$UNIT_DIR/$DAEMON"
 install -m 644 "$REPO/deploy/systemd/$CONTROLLER" "$UNIT_DIR/$CONTROLLER"
-install -m 644 "$REPO/deploy/systemd/$SIM" "$UNIT_DIR/$SIM"
+sed "s|@UV_DIR@|$uv_dir|" "$REPO/deploy/systemd/$SIM" >"$UNIT_DIR/$SIM"
 systemctl --user daemon-reload
 systemctl --user enable "$DAEMON" "$CONTROLLER"
 record dir "$DEST"

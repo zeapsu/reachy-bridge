@@ -26,7 +26,7 @@ async fn sim_harness(init: impl FnOnce(&mut Fake)) -> Sim {
         h._dir.path().to_path_buf(),
         Duration::from_millis(10),
         AuthConfig::default(),
-        SimMode::new(&robot_url, &sim_url, None),
+        SimMode::new(&robot_url, &sim_url, None, None),
     );
     let robot = h.fake.clone();
     Sim { robot, sim, h: Harness { state, ..h } }
@@ -93,15 +93,21 @@ async fn a_tab_that_missed_the_switch_is_refused() {
 }
 
 #[tokio::test]
-async fn apps_are_off_in_sim_mode() {
+async fn apps_run_on_the_sim_with_their_own_pins() {
     let s = sim_harness(|_| {}).await;
+    let (status, _) = s.h.call("PUT", "/api/apps/favorites", Some(json!({"favorites": ["hello_world"]}))).await;
+    assert_eq!(status, StatusCode::OK);
     s.h.call("POST", "/api/sim/enter", None).await;
-    let (status, body) = s.h.call("POST", "/api/apps/start/reachy_mini_radio", None).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["detail"], "Apps are off in sim mode");
-    let (status, _) = s.h.call("POST", "/api/apps/install", Some(json!({"name": "x"}))).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert!(calls(&s.sim).is_empty());
+    let (status, _) = s.h.call("POST", "/api/apps/start/reachy_mini_radio", None).await;
+    assert_ne!(status, StatusCode::CONFLICT, "apps aren't refused in sim mode");
+    assert!(calls(&s.robot).is_empty(), "nothing reached the robot: {:?}", calls(&s.robot));
+    let (status, _) = s.h.call("PUT", "/api/apps/favorites", Some(json!({"favorites": ["reachy_mini_radio"]}))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, sim_pins) = s.h.call("GET", "/api/apps/favorites", None).await;
+    assert_eq!(sim_pins["favorites"], json!(["reachy_mini_radio"]));
+    s.h.call("POST", "/api/sim/exit", None).await;
+    let (_, robot_pins) = s.h.call("GET", "/api/apps/favorites", None).await;
+    assert_eq!(robot_pins["favorites"], json!(["hello_world"]), "the robot's pins are its own");
 }
 
 #[tokio::test]
@@ -115,7 +121,7 @@ async fn entering_needs_the_robot_confirmed_off() {
         std::env::temp_dir().join("rc-test-sim-unreachable"),
         Duration::from_millis(10),
         AuthConfig::default(),
-        SimMode::new(robot_url, &sim_url, None),
+        SimMode::new(robot_url, &sim_url, None, None),
     );
     let response = reachy_controller::app(state.clone())
         .oneshot(Request::post("/api/sim/enter").body(Body::empty()).unwrap())
@@ -149,4 +155,43 @@ async fn the_sim_never_sets_the_hosts_sound() {
     let (status, body) = s.h.call("POST", "/api/volume/set", Some(json!({"volume": 10}))).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["detail"], "Sound is off in sim mode");
+}
+
+/// A fake `systemctl` that logs its arguments.
+fn fake_systemctl(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).unwrap();
+    let log = dir.join("systemctl.log");
+    let script = dir.join("systemctl");
+    std::fs::write(&script, format!("#!/bin/sh\necho \"$*\" >> '{}'\n", log.display())).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (script, log)
+}
+
+#[tokio::test]
+async fn the_robots_daemon_is_stopped_for_the_whole_of_sim_mode() {
+    let h = harness(|_| {}).await;
+    let sim = Arc::new(Mutex::new(Fake { state: "stopped".into(), ..Default::default() }));
+    let sim_url = fake_daemon(sim.clone()).await;
+    let robot_url = h.state.daemon.base_url();
+    let (systemctl, log) = fake_systemctl(&h._dir.path().join("bin"));
+    let state = AppState::with_sim(
+        Daemon::new(&robot_url, Duration::from_secs(2)),
+        LogBroker::new(),
+        h._dir.path().to_path_buf(),
+        Duration::from_millis(10),
+        AuthConfig::default(),
+        SimMode::new(&robot_url, &sim_url, Some("sim.service".into()), Some("robot.service".into()))
+            .with_systemctl(systemctl.to_str().unwrap()),
+    );
+    let s = Harness { state, ..h };
+    let (status, body) = s.call("POST", "/api/sim/enter", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = s.call("POST", "/api/sim/exit", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let calls = std::fs::read_to_string(log).unwrap();
+    assert_eq!(
+        calls.lines().collect::<Vec<_>>(),
+        vec!["--user stop robot.service", "--user start sim.service", "--user stop sim.service", "--user start robot.service"]
+    );
 }

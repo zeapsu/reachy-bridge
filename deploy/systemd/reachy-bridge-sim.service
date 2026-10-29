@@ -1,7 +1,15 @@
 [Unit]
 Description=Reachy Mini sim daemon for the controller's sim mode (MuJoCo; started on demand)
+Conflicts=reachy-bridge.service
+After=reachy-bridge.service
 # Not enabled: the controller starts it when sim mode is switched on (#149)
-# and stops it when sim mode ends or the controller starts.
+# and stops it when sim mode ends or the controller starts. For the whole of
+# sim mode the controller stops the robot's daemon (reachy-bridge.service,
+# robot confirmed off first) and starts it again after, so nothing a sim app
+# does can reach the robot.
+# Conflicts= makes systemd enforce it whatever starts the robot's daemon (a
+# controller restart through its Wants=, the CLI, install.sh): the sim, its
+# apps included, is stopped first.
 
 [Service]
 Type=simple
@@ -9,13 +17,22 @@ Type=simple
 # kinematics choice never replace the robot daemon's.
 WorkingDirectory=%h/.local/share/reachy-bridge/sim
 Environment=REACHY_BRIDGE_STATE_DIR=%h/.local/state/reachy-bridge/sim
+# Its apps live in sim/apps_venv, not the robot's apps_venv, and the runtime
+# points every app it starts at this daemon's port instead of the robot
+# daemon's (#218), so apps written for the robot drive the sim. It refuses to
+# start without this. Apps run as this user, like on the robot: only run an
+# app here that you'd run on the robot.
+Environment=REACHY_BRIDGE_APPS_ROOT=%h/.local/share/reachy-bridge/sim
+Environment=REACHY_BRIDGE_ROBOT_DAEMON_PORT=8000
+# uv must be on PATH: the daemon shells out to it to install apps.
+Environment=PATH=@UV_DIR@:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONUNBUFFERED=1
 # Loopback only, like the robot's daemon. No media (WebRTC signalling would
-# clash with the robot daemon's :8443) and no apps (no --desktop-app-daemon).
+# clash with the robot daemon's :8443), so apps get no camera or audio.
 # Its own robot name, so its mDNS entry isn't mistaken for the robot (a name
 # set from the mobile app, in ~/.config/reachy_mini, wins over it upstream).
 ExecStart=%h/.local/share/reachy-bridge/.venv/bin/reachy-bridge-runtime \
-    --sim --headless --no-media --no-autostart --no-wake-up-on-start \
+    --sim --headless --no-media --no-autostart --no-wake-up-on-start --desktop-app-daemon \
     --robot-name reachy_mini_sim \
     --fastapi-host 127.0.0.1 --fastapi-port 8001
 # The robot's daemon comes first for the CPU.

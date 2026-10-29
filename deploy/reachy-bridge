@@ -54,6 +54,31 @@ units_for() {
     esac
 }
 
+# Sim mode (#149) is the controller's to start and end: the sim unit
+# conflicts with the robot's daemon, so starting either from here would stop
+# the other under the controller. Refuses the sim always, and the daemon
+# while the controller reports sim mode on (or can't say).
+refuse_during_sim() {
+    if [[ " ${UNITS[*]} " == *" $SIM "* ]]; then
+        die "the sim is started from the dashboard (System > Simulation), which checks the robot is off first"
+    fi
+    [[ " ${UNITS[*]} " == *" $DAEMON "* ]] || return 0
+    (( force )) && return 0
+    # A controller that isn't running is in no sim mode: it starts on the
+    # robot. Any other unreadable answer refuses, unless --force.
+    local key="" out rc=0
+    [[ -r $STATE_DIR/controller.key ]] && key=$(<"$STATE_DIR/controller.key")
+    out=$(if [[ -n $key ]]; then printf 'X-Reachy-Bridge-Key: %s\n' "$key"; fi |
+        curl -sS -m 5 -H @- "$CONTROLLER_URL/api/sim" 2>/dev/null) || rc=$?
+    (( rc == 7 )) && return 0
+    if (( rc != 0 )) || [[ $out != *'"active":'* ]]; then
+        die "can't tell whether sim mode is on (the controller didn't answer); pass --force to start the daemon anyway"
+    fi
+    if [[ $out == *'"active":true'* ]]; then
+        die "sim mode is on; leave it from the dashboard (System > Simulation) first"
+    fi
+}
+
 # Prints off, on or unknown. Fails closed: only a refused connection (no
 # daemon listening) or a daemon reporting no backend counts as off. A slow or
 # busy daemon is unknown, never off, so nothing restarts it mid-motion.
@@ -451,6 +476,7 @@ case "$cmd" in
         ;;
     start)
         units_for "${args[0]:-all}"
+        refuse_during_sim
         systemctl --user start "${UNITS[@]}"
         ;;
     stop)
@@ -459,6 +485,7 @@ case "$cmd" in
         ;;
     restart)
         units_for "${args[0]:-all}"
+        refuse_during_sim
         if [[ " ${UNITS[*]} " == *" $DAEMON "* ]] && (( ! force )) && [[ $(robot_power) != off ]]; then
             die "the robot isn't confirmed off ($(robot_state)); turn it off first, or pass --force"
         fi

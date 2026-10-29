@@ -11,7 +11,7 @@ import { AppearancePanel, Wallpaper } from "./components/Appearance.tsx";
 import { AuthGate } from "./components/Login.tsx";
 import { Segmented } from "./components/Segmented.tsx";
 import { PhoneTabs, TopBar } from "./components/Shell.tsx";
-import { SimAppsNote, SimPanel } from "./components/SimPanel.tsx";
+import { SimPanel } from "./components/SimPanel.tsx";
 import { LogsPanel, StatsPanel } from "./components/SystemPanel.tsx";
 import { Viewport, type PoseSink } from "./components/Viewport.tsx";
 import { useLens } from "./glass.ts";
@@ -96,8 +96,8 @@ function Dashboard() {
     void apps.poll();
     void reloadKinematics();
   });
-  // Sim mode has no apps (#149): no catalog until the target is the robot.
-  const catalog = useCatalog(visible && tab === "apps" && appsReachable && sim.target === "robot", () => void apps.poll());
+  // The catalog marks what the current target has installed: wait for it.
+  const catalog = useCatalog(visible && tab === "apps" && appsReachable && sim.target !== null, () => void apps.poll());
 
   const blocked = driveBlocked({
     daemonOnline,
@@ -193,9 +193,8 @@ function Dashboard() {
         </main>
 
         <main className="view list" id="view-apps" role="tabpanel" hidden={tab !== "apps"} aria-label="Apps">
-          {sim.target === "sim" ? (
-            <SimAppsNote />
-          ) : sim.target === null ? null : (
+          {/* Nothing until the target is known: the robot's and the sim's apps differ (#218). */}
+          {sim.target === null ? null : (
             <>
               <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} reachable={appsReachable} exprBusy={expr.busy !== null} />
               <CatalogPanel catalog={catalog} reachable={appsReachable} />
