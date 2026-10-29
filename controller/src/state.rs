@@ -14,6 +14,7 @@ use crate::expressions::ExpressionPlayer;
 use crate::logs::LogBroker;
 use crate::routes::store::Catalog;
 use crate::routes::telemetry::Streams;
+use crate::setup::Setup;
 use crate::sim::SimMode;
 
 pub type Shared = Arc<AppState>;
@@ -41,6 +42,8 @@ pub struct AppState {
     pub control: Control,
     /// Listen and talk sessions on the audio gateway (#219).
     pub audio: Audio,
+    /// The setup page, while it is open (#135).
+    pub setup: Setup,
 }
 
 impl AppState {
@@ -69,6 +72,7 @@ impl AppState {
             auth,
             control: Control::new(&state_dir, player.clone()),
             audio,
+            setup: Setup::default(),
             apps: DaemonApps::new(daemon.clone()),
             catalog: Catalog::default(),
             player,

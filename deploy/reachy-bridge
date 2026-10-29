@@ -4,6 +4,7 @@
 #
 #   reachy-bridge status
 #   reachy-bridge check [--json]          can this device run the bridge and the robot?
+#   reachy-bridge setup                   open the setup page on the LAN (#135)
 #   reachy-bridge start | stop | restart [daemon|controller|sim|audio]   (default: daemon and controller)
 #   reachy-bridge logs [daemon|controller|sim|audio]
 #   reachy-bridge serve [on|off|status]
@@ -467,6 +468,51 @@ uninstall_bridge() {
     return 0
 }
 
+# setup: open the setup page and show its one-time code on this terminal
+# only. The code comes back in the controller's reply and goes nowhere else:
+# not the log, not a file, not a command line. Enter prints a new code (which
+# also unlocks the page after wrong tries); q, Ctrl-C or the end of input
+# closes the page.
+setup_page() {
+    local reply code port host addresses i line
+    [[ -t 1 ]] || die "setup prints a one-time code; run it in a terminal"
+    [[ -r $STATE_DIR/controller.key ]] ||
+        die "can't read $STATE_DIR/controller.key: run this on the robot, as the user the bridge runs as"
+    # Right after an install the controller may still be starting.
+    for (( i = 0; i < 15; i++ )); do
+        curl -s -m 2 -o /dev/null "$CONTROLLER_URL/api/auth/status" && break
+        sleep 2
+    done
+    reply=$(controller_api POST /api/setup/start)
+    port=${reply#*\"port\":}
+    port=${port%%[,\}]*}
+    host=$(hostname 2>/dev/null || echo robot)
+    addresses=$(hostname -I 2>/dev/null || true)
+    trap 'controller_api POST /api/setup/stop >/dev/null 2>&1 || true; echo; echo "setup page closed"; exit 0' INT TERM
+    echo "Open the setup page from a computer or phone on the same network:"
+    echo "  http://${host%%.*}.local:$port"
+    for i in $addresses; do
+        [[ $i == *:* ]] && continue
+        echo "  http://$i:$port"
+    done
+    while :; do
+        code=${reply#*\"code\":\"}
+        code=${code%%\"*}
+        [[ $code =~ ^[0-9]{6}$ ]] || die "the controller didn't return a setup code"
+        echo
+        echo "Code: ${code:0:3} ${code:3:3}   (single use, valid 15 minutes; it crosses the network unencrypted)"
+        echo "Enter: new code.  q: close the page."
+        line=
+        if ! read -r line || [[ $line == q* ]]; then
+            controller_api POST /api/setup/stop >/dev/null 2>&1 || true
+            echo "setup page closed"
+            return 0
+        fi
+        # A finished or expired page is reopened with a new code.
+        reply=$(controller_api POST /api/setup/start)
+    done
+}
+
 cmd=${1:-status}
 shift || true
 force=0
@@ -614,6 +660,9 @@ if 1 <= n <= len(devices):
         uninstall_bridge "${args[@]}"
         exit
         ;;
+    setup)
+        setup_page
+        ;;
     check)
         exec "$HOME/.local/share/reachy-bridge/.venv/bin/reachy-bridge-runtime" --doctor "${args[@]}"
         ;;
@@ -622,7 +671,7 @@ if 1 <= n <= len(devices):
         robot_power
         ;;
     -h|--help|help)
-        sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         die "unknown command '$cmd' (try: reachy-bridge help)"

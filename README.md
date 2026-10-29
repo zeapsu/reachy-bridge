@@ -33,8 +33,17 @@ goes through `runtime/src/reachy_bridge_runtime/upstream.py`, and
 ```bash
 deploy/install.sh        # runtime venv, controller, user units, the reachy-bridge command
 reachy-bridge serve      # publish on the tailnet (dashboard on HTTPS :10000, app UIs on :8043)
+reachy-bridge setup      # the setup page: device check, then make your dashboard the admin
 reachy-bridge status
 ```
+
+`reachy-bridge setup` opens a temporary page on the local network (port 7870) and prints a
+one-time code in the terminal. Enter the code on the page from any computer or phone on the
+network: it shows the device check, then approves the pairing code your dashboard shows as the
+admin. The code is single use and works for 15 minutes; five wrong tries lock the page until you
+press Enter in the terminal for a new code. It crosses the network over plain HTTP, which is why
+it is short-lived. The page closes when you finish, when you quit the command, or an hour after
+the code was used.
 
 `reachy-bridge serve` adds two HTTPS ports with `tailscale serve`: :10000 for the dashboard and
 :8043 for the running app's own UI. App UIs listen on plain http (`:8042`, `:7860`, ...), where
