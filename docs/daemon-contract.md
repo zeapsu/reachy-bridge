@@ -30,9 +30,10 @@ every symbol it relies on; `reachy-bridge-runtime --check` verifies them.
   (`eu.i.posthog.com`): daemon start, a daily heartbeat, app start, stop,
   install and removal with the public Space id, update results and client
   connections, tagged with a random install id, versions, OS and arch.
-  `REACHY_MINI_TELEMETRY=0` (or `DO_NOT_TRACK=1`) turns it off before it
-  writes any file, and overrides the WebRTC `set_telemetry` command and
-  `PUT /api/telemetry`. The bridge's units set `REACHY_MINI_TELEMETRY=0`.
+  With `REACHY_MINI_TELEMETRY=0` (or `DO_NOT_TRACK=1`) the daemon starts
+  without it and writes no telemetry files, and neither the WebRTC
+  `set_telemetry` command nor `PUT /api/telemetry` can turn it back on. The
+  bridge's units, the sim test runner and `tools/sim/sim_daemon.py` set it.
 - Local camera sharing: the daemon publishes BGR frames at 10 fps through
   `unixfdsink` on `/tmp/reachymini_camera_socket`, and apps read them with
   `unixfdsrc` (`media/media_server.py`, `media/camera_gstreamer.py`). The
@@ -177,11 +178,14 @@ The current state is exposed at `GET /api/daemon/robot-app-lock-status`.
 - SDK clients talking to the daemon directly (HTTP, WebSocket) bypass the
   lock entirely. The bridge's expressions and manual controls are such
   clients, so the controller must not send them while an app runs.
-- Since 1.13.0 a remote session can also install, remove, update and restart
-  apps over the WebRTC data channel (the `apps.*` JSON-RPC verbs in
-  `daemon/jsonrpc_relay.py`), without the controller. The relay refuses while
-  one of its own jobs runs, but the REST app routes don't see those jobs, so
-  a controller install can overlap a remote one.
+- A remote session can manage apps over the WebRTC data channel, without
+  the controller (`daemon/jsonrpc_relay.py`): `apps.install` (older), and
+  since 1.13.0 also `install_space`, `remove`, `update`, `restart`,
+  `list_installed`, `check_update` and `job_status`. The new verbs refuse
+  while any registered job runs, REST-started ones included, but the REST
+  app routes don't check for the relay's jobs, and the older inline
+  `apps.install` isn't a registered job, so a controller install can
+  overlap a remote one.
 
 ## Idle reset
 

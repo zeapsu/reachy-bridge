@@ -23,6 +23,7 @@ Only for sim tests: never run the real robot through this.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import threading
 
@@ -53,6 +54,9 @@ def _patch_motor_mode() -> None:
 
 
 def main() -> int:
+    # No usage telemetry from sim daemons (reachy-mini 1.13.0 sends it by
+    # default), including ones started by hand.
+    os.environ.setdefault("REACHY_MINI_TELEMETRY", "0")
     _patch_motor_mode()
     from reachy_bridge_runtime.main import main as runtime_main
 
