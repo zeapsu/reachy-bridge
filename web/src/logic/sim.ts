@@ -36,10 +36,10 @@ export function simView(target: Target | null, switching: boolean, robotOff: boo
     return { action: target === "sim" ? "Stopping…" : "Starting…", disabled: true, hint: "The simulated robot takes up to a minute to start." };
   }
   if (target === "sim") {
-    return { action: "Back to the robot", disabled: false, hint: "The dashboard is driving a simulated Reachy, apps included. The real robot stays off." };
+    return { action: "Back to the robot", disabled: false, hint: "The dashboard is driving a simulated Reachy, apps included. The real robot stays off. Its sounds can play on this device." };
   }
   if (!robotOff) {
     return { action: "Try the simulation", disabled: true, hint: "Switch the robot off to try the simulation." };
   }
-  return { action: "Try the simulation", disabled: target === null, hint: "Drive a simulated Reachy instead of the real one. Its apps are its own; sound and camera are off." };
+  return { action: "Try the simulation", disabled: target === null, hint: "Drive a simulated Reachy instead of the real one. Its apps are its own; it has no camera, and its sounds play on this device." };
 }

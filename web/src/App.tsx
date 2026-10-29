@@ -26,6 +26,7 @@ import { usePageVisible } from "./hooks/usePageVisible.ts";
 import { usePoll } from "./hooks/usePoll.ts";
 import { usePower } from "./hooks/usePower.ts";
 import { useSim } from "./hooks/useSim.ts";
+import { useSimSounds } from "./hooks/useSimSounds.ts";
 import { activeApp } from "./logic/apps.ts";
 import { read, write } from "./logic/appearance.ts";
 import { CONTROL_HINT_OFFLINE } from "./logic/controls.ts";
@@ -96,6 +97,8 @@ function Dashboard() {
     void apps.poll();
     void reloadKinematics();
   });
+  // The sim has no speaker: its sounds play here instead (#219).
+  const simSounds = useSimSounds(visible && sim.target === "sim" && !sim.switching);
   // The catalog marks what the current target has installed: wait for it.
   const catalog = useCatalog(visible && tab === "apps" && appsReachable && sim.target !== null, () => void apps.poll());
 
@@ -205,7 +208,7 @@ function Dashboard() {
         <main className="view list" id="view-system" role="tabpanel" hidden={tab !== "system"} aria-label="System">
           <StatsPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
           <AudioPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
-          <SimPanel sim={sim} powerStatus={power.status} />
+          <SimPanel sim={sim} sounds={simSounds} powerStatus={power.status} />
           <LogsPanel live={visible && tab === "system"} />
           <DevicesPanel />
           <AppearancePanel look={look} />
