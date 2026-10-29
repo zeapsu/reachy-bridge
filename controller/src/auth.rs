@@ -614,7 +614,7 @@ fn is_api(path: &str) -> bool {
 /// Changes only an admin (or the CLI) may make in admin mode: installing
 /// code (an app runs as the bridge's user and can read the local key, so a
 /// member installing one could make itself admin), the Hugging Face token,
-/// and the robot's calibration.
+/// and the kinematics engine.
 fn admin_only(method: &axum::http::Method, path: &str) -> bool {
     if method.is_safe() {
         return false;

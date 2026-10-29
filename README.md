@@ -93,7 +93,7 @@ Browsers paired before that are logged out, since anyone could approve them. Fro
 every browser logs in, Tailscale visitors included, and open streams and drive sessions from
 browsers without a login end at once. Only the admin approves new browsers (with a device name
 and the person using it) and revokes them, installs, updates and removes apps, sets the Hugging
-Face token, and saves the robot's calibration. Other people's browsers
+Face token, and switches the kinematics engine. Other people's browsers
 can log themselves out. The dashboard won't revoke the last admin device; to recover a lost one,
 pair a new admin from the robot and revoke the old one with `reachy-bridge devices revoke <n>`.
 Admin mode stays on even with no admin device left. An installed app runs as the bridge's user
