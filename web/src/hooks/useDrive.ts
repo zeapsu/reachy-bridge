@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getBelievedTarget } from "../api.ts";
+import { getBelievedTarget, takeControlIfFree } from "../api.ts";
 import {
   CENTRED,
   DEFAULT_LIMITS,
@@ -164,6 +164,8 @@ export function useDrive(allowed: boolean): DriveState {
     setError(null);
     setPhase("connecting");
     firstTry.current = performance.now();
+    // Nobody in control: take it. A start refused meanwhile is retried below.
+    void takeControlIfFree(true);
     connect();
     last.current = performance.now();
     if (timer.current === null) timer.current = setInterval(tick, TICK_MS);

@@ -8,7 +8,7 @@ const secure = typeof window !== "undefined" && window.isSecureContext;
 const hasMic = typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia);
 
 /**
- * Listen and talk (#219), under the control bar: hear the robot's mic on
+ * Listen and talk (#219), the Robot tab's Voice pane: hear the robot's mic on
  * this device, and speak through its speaker. Either can be switched while
  * connected.
  */

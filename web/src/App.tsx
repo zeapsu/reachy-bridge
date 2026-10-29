@@ -4,7 +4,7 @@ import { AppsPanel } from "./components/AppsPanel.tsx";
 import { CatalogPanel } from "./components/CatalogPanel.tsx";
 import { AudioPanel } from "./components/AudioPanel.tsx";
 import { ControlsPanel, type ControlHint } from "./components/ControlsPanel.tsx";
-import { ControlBar } from "./components/ControlBar.tsx";
+import { ControlStrip, ControlToast } from "./components/ControlStrip.tsx";
 import { ControlPanel } from "./components/ControlPanel.tsx";
 import { DevicesPanel } from "./components/DevicesPanel.tsx";
 import { DrivePanel } from "./components/DrivePanel.tsx";
@@ -34,7 +34,7 @@ import { useSimSounds } from "./hooks/useSimSounds.ts";
 import { useVoice } from "./hooks/useVoice.ts";
 import { activeApp } from "./logic/apps.ts";
 import { read, write } from "./logic/appearance.ts";
-import { controlState } from "./logic/control.ts";
+import { controlState, holderLabel } from "./logic/control.ts";
 import { CONTROL_HINT_OFFLINE } from "./logic/controls.ts";
 import { driveBlocked } from "./logic/drive.ts";
 import { TAB_KEY, parseTab, stageNote, type Tab } from "./logic/shell.ts";
@@ -68,7 +68,8 @@ function Dashboard() {
   const poseSink = useRef<PoseSink | null>(null);
   const look = useAppearance();
   const [tab, setTabState] = useState<Tab>(() => parseTab(read(TAB_KEY)));
-  const [pane, setPane] = useState<"expressions" | "drive" | "controls">("expressions");
+  const [pane, setPane] = useState<"expressions" | "drive" | "controls" | "voice">("expressions");
+  const [controlNudge, setControlNudge] = useState(0);
   const side = useLens<HTMLElement>();
 
   const reloadKinematics = useCallback(async () => {
@@ -161,19 +162,21 @@ function Dashboard() {
           activeApp={active ? active.display || active.name : null}
           sim={sim.target === "sim"}
           voice={voiceBadge(voice.view, voice.mine)}
+          holder={holderLabel(controlState(control.view))}
+          onHolder={() => setControlNudge((n) => n + 1)}
         />
 
         <main className={`view robot${pane === "drive" ? " driving" : ""}`} id="view-robot" role="tabpanel" hidden={tab !== "robot"} aria-label="Robot">
           <Viewport daemonOnline={daemonOnline} note={stageNote(power.view, daemonOnline)} visible={visible && tab === "robot"} poseSink={poseSink} />
           <section className="glass sheet side" data-lens ref={side} aria-label="Robot controls">
-            <ControlBar control={control} />
-            <VoicePanel voice={voice} control={controlState(control.view)} />
+            <ControlStrip control={control} />
             <Segmented
               label="Robot controls"
               options={[
                 { value: "expressions", label: "Expressions" },
                 { value: "drive", label: "Drive" },
                 { value: "controls", label: "Controls" },
+                { value: "voice", label: "Voice" },
               ]}
               value={pane}
               onChange={setPane}
@@ -204,6 +207,9 @@ function Dashboard() {
                 onReturningHome={expr.enterReturningHome}
               />
             </div>
+            <div hidden={pane !== "voice"}>
+              <VoicePanel voice={voice} control={controlState(control.view)} />
+            </div>
           </section>
         </main>
 
@@ -220,7 +226,7 @@ function Dashboard() {
         <main className="view list" id="view-system" role="tabpanel" hidden={tab !== "system"} aria-label="System">
           <StatsPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
           <AudioPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
-          <SimPanel sim={sim} sounds={simSounds} powerStatus={power.status} />
+          <SimPanel sim={sim} sounds={simSounds} powerStatus={power.status} control={control} />
           <LogsPanel live={visible && tab === "system"} />
           <ControlPanel control={control} />
           <DevicesPanel />
@@ -228,6 +234,7 @@ function Dashboard() {
         </main>
       </div>
       <PhoneTabs tab={tab} onTab={setTab} />
+      <ControlToast control={control} nudge={controlNudge} />
       {apps.appView ? (
         <AppView
           view={apps.appView}
