@@ -8,8 +8,9 @@ import "./AppView.css";
  * back. Until the app's server answers it shows the start steps. The bar
  * stays on top: "Controller" closes the view (the app keeps running), "Stop"
  * stops the app; the view also closes by itself when the app stops or
- * crashes. Over HTTPS the frame loads the app through the controller's proxy
- * on :8043 (#158), so it's a secure context like the dashboard.
+ * crashes. The frame loads the app through the controller's proxy: :8043 over
+ * HTTPS (#158), a secure context like the dashboard, or :7863 over plain http,
+ * behind the LAN login (#186).
  */
 export function AppView({
   view,

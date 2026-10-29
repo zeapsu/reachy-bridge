@@ -1,11 +1,19 @@
-// Pure helpers for the LAN login (#141): the login gate, pairing poll
+// Pure helpers for the login (#141, #221): the login gate, pairing poll
 // outcomes and the devices list.
+
+export type Role = "admin" | "member";
 
 /** GET /api/auth/status */
 export interface AuthStatus {
   lan: boolean;
+  /** LAN mode or admin mode; missing from controllers before #221. */
+  login_required?: boolean;
+  /** An admin has paired: every browser logs in, tailnet included. */
+  admin_mode?: boolean;
   authenticated: boolean;
   device?: string | null;
+  person?: string | null;
+  role?: Role | null;
 }
 
 /** One item of GET /api/auth/devices */
@@ -16,6 +24,9 @@ export interface PairedDevice {
   created: number;
   last_seen: number;
   peer: string;
+  /** Who uses it; missing from controllers before #221. */
+  person?: string;
+  role?: Role;
   /** This browser's own device. */
   current: boolean;
 }
@@ -28,9 +39,24 @@ export const LOGIN_REQUIRED_EVENT = "rb-login-required";
 /** How often the login screen polls its pairing request. */
 export const PAIR_POLL_MS = 2000;
 
-/** The login screen shows when LAN mode is on and this browser isn't paired. */
+/** The login screen shows when a login is required and this browser isn't paired. */
 export function needsLogin(status: AuthStatus | null | undefined): boolean {
-  return Boolean(status && status.lan && !status.authenticated);
+  return Boolean(status && (status.login_required ?? status.lan) && !status.authenticated);
+}
+
+/**
+ * What the devices panel offers this browser: nothing, admin setup (no admin
+ * yet), managing every device (an admin, or anyone before admin mode in LAN
+ * mode), or only its own device (a member).
+ */
+export type DevicesView = "hidden" | "setup" | "manage" | "own";
+
+export function devicesView(status: AuthStatus | null | undefined): DevicesView {
+  if (!status) return "hidden";
+  if (status.admin_mode) return status.role === "admin" ? "manage" : status.device ? "own" : "hidden";
+  // Before #221 the controller has no admin_mode: the #141 panel, LAN mode only.
+  if (status.admin_mode === undefined) return status.lan ? "manage" : "hidden";
+  return status.lan ? "manage" : "setup";
 }
 
 /**

@@ -2,36 +2,64 @@
 
     reachy-bridge-runtime [daemon args...]   start the daemon (args go to it)
     reachy-bridge-runtime --check            verify the upstream seam and exit
+    reachy-bridge-runtime --doctor [--json]  check this device can run the bridge (#135)
 
-Patches are applied in-process and never edit the venv. At startup a feature
+Patches are applied in-process and never edit the bridge's venv (``app_bind``
+writes a small loopback shim into the separate apps venv). At startup a feature
 whose upstream requirements don't match the installed ``reachy-mini`` is
-skipped with an error, so the robot stays usable without it; ``--check``
+skipped with an error, so the robot stays usable without it (except
+``app_bind``, which stops startup rather than run apps open on the LAN); ``--check``
 treats any mismatch as a failure (CI, and the SDK update pipeline in #155).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import sys
 
 from reachy_bridge_runtime import platforms, upstream
-from reachy_bridge_runtime.features import keep_awake, kinematics, media, platform_info
+from reachy_bridge_runtime.features import app_bind, keep_awake, kinematics, media, platform_info, sim_apps, sim_sounds
 
 logger = logging.getLogger("reachy_bridge_runtime")
 
 # Feature name -> how to apply it. Order matters only in that every route
 # installer is registered before the daemon builds its app.
 FEATURES = {
+    app_bind.FEATURE: app_bind.apply,
     keep_awake.FEATURE: keep_awake.apply,
     kinematics.FEATURE: kinematics.apply,
     "audio_levels": media.apply_audio_spectrum,
     "camera": media.apply_camera_stream,
+    sim_apps.FEATURE: lambda: sim_apps.apply(sys.argv[1:]),
+    sim_sounds.FEATURE: sim_sounds.apply,
 }
 # On every platform; the rest only where the platform adapter enables them.
-CORE_FEATURES = frozenset({keep_awake.FEATURE, kinematics.FEATURE})
+CORE_FEATURES = frozenset({app_bind.FEATURE, keep_awake.FEATURE, kinematics.FEATURE})
+# Features whose mismatch or failure stops startup, like a daemon mismatch:
+# without them the daemon would run apps open on the LAN (#186), or a sim
+# daemon's apps would drive the real robot (#218).
+FATAL_FEATURES = frozenset({app_bind.FEATURE, sim_apps.FEATURE})
 # Features that add routes to the daemon app, so need the "routes" hooks.
-ROUTE_FEATURES = frozenset({kinematics.FEATURE, "audio_levels", "camera"})
+ROUTE_FEATURES = frozenset({kinematics.FEATURE, "audio_levels", "camera", sim_sounds.FEATURE})
+# Features that read the daemon's media; off under --no-media.
+MEDIA_FEATURES = frozenset({"audio_levels", "camera"})
+
+
+def for_daemon_args(platform: platforms.Platform, args: list[str]) -> platforms.Platform:
+    """The platform as this daemon uses it. A sim daemon (sim mode, #149)
+    runs beside the robot's, so it leaves the host's audio setup alone, hands
+    its sounds to the dashboard (#219) and, when it runs apps, keeps them off
+    the robot (#218); a --no-media daemon has no media for the media features
+    to read."""
+    if "--sim" in args or "--mockup-sim" in args:
+        platform = dataclasses.replace(platform, host_setup=(), features=platform.features | {sim_sounds.FEATURE})
+        if "--desktop-app-daemon" in args or "--wireless-version" in args:
+            platform = dataclasses.replace(platform, features=platform.features | {sim_apps.FEATURE})
+    if "--no-media" in args:
+        platform = dataclasses.replace(platform, features=platform.features - MEDIA_FEATURES)
+    return platform
 
 
 def check() -> int:
@@ -53,6 +81,8 @@ def apply(platform: platforms.Platform) -> list[str]:
         if name not in wanted:
             continue
         blocked = problems.get(name, []) + (problems.get("routes", []) if name in ROUTE_FEATURES else [])
+        if blocked and name in FATAL_FEATURES:
+            raise upstream.UpstreamMismatch(f"{name}: " + "; ".join(blocked))
         if blocked:
             logger.error(
                 "Skipping %s: reachy-mini %s doesn't match what it patches: %s",
@@ -61,6 +91,9 @@ def apply(platform: platforms.Platform) -> list[str]:
                 "; ".join(blocked),
             )
             skipped.append(name)
+            continue
+        if name in FATAL_FEATURES:
+            apply_feature()
             continue
         try:
             apply_feature()
@@ -89,8 +122,12 @@ def report_platform(platform: platforms.Platform, skipped: list[str], routes_ok:
 def main() -> int:
     if "--check" in sys.argv[1:]:
         return check()
+    if "--doctor" in sys.argv[1:]:
+        from reachy_bridge_runtime import doctor
+
+        return doctor.main(sys.argv[1:])
     logging.basicConfig(level=logging.INFO)
-    platform = platforms.detect()
+    platform = for_daemon_args(platforms.detect(), sys.argv[1:])
     logger.info(
         "reachy-bridge runtime on %s (%s), reachy-mini %s",
         platform.name,

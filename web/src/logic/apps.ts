@@ -140,17 +140,25 @@ export function actionResultMessage(name: string, status: string | undefined): s
 export const APP_UI_HTTPS_PORT = 8043;
 
 /**
- * The app's own UI, on the robot host the dashboard was loaded from. An HTTPS
- * dashboard opens it through the proxy on :8043, so the app's page is a secure
- * context too (microphone, camera); plain http opens the app's port directly.
+ * The same proxy over plain http when the controller doesn't say
+ * (`CONTROLLER_APP_PORT`, default 7863): on loopback, or on the LAN in LAN
+ * mode behind the dashboard's login. Apps themselves listen on loopback only
+ * (#186), so a browser can't open an app's own port.
+ */
+export const APP_UI_HTTP_PORT = 7863;
+
+/**
+ * The running app's UI through the controller's proxy, on the robot host the
+ * dashboard was loaded from. Over HTTPS the app's page is a secure context
+ * too (microphone, camera).
  */
 export function appUiUrl(
   hostname: string,
-  port: number | string,
+  proxyPort: number = APP_UI_HTTP_PORT,
   protocol: string = globalThis.location?.protocol ?? "http:",
 ): string {
   if (protocol === "https:") return `https://${hostname}:${APP_UI_HTTPS_PORT}/`;
-  return `http://${hostname}:${encodeURIComponent(String(port))}/`;
+  return `http://${hostname}:${proxyPort}/`;
 }
 
 export const APP_UI_WAIT_ATTEMPTS = 60;

@@ -22,7 +22,7 @@ async fn status_reports_asleep_and_offline() {
         .await
         .unwrap();
     let body: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(body, json!({"reachable": false, "running": false, "manageable": false, "status": "offline"}));
+    assert_eq!(body, json!({"reachable": false, "running": false, "manageable": false, "status": "offline", "target": "robot"}));
 }
 
 #[tokio::test]

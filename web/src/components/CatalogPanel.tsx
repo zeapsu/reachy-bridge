@@ -15,7 +15,7 @@ export function JobText({ job }: { job: RowJob }) {
     return (
       <span className="err" title={job.line}>
         <span className="dot error"></span>
-        {job.line}
+        <span>{job.line}</span>
       </span>
     );
   }
@@ -38,7 +38,9 @@ export function AppCopy({ title, state, details }: { title: ReactNode; state: Re
           {title}
           <span className="more" aria-hidden="true"></span>
         </b>
-        <small title={typeof state === "string" ? state : undefined}>{state}</small>
+        <small title={typeof state === "string" ? state : undefined}>
+          {typeof state === "string" ? <span>{state}</span> : state}
+        </small>
       </button>
       {open ? (
         <div className="app-details" id={id}>
@@ -181,11 +183,12 @@ function HfLoginRow({ catalog }: { catalog: CatalogState }) {
 
 interface Props {
   catalog: CatalogState;
-  daemonOnline: boolean;
+  /** The daemon's app API answers (the robot may be off). */
+  reachable: boolean;
 }
 
 /** Apps to install from Hugging Face Spaces, as compact rows with a search (#126). */
-export function CatalogPanel({ catalog, daemonOnline }: Props) {
+export function CatalogPanel({ catalog, reachable }: Props) {
   const sheet = useLens<HTMLElement>();
   const [query, setQuery] = useState("");
   const shown = filterCatalog(catalog.apps, query);
@@ -212,7 +215,7 @@ export function CatalogPanel({ catalog, daemonOnline }: Props) {
         value={query}
         onChange={(e) => setQuery(e.target.value)}
       />
-      {!daemonOnline ? (
+      {!reachable ? (
         <p className="note">The catalog shows up when the daemon is online.</p>
       ) : catalog.error ? (
         <p className="note error">{catalog.error}</p>

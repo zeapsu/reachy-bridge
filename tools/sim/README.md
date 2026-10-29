@@ -49,7 +49,7 @@ because stock MuJoCo sim hides bugs 1 and 2:
   exits. The patch gives the backend that loop; the idle reset itself is the
   daemon's own code.
 
-`SIM_APPS_ROOT` points the daemon's `apps_venv` at the test run's directory.
+`REACHY_BRIDGE_APPS_ROOT` points the daemon's `apps_venv` at the test run's directory (the runtime's sim_apps feature, #218, which also points the apps at the sim daemon's port).
 
 ## Test apps
 

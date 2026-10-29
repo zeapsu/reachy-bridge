@@ -33,3 +33,8 @@
   color: var(--ink-3);
 }
 .devices-list .btn { grid-area: action; }
+.devices-person, .devices-role { color: var(--ink-3); font-weight: 500; }
+.devices-setup { display: grid; gap: 8px; justify-items: start; }
+.devices-setup .login-code { justify-self: stretch; }
+.devices-list .devices-last { grid-area: action; }
+.devices-list .row-actions { grid-area: action; display: flex; gap: 6px; }

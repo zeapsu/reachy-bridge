@@ -21,6 +21,7 @@ import importlib
 import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 # --- Requirements ------------------------------------------------------------
@@ -98,7 +99,10 @@ _APP_MAIN = "reachy_mini.daemon.app.main"
 _LOCK = "reachy_mini.daemon.robot_app_lock"
 _BACKEND = "reachy_mini.daemon.backend.abstract"
 _MEDIA_SERVER = "reachy_mini.media.media_server"
+_APPS_VENV = "reachy_mini.apps.sources.local_common_venv"
 _ROBOT_BACKEND = "reachy_mini.daemon.backend.robot.backend"
+# Backend.__init__ keeps uploaded move audio in <tempdir>/<this>/audio.
+_UPLOADS_DIR = "reachy-mini-uploads"
 
 REQUIREMENTS: tuple[Requirement, ...] = (
     Requirement("daemon", "daemon entry point", _function(_APP_MAIN, "main")),
@@ -163,6 +167,51 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         ),
     ),
     Requirement(
+        "app_bind",
+        "AppManager.start_app(app_name)",
+        _coroutine(_MANAGER, "AppManager.start_app", "app_name"),
+    ),
+    Requirement(
+        "app_bind",
+        "apps run get_app_python's interpreter with a copy of the daemon's environment",
+        lambda: (
+            _function(_APPS_VENV, "get_app_python", "app_name", "wireless_version", "desktop_app_daemon")(),
+            _source_mentions(
+                _MANAGER,
+                "AppManager.start_app",
+                "get_app_python",
+                "self.wireless_version",
+                "self.desktop_app_daemon",
+                "os.environ.copy()",
+            )(),
+        ),
+    ),
+    Requirement(
+        "app_bind",
+        "GstMediaServer._configure_webrtc(pipeline) returns the webrtcsink running the signalling server",
+        lambda: (
+            _function(_MEDIA_SERVER, "GstMediaServer._configure_webrtc", "pipeline")(),
+            _source_mentions(_MEDIA_SERVER, "GstMediaServer._configure_webrtc", "run-signalling-server", "return webrtcsink")(),
+        ),
+    ),
+    Requirement(
+        "sim_apps",
+        "every apps_venv path comes from local_common_venv._get_venv_parent_dir()",
+        lambda: (
+            _function(_APPS_VENV, "_get_venv_parent_dir")(),
+            _source_mentions(_APPS_VENV, "_get_app_venv_path", "_get_venv_parent_dir()")(),
+            _function(_APPS_VENV, "get_app_python", "app_name")(),
+        ),
+    ),
+    Requirement(
+        "sim_apps",
+        "AppManager.start_app(app_name) runs get_app_python's interpreter",
+        lambda: (
+            _coroutine(_MANAGER, "AppManager.start_app", "app_name")(),
+            _source_mentions(_MANAGER, "AppManager.start_app", "get_app_python")(),
+        ),
+    ),
+    Requirement(
         "kinematics",
         "Daemon.start takes kinematics_engine",
         _coroutine(_DAEMON, "Daemon.start", "kinematics_engine"),
@@ -208,6 +257,28 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         lambda: (
             _function("reachy_mini.media.audio_utils", "check_reachymini_asoundrc")(),
             _function("reachy_mini.media.audio_utils", "write_asoundrc_to_home")(),
+        ),
+    ),
+    Requirement(
+        "sim_sounds",
+        "Backend.play_sound(sound_file) and Backend.stop_sound()",
+        lambda: (
+            _function(_BACKEND, "Backend.play_sound", "sound_file")(),
+            _function(_BACKEND, "Backend.stop_sound")(),
+        ),
+    ),
+    Requirement(
+        "sim_sounds",
+        "ASSETS_ROOT_PATH, where play_sound looks up a bare file name",
+        lambda: _attr("reachy_mini.utils.constants", "ASSETS_ROOT_PATH"),
+    ),
+    Requirement(
+        "sim_sounds",
+        "where the daemon keeps uploaded sounds and move audio",
+        lambda: (
+            _attr("reachy_mini.daemon.app.routers.media", "SOUNDS_TMP_DIR"),
+            _source_mentions(_BACKEND, "Backend", f'"{_UPLOADS_DIR}"', '"audio"')(),
+            _attr("huggingface_hub.constants", "HF_HUB_CACHE"),
         ),
     ),
 )
@@ -291,6 +362,41 @@ def wrap_stop_current_app(wrapper: Callable[..., Awaitable[Any]]) -> None:
     from reachy_mini.apps.manager import AppManager
 
     _wrap(AppManager, "stop_current_app", wrapper)
+
+
+def wrap_start_app(wrapper: Callable[..., Awaitable[Any]]) -> None:
+    """Replace ``AppManager.start_app`` with ``wrapper(original, manager, app_name, ...)``."""
+    from reachy_mini.apps.manager import AppManager
+
+    _wrap(AppManager, "start_app", wrapper)
+
+
+def default_apps_root() -> Path:
+    """Where the daemon keeps ``apps_venv`` unless told otherwise: next to its own venv."""
+    from reachy_mini.apps.sources import local_common_venv
+
+    function = getattr(local_common_venv._get_venv_parent_dir, "__wrapped__", local_common_venv._get_venv_parent_dir)
+    return Path(function())
+
+
+def set_apps_root(root: Path) -> None:
+    """Keep ``apps_venv`` under ``root`` (a sim daemon's apps, #218)."""
+    from reachy_mini.apps.sources import local_common_venv
+
+    original = local_common_venv._get_venv_parent_dir
+
+    def apps_root() -> Path:
+        return Path(root)
+
+    apps_root.__wrapped__ = getattr(original, "__wrapped__", original)  # type: ignore[attr-defined]
+    local_common_venv._get_venv_parent_dir = apps_root
+
+
+def app_python(manager: Any, app_name: str) -> Path:
+    """The interpreter ``start_app`` runs ``app_name`` with."""
+    from reachy_mini.apps.sources.local_common_venv import get_app_python
+
+    return Path(get_app_python(app_name, manager.wireless_version, manager.desktop_app_daemon))
 
 
 def manager_daemon(manager: Any) -> Any | None:
@@ -397,6 +503,14 @@ def wrap_configure_audio(wrapper: Callable[..., None]) -> None:
     _wrap(GstMediaServer, "_configure_audio", wrapper)
 
 
+def wrap_configure_webrtc(wrapper: Callable[..., Any]) -> None:
+    """Replace ``GstMediaServer._configure_webrtc`` with
+    ``wrapper(original, media_server, pipeline)``; it returns the webrtcsink."""
+    from reachy_mini.media.media_server import GstMediaServer
+
+    _wrap(GstMediaServer, "_configure_webrtc", wrapper)
+
+
 def media_server(daemon: Any) -> Any | None:
     return getattr(daemon, "_media_server", None)
 
@@ -427,3 +541,61 @@ def ensure_reachymini_asoundrc() -> bool:
         return False
     write_asoundrc_to_home()
     return True
+
+
+def wrap_play_sound(wrapper: Callable[..., None]) -> None:
+    """Replace ``Backend.play_sound`` with ``wrapper(original, backend, sound_file)``."""
+    from reachy_mini.daemon.backend.abstract import Backend
+
+    _wrap(Backend, "play_sound", wrapper)
+
+
+def wrap_stop_sound(wrapper: Callable[..., None]) -> None:
+    """Replace ``Backend.stop_sound`` with ``wrapper(original, backend)``."""
+    from reachy_mini.daemon.backend.abstract import Backend
+
+    _wrap(Backend, "stop_sound", wrapper)
+
+
+def sound_path(sound_file: str) -> Path | None:
+    """The file ``play_sound(sound_file)`` plays, resolved as the media server
+    does (the path as given, else the name under the assets folder); None if
+    neither exists."""
+    from reachy_mini.utils.constants import ASSETS_ROOT_PATH
+
+    for candidate in (Path(sound_file), Path(ASSETS_ROOT_PATH) / sound_file):
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def sound_roots() -> tuple[Path, ...]:
+    """The folders the daemon's own sounds come from: its assets, uploaded
+    sounds, uploaded move audio, and the Hugging Face cache that move
+    datasets (and their sounds) download into."""
+    import tempfile
+
+    from huggingface_hub.constants import HF_HUB_CACHE
+    from reachy_mini.daemon.app.routers.media import SOUNDS_TMP_DIR
+    from reachy_mini.utils.constants import ASSETS_ROOT_PATH
+
+    uploads = Path(tempfile.gettempdir()) / _UPLOADS_DIR
+    # The upload folders sit in the shared temp dir: one another user made
+    # first (or a link there) would widen what counts as a sound folder. The
+    # assets and the Hugging Face cache may well be links (a cache on another
+    # disk), so they aren't held to this.
+    shared = [
+        folder
+        for folder, checked in ((Path(SOUNDS_TMP_DIR), [Path(SOUNDS_TMP_DIR)]), (uploads / "audio", [uploads, uploads / "audio"]))
+        if all(_own_folder(f) for f in checked)
+    ]
+    return tuple(Path(root).resolve() for root in (ASSETS_ROOT_PATH, HF_HUB_CACHE, *shared))
+
+
+def _own_folder(path: Path) -> bool:
+    import os
+
+    try:
+        return not path.is_symlink() and path.stat().st_uid == os.getuid()
+    except OSError:
+        return False

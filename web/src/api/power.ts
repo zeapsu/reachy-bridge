@@ -9,6 +9,8 @@ export interface DaemonStatus {
   status: string;
   motors?: string | null;
   error?: unknown;
+  /** Which daemon the controller drives (#149). */
+  target?: "robot" | "sim";
 }
 
 /** GET/PUT /api/daemon/kinematics */

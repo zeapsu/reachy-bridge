@@ -10,11 +10,12 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::Response;
 use axum::routing::get;
-use axum::Router;
+use axum::{Extension, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite;
 
+use crate::auth::{AuthContext, Credential};
 use crate::daemon::{backend_up, motor_mode};
 use crate::error::{ApiError, ApiResult};
 use crate::expressions::{ExpressionPlayer, PlayError};
@@ -143,10 +144,22 @@ impl Drop for Session {
     }
 }
 
-async fn upgrade(State(state): State<Shared>, ws: WebSocketUpgrade) -> ApiResult<Response> {
+async fn upgrade(
+    State(state): State<Shared>,
+    ctx: Option<Extension<AuthContext>>,
+    ws: WebSocketUpgrade,
+) -> ApiResult<Response> {
+    // Requests built without the auth layer (unit tests) count as trusted.
+    let ctx = ctx.map(|Extension(ctx)| ctx);
+    // In admin mode only the holder gets here (control::guard); the session
+    // ends when it loses control, or when admin mode starts later.
+    let holder = ctx.as_ref().filter(|c| !c.local).and_then(|c| c.device.clone());
+    let credential = ctx.and_then(|ctx| ctx.credential).unwrap_or(Credential::Trusted);
     // Connect before claiming the robot, so a failure leaves nothing to undo.
     let url = state.daemon.ws_url("move/ws/set_target");
-    let Ok((upstream, _)) = tokio_tungstenite::connect_async(url.as_str()).await else {
+    // Bounded: the upgrade holds actions and sim switches apart (sim.rs).
+    let connect = tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(url.as_str()));
+    let Ok(Ok((upstream, _))) = connect.await else {
         return Err(ApiError::unavailable());
     };
     // Under the power lock, so an app start or a power action can't be
@@ -163,7 +176,7 @@ async fn upgrade(State(state): State<Shared>, ws: WebSocketUpgrade) -> ApiResult
         }
     };
     let session = Session { player: state.player.clone(), epoch, home: true };
-    Ok(ws.on_upgrade(move |socket| drive(state, socket, upstream, session)))
+    Ok(ws.on_upgrade(move |socket| drive(state, socket, upstream, session, credential, holder)))
 }
 
 type Upstream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -175,7 +188,14 @@ async fn sent<E>(send: impl std::future::Future<Output = Result<(), E>>) -> bool
 
 const MODE_CHANGED: &str = "Motor mode changed: drive again once the robot is home";
 
-async fn drive(state: Shared, mut socket: WebSocket, mut upstream: Upstream, mut session: Session) {
+async fn drive(
+    state: Shared,
+    mut socket: WebSocket,
+    mut upstream: Upstream,
+    mut session: Session,
+    credential: Credential,
+    holder: Option<String>,
+) {
     let epoch = session.epoch;
     let ready = json!({"type": "ready", "limits": limits()});
     if !sent(socket.send(Message::Text(ready.to_string().into()))).await {
@@ -184,8 +204,20 @@ async fn drive(state: Shared, mut socket: WebSocket, mut upstream: Upstream, mut
     let mut body_yaw = 0.0;
     let mut recheck = tokio::time::interval(RECHECK);
     recheck.tick().await;
+    // Ends the session when this browser is revoked or loses its trust (#221).
+    let ended = state.auth.ended(credential);
+    tokio::pin!(ended);
+    let lost = async {
+        match holder.clone() {
+            Some(device) => state.control.lost(&state.auth, device).await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(lost);
     let detail = loop {
         tokio::select! {
+            () = &mut ended => break "Logged out: log in again to drive".to_string(),
+            () = &mut lost => break "Control ended: take control again to drive".to_string(),
             message = socket.recv() => match message {
                 Some(Ok(Message::Text(text))) => {
                     if !state.player.driving(epoch) {
@@ -209,6 +241,10 @@ async fn drive(state: Shared, mut socket: WebSocket, mut upstream: Upstream, mut
                 None | Some(Err(_)) => break "Daemon unavailable".to_string(),
             },
             _ = recheck.tick() => {
+                // An open session counts as the holder being here.
+                if let Some(device) = &holder {
+                    state.control.touch(device);
+                }
                 if !state.player.driving(epoch) {
                     break MODE_CHANGED.to_string();
                 }

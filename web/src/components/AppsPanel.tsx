@@ -69,7 +69,7 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps, catalog, manage
     state = (
       <span className="err">
         <span className="dot error"></span>
-        {app.error || "Error"}
+        <span>{app.error || "Error"}</span>
       </span>
     );
   } else {
@@ -156,6 +156,8 @@ interface Props {
   apps: AppsState;
   catalog: CatalogState;
   daemonOnline: boolean;
+  /** The daemon's app API answers (the robot may be off). */
+  reachable: boolean;
   exprBusy: boolean;
 }
 
@@ -163,7 +165,7 @@ interface Props {
  * Installed apps as compact rows. Pinned apps (favorites, plus whichever app
  * owns the robot or failed) stay on top; everything installed is below.
  */
-export function AppsPanel({ apps, catalog, daemonOnline, exprBusy }: Props) {
+export function AppsPanel({ apps, catalog, daemonOnline, reachable, exprBusy }: Props) {
   const sheet = useLens<HTMLElement>();
   const [manage, setManage] = useState(false);
   const active = activeApp(apps.statuses);
@@ -220,7 +222,7 @@ export function AppsPanel({ apps, catalog, daemonOnline, exprBusy }: Props) {
         </>
       ) : null}
       {apps.names.length === 0 ? (
-        <p className="note">{daemonOnline ? "No apps installed yet." : "Apps show up when the daemon is online."}</p>
+        <p className="note">{reachable ? "No apps installed yet." : "Apps show up when the daemon is online."}</p>
       ) : null}
     </section>
   );

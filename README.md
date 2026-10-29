@@ -40,11 +40,19 @@ reachy-bridge status
 :8043 for the running app's own UI. App UIs listen on plain http (`:8042`, `:7860`, ...), where
 browsers block the microphone and camera; the controller proxies whichever app is running on
 `127.0.0.1:7863`, and a dashboard opened over HTTPS sends you to `https://<host>:8043/`. Over
-plain http the dashboard still opens the app's own port. Run `reachy-bridge serve` again after an
-update that adds a mapping.
+plain http the dashboard opens `http://<host>:7863/`. The bridge keeps app web servers and WebRTC
+signalling (`:8443`) on loopback, so the proxy is the way to an app from another machine (see the
+limits under LAN access). Run
+`reachy-bridge serve` again after an update that adds a mapping.
 
 The robot starts off; switch it on from the dashboard. `install.sh` is safe to re-run after a
 pull, and never restarts the daemon while the robot is on.
+
+To remove the bridge, run `reachy-bridge uninstall` (or `deploy/uninstall.sh`). It puts the robot
+to sleep, removes the services, the install, installed apps, settings and paired devices, and the
+tailnet ports that still point at the bridge, then lists what it left (Tailscale, apt packages,
+the Hugging Face cache). `--dry-run` shows the plan; `--keep-data` keeps apps, settings and paired
+devices for a reinstall.
 
 ## LAN access
 
@@ -56,22 +64,44 @@ systemctl --user edit reachy-bridge-controller.service   # add: [Service] Enviro
 reachy-bridge restart controller
 ```
 
-The dashboard then listens on every interface on port 7861; the daemon stays on loopback.
+The dashboard then listens on every interface on port 7861, and the app UI proxy on port 7863;
+the daemon, the app UIs and WebRTC signalling stay on loopback.
 A browser on the LAN gets a login screen with a 6-digit code (valid for 5 minutes). Approve it
 on the device with `reachy-bridge pair <code> [name]`, or from an already-paired dashboard
 (devices panel). The browser then keeps a device cookie for a year. `reachy-bridge devices`
 lists paired browsers and `reachy-bridge devices revoke <n>` logs one out at once (`<n>` is its number in that list; the id works too).
 Visitors through `tailscale serve` and local tools are trusted without pairing; set
-`CONTROLLER_TRUST_TAILNET=0` to make them pair too (that covers the app UIs on :8043 as well).
-The login protects the dashboard and :8043 only: app UIs also listen on plain http on their own
-ports (`:8042`, `:7860`, ...), where any LAN device can reach them without pairing.
+`CONTROLLER_TRUST_TAILNET=0` to make them pair too (an admin, below, does that as well). The same login covers the app UIs, on :7863
+from the LAN and on :8043 through `tailscale serve`.
+
+Apps are code you install from Hugging Face, and they run as the bridge's own user. The bridge
+moves every server an app opens through Python's `socket` module onto loopback, but not listeners
+opened by native code (a C extension, a Node or ffmpeg child process), and not a Gradio app's
+public `share` link. An app can also read the controller's local key. Install apps you trust.
 
 A paired browser can approve and revoke other browsers, so approve only codes you expect
 (`reachy-bridge pair` prints the address that asked). A browser unused for 30 days is logged out.
 
+## Admin
+
+Until an admin exists, anyone who reaches the dashboard can drive the robot. To lock it to the
+browsers you approve, LAN mode or not, make your own browser the admin: open the devices panel
+(System), choose "Make this browser the admin", and run the command it shows on the robot,
+`reachy-bridge pair --admin --person=<you> <code> [name]`. Only the CLI on the robot can approve an admin.
+
+Browsers paired before that are logged out, since anyone could approve them. From then on
+every browser logs in, Tailscale visitors included, and open streams and drive sessions from
+browsers without a login end at once. Only the admin approves new browsers (with a device name
+and the person using it) and revokes them, installs, updates and removes apps, sets the Hugging
+Face token, and switches the kinematics engine. Other people's browsers
+can log themselves out. The dashboard won't revoke the last admin device; to recover a lost one,
+pair a new admin from the robot and revoke the old one with `reachy-bridge devices revoke <n>`.
+Admin mode stays on even with no admin device left. An installed app runs as the bridge's user
+and can read the local key, so it could approve an admin too; install apps you trust.
+
 LAN traffic is plain HTTP, so anyone on the network can read it, including the device cookie,
-unless you put TLS in front of the controller. Browsers also send that cookie to the app UIs
-served on other ports of the device (cookies aren't separated by port). Use LAN access on a home
+unless you put TLS in front of the controller. The app proxy strips the cookie before a request
+reaches an app. Use LAN access on a home
 network you trust, and Tailscale (`reachy-bridge serve`, HTTPS) for anything beyond it.
 
 ## Development quick start

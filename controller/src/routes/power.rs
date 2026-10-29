@@ -138,7 +138,8 @@ pub async fn power_off_locked(state: &Shared) -> ApiResult<Value> {
 /// Robot state, in the shape the dashboard's power button expects.
 async fn status(State(state): State<Shared>) -> Json<Value> {
     let Some(status) = state.daemon.status().await else {
-        return Json(json!({"reachable": false, "running": false, "manageable": false, "status": "offline"}));
+        let target = state.sim.target();
+        return Json(json!({"reachable": false, "running": false, "manageable": false, "status": "offline", "target": target}));
     };
     let robot = robot_state(&status);
     Json(json!({
@@ -149,6 +150,8 @@ async fn status(State(state): State<Shared>) -> Json<Value> {
         // Lets the dashboard tell the sleep move (motors on) from torque release.
         "motors": motor_mode(&status),
         "error": status.get("error").cloned().unwrap_or(Value::Null),
+        // "robot" or "sim" (#149): which daemon the controller drives.
+        "target": state.sim.target(),
     }))
 }
 

@@ -134,6 +134,19 @@ Backend: `daemon/backend/abstract.py`; endpoints:
 - `POST /api/move/goto` and the play endpoints return a move UUID;
   `GET /api/move/running` lists the UUIDs still running, and
   `POST /api/move/stop` cancels one.
+- Sounds: `Backend.play_sound(file)` (wake-up, sleep, a recorded move's
+  sound, `volume/test-sound`, `media/play_sound`) hands the file to the media
+  server: the path as given, else the name under the package's `assets/`.
+  `media/play_sound` first tries a relative name in its upload folder
+  (`/tmp/reachy_mini_sounds`). Move sounds are absolute paths into the
+  dataset's Hugging Face cache; an uploaded move's audio is deleted when the
+  move ends. A new sound stops the one playing. With `--no-media` there is no
+  media server and nothing plays. **Bridge feature** (`features/sim_sounds.py`,
+  sim daemons only, #219): every `play_sound` of a file in those folders
+  (checked again when served), and every `stop_sound`, is recorded; `GET /api/bridge/sounds` lists the latest
+  events and `GET /api/bridge/sounds/{token}` serves a played file by the
+  random token its event names. The controller relays them to the dashboard in sim
+  mode (`/api/sim/sounds-stream`, `/api/sim/sounds/{token}`).
 - **REST moves are not serialized.** `play_move`'s guard (`_play_move_lock`)
   is a re-entrant `threading.RLock`, and every REST move runs on the same
   event-loop thread, so two `move/play/wake_up` calls both run and write
@@ -219,11 +232,32 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
 - The app's UI address is `extra.custom_app_url` in the app metadata (for
   example `0.0.0.0:8042` for radio, `:7860` for conversation). The UI server
   comes up 1–3 s after the process starts, so the bridge polls it before
-  sending the user there. The app binds `0.0.0.0` on that port itself, so
-  nothing else may listen on it; over HTTPS the controller proxies the
-  current app's UI from `127.0.0.1:7863`, published as :8043 (#158).
+  sending the user there. The app binds that port itself, so nothing else
+  may listen on it. Apps ask for every interface (`0.0.0.0` in
+  `custom_app_url`, or Gradio's `server_name`). **Bridge patch (#186):**
+  before each start the runtime writes a stdlib-only shim and a `.pth` into
+  the app's venv, so every Python process there binds its TCP servers on
+  loopback whatever address it asks for (a dual-stack `::` socket gets
+  `::ffff:127.0.0.1`). An app that would run in the daemon's own venv, or
+  whose venv can't take the shim, is refused, and a reachy-mini that no
+  longer matches the hooks stops the runtime instead of running apps open.
+  A specific address with port 0 is left alone (a client choosing its source
+  address before `connect`). Not covered: a server that binds a specific LAN
+  address or host name on port 0, listeners opened by native code (C
+  extensions, non-Python child processes), Gradio `share` tunnels, and an app that undoes the shim
+  on purpose; apps run as the bridge's user and are trusted at that level. The
+  controller proxies the current app's UI from `:7863` (loopback, or every
+  interface behind the login in LAN mode), published over HTTPS as :8043
+  (#158).
+- webrtcsink runs the signalling server (`run-signalling-server`) on
+  `0.0.0.0:8443` upstream. **Bridge patch (#186):** `signalling-server-host`
+  is set to `127.0.0.1` (a webrtcsink without the property fails the media
+  server instead); the daemon's central relay connects to
+  `ws://127.0.0.1:8443`. Only the Wireless model, out of scope here,
+  advertises its LAN address for direct signalling. The app proxy never
+  forwards to :8443.
 - The dashboard shows an app's UI in a frame (#159), from a different origin
-  (:8043 inside :10000, or the app's own port on the LAN). An app that sends
+  (:8043 inside :10000, or :7863 inside :7861 over plain http). An app that sends
   `X-Frame-Options` or a CSP `frame-ancestors` that leaves out the dashboard
   shows a blank frame; ↗ opens it in its own tab. Checked 2026-10-28: the
   app base class in reachy-mini 1.12.0, Radio, Conversation App and Gradio's

@@ -17,20 +17,14 @@ this process only, then runs ``reachy-bridge-runtime`` as usual:
   ``--no-media`` daemon never runs it. Here a backend without that loop gets
   one of its own, and the daemon's unmodified idle-reset code runs on it.
 
-``SIM_APPS_ROOT``, when set, is where the daemon keeps ``apps_venv`` (and its
-app metadata) instead of next to this checkout's ``.venv``, so a test run
-doesn't touch a developer's installed apps.
-
 Only for sim tests: never run the real robot through this.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import threading
-from pathlib import Path
 
 
 def _patch_motor_mode() -> None:
@@ -58,18 +52,8 @@ def _patch_motor_mode() -> None:
     MujocoBackend.set_motor_control_mode = set_motor_control_mode
 
 
-def _patch_apps_root() -> None:
-    root = os.getenv("SIM_APPS_ROOT")
-    if not root:
-        return
-    from reachy_mini.apps.sources import local_common_venv
-
-    local_common_venv._get_venv_parent_dir = lambda: Path(root)
-
-
 def main() -> int:
     _patch_motor_mode()
-    _patch_apps_root()
     from reachy_bridge_runtime.main import main as runtime_main
 
     return runtime_main()

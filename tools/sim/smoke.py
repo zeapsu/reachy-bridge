@@ -24,6 +24,7 @@ checks passed.
 from __future__ import annotations
 
 import os
+import socket
 import sys
 import time
 
@@ -90,6 +91,25 @@ def answers(port: int) -> bool:
     try:
         return httpx.get(f"http://127.0.0.1:{port}/", timeout=2).status_code == 200
     except httpx.HTTPError:
+        return False
+
+
+def lan_address() -> str | None:
+    """This host's address on its default route, if it has one."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(("192.0.2.1", 9))  # no packet is sent
+        except OSError:
+            return None
+        address = s.getsockname()[0]
+    return None if address.startswith("127.") or address == "0.0.0.0" else address
+
+
+def answers_on(address: str, port: int) -> bool:
+    try:
+        with socket.create_connection((address, port), timeout=2):
+            return True
+    except OSError:
         return False
 
 
@@ -170,6 +190,12 @@ check("[bug 3] app started while asleep runs on an awake robot", daemon_state() 
 ready = port is not None and wait(lambda: ui(APP).get("ready") is True, 60)
 check("[bug 4] app UI reports ready", ready, f"port={port}")
 check("[bug 4] app UI answers once ready", port is not None and answers(port), f"port={port}")
+lan = lan_address()
+check(
+    "[#186] app UI asked for 0.0.0.0 but listens on loopback only",
+    port is not None and (lan is None or not answers_on(lan, port)),
+    f"port={port} lan={lan}",
+)
 
 # 10. power on from asleep wakes the robot in place
 crash_to_sleep()

@@ -6,12 +6,14 @@ use std::time::Duration;
 
 use crate::apps::DaemonApps;
 use crate::auth::{Auth, AuthConfig};
+use crate::control::Control;
 use crate::daemon::Daemon;
 use crate::datasets::DatasetCache;
 use crate::expressions::ExpressionPlayer;
 use crate::logs::LogBroker;
 use crate::routes::store::Catalog;
 use crate::routes::telemetry::Streams;
+use crate::sim::SimMode;
 
 pub type Shared = Arc<AppState>;
 
@@ -32,6 +34,10 @@ pub struct AppState {
     pub state_dir: PathBuf,
     /// LAN login (#141); off unless `CONTROLLER_LAN=1`.
     pub auth: Auth,
+    /// Which daemon `daemon` drives: the robot's or the sim's (#149).
+    pub sim: SimMode,
+    /// Who drives the robot in admin mode (#221).
+    pub control: Control,
 }
 
 impl AppState {
@@ -40,11 +46,26 @@ impl AppState {
     }
 
     pub fn with_auth(daemon: Daemon, logs: Arc<LogBroker>, state_dir: PathBuf, poll: Duration, auth: AuthConfig) -> Shared {
+        let sim = SimMode::new(&daemon.base_url(), "http://127.0.0.1:8001", None, None);
+        Self::with_sim(daemon, logs, state_dir, poll, auth, sim)
+    }
+
+    pub fn with_sim(
+        daemon: Daemon,
+        logs: Arc<LogBroker>,
+        state_dir: PathBuf,
+        poll: Duration,
+        auth: AuthConfig,
+        sim: SimMode,
+    ) -> Shared {
+        let player = ExpressionPlayer::new(daemon.clone(), poll);
         Arc::new(Self {
+            sim,
             auth: Auth::new(auth, &state_dir),
+            control: Control::new(&state_dir, player.clone()),
             apps: DaemonApps::new(daemon.clone()),
             catalog: Catalog::default(),
-            player: ExpressionPlayer::new(daemon.clone(), poll),
+            player,
             daemon,
             power_lock: tokio::sync::Mutex::new(()),
             streams: Streams::default(),

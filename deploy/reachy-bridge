@@ -3,11 +3,16 @@
 # Replaces the old reachy-up / reachy-down shell functions (#130).
 #
 #   reachy-bridge status
-#   reachy-bridge start | stop | restart [daemon|controller]   (default: both)
-#   reachy-bridge logs [daemon|controller]
+#   reachy-bridge check [--json]          can this device run the bridge and the robot?
+#   reachy-bridge start | stop | restart [daemon|controller|sim]   (default: daemon and controller)
+#   reachy-bridge logs [daemon|controller|sim]
 #   reachy-bridge serve [on|off|status]
-#   reachy-bridge pair <code> [name]     approve a browser's LAN login code
+#   reachy-bridge pair [--admin] [--person=<who>] <code> [name]
+#                                        approve a browser's login code
+#                                        (--admin: as the admin, #221)
 #   reachy-bridge devices [revoke <n|id>]  list or revoke paired browsers
+#   reachy-bridge deploy <tag>           install a tag; reinstall the previous version if it fails
+#   reachy-bridge uninstall [--keep-data] [--dry-run] [--yes]
 #
 # Stopping the daemon sends SIGINT, which puts the robot to sleep and releases
 # torque. Restarting the daemon is refused while the robot is on, unless
@@ -16,14 +21,17 @@ set -euo pipefail
 
 DAEMON=reachy-bridge.service
 CONTROLLER=reachy-bridge-controller.service
+# The sim daemon behind the dashboard's sim mode (#149); the controller starts it.
+SIM=reachy-bridge-sim.service
 DAEMON_URL=${DAEMON_URL:-http://127.0.0.1:8000}
 
 # tailscale serve: dedicated HTTPS ports only. Never the root mapping, never
 # `tailscale serve reset` (other services share this node's serve config).
-# WebRTC signalling (:8443) and app UIs (:8042, :7860, ...) bind 0.0.0.0
-# themselves, so a serve listener on the same port would make their bind fail
-# at power-on: never serve those port numbers. Browsers don't need :8443
-# (remote WebRTC goes through the central relay over HTTPS). App UIs are
+# WebRTC signalling (:8443) and app UIs (:8042, :7860, ...) listen on
+# loopback only (the runtime's app_bind, #186); still never serve those port
+# numbers, as an older runtime binds them on 0.0.0.0 and a serve listener on
+# the same port would make that bind fail at power-on. Browsers don't need
+# :8443 (remote WebRTC goes through the central relay over HTTPS). App UIs are
 # reached through :8043 instead, the controller's app proxy, which forwards
 # to whichever app is running; nothing on the device binds 8043.
 SERVE_CONTROLLER_PORT=${REACHY_BRIDGE_SERVE_PORT:-10000}
@@ -44,8 +52,34 @@ units_for() {
         all) UNITS=("$DAEMON" "$CONTROLLER") ;;
         daemon) UNITS=("$DAEMON") ;;
         controller) UNITS=("$CONTROLLER") ;;
-        *) die "unknown service '$1' (daemon, controller)" ;;
+        sim) UNITS=("$SIM") ;;
+        *) die "unknown service '$1' (daemon, controller, sim)" ;;
     esac
+}
+
+# Sim mode (#149) is the controller's to start and end: the sim unit
+# conflicts with the robot's daemon, so starting either from here would stop
+# the other under the controller. Refuses the sim always, and the daemon
+# while the controller reports sim mode on (or can't say).
+refuse_during_sim() {
+    if [[ " ${UNITS[*]} " == *" $SIM "* ]]; then
+        die "the sim is started from the dashboard (System > Simulation), which checks the robot is off first"
+    fi
+    [[ " ${UNITS[*]} " == *" $DAEMON "* ]] || return 0
+    (( force )) && return 0
+    # A controller that isn't running is in no sim mode: it starts on the
+    # robot. Any other unreadable answer refuses, unless --force.
+    local key="" out rc=0
+    [[ -r $STATE_DIR/controller.key ]] && key=$(<"$STATE_DIR/controller.key")
+    out=$(if [[ -n $key ]]; then printf 'X-Reachy-Bridge-Key: %s\n' "$key"; fi |
+        curl -sS -m 5 -H @- "$CONTROLLER_URL/api/sim" 2>/dev/null) || rc=$?
+    (( rc == 7 )) && return 0
+    if (( rc != 0 )) || [[ $out != *'"active":'* ]]; then
+        die "can't tell whether sim mode is on (the controller didn't answer); pass --force to start the daemon anyway"
+    fi
+    if [[ $out == *'"active":true'* ]]; then
+        die "sim mode is on; leave it from the dashboard (System > Simulation) first"
+    fi
 }
 
 # Prints off, on or unknown. Fails closed: only a refused connection (no
@@ -103,27 +137,354 @@ json_string() {
     printf '"%s"' "${s//[[:cntrl:]]/}"
 }
 
+# Prints none, running or unknown: whether an app is starting, running or
+# stopping. No daemon listening means none; an answer it can't read, unknown.
+app_state() {
+    local status rc=0
+    status=$(curl -s -m 5 -w '\n%{http_code}' "$DAEMON_URL/api/apps/current-app-status") || rc=$?
+    if (( rc == 7 )); then echo none; return; fi
+    if (( rc != 0 )) || [[ ${status##*$'\n'} != 200 ]]; then echo unknown; return; fi
+    status=${status%$'\n'*}
+    if [[ $status == null || $status == *'"state":"done"'* || $status == *'"state":"error"'* ]]; then
+        echo none
+    elif [[ $status == *'"state":"starting"'* || $status == *'"state":"running"'* || $status == *'"state":"stopping"'* ]]; then
+        echo running
+    else
+        echo unknown
+    fi
+}
+
+# Waits up to 90 s for the daemon and the controller to answer their status
+# routes after an install (the daemon starts with the robot off).
+healthy() {
+    local i
+    for (( i = 0; i < 45; i++ )); do
+        if [[ $(curl -s -m 5 "$DAEMON_URL/api/daemon/status") == *'"state":"'* ]] &&
+            (controller_api GET /api/daemon/status >/dev/null 2>&1); then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+# deploy <tag>: install a tag from the checkout with deploy/install.sh, check
+# the services come back, and reinstall the previous version if not (#200).
+# The robot must be off and no app running; install.sh checks the robot again.
+deploy_tag() {
+    local tag=$1 repo=${REACHY_BRIDGE_REPO:-$HOME/reachy-bridge}
+    local record=$HOME/.local/share/reachy-bridge/VERSION installed="" prev prev_ref checkout_ref prev_name rc=0
+    [[ -x $repo/deploy/install.sh ]] || die "no checkout at $repo (set REACHY_BRIDGE_REPO)"
+    [[ $(robot_power) == off ]] || die "the robot isn't confirmed off ($(robot_state)); turn it off first"
+    [[ $(app_state) == none ]] || die "an app is running, or the daemon didn't say; stop it first"
+    [[ -z $(git -C "$repo" status --porcelain --untracked-files=no) ]] ||
+        die "$repo has local changes; commit or discard them first"
+    git -C "$repo" fetch --quiet --tags origin || die "git fetch failed"
+    git -C "$repo" rev-parse --quiet --verify "refs/tags/$tag^{commit}" >/dev/null || die "no tag $tag"
+
+    # Roll back to what was last installed (deploy and install.sh record the
+    # commit), which can differ from the checkout's HEAD after a pull. Without
+    # a record yet, the checkout is the best guess.
+    [[ -r $record ]] && installed=$(<"$record")
+    if [[ -n $installed ]] && ! git -C "$repo" cat-file -e "$installed^{commit}" 2>/dev/null; then
+        installed=""
+    fi
+    prev=$(git -C "$repo" rev-parse HEAD)
+    checkout_ref=$(git -C "$repo" symbolic-ref --quiet --short HEAD || echo "$prev")
+    prev_ref=$checkout_ref
+    if [[ -n $installed && $installed != "$prev" ]]; then
+        prev=$installed prev_ref=$installed
+    fi
+    prev_name=$(git -C "$repo" describe --tags --always "$prev")
+    if [[ -n $installed ]]; then
+        echo "installed: $prev_name"
+    else
+        echo "installed: $prev_name (no install record yet; assuming the checkout)"
+    fi
+    echo "deploying: $tag"
+    git -C "$repo" checkout --quiet --detach "refs/tags/$tag"
+    "$repo/deploy/install.sh" || rc=$?
+    # The record is written here too, not only by install.sh: an older tag's
+    # install.sh doesn't write one.
+    if (( rc == 0 )) && healthy; then
+        git -C "$repo" rev-parse HEAD >"$record"
+        echo "deployed $tag (previously $prev_name)"
+        return 0
+    fi
+
+    # The tree was clean before, so --force only drops what the tag's build
+    # left behind.
+    if (( rc == 3 )); then
+        git -C "$repo" checkout --quiet --force "$checkout_ref" ||
+            die "deploying $tag was refused before anything changed (see above), but checking out $checkout_ref again failed; the checkout is still at $tag"
+        die "deploying $tag was refused before anything changed (see above); $prev_name is still installed"
+    fi
+    git -C "$repo" checkout --quiet --force "$prev_ref" ||
+        die "deploying $tag failed, and checking out $prev_name again failed too; the checkout is still at $tag"
+    echo "reachy-bridge: deploying $tag failed; reinstalling $prev_name" >&2
+    rc=0
+    "$repo/deploy/install.sh" || rc=$?
+    if (( rc == 3 )); then
+        die "deploying $tag failed, and reinstalling $prev_name was refused before it changed anything (see above); check reachy-bridge status"
+    fi
+    if (( rc == 0 )) && healthy; then
+        git -C "$repo" rev-parse HEAD >"$record"
+        [[ $prev_ref == "$checkout_ref" ]] || echo "reachy-bridge: the checkout is now detached at $prev_name (was $checkout_ref)" >&2
+        die "deploying $tag failed; $prev_name is installed again"
+    fi
+    # What is installed is now unknown; don't let the next deploy trust it.
+    rm -f "$record"
+    die "deploying $tag failed, and so did reinstalling $prev_name; check reachy-bridge status and logs"
+}
+
 tailscale_serve() {
     # Without an operator set, tailscale serve needs root.
     if tailscale serve "$@" 2>/dev/null; then return 0; fi
     sudo tailscale serve "$@"
 }
 
+# The tailnet ports `serve on` added that still point at the bridge: a port
+# serving something else (another service reusing the number) is left alone.
+bridge_serve_ports() {
+    local status
+    command -v tailscale >/dev/null || return 0
+    if ! command -v python3 >/dev/null || ! status=$(tailscale serve status --json 2>/dev/null) ||
+        ! python3 -c '
+import json, sys
+web = (json.loads(sys.argv[1] or "{}") or {}).get("Web") or {}
+for mapping in sys.argv[2:]:
+    port, target = mapping.split()
+    for host, conf in web.items():
+        handlers = (conf or {}).get("Handlers") or {}
+        if host.rsplit(":", 1)[-1] == port and handlers and all(
+            (h or {}).get("Proxy", "").rstrip("/") == target for h in handlers.values()
+        ):
+            print(port)
+            break
+' "$status" "${SERVE_MAPPINGS[@]}" 2>/dev/null; then
+        echo "warning: couldn't read the tailnet serve config; check tailscale serve status afterwards" >&2
+    fi
+}
+
+# as_owner PATH CMD...: run CMD directly if PATH's directory is writable, with
+# sudo otherwise (udev rules, a system GStreamer plugin).
+as_owner() {
+    local path=$1
+    shift
+    if [[ -w $(dirname "$path") ]]; then "$@"; else sudo "$@"; fi
+}
+
+# Only absolute paths strictly inside the home directory, with no '..' and no
+# trailing slash: the manifest is only a list, not trusted blindly. Symlinks
+# are not resolved, so an install moved to another disk through a link still
+# counts as in the home directory.
+safe_path() {
+    local real home
+    [[ $1 == /* && $1 != */ && /$1/ != */../* ]] || return 1
+    real=$(realpath -m -s -- "$1") && home=$(realpath -m -s -- "$HOME") || return 1
+    [[ $real == "$home"/?* ]]
+}
+
+# A path the uninstaller may restore a GStreamer plugin to: in the home
+# directory or a system GStreamer plugin directory.
+gst_path() {
+    safe_path "$1" || [[ $1 == /usr/lib/*/gstreamer-1.0/*.so && $1 != *..* ]]
+}
+
+# The bridge's sleep sequence: through the controller when it answers, which
+# also stops the app, halts expressions and drive targets, and skips the sleep
+# move if the robot is already asleep; straight to the daemon otherwise.
+robot_down() {
+    local i
+    [[ $(app_state) == none && $(robot_power) == off ]] && return 0
+    echo "== Stopping any app and putting the robot to sleep"
+    # Its power-off can take 40 s (it stops the app first); a timeout means
+    # it is still working, so only a controller that isn't there, or that
+    # refused, falls back to the daemon, never one still mid-sequence.
+    local key="" code rc=0
+    [[ -r $STATE_DIR/controller.key ]] && key=$(<"$STATE_DIR/controller.key")
+    code=$(if [[ -n $key ]]; then printf 'X-Reachy-Bridge-Key: %s\n' "$key"; fi |
+        curl -s -m 60 -o /dev/null -w '%{http_code}' -X POST -H @- "$CONTROLLER_URL/api/daemon/stop") || rc=$?
+    if (( rc == 7 )) || { (( rc == 0 )) && [[ $code != 2* ]]; }; then
+        if [[ $(app_state) != none ]]; then
+            curl -s -m 10 -X POST "$DAEMON_URL/api/apps/stop-current-app" >/dev/null || true
+            for (( i = 0; i < 30; i++ )); do [[ $(app_state) == none ]] && break; sleep 1; done
+        fi
+        [[ $(robot_power) == off ]] ||
+            curl -s -m 10 -X POST "$DAEMON_URL/api/daemon/stop?goto_sleep=true" >/dev/null || true
+    fi
+    for (( i = 0; i < 30; i++ )); do [[ $(robot_power) == off ]] && return 0; sleep 1; done
+    # Stopping the service next sends SIGINT, which also sleeps the robot and
+    # releases torque.
+    echo "warning: the robot didn't report off; stopping the service puts it to sleep"
+}
+
+# uninstall: reverse deploy/install.sh from its install manifest (#142).
+uninstall_bridge() {
+    local keep=0 dry=0 yes=0 arg
+    for arg in "$@"; do
+        case "$arg" in
+            --keep-data) keep=1 ;;
+            --dry-run) dry=1 ;;
+            --yes|-y) yes=1 ;;
+            *) die "usage: reachy-bridge uninstall [--keep-data] [--dry-run] [--yes]" ;;
+        esac
+    done
+    (( EUID != 0 )) || die "run uninstall as the user who installed the bridge, not as root; it asks for sudo when it needs it"
+    systemctl --user show-environment >/dev/null 2>&1 ||
+        die "can't reach your user systemd; run this from a login shell (e.g. ssh) as the user who installed the bridge"
+    local dest=$HOME/.local/share/reachy-bridge
+    local manifest=$dest/install-manifest
+    local unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+    local kind value extra units=() dirs=() files=() udev=() groups=() linger=0 gst=() ports=()
+    # Kept with --keep-data: the apps and the daemon's metadata about them.
+    local kept=(apps_venv .app_metadata)
+    if [[ -r $manifest ]]; then
+        while IFS=$'\t' read -r kind value extra; do
+            case "$kind" in
+                unit) [[ $value =~ ^[A-Za-z0-9@._-]+$ ]] && units+=("$value") ;;
+                dir) dirs+=("$value") ;;
+                file) files+=("$value") ;;
+                udev) [[ $value == /etc/udev/rules.d/*.rules && $value != */../* ]] && udev+=("$value") ;;
+                group) [[ $value == dialout ]] && groups+=("$value") ;;
+                linger) linger=1 ;;
+                gst-backup) gst_path "$value" && safe_path "$extra" && gst+=("$value"$'\t'"$extra") ;;
+                '') ;;
+                *) false ;;
+            esac || echo "reachy-bridge: skipping manifest entry: $kind $value $extra" >&2
+        done <"$manifest"
+    else
+        # Installed before the manifest existed: what every install.sh added.
+        units=("$DAEMON" "$CONTROLLER" "$SIM")
+        dirs=("$dest")
+        files=("$HOME/.local/bin/reachy-bridge")
+    fi
+    # The state dir comes from the environment; only remove one that is the
+    # bridge's own, never a parent such as ~/.local/state.
+    local state=$STATE_DIR
+    if [[ $state != */reachy-bridge ]] || ! safe_path "$state"; then
+        echo "warning: won't remove the state dir $state (not a reachy-bridge directory in $HOME)" >&2
+        state=
+    fi
+    mapfile -t ports < <(bridge_serve_ports)
+
+    echo "This removes reachy-bridge from this device:"
+    echo "  stop any app, put the robot to sleep and switch it off"
+    (( ${#units[@]} )) && echo "  stop, disable and remove the user units: ${units[*]}"
+    (( ${#ports[@]} )) && echo "  remove the tailnet HTTPS ports: ${ports[*]} (needs sudo)"
+    for value in "${udev[@]}"; do echo "  remove the udev rules $value (needs sudo)"; done
+    for value in "${groups[@]}"; do echo "  remove $USER from the $value group (needs sudo)"; done
+    (( linger )) && echo "  disable lingering for $USER (needs sudo)"
+    for value in "${gst[@]}"; do echo "  restore the GStreamer plugin ${value%%$'\t'*} from ${value#*$'\t'}"; done
+    for value in "${dirs[@]}"; do
+        if (( keep )) && [[ $value == "$dest" ]]; then
+            echo "  remove $value, except ${kept[*]} (installed apps)"
+        else
+            echo "  remove $value"
+        fi
+    done
+    if [[ -n $state ]]; then
+        if (( keep )); then echo "  keep $state (settings, paired devices, logs)"; else echo "  remove $state (settings, paired devices, logs)"; fi
+    fi
+    for value in "${files[@]}"; do echo "  remove $value"; done
+    (( dry )) && { echo "(dry run: nothing changed)"; return 0; }
+
+    if (( ! yes )); then
+        [[ -t 0 ]] || die "not a terminal; pass --yes to uninstall"
+        read -r -p "Uninstall? [y/N] " arg
+        [[ $arg == [yY]* ]] || die "nothing changed"
+    fi
+
+    # Asks the daemon over HTTP rather than systemd: a daemon that is up
+    # outside the unit still gets its robot put to sleep.
+    robot_down
+
+    echo "== Removing the services"
+    for value in "${units[@]}"; do
+        systemctl --user disable --now "$value" 2>/dev/null ||
+            echo "warning: couldn't stop or disable $value" >&2
+        rm -f "$unit_dir/$value"
+        [[ -d $unit_dir/$value.d ]] && echo "note: left your drop-ins in $unit_dir/$value.d"
+    done
+    systemctl --user daemon-reload || echo "warning: systemctl --user daemon-reload failed" >&2
+    systemctl --user reset-failed "${units[@]}" 2>/dev/null || true
+
+    for value in "${ports[@]}"; do
+        tailscale_serve --https="$value" off ||
+            echo "warning: couldn't remove tailnet port $value; run: sudo tailscale serve --https=$value off"
+    done
+
+    if (( ${#udev[@]} )); then
+        for value in "${udev[@]}"; do sudo rm -f "$value"; done
+        sudo udevadm control --reload-rules && sudo udevadm trigger || true
+    fi
+    for value in "${groups[@]}"; do
+        sudo gpasswd -d "$USER" "$value" || echo "warning: couldn't remove $USER from $value"
+    done
+    (( linger )) && { sudo loginctl disable-linger "$USER" || echo "warning: couldn't disable lingering"; }
+    for value in "${gst[@]}"; do
+        local plugin=${value%%$'\t'*} backup=${value#*$'\t'}
+        if [[ -f $backup ]]; then
+            as_owner "$plugin" mv -f "$backup" "$plugin"
+        else
+            echo "warning: no backup at $backup; left $plugin in place"
+        fi
+    done
+
+    echo "== Removing files"
+    for value in "${dirs[@]}"; do
+        safe_path "$value" || { echo "warning: skipped $value (outside $HOME)"; continue; }
+        # A linked dir (an install moved to another disk) is emptied through
+        # the link, but only if it holds an install: a link to a whole disk
+        # or a shared folder only loses the link.
+        local inside=1
+        if [[ -L $value && ! -e $value/.venv && ! -e $value/install-manifest && ! -e $value/bin/reachy-controller ]]; then
+            inside=0
+            echo "note: $value links to $(readlink -- "$value"), which doesn't look like an install; left its contents alone"
+        fi
+        if (( keep )) && [[ $value == "$dest" ]]; then
+            (( inside )) && find -H "$value" -mindepth 1 -maxdepth 1 ! -name "${kept[0]}" ! -name "${kept[1]}" -exec rm -rf {} +
+        else
+            [[ -L $value ]] && (( inside )) && find -H "$value" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+            rm -rf "$value"
+        fi
+    done
+    (( keep )) || [[ -z $state ]] || rm -rf "$state"
+    for value in "${files[@]}"; do
+        safe_path "$value" && rm -f "$value"
+    done
+
+    echo
+    echo "reachy-bridge is uninstalled. Left in place, to remove by hand if you want:"
+    echo "  Tailscale, and any other tailnet ports (tailscale serve status)"
+    echo "  apt packages installed for it (GStreamer, libssl-dev, pkg-config)"
+    echo "  the Hugging Face cache (~/.cache/huggingface), uv, Rust and Bun"
+    echo "  the source checkout, if you installed from one"
+    (( keep )) && echo "  kept: ${kept[*]/#/$dest/} and ${state:-the state dir}, for a later reinstall"
+    return 0
+}
+
 cmd=${1:-status}
 shift || true
 force=0
+admin=0
+person=""
 args=()
 for arg in "$@"; do
-    if [[ $arg == --force ]]; then force=1; else args+=("$arg"); fi
+    if [[ $arg == --force ]]; then force=1
+    elif [[ $arg == --admin && $cmd == pair ]]; then admin=1
+    elif [[ $arg == --person=* && $cmd == pair ]]; then person=${arg#--person=}
+    else args+=("$arg"); fi
 done
 
 case "$cmd" in
     status)
-        systemctl --user --no-pager --lines=0 status $DAEMON $CONTROLLER || true
+        systemctl --user --no-pager --lines=0 status $DAEMON $CONTROLLER $SIM || true
         echo "robot: $(robot_state)"
         ;;
     start)
         units_for "${args[0]:-all}"
+        refuse_during_sim
         systemctl --user start "${UNITS[@]}"
         ;;
     stop)
@@ -132,6 +493,7 @@ case "$cmd" in
         ;;
     restart)
         units_for "${args[0]:-all}"
+        refuse_during_sim
         if [[ " ${UNITS[*]} " == *" $DAEMON "* ]] && (( ! force )) && [[ $(robot_power) != off ]]; then
             die "the robot isn't confirmed off ($(robot_state)); turn it off first, or pass --force"
         fi
@@ -141,6 +503,7 @@ case "$cmd" in
         case "${args[0]:-daemon}" in
             daemon) unit=$DAEMON ;;
             controller) unit=$CONTROLLER ;;
+            sim) unit=$SIM ;;
             *) die "unknown service '${args[0]}'" ;;
         esac
         # --user-unit reads the system journal, where user services log when
@@ -168,13 +531,27 @@ case "$cmd" in
         esac
         ;;
     pair)
-        [[ ${args[0]:-} =~ ^[0-9]{6}$ ]] || die "usage: reachy-bridge pair <6-digit code> [name]"
+        [[ ${args[0]:-} =~ ^[0-9]{6}$ ]] || die "usage: reachy-bridge pair [--admin] [--person=<who>] <6-digit code> [name]"
         body="{\"code\": \"${args[0]}\""
         [[ -n ${args[1]:-} ]] && body+=", \"name\": $(json_string "${args[*]:1}")"
+        # Control time is granted per person (#221); it defaults to the name.
+        [[ -n $person ]] && body+=", \"person\": $(json_string "$person")"
+        if (( admin )); then
+            # Only the local key approves an admin.
+            [[ -r $STATE_DIR/controller.key ]] ||
+                die "can't read $STATE_DIR/controller.key: run this on the robot, as the user the bridge runs as"
+            body+=', "role": "admin"'
+        fi
         reply=$(controller_api POST /api/auth/approve -H 'Content-Type: application/json' --data "$body}")
         peer=${reply#*\"peer\":\"}
         [[ $peer == "$reply" ]] && peer="?" || peer=${peer%%\"*}
-        echo "approved the browser at $peer; it logs in within a few seconds"
+        if (( admin )); then
+            echo "approved the browser at $peer as the admin; it logs in within a few seconds"
+            echo "every other browser, tailnet included, now needs a code approved by you;"
+            echo "browsers paired before an admin existed were logged out"
+        else
+            echo "approved the browser at $peer; it logs in within a few seconds"
+        fi
         ;;
     devices)
         case "${args[0]:-list}" in
@@ -188,7 +565,9 @@ if not devices:
     print("no paired devices")
 for n, d in enumerate(devices, 1):
     seen = time.strftime("%Y-%m-%d %H:%M", time.localtime(d["last_seen"]))
-    print("%d  %s  %s  (last seen %s from %s)" % (n, d["id"], d["name"], seen, d["peer"]))
+    who = d.get("person") or d["name"]
+    role = " [admin]" if d.get("role") == "admin" else ""
+    print("%d  %s  %s, %s%s  (last seen %s from %s)" % (n, d["id"], d["name"], who, role, seen, d["peer"]))
 ' "$list"
                 else
                     echo "$list"
@@ -218,12 +597,28 @@ if 1 <= n <= len(devices):
             *) die "devices takes list or revoke <n|id>" ;;
         esac
         ;;
+    deploy)
+        # Exit from inside the case: install.sh replaces this file, and bash
+        # would otherwise read on from the new one.
+        (( ${#args[@]} == 1 && ! force )) && [[ ${args[0]} != -* ]] || die "usage: reachy-bridge deploy <tag>"
+        deploy_tag "${args[0]}"
+        exit
+        ;;
+    uninstall)
+        # Exit from inside the case: this removes the file bash is reading.
+        (( ! force )) || die "usage: reachy-bridge uninstall [--keep-data] [--dry-run] [--yes]"
+        uninstall_bridge "${args[@]}"
+        exit
+        ;;
+    check)
+        exec "$HOME/.local/share/reachy-bridge/.venv/bin/reachy-bridge-runtime" --doctor "${args[@]}"
+        ;;
     robot-power)
         # For install.sh: off, on or unknown (see robot_power).
         robot_power
         ;;
     -h|--help|help)
-        sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         die "unknown command '$cmd' (try: reachy-bridge help)"

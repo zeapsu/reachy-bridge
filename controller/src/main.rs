@@ -4,16 +4,19 @@
 //! Environment: `DAEMON_URL` (default `http://127.0.0.1:8000`),
 //! `DAEMON_TIMEOUT` seconds (2), `CONTROLLER_HOST` (127.0.0.1),
 //! `CONTROLLER_PORT` (7861), `CONTROLLER_APP_PORT` (7863: the running app's
-//! UI proxy, always on loopback), `REACHY_DAEMON_UNIT`
+//! UI proxy, on loopback, or every interface in LAN mode), `REACHY_DAEMON_UNIT`
 //! (`reachy-bridge.service`), `REACHY_BRIDGE_STATE_DIR`, `RUST_LOG` (info).
-//! `CONTROLLER_LAN=1` serves the dashboard on every interface behind a device
-//! login; `CONTROLLER_TRUST_TAILNET=0` makes loopback peers log in too (#141).
+//! `SIM_DAEMON_URL` (`http://127.0.0.1:8001`) and `SIM_DAEMON_UNIT`
+//! (`reachy-bridge-sim.service`) for sim mode (#149).
+//! `CONTROLLER_LAN=1` serves the dashboard and the app UI proxy on every
+//! interface behind a device login; `CONTROLLER_TRUST_TAILNET=0` makes loopback peers log in too (#141).
 
 use std::time::Duration;
 
 use reachy_controller::auth::AuthConfig;
 use reachy_controller::daemon::Daemon;
 use reachy_controller::logs::{follow_journal, ControllerLogLayer, LogBroker};
+use reachy_controller::sim::SimMode;
 use reachy_controller::state::{state_dir, AppState};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -72,7 +75,10 @@ async fn main() -> std::io::Result<()> {
     let daemon = Daemon::new(&daemon_url, Duration::from_secs_f64(timeout));
     let auth = AuthConfig::from_env();
     let lan = auth.lan;
-    let state = AppState::with_auth(daemon, logs.clone(), state_dir, Duration::from_millis(300), auth);
+    let sim = SimMode::from_env(&daemon_url);
+    let sim_url = sim.sim_url().to_string();
+    let state = AppState::with_sim(daemon, logs.clone(), state_dir, Duration::from_millis(300), auth, sim);
+    tokio::spawn(reachy_controller::sim::stop_leftover(state.clone()));
     tokio::spawn(reachy_controller::datasets::prefetch(state.clone()));
     tokio::spawn(follow_journal(logs, env_or("REACHY_DAEMON_UNIT", "reachy-bridge.service")));
 
@@ -86,12 +92,18 @@ async fn main() -> std::io::Result<()> {
     } else if std::env::var("CONTROLLER_TRUST_TAILNET").is_ok_and(|v| !v.trim().is_empty()) {
         tracing::warn!("CONTROLLER_TRUST_TAILNET only applies with CONTROLLER_LAN=1; ignoring it");
     }
-    // The app UI proxy (#158) binds loopback only, whatever CONTROLLER_HOST says.
-    let app_address = format!("127.0.0.1:{}", env_or("CONTROLLER_APP_PORT", "7863"));
+    // The app UI proxy (#158): loopback only, or every interface with the
+    // dashboard in LAN mode, behind the same login. Apps themselves stay on
+    // loopback (the runtime's app_bind), so it is the LAN's only way to them (#186).
+    let app_host = if lan { host.as_str() } else { "127.0.0.1" };
+    let app_address = format!("{app_host}:{}", reachy_controller::app_proxy::http_port());
     // A busy port costs the app UIs over HTTPS, not the dashboard.
     let app_listener = match tokio::net::TcpListener::bind(&app_address).await {
         Ok(app_listener) => {
             tracing::info!("app UI proxy listening on http://{app_address}");
+            if let Ok(address) = app_listener.local_addr() {
+                reachy_controller::app_proxy::set_listening(address.port());
+            }
             Some(app_listener)
         }
         Err(error) => {
@@ -104,9 +116,15 @@ async fn main() -> std::io::Result<()> {
     // both listeners 3 s, then return.
     // Ports the app proxy never forwards to, whatever an app's URL says: the
     // controller's own and the daemon's.
-    let mut own_ports = vec![listener.local_addr()?.port()];
+    let dashboard_port = listener.local_addr()?.port();
+    let mut own_ports = vec![dashboard_port];
     own_ports.extend(app_listener.as_ref().and_then(|l| l.local_addr().ok()).map(|a| a.port()));
-    own_ports.extend(reqwest::Url::parse(&daemon_url).ok().and_then(|url| url.port_or_known_default()));
+    for url in [&daemon_url, &sim_url] {
+        own_ports.extend(reqwest::Url::parse(url).ok().and_then(|url| url.port_or_known_default()));
+    }
+    // Nor the daemon's WebRTC signalling: it is on loopback so the LAN can't
+    // reach it, and an app's manifest mustn't re-expose it through here (#186).
+    own_ports.push(reachy_controller::app_proxy::SIGNALLING_PORT);
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
         let _ = rx.wait_for(|stop| *stop).await;
@@ -114,7 +132,7 @@ async fn main() -> std::io::Result<()> {
     let app = reachy_controller::app(state.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>();
     let server = axum::serve(listener, app).with_graceful_shutdown(stopped(stop_rx.clone()));
     let app_server = app_listener.map(|app_listener| {
-        let app_proxy = reachy_controller::app_proxy::router(state, &own_ports)
+        let app_proxy = reachy_controller::app_proxy::router(state, dashboard_port, &own_ports)
             .into_make_service_with_connect_info::<std::net::SocketAddr>();
         axum::serve(app_listener, app_proxy).with_graceful_shutdown(stopped(stop_rx.clone()))
     });
