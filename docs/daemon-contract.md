@@ -134,6 +134,16 @@ Backend: `daemon/backend/abstract.py`; endpoints:
 - `POST /api/move/goto` and the play endpoints return a move UUID;
   `GET /api/move/running` lists the UUIDs still running, and
   `POST /api/move/stop` cancels one.
+- Sounds: `Backend.play_sound(file)` (wake-up, sleep, a recorded move's
+  sound, `volume/test-sound`, `media/play_sound`) hands the file to the media
+  server: the path as given, else the name under the package's `assets/`.
+  Move sounds are absolute paths into the dataset's Hugging Face cache. With
+  `--no-media` there is no media server and nothing plays. **Bridge feature**
+  (`features/sim_sounds.py`, sim daemons only, #219): every `play_sound` and
+  `stop_sound` is recorded; `GET /api/bridge/sounds` lists the latest events
+  and `GET /api/bridge/sounds/{token}` serves a played file by the random
+  token its event names. The controller relays them to the dashboard in sim
+  mode (`/api/sim/sounds-stream`, `/api/sim/sounds/{token}`).
 - **REST moves are not serialized.** `play_move`'s guard (`_play_move_lock`)
   is a re-entrant `threading.RLock`, and every REST move runs on the same
   event-loop thread, so two `move/play/wake_up` calls both run and write

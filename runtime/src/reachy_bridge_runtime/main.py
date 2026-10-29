@@ -19,7 +19,7 @@ import logging
 import sys
 
 from reachy_bridge_runtime import platforms, upstream
-from reachy_bridge_runtime.features import app_bind, keep_awake, kinematics, media, platform_info, sim_apps
+from reachy_bridge_runtime.features import app_bind, keep_awake, kinematics, media, platform_info, sim_apps, sim_sounds
 
 logger = logging.getLogger("reachy_bridge_runtime")
 
@@ -32,6 +32,7 @@ FEATURES = {
     "audio_levels": media.apply_audio_spectrum,
     "camera": media.apply_camera_stream,
     sim_apps.FEATURE: lambda: sim_apps.apply(sys.argv[1:]),
+    sim_sounds.FEATURE: sim_sounds.apply,
 }
 # On every platform; the rest only where the platform adapter enables them.
 CORE_FEATURES = frozenset({app_bind.FEATURE, keep_awake.FEATURE, kinematics.FEATURE})
@@ -40,18 +41,19 @@ CORE_FEATURES = frozenset({app_bind.FEATURE, keep_awake.FEATURE, kinematics.FEAT
 # daemon's apps would drive the real robot (#218).
 FATAL_FEATURES = frozenset({app_bind.FEATURE, sim_apps.FEATURE})
 # Features that add routes to the daemon app, so need the "routes" hooks.
-ROUTE_FEATURES = frozenset({kinematics.FEATURE, "audio_levels", "camera"})
+ROUTE_FEATURES = frozenset({kinematics.FEATURE, "audio_levels", "camera", sim_sounds.FEATURE})
 # Features that read the daemon's media; off under --no-media.
 MEDIA_FEATURES = frozenset({"audio_levels", "camera"})
 
 
 def for_daemon_args(platform: platforms.Platform, args: list[str]) -> platforms.Platform:
     """The platform as this daemon uses it. A sim daemon (sim mode, #149)
-    runs beside the robot's, so it leaves the host's audio setup alone and,
-    when it runs apps, keeps them off the robot (#218); a --no-media daemon
-    has no media for the media features to read."""
+    runs beside the robot's, so it leaves the host's audio setup alone, hands
+    its sounds to the dashboard (#219) and, when it runs apps, keeps them off
+    the robot (#218); a --no-media daemon has no media for the media features
+    to read."""
     if "--sim" in args or "--mockup-sim" in args:
-        platform = dataclasses.replace(platform, host_setup=())
+        platform = dataclasses.replace(platform, host_setup=(), features=platform.features | {sim_sounds.FEATURE})
         if "--desktop-app-daemon" in args or "--wireless-version" in args:
             platform = dataclasses.replace(platform, features=platform.features | {sim_apps.FEATURE})
     if "--no-media" in args:

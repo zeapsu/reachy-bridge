@@ -257,6 +257,19 @@ REQUIREMENTS: tuple[Requirement, ...] = (
             _function("reachy_mini.media.audio_utils", "write_asoundrc_to_home")(),
         ),
     ),
+    Requirement(
+        "sim_sounds",
+        "Backend.play_sound(sound_file) and Backend.stop_sound()",
+        lambda: (
+            _function(_BACKEND, "Backend.play_sound", "sound_file")(),
+            _function(_BACKEND, "Backend.stop_sound")(),
+        ),
+    ),
+    Requirement(
+        "sim_sounds",
+        "ASSETS_ROOT_PATH, where play_sound looks up a bare file name",
+        lambda: _attr("reachy_mini.utils.constants", "ASSETS_ROOT_PATH"),
+    ),
 )
 
 
@@ -517,3 +530,29 @@ def ensure_reachymini_asoundrc() -> bool:
         return False
     write_asoundrc_to_home()
     return True
+
+
+def wrap_play_sound(wrapper: Callable[..., None]) -> None:
+    """Replace ``Backend.play_sound`` with ``wrapper(original, backend, sound_file)``."""
+    from reachy_mini.daemon.backend.abstract import Backend
+
+    _wrap(Backend, "play_sound", wrapper)
+
+
+def wrap_stop_sound(wrapper: Callable[..., None]) -> None:
+    """Replace ``Backend.stop_sound`` with ``wrapper(original, backend)``."""
+    from reachy_mini.daemon.backend.abstract import Backend
+
+    _wrap(Backend, "stop_sound", wrapper)
+
+
+def sound_path(sound_file: str) -> Path | None:
+    """The file ``play_sound(sound_file)`` plays, resolved as the media server
+    does (the path as given, else the name under the assets folder); None if
+    neither exists."""
+    from reachy_mini.utils.constants import ASSETS_ROOT_PATH
+
+    for candidate in (Path(sound_file), Path(ASSETS_ROOT_PATH) / sound_file):
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
