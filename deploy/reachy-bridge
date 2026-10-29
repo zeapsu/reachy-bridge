@@ -3,6 +3,7 @@
 # Replaces the old reachy-up / reachy-down shell functions (#130).
 #
 #   reachy-bridge status
+#   reachy-bridge check [--json]          can this device run the bridge and the robot?
 #   reachy-bridge start | stop | restart [daemon|controller|sim]   (default: daemon and controller)
 #   reachy-bridge logs [daemon|controller|sim]
 #   reachy-bridge serve [on|off|status]
@@ -609,12 +610,15 @@ if 1 <= n <= len(devices):
         uninstall_bridge "${args[@]}"
         exit
         ;;
+    check)
+        exec "$HOME/.local/share/reachy-bridge/.venv/bin/reachy-bridge-runtime" --doctor "${args[@]}"
+        ;;
     robot-power)
         # For install.sh: off, on or unknown (see robot_power).
         robot_power
         ;;
     -h|--help|help)
-        sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         die "unknown command '$cmd' (try: reachy-bridge help)"

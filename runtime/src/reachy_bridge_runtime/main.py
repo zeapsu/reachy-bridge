@@ -2,6 +2,7 @@
 
     reachy-bridge-runtime [daemon args...]   start the daemon (args go to it)
     reachy-bridge-runtime --check            verify the upstream seam and exit
+    reachy-bridge-runtime --doctor [--json]  check this device can run the bridge (#135)
 
 Patches are applied in-process and never edit the bridge's venv (``app_bind``
 writes a small loopback shim into the separate apps venv). At startup a feature
@@ -121,6 +122,10 @@ def report_platform(platform: platforms.Platform, skipped: list[str], routes_ok:
 def main() -> int:
     if "--check" in sys.argv[1:]:
         return check()
+    if "--doctor" in sys.argv[1:]:
+        from reachy_bridge_runtime import doctor
+
+        return doctor.main(sys.argv[1:])
     logging.basicConfig(level=logging.INFO)
     platform = for_daemon_args(platforms.detect(), sys.argv[1:])
     logger.info(
