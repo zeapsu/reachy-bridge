@@ -25,9 +25,12 @@ export function talkBlocked(secure: boolean, hasMic: boolean): string | null {
 const doing = (s: VoiceSession) =>
   s.listen && s.talk ? "listening and talking" : s.talk ? "talking" : s.listen ? "listening" : "connected, muted";
 
+/** The open session is this browser's: its login's, or the one it opened (`mine`). */
+export const isMine = (s: VoiceSession, mine: string | null) => s.you || (mine !== null && s.id === mine);
+
 /** The mic-live badge every dashboard shows, or null with no session. */
-export function voiceBadge(view: VoiceView | null): string | null {
+export function voiceBadge(view: VoiceView | null, mine: string | null): string | null {
   const s = view?.session;
   if (!s) return null;
-  return s.you ? `You're ${doing(s)}` : `${s.person || "Someone"} is ${doing(s)}`;
+  return isMine(s, mine) ? `You're ${doing(s)}` : `${s.person || "Someone"} is ${doing(s)}`;
 }

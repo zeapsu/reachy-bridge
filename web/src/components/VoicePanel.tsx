@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { VoiceApi } from "../hooks/useVoice.ts";
 import type { ControlState } from "../logic/control.ts";
-import { talkBlocked, voiceBadge, voiceBlocked } from "../logic/voice.ts";
+import { isMine, talkBlocked, voiceBadge, voiceBlocked } from "../logic/voice.ts";
 import "./VoicePanel.css";
 
 const secure = typeof window !== "undefined" && window.isSecureContext;
@@ -18,7 +18,8 @@ export function VoicePanel({ voice, control }: { voice: VoiceApi; control: Contr
   const blocked = voiceBlocked(voice.view, control);
   const noTalk = talkBlocked(secure, hasMic);
   const route = open ? voice.route : wanted;
-  const other = voice.view?.session && !voice.view.session.you ? voiceBadge(voice.view) : null;
+  const session = voice.view?.session;
+  const other = session && !isMine(session, voice.mine) ? voiceBadge(voice.view, voice.mine) : null;
 
   const flip = (key: "listen" | "talk") => {
     const next = { ...route, [key]: !route[key] };

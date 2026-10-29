@@ -141,16 +141,19 @@ pub fn router() -> Router<Shared> {
         .route("/api/audio/session/{id}/route", post(route))
 }
 
-/// The open session, for every dashboard's mic-live indicator.
+/// The open session, for every dashboard's mic-live indicator. Only its
+/// owner gets the id; without logins (no device) every browser is equally
+/// trusted, so all get it and each tells its own by the id it opened.
 async fn view(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>) -> Json<Value> {
     let session = state.audio.owner().map(|o| {
+        let you = o.device.is_some() && o.device == ctx.device;
         json!({
-            "id": if o.device == ctx.device { Some(o.id.clone()) } else { None },
+            "id": if you || o.device.is_none() { Some(o.id.clone()) } else { None },
             "person": o.person,
             "listen": o.listen,
             "talk": o.talk,
             "since": o.since,
-            "you": o.device == ctx.device,
+            "you": you,
         })
     });
     Json(json!({"available": !state.sim.active(), "session": session}))

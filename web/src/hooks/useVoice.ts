@@ -6,6 +6,8 @@ export type VoiceStatus = "off" | "connecting" | "live";
 
 export interface VoiceApi {
   view: VoiceView | null;
+  /** The id of the session this browser opened, or null. */
+  mine: string | null;
   status: VoiceStatus;
   /** What this browser asked for; meaningful while a session is open. */
   route: VoiceRoute;
@@ -50,6 +52,7 @@ export function useVoice(visible: boolean): VoiceApi {
   const [route, setRouteState] = useState<VoiceRoute>(OFF);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [mine, setMine] = useState<string | null>(null);
   const pc = useRef<RTCPeerConnection | null>(null);
   const id = useRef<string | null>(null);
   // When `id` was set: a poll sent before then can't know the session.
@@ -64,6 +67,7 @@ export function useVoice(visible: boolean): VoiceApi {
     mic.current = null;
     if (speaker.current) speaker.current.srcObject = null;
     id.current = null;
+    setMine(null);
     setStatus("off");
     setRouteState(OFF);
     if (why) setError(why);
@@ -118,6 +122,7 @@ export function useVoice(visible: boolean): VoiceApi {
           const { id: sid, offer } = await apiJson<VoiceOffer>(paths.voiceSession, { method: "POST", body: JSON.stringify(next) });
           opened = sid;
           id.current = sid;
+          setMine(sid);
           openedAt.current = performance.now();
           setStatus("connecting");
           setRouteState(next);
@@ -189,5 +194,5 @@ export function useVoice(visible: boolean): VoiceApi {
     [run, teardown],
   );
 
-  return { view, status, route, error, busy, start, setRoute, stop };
+  return { view, mine, status, route, error, busy, start, setRoute, stop };
 }

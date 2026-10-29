@@ -36,10 +36,16 @@ describe("talkBlocked", () => {
 
 describe("voiceBadge", () => {
   test("says who is live and how", () => {
-    expect(voiceBadge({ available: true, session: null })).toBeNull();
-    expect(voiceBadge({ available: true, session: session() })).toBe("Sam is listening");
-    expect(voiceBadge({ available: true, session: session({ talk: true, you: true }) })).toBe("You're listening and talking");
-    expect(voiceBadge({ available: true, session: session({ listen: false, talk: true, person: null }) })).toBe("Someone is talking");
-    expect(voiceBadge({ available: true, session: session({ listen: false }) })).toBe("Sam is connected, muted");
+    expect(voiceBadge({ available: true, session: null }, null)).toBeNull();
+    expect(voiceBadge({ available: true, session: session() }, null)).toBe("Sam is listening");
+    expect(voiceBadge({ available: true, session: session({ talk: true, you: true }) }, null)).toBe("You're listening and talking");
+    expect(voiceBadge({ available: true, session: session({ listen: false, talk: true, person: null }) }, null)).toBe("Someone is talking");
+    expect(voiceBadge({ available: true, session: session({ listen: false }) }, null)).toBe("Sam is connected, muted");
+  });
+  test("without logins, tells this browser's session by its id", () => {
+    const open = session({ id: "s1", person: null });
+    expect(voiceBadge({ available: true, session: open }, "s1")).toBe("You're listening");
+    expect(voiceBadge({ available: true, session: open }, null)).toBe("Someone is listening");
+    expect(voiceBadge({ available: true, session: open }, "s0")).toBe("Someone is listening");
   });
 });

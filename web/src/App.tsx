@@ -160,7 +160,7 @@ function Dashboard() {
           daemonOnline={daemonOnline}
           activeApp={active ? active.display || active.name : null}
           sim={sim.target === "sim"}
-          voice={voiceBadge(voice.view)}
+          voice={voiceBadge(voice.view, voice.mine)}
         />
 
         <main className={`view robot${pane === "drive" ? " driving" : ""}`} id="view-robot" role="tabpanel" hidden={tab !== "robot"} aria-label="Robot">
