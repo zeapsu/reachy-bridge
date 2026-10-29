@@ -48,13 +48,17 @@ const APP_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 /// queued, it would hold every new action (power off included) behind them.
 const SWITCH_WAIT: Duration = Duration::from_secs(3);
 /// The volume and sound routes: the sim daemon would set the host's real
-/// speaker and microphone.
+/// speaker and microphone (except [`SIM_SOUNDS`]).
 /// The Hugging Face login is the host's, shared with the robot's daemon.
 const SIM_REFUSED: [(&str, &str); 3] = [
     ("/api/volume/", "Sound is off in sim mode"),
     ("/api/media/", "Sound is off in sim mode"),
     ("/api/hf/token", "Sign in to Hugging Face from the robot, not the simulation"),
 ];
+
+/// Sound routes that only play or stop a sound: with no media the sim daemon
+/// plays nothing on the host, and the dashboard plays it instead (#219).
+const SIM_SOUNDS: [&str; 3] = ["/api/volume/test-sound", "/api/media/play_sound", "/api/media/stop-sound"];
 
 pub struct SimMode {
     robot_url: String,
@@ -325,6 +329,7 @@ pub async fn guard(State(state): State<Shared>, request: Request, next: Next) ->
             return ApiError::new(409, detail).into_response();
         }
         if state.sim.active()
+            && !SIM_SOUNDS.contains(&path)
             && let Some((_, detail)) = SIM_REFUSED.iter().find(|(prefix, _)| path.starts_with(prefix))
         {
             return ApiError::new(409, *detail).into_response();

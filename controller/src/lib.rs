@@ -46,6 +46,7 @@ pub fn app(state: Shared) -> Router {
         .merge(routes::store::router())
         .merge(auth::router())
         .merge(sim::router())
+        .merge(routes::sounds::router())
         .fallback(routes::assets::serve)
         .layer(middleware::from_fn_with_state(state.clone(), sim::guard))
         .layer(middleware::from_fn_with_state(state.clone(), auth::guard))

@@ -195,3 +195,43 @@ async fn the_robots_daemon_is_stopped_for_the_whole_of_sim_mode() {
         vec!["--user stop robot.service", "--user start sim.service", "--user stop sim.service", "--user start robot.service"]
     );
 }
+
+async fn raw(s: &Sim, uri: &str) -> (StatusCode, String, Vec<u8>) {
+    let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    let response = reachy_controller::app(s.h.state.clone()).oneshot(request).await.unwrap();
+    let status = response.status();
+    let content_type =
+        response.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, content_type, bytes.to_vec())
+}
+
+#[tokio::test]
+async fn sim_sounds_are_served_only_in_sim_mode() {
+    let s = sim_harness(|_| {}).await;
+    let file = format!("/api/sim/sounds/{SOUND_TOKEN}");
+    // The robot's sounds stay on the robot.
+    assert_eq!(raw(&s, &file).await.0, StatusCode::CONFLICT);
+    assert_eq!(raw(&s, "/api/sim/sounds-stream").await.0, StatusCode::CONFLICT);
+
+    s.h.call("POST", "/api/sim/enter", None).await;
+    let (status, content_type, body) = raw(&s, &file).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type, "audio/x-wav");
+    assert_eq!(body, b"RIFF");
+    assert_eq!(raw(&s, &format!("/api/sim/sounds/{}", "f".repeat(32))).await.0, StatusCode::NOT_FOUND);
+    // Not a token: never forwarded.
+    assert_eq!(raw(&s, "/api/sim/sounds/..%2F..%2Fdaemon").await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_test_sound_plays_in_the_browser_in_sim_mode() {
+    let s = sim_harness(|_| {}).await;
+    s.h.call("POST", "/api/sim/enter", None).await;
+    let (status, _) = s.h.call("POST", "/api/volume/test-sound", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(calls(&s.sim).contains(&"test-sound".to_string()));
+    // Setting the volume still is refused: it would set the host's speaker.
+    let (status, _) = s.h.call("POST", "/api/volume/set", Some(json!({"volume": 10}))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}

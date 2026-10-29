@@ -80,7 +80,7 @@ async fn system_stats() -> Json<Value> {
 type EventStream = Response;
 
 /// Map each sample to an event (or skip it), with a 15 s keepalive comment.
-fn sse(
+pub(crate) fn sse(
     rx: tokio::sync::watch::Receiver<Sample>,
     to_event: fn(&Value) -> Option<Event>,
 ) -> EventStream {
@@ -128,6 +128,8 @@ pub struct Streams {
     pub state: Arc<streams::LazyStream>,
     pub audio: Arc<streams::LazyStream>,
     pub stats: Arc<streams::LazyStream>,
+    /// The sim's sound events (#219).
+    pub sounds: Arc<streams::LazyStream>,
 }
 
 impl Default for Streams {
@@ -136,6 +138,7 @@ impl Default for Streams {
             state: streams::LazyStream::new(false),
             audio: streams::LazyStream::new(true),
             stats: streams::LazyStream::new(false),
+            sounds: streams::LazyStream::new(true),
         }
     }
 }

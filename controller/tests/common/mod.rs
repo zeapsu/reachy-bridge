@@ -10,6 +10,7 @@ pub use std::time::Duration;
 pub use axum::body::Body;
 pub use axum::extract::{Path, Query, State};
 pub use axum::http::{Request, StatusCode};
+pub use axum::response::IntoResponse;
 pub use axum::routing::{get, post};
 pub use axum::{Json, Router};
 pub use reachy_controller::daemon::Daemon;
@@ -37,6 +38,9 @@ pub struct Fake {
 }
 
 pub type FakeState = Arc<Mutex<Fake>>;
+
+/// The one sound the fake daemon serves (#219).
+pub const SOUND_TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
 pub fn record(fake: &FakeState, call: impl Into<String>) {
     fake.lock().unwrap().calls.push(call.into());
@@ -177,6 +181,27 @@ pub async fn fake_daemon(fake: FakeState) -> String {
                     f.lock().unwrap().running_moves.push("home".into());
                 }
                 Json(json!({"uuid": "home"}))
+            }),
+        )
+        .route(
+            "/api/bridge/sounds",
+            get(|| async { Json(json!({"seq": 1, "events": [{"seq": 1, "kind": "play", "token": SOUND_TOKEN, "name": "wake_up.wav"}]})) }),
+        )
+        .route(
+            "/api/bridge/sounds/{token}",
+            get(|Path(token): Path<String>| async move {
+                if token == SOUND_TOKEN {
+                    ([("content-type", "audio/x-wav")], "RIFF").into_response()
+                } else {
+                    (StatusCode::NOT_FOUND, Json(json!({"detail": "No such sound"}))).into_response()
+                }
+            }),
+        )
+        .route(
+            "/api/volume/test-sound",
+            post(|State(f): State<FakeState>| async move {
+                record(&f, "test-sound");
+                Json(json!({"status": "ok"}))
             }),
         )
         .route(
