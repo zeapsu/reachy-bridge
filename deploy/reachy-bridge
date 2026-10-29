@@ -4,6 +4,7 @@
 #
 #   reachy-bridge status
 #   reachy-bridge check [--json]          can this device run the bridge and the robot?
+#   reachy-bridge setup                   open the setup page on the LAN (#135)
 #   reachy-bridge start | stop | restart [daemon|controller|sim|audio]   (default: daemon and controller)
 #   reachy-bridge logs [daemon|controller|sim|audio]
 #   reachy-bridge serve [on|off|status]
@@ -467,6 +468,116 @@ uninstall_bridge() {
     return 0
 }
 
+# setup: open the setup page and show its one-time code on this terminal
+# only. The code comes back in the controller's reply and goes nowhere else:
+# not the log, not a file, not a command line. Enter prints a new code (which
+# also unlocks the page after wrong tries); q, Ctrl-C or the end of input
+# closes the page.
+# A JSON string field from a controller reply, without control characters.
+json_field() {
+    local value=${1#*\""$2"\":\"}
+    [[ $value == "$1" ]] && return 0
+    value=${value%%\"*}
+    printf '%s' "${value//[[:cntrl:]]/}"
+}
+
+setup_close() {
+    # In a subshell, so a failing call (die) can't skip the rest of the cleanup.
+    (controller_api POST /api/setup/stop >/dev/null 2>&1) || true
+}
+
+setup_page() {
+    local reply code port host addresses i line rc state person name peer from detail asked=""
+    [[ -t 0 && -t 1 ]] || die "setup prints a one-time code and asks for confirmations; run it in a terminal"
+    [[ -r $STATE_DIR/controller.key ]] ||
+        die "can't read $STATE_DIR/controller.key: run this on the robot, as the user the bridge runs as"
+    # Right after an install the controller may still be starting.
+    for (( i = 0; i < 15; i++ )); do
+        curl -s -m 2 -o /dev/null "$CONTROLLER_URL/api/auth/status" && break
+        sleep 2
+    done
+    reply=$(controller_api POST /api/setup/start)
+    trap 'setup_close' EXIT
+    trap 'echo; echo "setup page closed"; exit 0' HUP INT TERM
+    port=${reply#*\"port\":}
+    port=${port%%[,\}]*}
+    host=$(hostname 2>/dev/null || echo robot)
+    addresses=$(hostname -I 2>/dev/null || true)
+    echo "Open the setup page from a computer or phone on the same network:"
+    echo "  http://${host%%.*}.local:$port"
+    for i in $addresses; do
+        [[ $i == *:* ]] && continue
+        echo "  http://$i:$port"
+    done
+    echo "While it is open the page listens on every network this device is on, even if"
+    echo "the dashboard is tailnet-only. It closes when setup finishes or you press q."
+    show_code() {
+        code=$(json_field "$reply" code)
+        [[ $code =~ ^[0-9]{6}$ ]] || die "the controller didn't return a setup code"
+        echo
+        echo "Code: ${code:0:3} ${code:3:3}   (single use, valid 15 minutes; it crosses the network unencrypted)"
+        echo "Enter: new code.  q: close the page."
+    }
+    show_code
+    while :; do
+        line=
+        rc=0
+        read -r -t 2 line || rc=$?
+        # A timeout is >128 (bash 3.2, macOS: 1, the same as end of input).
+        if (( rc == 1 && BASH_VERSINFO[0] >= 4 )); then
+            break  # end of input
+        elif (( rc == 0 )); then
+            [[ $line == q* ]] && break
+            state=$( (controller_api GET /api/setup/state) 2>/dev/null) || state=
+            if [[ $state == *'"in_use":true'* ]]; then
+                read -r -p "Someone is using the page. A new code logs them out. New code? [y/N] " line || break
+                [[ $line == [yY]* ]] || continue
+            fi
+            # A finished or expired page is reopened with a new code.
+            reply=$(controller_api POST /api/setup/start)
+            asked=
+            show_code
+            continue
+        fi
+        state=$( (controller_api GET /api/setup/state) 2>/dev/null) || state=
+        if [[ $state == *'"open":false'* ]]; then
+            echo
+            echo "The setup page closed (setup finished, or its time ran out)."
+            echo "Run reachy-bridge setup again to reopen it."
+            trap - EXIT
+            return 0
+        fi
+        [[ $state == *'"proposal":{'* ]] || { asked=; continue; }
+        person=$(json_field "${state#*\"proposal\":}" person)
+        name=$(json_field "${state#*\"proposal\":}" name)
+        peer=$(json_field "${state#*\"proposal\":}" peer)
+        from=$(json_field "${state#*\"proposal\":}" from)
+        [[ $asked == "$peer/$person/$name" ]] && continue
+        asked="$peer/$person/$name"
+        echo
+        if [[ $peer == 127.* || $peer == ::1 ]]; then
+            echo "The setup page (from $from) asks to make a dashboard reached through Tailscale the admin."
+        else
+            echo "The setup page (from $from) asks to make the dashboard at $peer the admin."
+        fi
+        echo "  person: '${person:-}'   device: '${name:-}'"
+        echo "The admin approves every other device and can take control of the robot."
+        line=
+        read -r -p "To approve, type the code your dashboard shows (Enter refuses): " line || break
+        reply=$( (controller_api POST /api/setup/confirm -H 'Content-Type: application/json' --data "{\"code\": $(json_string "$line")}") 2>&1) || true
+        if [[ $reply == *'"role":"admin"'* ]]; then
+            echo "Done: that dashboard is the admin."
+        elif [[ $reply == *'"status":"refused"'* ]]; then
+            detail=$(json_field "$reply" detail)
+            echo "Not approved: ${detail:-refused}. The setup page can ask again."
+        else
+            echo "Not approved: ${reply#reachy-bridge: }"
+        fi
+        asked=
+    done
+    echo "setup page closed"
+}
+
 cmd=${1:-status}
 shift || true
 force=0
@@ -614,6 +725,9 @@ if 1 <= n <= len(devices):
         uninstall_bridge "${args[@]}"
         exit
         ;;
+    setup)
+        setup_page
+        ;;
     check)
         exec "$HOME/.local/share/reachy-bridge/.venv/bin/reachy-bridge-runtime" --doctor "${args[@]}"
         ;;
@@ -622,7 +736,7 @@ if 1 <= n <= len(devices):
         robot_power
         ;;
     -h|--help|help)
-        sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         die "unknown command '$cmd' (try: reachy-bridge help)"

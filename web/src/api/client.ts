@@ -2,7 +2,15 @@
 
 import { LOGIN_REQUIRED_EVENT } from "../logic/auth.ts";
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  /** The HTTP status, when the error came from a response. */
+  constructor(
+    message: string,
+    readonly status = 0,
+  ) {
+    super(message);
+  }
+}
 
 let believedTarget: string | null = null;
 
@@ -50,7 +58,7 @@ export async function apiJson<T = unknown>(path: string, options: RequestInit = 
       payload && typeof payload === "object" && "detail" in payload
         ? (payload as { detail: unknown }).detail
         : `HTTP ${response.status}`;
-    throw new ApiError(String(detail));
+    throw new ApiError(String(detail), response.status);
   }
   return payload as T;
 }

@@ -147,3 +147,4 @@ if [[ $(loginctl show-user "$USER" -p Linger --value 2>/dev/null) != yes ]]; the
 fi
 echo
 echo "Done. Publish on the tailnet with: reachy-bridge serve"
+echo "Then run reachy-bridge setup: it checks the device and makes your dashboard the admin."
