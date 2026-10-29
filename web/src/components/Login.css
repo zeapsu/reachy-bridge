@@ -50,6 +50,18 @@
   padding: 1px 6px;
   white-space: nowrap;
 }
+/* The command to run: its own line, wrapping on a phone instead of
+   widening the card. */
+.login-note .login-cmd {
+  display: block;
+  margin: 6px 0;
+  padding: 6px 8px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+  -webkit-user-select: all;
+  user-select: all;
+}
 
 .login-error { color: var(--danger); }
 

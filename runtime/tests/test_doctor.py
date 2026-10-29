@@ -28,8 +28,10 @@ def fake_root(tmp_path: Path, ids: list[str], l4t: str | None = None, rule: str 
     return tmp_path
 
 
-def gst(version: str | None = "gst-inspect-1.0 version 1.24.2\nGStreamer 1.24.2\n", sink: str | None = WEBRTCSINK):
+def gst(version: str | None = "gst-inspect-1.0 version 1.24.2\nGStreamer 1.24.2\n", sink: str | None = WEBRTCSINK, nice: bool = True):
     def run(args: list[str]) -> str | None:
+        if args[-1] == "nicesrc":
+            return "Factory Details:\n  nicesrc\n" if nice and version is not None else None
         return version if args[-1] == "--version" else sink
 
     return run
@@ -60,13 +62,18 @@ def test_jetpack_reads_the_l4t_release(tmp_path: Path):
 
 
 def test_gstreamer_and_webrtcsink():
-    assert [r.status for r in doctor.gstreamer(gst())] == ["pass", "pass"]
-    assert [r.status for r in doctor.gstreamer(gst(sink=None))] == ["pass", "fail"]
+    assert [r.status for r in doctor.gstreamer(gst())] == ["pass", "pass", "pass"]
+    assert [r.status for r in doctor.gstreamer(gst(sink=None))] == ["pass", "fail", "pass"]
     # 0.13 and earlier have webrtcsink but no run-signalling-server.
     too_old = doctor.gstreamer(gst(sink="Factory Details:\n  webrtcsink\n"))[1]
     assert too_old.status == "fail" and "0.14" in too_old.detail
     assert doctor.gstreamer(gst(version="GStreamer 1.22.0\n"))[0].status == "fail"
-    assert [r.status for r in doctor.gstreamer(gst(version=None))] == ["fail", "skip"]
+    assert [r.status for r in doctor.gstreamer(gst(version=None))] == ["fail", "skip", "skip"]
+
+
+def test_libnice_is_required_for_webrtc():
+    nice = doctor.gstreamer(gst(nice=False))[2]
+    assert nice.status == "fail" and "gstreamer1.0-nice" in nice.detail
 
 
 def test_robot_usb_devices(tmp_path: Path):
