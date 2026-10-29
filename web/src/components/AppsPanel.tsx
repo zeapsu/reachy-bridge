@@ -69,7 +69,7 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps, catalog, manage
     state = (
       <span className="err">
         <span className="dot error"></span>
-        {app.error || "Error"}
+        <span>{app.error || "Error"}</span>
       </span>
     );
   } else {
