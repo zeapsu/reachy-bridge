@@ -680,3 +680,26 @@ async fn approvals_from_before_the_admin_cant_be_collected_after() {
     h.admin(LOOPBACK).await;
     assert_eq!(h.poll(&id, LOOPBACK, &pair_cookie).await.status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn only_an_admin_installs_apps_or_changes_the_token() {
+    let h = harness(AuthConfig::default()).await;
+    let admin = h.admin(LOOPBACK).await;
+    let member = h.paired_as(LAN, &[("cookie", &admin)], json!({"name": "phone"})).await;
+    for (method, uri) in [
+        ("POST", "/api/apps/install"),
+        ("POST", "/api/apps/install-private"),
+        ("POST", "/api/apps/update/some_app"),
+        ("POST", "/api/apps/remove/some_app"),
+        ("PUT", "/api/hf/token"),
+        ("DELETE", "/api/hf/token"),
+        ("PUT", "/api/daemon/kinematics"),
+    ] {
+        let r = h.call(method, uri, LAN, &[("cookie", &member)], Some(json!({}))).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{method} {uri}");
+        let r = h.call(method, uri, LOOPBACK, &[("cookie", &admin)], Some(json!({}))).await;
+        assert_ne!(r.status, StatusCode::FORBIDDEN, "{method} {uri} as admin: {:?}", r.body);
+    }
+    // Reads stay open to members.
+    assert_eq!(h.call("GET", "/api/logs/sources", LAN, &[("cookie", &member)], None).await.status, StatusCode::OK);
+}
