@@ -23,14 +23,15 @@ absolute paths.
 ## Running it without a robot
 
 ```bash
-uv run reachy-bridge-runtime --sim --headless --desktop-app-daemon --fastapi-port 8000
+uv run reachy-bridge-runtime --sim --headless --fastapi-port 8000
 (cd controller && cargo run --release)          # controller on 127.0.0.1:7861
 ```
 
 Then open <http://127.0.0.1:7861/>. The sim daemon runs Pollen's MuJoCo simulation.
-`--desktop-app-daemon` puts community apps in their own `apps_venv`; without it the
-runtime refuses to start apps, because it can't keep their web servers on loopback (#186).
-For UI work, `bun run dev` in `web/` serves the dashboard with hot reload and proxies the
+It can't start apps: the runtime only starts an app from a separate apps venv, where it
+can keep the app's web server on loopback (#186). `tools/sim/run.py` sets one up for its
+test apps (it runs the sim daemon with `--desktop-app-daemon` and
+`REACHY_BRIDGE_APPS_ROOT`), and so does the installed bridge's sim mode. For UI work, `bun run dev` in `web/` serves the dashboard with hot reload and proxies the
 API to the controller.
 
 The installed bridge also has a sim mode the dashboard switches to (#149); it runs a
@@ -47,8 +48,8 @@ CI runs these on every PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPac
 | shell | `shellcheck` on the scripts in `deploy/` and `tools/`, and `bash tools/test_uninstall.sh` |
 | sim | `uv run python tools/sim/run.py`: the controller against a sim daemon (see [`tools/sim/README.md`](tools/sim/README.md)) |
 
-Run the sim tests before asking for hardware QA. UI changes are checked in a headless
-browser against the sim stack, not by eye on the robot.
+Run the sim tests before asking for hardware QA. CI doesn't check the UI in a browser;
+check UI changes yourself in a headless browser against the sim stack.
 
 ## How the bridge fits together
 
@@ -58,8 +59,8 @@ browser against the sim stack, not by eye on the robot.
 - **`runtime/src/reachy_bridge_runtime/upstream.py`** is the only module that touches
   `reachy_mini` internals. Every symbol it relies on is listed in its `REQUIREMENTS`, and
   `reachy-bridge-runtime --check` verifies them against the installed version. A feature
-  whose requirements don't match is skipped at startup; `app_bind`, which keeps apps off the
-  LAN, stops startup instead.
+  whose requirements don't match is skipped at startup, except `app_bind` (which keeps
+  apps off the LAN) and `sim_apps`, which stop startup instead.
 - **`controller/`** is a Rust (axum) binary that embeds the dashboard from **`web/`** and
   exposes only the routes the dashboard uses. What it may assume about the daemon is in
   [`docs/daemon-contract.md`](docs/daemon-contract.md); read it before changing how the
@@ -89,7 +90,8 @@ A board is one module in `runtime/src/reachy_bridge_runtime/platforms/` (#140):
    `host_setup` holds functions that run before the daemon starts (audio mixer
    defaults, for example), and `features` names the optional runtime features the board
    supports (`audio_levels`, `camera`).
-3. Add the module to the loop in `platforms/__init__.py`'s `detect()`, ahead of `generic`.
+3. Import it in `platforms/__init__.py`'s `detect()` and add it to the tuple of adapters
+   there; a board no adapter matches gets `generic`.
 4. Add what the board needs to `doctor.py` if `reachy-bridge check` should test it.
 
 A board becomes `tested` once someone runs it with the robot and owns keeping it working.
@@ -98,9 +100,9 @@ A board becomes `tested` once someone runs it with the robot and owns keeping it
 ## Work tracking
 
 Work goes epic → milestone → issue. The epic (#111) lists the milestones; each milestone's
-description holds its scope and order, and each issue its acceptance criteria. Labels:
-`epic`, `bug`, `enhancement`, `documentation`, and `regression` for anything found in
-hardware QA or soak. Branches are `feat/`, `fix/`, `docs/` or `chore/` plus the issue
+description holds its scope and order, and each issue its acceptance criteria. Labels include
+`epic`, `bug`, `enhancement`, `documentation`, `security`, `upstream-break` (opened by the
+upstream watch), and `regression` for anything found in hardware QA or soak. Branches are `feat/`, `fix/`, `docs/` or `chore/` plus the issue
 number. Related issues go in one PR, each with its own commit and its own `Closes #N`.
 Commits have a short subject and a body that says what changed and why.
 
@@ -108,7 +110,7 @@ Commits have a short subject and a body that says what changed and why.
 
 Pushing a `vX.Y.Z` tag runs CI and then publishes a GitHub Release with the source
 archive, `uv.lock`, the prebuilt webrtcsink plugin, `SHA256SUMS` and, once the repo is public, a build attestation.
-`-rcN` tags are prereleases. Notes come from `docs/releases/<tag>.md` when that file
+`-rcN` tags are prereleases (nightlies). Notes come from `docs/releases/<tag>.md` when that file
 exists. A device moves to a tag with `reachy-bridge deploy <tag>`, which reinstalls the
 previous version if the new one doesn't come up healthy. The on-device updater and its
 dashboard controls are in progress (#133, #134).
