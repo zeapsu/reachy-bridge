@@ -80,7 +80,7 @@ function usePairing(): { phase: Phase; retry: () => void } {
         else if (outcome === "expired") setPhase({ kind: "ended", reason: outcome });
         // Locked by wrong codes: only the CLI on the robot can still approve
         // it (#221), so keep polling until it expires.
-        else if (outcome === "locked") setPhase((p) => (p.kind === "waiting" && !p.locked ? { ...p, locked: true } : p));
+        else if (outcome === "locked") setPhase((p) => (p.kind === "waiting" && p.id === waitingId && !p.locked ? { ...p, locked: true } : p));
       } catch {
         // Network blip: try again on the next tick.
       } finally {
