@@ -101,6 +101,8 @@ _BACKEND = "reachy_mini.daemon.backend.abstract"
 _MEDIA_SERVER = "reachy_mini.media.media_server"
 _APPS_VENV = "reachy_mini.apps.sources.local_common_venv"
 _ROBOT_BACKEND = "reachy_mini.daemon.backend.robot.backend"
+# Backend.__init__ keeps uploaded move audio in <tempdir>/<this>/audio.
+_UPLOADS_DIR = "reachy-mini-uploads"
 
 REQUIREMENTS: tuple[Requirement, ...] = (
     Requirement("daemon", "daemon entry point", _function(_APP_MAIN, "main")),
@@ -269,6 +271,15 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         "sim_sounds",
         "ASSETS_ROOT_PATH, where play_sound looks up a bare file name",
         lambda: _attr("reachy_mini.utils.constants", "ASSETS_ROOT_PATH"),
+    ),
+    Requirement(
+        "sim_sounds",
+        "where the daemon keeps uploaded sounds and move audio",
+        lambda: (
+            _attr("reachy_mini.daemon.app.routers.media", "SOUNDS_TMP_DIR"),
+            _source_mentions(_BACKEND, "Backend", f'"{_UPLOADS_DIR}"', '"audio"')(),
+            _attr("huggingface_hub.constants", "HF_HUB_CACHE"),
+        ),
     ),
 )
 
@@ -556,3 +567,17 @@ def sound_path(sound_file: str) -> Path | None:
         if candidate.is_file():
             return candidate.resolve()
     return None
+
+
+def sound_roots() -> tuple[Path, ...]:
+    """The folders the daemon's own sounds come from: its assets, uploaded
+    sounds, uploaded move audio, and the Hugging Face cache that move
+    datasets (and their sounds) download into."""
+    import tempfile
+
+    from huggingface_hub.constants import HF_HUB_CACHE
+    from reachy_mini.daemon.app.routers.media import SOUNDS_TMP_DIR
+    from reachy_mini.utils.constants import ASSETS_ROOT_PATH
+
+    roots = (ASSETS_ROOT_PATH, SOUNDS_TMP_DIR, Path(tempfile.gettempdir()) / _UPLOADS_DIR / "audio", HF_HUB_CACHE)
+    return tuple(Path(root).resolve() for root in roots)

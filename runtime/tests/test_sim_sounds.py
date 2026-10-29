@@ -30,6 +30,8 @@ def assets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     constants = types.ModuleType("reachy_mini.utils.constants")
     constants.ASSETS_ROOT_PATH = str(folder)  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "reachy_mini.utils.constants", constants)
+    # The daemon's sound folders: its assets and a dataset cache.
+    monkeypatch.setattr(upstream, "sound_roots", lambda: (folder.resolve(), (tmp_path / "dataset").resolve()))
     return folder
 
 
@@ -81,6 +83,18 @@ def test_missing_and_non_audio_files_are_not_recorded(
     assert _log.snapshot() == {"seq": 0, "events": []}
 
 
+def test_files_outside_the_daemons_sound_folders_are_not_recorded(
+    tmp_path: Path, assets: Path, _log: sim_sounds.SoundLog
+) -> None:
+    private = tmp_path / "home" / "voicemail.m4a"
+    private.parent.mkdir()
+    private.write_bytes(b"x")
+    # Absolute, or climbing out of the assets folder: both refused.
+    _play(str(private))
+    _play("../home/voicemail.m4a")
+    assert _log.snapshot() == {"seq": 0, "events": []}
+
+
 def test_a_failing_lookup_never_breaks_the_caller(assets: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(upstream, "sound_path", lambda _f: (_ for _ in ()).throw(OSError("disk")))
     assert _play("wake_up.wav") == ["wake_up.wav"]
@@ -118,6 +132,6 @@ async def test_routes_list_events_and_serve_only_recorded_files(
         traversal = await client.get("/api/bridge/sounds/..%2F..%2Fetc%2Fpasswd")
     assert listing["seq"] == 1
     assert served.status_code == 200 and served.content == b"RIFF....WAVE"
-    assert served.headers["content-type"].startswith("audio/")
+    assert served.headers["content-type"] == "audio/wav"
     assert unknown.status_code == 404
     assert traversal.status_code == 404

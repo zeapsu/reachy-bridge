@@ -56,6 +56,15 @@ export function useSimSounds(active: boolean): SimSoundsState {
       if (!response.ok) return;
       const buffer = await ctx.decodeAudioData(await response.arrayBuffer());
       if (generation.current !== started) return;
+      // Like the robot's speaker: a new sound cuts off the one playing.
+      for (const previous of playing.current) {
+        try {
+          previous.stop();
+        } catch {
+          // Already ended.
+        }
+      }
+      playing.current.clear();
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(ctx.destination);
@@ -85,9 +94,22 @@ export function useSimSounds(active: boolean): SimSoundsState {
     if (!listening) stopAll();
   }, [listening, stopAll]);
 
-  useEffect(() => () => void context.current?.close().catch(() => undefined), []);
+  useEffect(
+    () => () => {
+      void context.current?.close().catch(() => undefined);
+      context.current = null;
+    },
+    [],
+  );
 
+  // `listening` follows page visibility too: hiding the tab stops the sound
+  // playing in it, as the stream closes.
   useEventSource(listening ? paths.simSoundsStream : null, {
+    // A dropped stream reconnects by itself; its first payload after that
+    // is a new starting point, so a long drop doesn't replay a burst.
+    error: () => {
+      last.current = null;
+    },
     "sim-sounds": (event) => {
       const payload = readEventPayload(event);
       if (!isSimSounds(payload)) return;

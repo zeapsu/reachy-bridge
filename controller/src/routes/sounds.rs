@@ -75,11 +75,16 @@ pub async fn run_sounds(state: Shared, tx: watch::Sender<Sample>) {
             None
         };
         let delay = if sounds.is_some() { POLL } else { IDLE };
-        if let Some(sounds) = sounds
-            && last.as_ref() != Some(&sounds)
-        {
-            tx.send_replace(Some(Arc::new(sounds.clone())));
-            last = Some(sounds);
+        if let Some(sounds) = sounds {
+            if last.as_ref() != Some(&sounds) {
+                tx.send_replace(Some(Arc::new(sounds.clone())));
+                last = Some(sounds);
+            }
+        } else if !state.sim.active() && last.take().is_some() {
+            // Out of sim mode: forget the old sim daemon's log, so a tab
+            // still listening when sim mode starts again takes the new
+            // daemon's first sample as its starting point.
+            tx.send_replace(None);
         }
         tokio::time::sleep(delay).await;
     }

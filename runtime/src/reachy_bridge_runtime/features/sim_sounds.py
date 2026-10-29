@@ -14,7 +14,10 @@ So in a sim daemon every ``play_sound`` and ``stop_sound`` is recorded:
 - ``GET /api/bridge/sounds/<token>`` serves the file a play event named.
   The only files it serves are ones the daemon itself was asked to play,
   each under a random token, and only the most recent ones: there is no path
-  parameter to probe the disk with.
+  parameter to probe the disk with. A ``play_sound`` can name any path
+  (``POST /api/media/play_sound`` passes it through), so only files under
+  the daemon's own sound folders are recorded (``upstream.sound_roots``):
+  its assets, uploads, and the Hugging Face cache move datasets live in.
 
 Daemon access goes through ``reachy_bridge_runtime.upstream``.
 """
@@ -42,7 +45,17 @@ FEATURE = "sim_sounds"
 EVENTS_KEPT = 16
 # Files that stay servable; an old token 404s, which a late tab survives.
 FILES_KEPT = 32
-SOUND_SUFFIXES = frozenset({".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".opus"})
+# Explicit types: the host's MIME table may not know them, and the
+# controller passes only audio/* on.
+SOUND_TYPES = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".flac": "audio/flac",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+}
 
 
 class SoundLog:
@@ -86,8 +99,10 @@ def _play_sound(original: Any, backend: Any, sound_file: str, *args: Any, **kwar
     result = original(backend, sound_file, *args, **kwargs)
     try:
         path = upstream.sound_path(str(sound_file))
-        if path is None or path.suffix.lower() not in SOUND_SUFFIXES:
+        if path is None or path.suffix.lower() not in SOUND_TYPES:
             logger.info("Sim sound %r not relayed: no such sound file", sound_file)
+        elif not any(path.is_relative_to(root) for root in upstream.sound_roots()):
+            logger.warning("Sim sound %r not relayed: not one of the daemon's sound folders", sound_file)
         else:
             LOG.played(path)
     except Exception:
@@ -112,7 +127,7 @@ def install_route(app: Any) -> None:
         path = LOG.file(token)
         if path is None or not path.is_file():
             raise HTTPException(status_code=404, detail="No such sound")
-        return FileResponse(path)
+        return FileResponse(path, media_type=SOUND_TYPES[path.suffix.lower()])
 
 
 def apply() -> None:

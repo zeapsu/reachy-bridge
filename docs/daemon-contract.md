@@ -137,12 +137,15 @@ Backend: `daemon/backend/abstract.py`; endpoints:
 - Sounds: `Backend.play_sound(file)` (wake-up, sleep, a recorded move's
   sound, `volume/test-sound`, `media/play_sound`) hands the file to the media
   server: the path as given, else the name under the package's `assets/`.
-  Move sounds are absolute paths into the dataset's Hugging Face cache. With
-  `--no-media` there is no media server and nothing plays. **Bridge feature**
-  (`features/sim_sounds.py`, sim daemons only, #219): every `play_sound` and
-  `stop_sound` is recorded; `GET /api/bridge/sounds` lists the latest events
-  and `GET /api/bridge/sounds/{token}` serves a played file by the random
-  token its event names. The controller relays them to the dashboard in sim
+  `media/play_sound` first tries a relative name in its upload folder
+  (`/tmp/reachy_mini_sounds`). Move sounds are absolute paths into the
+  dataset's Hugging Face cache; an uploaded move's audio is deleted when the
+  move ends. A new sound stops the one playing. With `--no-media` there is no
+  media server and nothing plays. **Bridge feature** (`features/sim_sounds.py`,
+  sim daemons only, #219): every `play_sound` of a file in those folders, and
+  every `stop_sound`, is recorded; `GET /api/bridge/sounds` lists the latest
+  events and `GET /api/bridge/sounds/{token}` serves a played file by the
+  random token its event names. The controller relays them to the dashboard in sim
   mode (`/api/sim/sounds-stream`, `/api/sim/sounds/{token}`).
 - **REST moves are not serialized.** `play_move`'s guard (`_play_move_lock`)
   is a re-entrant `threading.RLock`, and every REST move runs on the same
