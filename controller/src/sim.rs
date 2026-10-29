@@ -149,7 +149,7 @@ pub async fn stop_leftover(state: Shared) {
     }
 }
 
-async fn systemctl(program: &str, action: &str, unit: &str) -> Result<(), String> {
+pub(crate) async fn systemctl(program: &str, action: &str, unit: &str) -> Result<(), String> {
     let run = tokio::process::Command::new(program)
         .args(["--user", action, unit])
         .stdin(std::process::Stdio::null())
