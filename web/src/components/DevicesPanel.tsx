@@ -90,6 +90,9 @@ export function DevicesPanel() {
   };
 
   const now = Date.now();
+  // The controller won't revoke the last admin from a dashboard (the CLI on the robot can).
+  const admins = devices.filter((device) => device.role === "admin").length;
+  const lastAdmin = (device: PairedDevice) => device.role === "admin" && admins === 1;
   return (
     <section className="glass sheet devices-panel" data-lens ref={sheet} id="devices-panel" aria-labelledby="devices-title">
       <header>
@@ -145,9 +148,13 @@ export function DevicesPanel() {
                 <span className="devices-meta">
                   {seenText(device.last_seen, now)} · {device.peer}
                 </span>
-                <button className="btn danger press" type="button" onClick={() => void revoke(device)}>
-                  {device.current ? "Log out" : "Revoke"}
-                </button>
+                {lastAdmin(device) ? (
+                  <span className="devices-meta devices-last">only admin</span>
+                ) : (
+                  <button className="btn danger press" type="button" onClick={() => void revoke(device)}>
+                    {device.current ? "Log out" : "Revoke"}
+                  </button>
+                )}
               </li>
             ))}
           </ul>

@@ -530,14 +530,19 @@ case "$cmd" in
         [[ ${args[0]:-} =~ ^[0-9]{6}$ ]] || die "usage: reachy-bridge pair [--admin] <6-digit code> [name]"
         body="{\"code\": \"${args[0]}\""
         [[ -n ${args[1]:-} ]] && body+=", \"name\": $(json_string "${args[*]:1}")"
-        (( admin )) && body+=', "role": "admin"'
-        # Only the local key approves an admin; the controller says so if it's missing.
+        if (( admin )); then
+            # Only the local key approves an admin.
+            [[ -r $STATE_DIR/controller.key ]] ||
+                die "can't read $STATE_DIR/controller.key: run this on the robot, as the user the bridge runs as"
+            body+=', "role": "admin"'
+        fi
         reply=$(controller_api POST /api/auth/approve -H 'Content-Type: application/json' --data "$body}")
         peer=${reply#*\"peer\":\"}
         [[ $peer == "$reply" ]] && peer="?" || peer=${peer%%\"*}
         if (( admin )); then
             echo "approved the browser at $peer as the admin; it logs in within a few seconds"
-            echo "every other browser, tailnet included, now needs a code approved by you"
+            echo "every other browser, tailnet included, now needs a code approved by you;"
+            echo "browsers paired before an admin existed were logged out"
         else
             echo "approved the browser at $peer; it logs in within a few seconds"
         fi

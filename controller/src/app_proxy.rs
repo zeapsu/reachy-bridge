@@ -36,7 +36,7 @@ use serde_json::Value;
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use crate::auth::{cross_site, strip_credential_cookies, strip_credentials};
+use crate::auth::{cross_site, end_with, strip_credential_cookies, strip_credentials, Credential};
 use crate::state::Shared;
 
 /// How long a resolved upstream port is reused before asking the daemon again.
@@ -157,9 +157,9 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
     let peer = parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0);
     let loopback = peer.is_some_and(|p| p.ip().to_canonical().is_loopback());
     let dashboard = forwarded_host(&parts.headers, loopback).map(|host| dashboard_url(&host, loopback, proxy.dashboard_port));
-    if !proxy.state.auth.app_proxy_allowed(&parts.headers, peer.map(|p| p.ip().to_canonical())) {
+    let Some(credential) = proxy.state.auth.app_proxy_credential(&parts.headers, peer.map(|p| p.ip().to_canonical())) else {
         return login_required(dashboard.as_deref());
-    }
+    };
     // Another site can't make a tailnet browser act through the app (a plain
     // form POST); the app's own page is same-origin. tailscale serve keeps
     // Host, so X-Forwarded-Host isn't needed (and isn't believed).
@@ -182,7 +182,7 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
             Ok(upgrade) => upgrade,
             Err(rejection) => return rejection.into_response(),
         };
-        return websocket(proxy, upgrade, port, &path, headers, dashboard.as_deref()).await;
+        return websocket(proxy, upgrade, port, &path, headers, dashboard.as_deref(), credential).await;
     }
 
     let url = format!("http://127.0.0.1:{port}{path}");
@@ -198,7 +198,9 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
                 strip_hop_by_hop(out_headers);
                 strip_credential_cookies(out_headers);
             }
-            out.body(Body::from_stream(response.bytes_stream())).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+            let out = out.body(Body::from_stream(response.bytes_stream())).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response());
+            // An app's SSE ends with the browser's login, like the dashboard's.
+            end_with(proxy.state.clone(), credential, out)
         }
         Err(error) => {
             if error.is_connect() {
@@ -219,6 +221,7 @@ async fn websocket(
     path: &str,
     mut headers: HeaderMap,
     dashboard: Option<&str>,
+    credential: Credential,
 ) -> Response {
     let Ok(mut request) = format!("ws://127.0.0.1:{port}{path}").into_client_request() else {
         return StatusCode::BAD_REQUEST.into_response();
@@ -263,7 +266,14 @@ async fn websocket(
         Some(protocol) => upgrade.protocols([protocol]),
         None => upgrade,
     };
-    upgrade.on_upgrade(move |browser| pipe(browser, app))
+    let state = proxy.state.clone();
+    upgrade.on_upgrade(move |browser| async move {
+        // Dropping the pipe closes both sockets when the login stops counting.
+        tokio::select! {
+            () = pipe(browser, app) => {}
+            () = state.auth.ended(credential) => tracing::info!("app proxy: WebSocket closed, its login ended"),
+        }
+    })
 }
 
 type AppSocket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;

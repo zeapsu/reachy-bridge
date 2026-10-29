@@ -622,3 +622,51 @@ async fn devices_paired_before_roles_are_members() {
     let devices = restarted.call("GET", "/api/auth/devices", LOOPBACK, &[], None).await.body["devices"].clone();
     assert_eq!((devices[0]["person"].clone(), devices[0]["role"].clone()), (json!("phone"), json!("member")));
 }
+
+#[tokio::test]
+async fn streams_without_a_device_end_when_admin_mode_starts() {
+    let h = harness(AuthConfig::default()).await;
+    let response = reachy_controller::app(h.state.clone())
+        .oneshot(request("GET", "/api/logs/stream?source=controller", LOOPBACK, &[], None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut stream = response.into_body().into_data_stream();
+    assert!(stream.next().await.is_some(), "first event");
+    h.admin(LOOPBACK).await;
+    let ended = tokio::time::timeout(Duration::from_secs(2), async { while stream.next().await.is_some() {} }).await;
+    assert!(ended.is_ok(), "stream still open after admin mode started");
+}
+
+#[tokio::test]
+async fn the_first_admin_logs_out_earlier_devices() {
+    let h = harness(lan()).await;
+    let earlier = h.paired(LAN).await;
+    assert_eq!(h.call("GET", "/api/logs/sources", LAN, &[("cookie", &earlier)], None).await.status, StatusCode::OK);
+    let admin = h.admin(LAN2).await;
+    assert_eq!(h.call("GET", "/api/logs/sources", LAN, &[("cookie", &earlier)], None).await.status, StatusCode::UNAUTHORIZED);
+    let devices = h.call("GET", "/api/auth/devices", LAN2, &[("cookie", &admin)], None).await.body["devices"].clone();
+    assert_eq!(devices.as_array().unwrap().len(), 1);
+    // Later members stay.
+    let member = h.paired_as(LAN, &[("cookie", &admin)], json!({"name": "phone"})).await;
+    // A member can't ask for admin either.
+    let (_, code, _) = h.pair(LAN).await;
+    let r = h.call("POST", "/api/auth/approve", LAN, &[("cookie", &member)], Some(json!({"code": code, "role": "admin"}))).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn the_cli_approves_a_request_others_locked() {
+    let h = harness(AuthConfig::default()).await;
+    let (id, code, pair_cookie) = h.pair(LOOPBACK).await;
+    // Anyone reaching the dashboard before an admin exists can send wrong codes.
+    for _ in 0..5 {
+        h.approve("000000", LOOPBACK, &[]).await;
+    }
+    assert_eq!(h.poll(&id, LOOPBACK, &pair_cookie).await.body["status"], "locked");
+    let key = h.key();
+    assert_eq!(h.approve("000000", LOOPBACK, &[("x-reachy-bridge-key", &key)]).await.status, StatusCode::BAD_REQUEST);
+    let body = json!({"code": code, "role": "admin"});
+    assert_eq!(h.call("POST", "/api/auth/approve", LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(body)).await.status, StatusCode::OK);
+    assert_eq!(h.poll(&id, LOOPBACK, &pair_cookie).await.body["status"], "approved");
+}
