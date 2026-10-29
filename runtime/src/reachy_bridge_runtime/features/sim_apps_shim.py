@@ -20,6 +20,7 @@ It must not import anything outside the standard library: it runs in the
 apps venv, not the bridge's.
 """
 
+import errno
 import ipaddress
 import socket
 import sys
@@ -65,7 +66,8 @@ def sim_address(family, address):
 
     Any other host on that port is refused: the SDK falls back to
     ``reachy-mini.local:8000`` when localhost doesn't answer, which could be
-    a robot on the network.
+    a robot on the network. So a sim app can't reach any service on that port
+    off this host.
     """
     if family not in (socket.AF_INET, socket.AF_INET6):
         return address
@@ -93,7 +95,11 @@ def install():
         return connect(self, sim_address(self.family, address))
 
     def sim_connect_ex(self, address):
-        return connect_ex(self, sim_address(self.family, address))
+        try:
+            address = sim_address(self.family, address)
+        except ConnectionRefusedError:
+            return errno.ECONNREFUSED
+        return connect_ex(self, address)
 
     sim_connect._reachy_bridge_sim = True  # type: ignore[attr-defined]
     socket.socket.connect = sim_connect
