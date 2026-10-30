@@ -17,6 +17,7 @@ use axum::{Json, Router};
 use futures_util::StreamExt;
 use reachy_controller::audio;
 use reachy_controller::auth::AuthConfig;
+use reachy_controller::control::AWAY_AFTER;
 use reachy_controller::daemon::Daemon;
 use reachy_controller::logs::LogBroker;
 use reachy_controller::state::{AppState, Shared};
@@ -858,14 +859,20 @@ async fn one_person_drives_at_a_time_and_revoking_the_browser_ends_control() {
 async fn a_silent_holder_steps_away_and_comes_back() {
     let (h, admin, sam) = control_harness().await;
     h.control(LAN, &sam, "take", None).await;
-    // The phone's screen goes off: no requests for 10 s.
-    h.state.control.advance(11);
+    // A blip under a minute changes nothing: nobody but an admin takes control meanwhile.
+    h.state.control.advance(AWAY_AFTER as i64 - 5);
+    assert_eq!(h.view(LOOPBACK, &admin).await["holder"]["person"], "Sam");
+    let kim = h.paired_as(LAN, &[("cookie", &admin)], json!({"name": "tablet", "person": "Kim"})).await;
+    assert_eq!(h.control(LAN, &kim, "take?if_free=true", None).await.status, StatusCode::CONFLICT);
+    assert_eq!(h.view(LAN, &sam).await["holder"]["you"], true);
+    // The phone's screen goes off: no requests for a minute.
+    h.state.control.advance(AWAY_AFTER as i64 + 1);
     assert_eq!(h.view(LOOPBACK, &admin).await["holder"], Value::Null);
     // It comes back in time and has control again.
     assert_eq!(h.view(LAN, &sam).await["holder"]["you"], true);
     assert_eq!(h.act(LAN, &sam).await.status, StatusCode::OK);
     // Unless the admin took it meanwhile.
-    h.state.control.advance(11);
+    h.state.control.advance(AWAY_AFTER as i64 + 1);
     h.control(LOOPBACK, &admin, "take", None).await;
     assert_eq!(h.view(LAN, &sam).await["holder"]["person"], "Andry");
 }
@@ -905,7 +912,7 @@ async fn control_details() {
     assert_eq!(h.call("GET", "/api/drive/ws", LAN, &upgrade, None).await.status, StatusCode::FORBIDDEN);
     // An admin away too long doesn't silently get control back.
     h.control(LOOPBACK, &admin, "take", None).await;
-    h.state.control.advance(11);
+    h.state.control.advance(AWAY_AFTER as i64 + 1);
     assert_eq!(h.view(LAN, &sam).await["holder"], Value::Null);
     h.state.control.advance(300);
     assert_eq!(h.view(LOOPBACK, &admin).await["holder"], Value::Null);

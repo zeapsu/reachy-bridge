@@ -26,6 +26,10 @@ const RECHECK: Duration = Duration::from_secs(1);
 /// A socket that takes longer to accept a message ends the session, so a
 /// stalled peer can't hold the robot.
 const SEND_TIMEOUT: Duration = Duration::from_millis(500);
+/// A browser silent this long ends the session (and the robot goes home):
+/// the dashboard sends its target at least every second, so this is a lost
+/// connection, which TCP alone can take minutes to notice.
+const SILENT: Duration = Duration::from_secs(3);
 
 use std::f64::consts::PI;
 
@@ -214,12 +218,19 @@ async fn drive(
         }
     };
     tokio::pin!(lost);
+    let silent = tokio::time::sleep(SILENT);
+    tokio::pin!(silent);
     let detail = loop {
         tokio::select! {
             () = &mut ended => break "Logged out: log in again to drive".to_string(),
             () = &mut lost => break "Control ended: take control again to drive".to_string(),
+            () = &mut silent => {
+                tracing::info!("drive: browser silent, ending the session");
+                break "Connection lost: drive again".to_string();
+            }
             message = socket.recv() => match message {
                 Some(Ok(Message::Text(text))) => {
+                    silent.as_mut().reset(tokio::time::Instant::now() + SILENT);
                     if !state.player.driving(epoch) {
                         break MODE_CHANGED.to_string();
                     }
