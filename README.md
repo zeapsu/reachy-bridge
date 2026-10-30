@@ -65,6 +65,10 @@ signalling (`:8443`) on loopback, so the proxy is the way to an app from another
 limits under LAN access). Run
 `reachy-bridge serve` again after an update that adds a mapping.
 
+If the dashboard's tailnet name won't load on an iPhone but works on other devices, turn off iCloud
+Private Relay (and "Limit IP Address Tracking" for the network). It sends Safari's DNS lookups past
+Tailscale, so public DNS answers for the name, and that answer never points at the device.
+
 The robot starts off; switch it on from the dashboard. `install.sh` is safe to re-run after a
 pull, and never restarts the daemon while the robot is on.
 
