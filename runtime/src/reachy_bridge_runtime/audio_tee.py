@@ -242,6 +242,9 @@ def _ensure() -> None:
     elif not present and installed(text):
         _write(ASOUNDRC, untee(text))
         logger.info("No ALSA loopback card; took the speaker tee out of ~/.asoundrc.")
+        # And let WirePlumber have loopback cards again.
+        for path in WIREPLUMBER_RULES:
+            path.unlink(missing_ok=True)
     if present and installed(ASOUNDRC.read_text(errors="ignore")):
         _leave_loopback_to_us()
         set_speaker(True)

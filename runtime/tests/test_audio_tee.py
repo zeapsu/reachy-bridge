@@ -102,6 +102,7 @@ def test_ensure_adds_and_removes_the_tee(tmp_path: Path, monkeypatch):
     assert not audio_tee.is_installed()
     audio_tee.ensure()
     assert rc.read_text().strip() == UPSTREAM.strip() and switched == [True, True]
+    assert not any(path.exists() for path in rules)
 
 
 def test_set_speaker_creates_the_switch_once(monkeypatch):
