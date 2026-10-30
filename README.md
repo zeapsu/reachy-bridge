@@ -118,8 +118,8 @@ In admin mode one browser at a time drives the robot: the admin, or a person the
 control time. Without the admin's browser, grant it from the robot: `reachy-bridge control`
 shows who is in control, the grants and who is asking; `reachy-bridge control grant <n|person> [minutes]`
 gives a person control time (`<n>` is a device's number in `reachy-bridge devices`; no minutes
-means no end); `reachy-bridge control revoke <n|person>` ends a grant (`<n>` is its number in `reachy-bridge control`). Grants can't overlap, so revoke
-the current one first to give control to someone else.
+means no end); `reachy-bridge control revoke <n|person>` ends that person's grant. Grants can't
+overlap, so revoke the current one first to give control to someone else.
 
 An installed app runs as the bridge's user
 and can read the local key, so it could approve an admin too; install apps you trust.
