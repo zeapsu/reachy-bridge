@@ -192,11 +192,13 @@ def loopback(root: Path) -> Result:
     except OSError:
         return Result("Audio loopback", "warn", "couldn't read /proc/asound/cards")
     if audio_tee.loopback_present(cards):
+        if not (root / f"proc/asound/{audio_tee.LOOPBACK}/pcm0p/sub1").exists():
+            return Result("Audio loopback", "warn", "the loopback card has one substream; hearing Reachy and talking to its apps need two (pcm_substreams=2)")
         return Result("Audio loopback", "pass", f"ALSA card {audio_tee.LOOPBACK}")
     return Result(
         "Audio loopback",
         "warn",
-        "no ALSA loopback card; hearing what Reachy says on the dashboard needs it "
+        "no ALSA loopback card; hearing what Reachy says and talking to its apps need it "
         f"(sudo modprobe snd-aloop id={audio_tee.LOOPBACK}, and load it at boot)",
     )
 

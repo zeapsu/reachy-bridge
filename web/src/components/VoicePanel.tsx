@@ -11,18 +11,20 @@ const hasMic = typeof navigator !== "undefined" && Boolean(navigator.mediaDevice
 /**
  * Listen and talk (#219), the Robot tab's Voice pane: hear the robot's mic on
  * this device, hear what the robot says (its speaker goes quiet meanwhile),
- * and speak through its speaker. Each can be switched while connected.
+ * speak through its speaker, and speak to its apps (into what they hear as
+ * its mic). Each can be switched while connected.
  */
 export function VoicePanel({ voice, control }: { voice: VoiceApi; control: ControlState }) {
-  const [wanted, setWanted] = useState({ listen: true, talk: false, hear: false });
+  const [wanted, setWanted] = useState({ listen: true, talk: false, hear: false, apps: false });
   const open = voice.status !== "off";
   const blocked = voiceBlocked(voice.view, control, tailnet);
   const noTalk = talkBlocked(secure, hasMic);
   const route = open ? voice.route : wanted;
+  const speaks = wanted.talk || wanted.apps;
   const session = voice.view?.session;
   const other = session && !isMine(session, voice.mine) ? voiceBadge(voice.view, voice.mine) : null;
 
-  const flip = (key: "listen" | "talk" | "hear") => {
+  const flip = (key: "listen" | "talk" | "hear" | "apps") => {
     const next = { ...route, [key]: !route[key] };
     if (open) void voice.setRoute(next);
     else setWanted(next);
@@ -78,6 +80,23 @@ export function VoicePanel({ voice, control }: { voice: VoiceApi; control: Contr
           onClick={() => flip("talk")}
         ></button>
       </div>
+      <div className="row">
+        <label htmlFor="voice-apps">Talk to Reachy's apps (into its mic)</label>
+        <button
+          className="switch"
+          type="button"
+          role="switch"
+          id="voice-apps"
+          aria-checked={route.apps && noTalk === null}
+          disabled={voice.busy || noTalk !== null || (!open && blocked !== null)}
+          aria-describedby="voice-apps-note"
+          onClick={() => flip("apps")}
+        ></button>
+      </div>
+      <p className="note" id="voice-apps-note">
+        For a conversation app: it hears you as if you were next to the robot. Anything else using the
+        robot's mic, such as a remote session, hears you too.
+      </p>
       {noTalk ? (
         <p className="note" id="voice-talk-note">
           {noTalk}
@@ -97,8 +116,8 @@ export function VoicePanel({ voice, control }: { voice: VoiceApi; control: Contr
           className="btn primary press"
           type="button"
           id="voice-start"
-          disabled={voice.busy || blocked !== null || !(wanted.listen || wanted.hear || (wanted.talk && noTalk === null))}
-          onClick={() => void voice.start({ ...wanted, talk: wanted.talk && noTalk === null })}
+          disabled={voice.busy || blocked !== null || !(wanted.listen || wanted.hear || (speaks && noTalk === null))}
+          onClick={() => void voice.start({ ...wanted, talk: wanted.talk && noTalk === null, apps: wanted.apps && noTalk === null })}
         >
           Start
         </button>

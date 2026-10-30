@@ -134,8 +134,13 @@ network you trust, and Tailscale (`reachy-bridge serve`, HTTPS) for anything bey
 ## Listen and talk
 
 The Robot tab's Voice pane plays the robot's microphone on your device and your
-device's microphone through the robot's speaker, and can play what the robot says (its own sounds
-and an app's voice) on your device instead of its speaker. Each is switched while connected. One
+device's microphone through the robot's speaker. It can also play what the robot says (its own
+sounds and an app's voice) on your device instead of its speaker, and send your voice to the
+robot's apps, mixed into what they hear as its microphone, so you can hold a conversation with an
+app from anywhere. Everything that reads the robot's microphone hears you, including a remote
+session connected through the daemon, and nothing in the room signals it; the dashboards' badge
+does. (Talking through the speaker doesn't reach apps: the robot's audio board
+cancels its own speaker output from its microphone.) Each is switched while connected. One
 browser at a time, with the robot on; in admin mode, only the browser in control, and the session
 ends when control or the login does, or when the robot is turned off. Every dashboard shows a mic
 badge while a session is open.
@@ -144,13 +149,14 @@ The controller starts `reachy-bridge-audio.service` on demand. Audio is WebRTC o
 between the browser and the device, on tailnet addresses only (no STUN or TURN), using UDP ports
 47100-47199; a Tailscale ACL that limits ports must allow them. Use a tailnet address: audio
 can't connect from a home-network address. Listening also works on the device's plain-http
-tailnet IP (LAN mode), but talking needs the HTTPS (Tailscale) name, since browsers only share a
-microphone with a secure page. Sim mode has no audio. The device needs GStreamer's libnice plugin
+tailnet IP (LAN mode), and so does hearing what the robot says, but talking (to the robot or its
+apps) needs the HTTPS (Tailscale) name, since browsers only share a microphone with a secure page. Sim mode has no audio. The device needs GStreamer's libnice plugin
 (`sudo apt install gstreamer1.0-nice`); `reachy-bridge check` reports it.
 
-Hearing what the robot says needs an ALSA loopback card with the id `Loopback`, which the runtime
-then routes the robot's speaker output through (it rewrites upstream's `~/.asoundrc`, keeping its
-device names, and takes the change out again when the card is gone). Load it now and at boot:
+Hearing what the robot says and talking to its apps need an ALSA loopback card with the id
+`Loopback`, which the runtime then routes the robot's speaker output and microphone through (it
+rewrites upstream's `~/.asoundrc`, keeping its device names, and takes the change out again when
+the card is gone). Load it now and at boot:
 
 ```bash
 sudo modprobe snd-aloop index=10 id=Loopback pcm_substreams=2

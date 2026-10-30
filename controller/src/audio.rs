@@ -1,9 +1,10 @@
 //! Listen and talk from the dashboard (#219): sessions on the audio gateway.
 //!
 //! The gateway (`reachy-bridge-audio-gateway`, loopback only) streams the
-//! robot mic (and, with its speaker tee, what the robot plays) to one
-//! browser and plays that browser's mic on the robot speaker, over WebRTC. The controller is its only client: it starts the
-//! gateway's unit on demand, opens a session for the browser that asks,
+//! robot mic (and, with its speaker and mic tee, what the robot plays) to one
+//! browser, and plays that browser's mic on the robot speaker (or into what
+//! its apps hear), over WebRTC. The controller is its only client: it starts
+//! the gateway's unit on demand, opens a session for the browser that asks,
 //! passes its answer on, and ends the session when the browser's login or,
 //! in admin mode, its control (#221) ends. Starting a session is a robot
 //! action, so in admin mode only the device in control can (control::guard);
@@ -78,6 +79,7 @@ struct Owner {
     listen: bool,
     talk: bool,
     hear: bool,
+    apps: bool,
     since: u64,
     end: Arc<Notify>,
 }
@@ -254,6 +256,7 @@ async fn view(State(state): State<Shared>, Extension(ctx): Extension<AuthContext
             "listen": o.listen,
             "talk": o.talk,
             "hear": o.hear,
+            "apps": o.apps,
             "since": o.since,
             "you": you,
         })
@@ -268,11 +271,14 @@ struct Route {
     /// Hear what the robot plays (its speaker goes quiet meanwhile).
     #[serde(default)]
     hear: bool,
+    /// Talk to the robot's apps: this browser's mic, mixed into theirs.
+    #[serde(default)]
+    apps: bool,
 }
 
 impl Route {
     fn json(&self) -> Value {
-        json!({"listen": self.listen, "talk": self.talk, "hear": self.hear})
+        json!({"listen": self.listen, "talk": self.talk, "hear": self.hear, "apps": self.apps})
     }
 }
 
@@ -333,6 +339,7 @@ async fn open(
         listen: body.listen,
         talk: body.talk,
         hear: body.hear,
+        apps: body.apps,
         since: state.control.now(),
         end: Arc::new(Notify::new()),
     };
@@ -342,12 +349,13 @@ async fn open(
     }
     // The log is readable from every dashboard: name the public ref, never the id.
     tracing::info!(
-        "audio: session {} for {} (listen={}, talk={}, hear={})",
+        "audio: session {} for {} (listen={}, talk={}, hear={}, apps={})",
         owner.public,
         ctx.person.as_deref().or(ctx.device.as_deref()).unwrap_or("this host"),
         body.listen,
         body.talk,
-        body.hear
+        body.hear,
+        body.apps
     );
     let credential = ctx.credential.clone().unwrap_or(Credential::Trusted);
     let public = owner.public.clone();
@@ -458,6 +466,7 @@ async fn route(
         owner.listen = body.listen;
         owner.talk = body.talk;
         owner.hear = body.hear;
+        owner.apps = body.apps;
     }
     Ok(Json(body.json()))
 }

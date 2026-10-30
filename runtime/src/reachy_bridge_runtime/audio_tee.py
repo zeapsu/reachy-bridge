@@ -1,4 +1,4 @@
-"""Hear what Reachy says (#219): a copy of the robot's speaker output.
+"""Hear what Reachy says, and talk to its apps (#219): the speaker and mic tee.
 
 Everything the robot plays (its own sounds, an app's voice) goes to the
 ``reachymini_audio_sink`` ALSA device that upstream's ``~/.asoundrc``
@@ -12,10 +12,21 @@ robot goes quiet while a browser hears it instead:
     loopback -> reachy_bridge_hear -> audio gateway -> browser
     browser -> audio gateway -> reachy_bridge_talk -> speaker (no mute, no loopback)
 
+The mic gets the same treatment the other way round, on the loopback's
+second subdevice: what apps read as the robot's mic (``reachymini_audio_src``)
+is the real mic mixed with whatever the gateway plays into the loopback, so
+a browser can talk to an app directly. (Talking through the speaker doesn't
+reach apps: the audio board's echo cancellation removes the robot's own
+speaker output from its mic.) The gateway listens to the real mic only:
+
+    reachy_bridge_mic_hw (real mic) + loopback -> reachymini_audio_src -> apps
+    browser -> audio gateway -> reachy_bridge_app_voice -> loopback
+    reachy_bridge_mic_hw -> audio gateway -> browser
+
 Nothing here is board-specific: any board whose ``~/.asoundrc`` has upstream's
 devices gets it once the loopback card exists, and loses it again when the
 card is gone. The upstream device names stay, so upstream's own check still
-accepts the file.
+accepts the file. A tee from an earlier version is replaced.
 
 The speaker and the loopback open together (ALSA's ``multi``), so something
 else holding the loopback would silence the robot: WirePlumber, which would
@@ -32,15 +43,22 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-MARKER = "# reachy-bridge: speaker tee (#219)"
+# Every version's marker starts with PREFIX; MARKER is this version's. It
+# contains the first version's marker, so that version's runtime, if a failed
+# deploy rolls back to it, leaves this tee alone instead of wrapping it.
+PREFIX = "# reachy-bridge: "
+MARKER = PREFIX + "speaker tee (#219), and mic tee (v2)"
 LOOPBACK = "Loopback"
 SPEAKER_SWITCH = "Reachy Bridge Speaker"
 HEAR_SOURCE = "reachy_bridge_hear"
 TALK_SINK = "reachy_bridge_talk"
 SINK = "reachymini_audio_sink"
-# The speaker's original dmix, renamed: same ipc_key and hardware, so it
-# shares the device with whatever already plays on it.
+SOURCE = "reachymini_audio_src"
+APP_VOICE_SINK = "reachy_bridge_app_voice"
+# Upstream's speaker dmix and mic dsnoop, renamed: same ipc_key and
+# hardware, so they share the devices with whatever already uses them.
 SPEAKER = "reachy_bridge_speaker_hw"
+MIC = "reachy_bridge_mic_hw"
 
 # The loopback runs at the speaker's format (upstream's dmix: 16 kHz, 2 ch).
 _TEE = f"""
@@ -85,10 +103,45 @@ pcm.{TALK_SINK} {{
     type plug
     slave.pcm "{SPEAKER}"
 }}
+
+pcm.reachy_bridge_app_voice_in {{
+    type dsnoop
+    ipc_key 4254
+    slave {{ pcm "hw:{LOOPBACK},1,1" channels 2 period_size 256 buffer_size 1024 rate 16000 format S16_LE }}
+}}
+
+pcm.reachy_bridge_mics {{
+    type multi
+    slaves.a {{ pcm "{MIC}" channels 2 }}
+    slaves.b {{ pcm "reachy_bridge_app_voice_in" channels 2 }}
+    bindings {{ 0 {{ slave a channel 0 }} 1 {{ slave a channel 1 }} 2 {{ slave b channel 0 }} 3 {{ slave b channel 1 }} }}
+}}
+
+# Capture: ttable.<client channel>.<slave channel>, so each side is a sum.
+pcm.{SOURCE} {{
+    type plug
+    slave.pcm {{
+        type route
+        slave {{ pcm "reachy_bridge_mics" channels 4 }}
+        ttable {{ 0.0 1 0.2 1 1.1 1 1.3 1 }}
+    }}
+}}
+
+pcm.{APP_VOICE_SINK} {{
+    type plug
+    slave.pcm {{
+        type dmix
+        ipc_key 4253
+        slave {{ pcm "hw:{LOOPBACK},0,1" channels 2 period_size 256 buffer_size 1024 rate 16000 format S16_LE }}
+        bindings {{ 0 0 1 1 }}
+    }}
+}}
 """
 
 ASOUNDRC = Path.home() / ".asoundrc"
 CARDS = Path("/proc/asound/cards")
+# The mic side needs the card's second subdevice (snd-aloop's default is 8).
+SECOND_SUBDEVICE = Path(f"/proc/asound/{LOOPBACK}/pcm0p/sub1")
 # WirePlumber 0.4 (Lua) and 0.5 (SPA-JSON) read different files; each ignores
 # the other's.
 _WIREPLUMBER = Path.home() / ".config/wireplumber"
@@ -135,30 +188,40 @@ def _block(text: str, name: str) -> tuple[int, int] | None:
     return None
 
 
+def _rename(text: str, old: str, new: str) -> str:
+    return re.sub(rf"^pcm\.{re.escape(old)}(\s*\{{)", rf"pcm.{new}\1", text, count=1, flags=re.MULTILINE)
+
+
 def tee(text: str) -> str | None:
-    """``text`` with the speaker tee, or None if it has no upstream sink."""
+    """``text`` with this version's tee, or None without upstream's devices."""
     if installed(text):
         return text
-    span = _block(text, SINK)
-    if span is None:
+    text = untee(text)
+    if _block(text, SINK) is None or _block(text, SOURCE) is None:
         return None
-    start, end = span
-    renamed = text[start:end].replace(f"pcm.{SINK}", f"pcm.{SPEAKER}", 1)
-    return text[:start] + renamed + text[end:].rstrip("\n") + "\n" + _TEE
+    renamed = _rename(_rename(text, SINK, SPEAKER), SOURCE, MIC)
+    return renamed.rstrip("\n") + "\n" + _TEE
 
 
 def untee(text: str) -> str:
-    """``text`` as upstream wrote it."""
-    if not installed(text):
+    """``text`` as upstream wrote it (from any version's tee)."""
+    if PREFIX not in text:
         return text
-    plain = text[: text.index(MARKER)].rstrip("\n") + "\n"
-    return re.sub(rf"^pcm\.{SPEAKER}(\s*\{{)", rf"pcm.{SINK}\1", plain, count=1, flags=re.MULTILINE)
+    plain = text[: text.index(PREFIX)].rstrip("\n") + "\n"
+    return _rename(_rename(plain, SPEAKER, SINK), MIC, SOURCE)
+
+
+def _card_usable() -> bool:
+    try:
+        return loopback_present(CARDS.read_text()) and SECOND_SUBDEVICE.exists()
+    except OSError:
+        return False
 
 
 def is_installed() -> bool:
     """The tee is in ``~/.asoundrc`` and its loopback card is there."""
     try:
-        return installed(ASOUNDRC.read_text(errors="ignore")) and loopback_present(CARDS.read_text())
+        return installed(ASOUNDRC.read_text(errors="ignore")) and _card_usable()
     except OSError:
         return False
 
@@ -228,19 +291,16 @@ def _ensure() -> None:
         text = ASOUNDRC.read_text(errors="ignore")
     except OSError:
         return
-    try:
-        present = loopback_present(CARDS.read_text())
-    except OSError:
-        present = False
+    present = _card_usable()
     if present and not installed(text):
         new = tee(text)
         if new is None:
             return
         _write(ASOUNDRC, new)
-        logger.info("Added the speaker tee to ~/.asoundrc (the dashboard can hear what Reachy says).")
-    elif not present and installed(text):
+        logger.info("Added the speaker and mic tee to ~/.asoundrc (hearing Reachy and talking to its apps).")
+    elif not present and PREFIX in text:
         _write(ASOUNDRC, untee(text))
-        logger.info("No ALSA loopback card; took the speaker tee out of ~/.asoundrc.")
+        logger.info("No ALSA loopback card; took the speaker and mic tee out of ~/.asoundrc.")
         # And let WirePlumber have loopback cards again.
         for path in WIREPLUMBER_RULES:
             path.unlink(missing_ok=True)

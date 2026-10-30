@@ -936,11 +936,11 @@ async fn unnamed_devices_from_before_get_a_person_each() {
 
 // Listen and talk (#219) -----------------------------------------------------
 
-/// A stand-in audio gateway: one session "s1", always connected; records
-/// deletes. It signs its replies with `key` (None: a squatter that can't).
 /// The last route the fake gateway was given.
 static ROUTED: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
 
+/// A stand-in audio gateway: one session "s1", always connected; records
+/// deletes. It signs its replies with `key` (None: a squatter that can't).
 async fn fake_gateway(deleted: Arc<AtomicU64>, key: Option<String>) -> String {
     use axum::routing::{delete, post};
     let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1075,12 +1075,15 @@ async fn hearing_what_the_robot_says_is_a_route() {
     assert_eq!(r.status, StatusCode::OK);
     let id = r.body["id"].as_str().unwrap().to_string();
     assert_eq!(h.call("GET", "/api/audio", LOOPBACK, &[], None).await.body["session"]["hear"], false);
-    let route = json!({"listen": false, "talk": false, "hear": true});
+    let route = json!({"listen": false, "talk": false, "hear": true, "apps": true});
     let r = h.call("POST", &format!("/api/audio/session/{id}/route"), LOOPBACK, &[], Some(route.clone())).await;
     assert_eq!((r.status, r.body.clone()), (StatusCode::OK, route.clone()));
     assert_eq!(ROUTED.lock().unwrap().clone(), Some(route));
     let view = h.call("GET", "/api/audio", LOOPBACK, &[], None).await.body;
-    assert_eq!((view["session"]["listen"].clone(), view["session"]["hear"].clone()), (json!(false), json!(true)));
+    assert_eq!(
+        (view["session"]["listen"].clone(), view["session"]["hear"].clone(), view["session"]["apps"].clone()),
+        (json!(false), json!(true), json!(true))
+    );
 }
 
 #[tokio::test]

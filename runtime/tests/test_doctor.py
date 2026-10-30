@@ -163,5 +163,7 @@ def test_loopback_card(tmp_path: Path):
     missing = doctor.loopback(tmp_path)
     assert missing.status == "warn" and "snd-aloop" in missing.detail
     cards.write_text(cards.read_text() + "10 [Loopback       ]: Loopback - Loopback\n                      Loopback 1\n")
+    assert doctor.loopback(tmp_path).status == "warn"
+    (tmp_path / "proc/asound/Loopback/pcm0p/sub1").mkdir(parents=True)
     assert doctor.loopback(tmp_path).status == "pass"
     assert doctor.loopback(tmp_path / "nowhere").status == "warn"

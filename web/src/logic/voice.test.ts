@@ -9,6 +9,7 @@ const session = (over: Partial<VoiceSession> = {}): VoiceSession => ({
   listen: true,
   talk: false,
   hear: false,
+  apps: false,
   since: 1000,
   you: false,
   ...over,
@@ -62,6 +63,9 @@ describe("voiceBadge", () => {
     expect(voiceBadge({ available: true, session: session({ listen: false, talk: true, person: null }) }, null)).toBe("Someone is talking");
     expect(voiceBadge({ available: true, session: session({ listen: false }) }, null)).toBe("Sam is connected, muted");
     expect(voiceBadge({ available: true, session: session({ listen: false, hear: true }) }, null)).toBe("Sam is hearing what Reachy says");
+    expect(voiceBadge({ available: true, session: session({ hear: true, apps: true }) }, null)).toBe(
+      "Sam is listening, hearing what Reachy says and talking to its apps",
+    );
     expect(voiceBadge({ available: true, session: session({ hear: true, talk: true, you: true }) }, null)).toBe(
       "You're listening, hearing what Reachy says and talking",
     );
