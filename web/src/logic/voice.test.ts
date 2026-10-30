@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { VoiceSession } from "../api/voice.ts";
-import { onTailnet, talkBlocked, voiceBadge, voiceBlocked } from "./voice.ts";
+import { onTailnet, talkBlocked, turnsOff, voiceBadge, voiceBlocked } from "./voice.ts";
 
 const session = (over: Partial<VoiceSession> = {}): VoiceSession => ({
   id: null,
