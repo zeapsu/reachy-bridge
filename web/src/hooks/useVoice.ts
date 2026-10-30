@@ -23,7 +23,7 @@ export interface VoiceApi {
   stop: () => Promise<void>;
 }
 
-const OFF: VoiceRoute = { listen: false, talk: false };
+const OFF: VoiceRoute = { listen: false, talk: false, hear: false };
 
 async function microphone(): Promise<MediaStreamTrack> {
   const stream = await navigator.mediaDevices.getUserMedia({
@@ -150,7 +150,7 @@ export function useVoice(visible: boolean): VoiceApi {
         speaker.current ??= new Audio();
         const out = speaker.current;
         out.autoplay = true;
-        out.muted = !next.listen;
+        out.muted = !(next.listen || next.hear);
         void out.play().catch(() => {});
         let opened: string | null = null;
         try {
@@ -226,7 +226,7 @@ export function useVoice(visible: boolean): VoiceApi {
             mic.current.stop();
             mic.current = null;
           }
-          if (speaker.current) speaker.current.muted = !next.listen;
+          if (speaker.current) speaker.current.muted = !(next.listen || next.hear);
           // The switches show what this browser does now, even if the gateway refuses.
           setRouteState(next);
           await apiJson(paths.voiceRoute(sid), { method: "POST", body: JSON.stringify(next) });

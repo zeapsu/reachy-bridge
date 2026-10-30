@@ -22,3 +22,6 @@ Restart=on-failure
 RestartSec=2
 KillSignal=SIGINT
 TimeoutStopSec=10
+# A session that heard the robot mutes its speaker; however the gateway
+# stops, give the robot its voice back ("-": no loopback card, no switch).
+ExecStopPost=-/usr/bin/amixer -q -c Loopback cset "name=Reachy Bridge Speaker" on

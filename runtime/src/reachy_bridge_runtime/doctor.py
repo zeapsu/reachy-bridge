@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from reachy_bridge_runtime import platforms
+from reachy_bridge_runtime import audio_tee, platforms
 
 # The Lite's USB devices: the motor bus's serial adapter, then Pollen's audio
 # and camera (reachy_mini's daemon/utils.py and media/camera_constants.py).
@@ -185,6 +185,22 @@ def udev_rule(root: Path) -> Result:
     )
 
 
+def loopback(root: Path) -> Result:
+    """The ALSA loopback card that lets the dashboard hear what the robot says."""
+    try:
+        cards = (root / "proc/asound/cards").read_text(errors="replace")
+    except OSError:
+        return Result("Audio loopback", "warn", "couldn't read /proc/asound/cards")
+    if audio_tee.loopback_present(cards):
+        return Result("Audio loopback", "pass", f"ALSA card {audio_tee.LOOPBACK}")
+    return Result(
+        "Audio loopback",
+        "warn",
+        "no ALSA loopback card; hearing what Reachy says on the dashboard needs it "
+        f"(sudo modprobe snd-aloop id={audio_tee.LOOPBACK}, and load it at boot)",
+    )
+
+
 def disk(home: Path) -> Result:
     try:
         free = shutil.disk_usage(home).free / 1e9
@@ -256,6 +272,7 @@ def run_checks(root: Path = Path("/"), run: Callable[[list[str]], str | None] = 
     results.append(group("dialout", user, active, _members, "the motor bus's serial port needs it"))
     results.append(group("plugdev", user, active, _members, "the udev rule gives it the audio device"))
     results.append(udev_rule(root))
+    results.append(loopback(root))
     results.append(disk(Path.home()))
     results.append(memory(root))
     results.append(Result("Power supply", "skip", "needs the motors on; the setup's on/off test checks it"))
