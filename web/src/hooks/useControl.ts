@@ -70,9 +70,12 @@ export function useControl(visible: boolean): ControlApi {
       if (event.persisted || others.size > 0 || !latest.current?.holder?.you) return;
       void fetch(paths.controlRelease, { method: "POST", keepalive: true }).catch(() => {});
     };
-    // Back from the back/forward cache: say hello again.
+    // Back from the back/forward cache: byes sent meanwhile were missed, so
+    // ask again who's open.
     const show = (event: PageTransitionEvent) => {
-      if (event.persisted) channel?.postMessage({ kind: "hello", tab: me });
+      if (!event.persisted) return;
+      others.clear();
+      channel?.postMessage({ kind: "hello", tab: me });
     };
     window.addEventListener("pagehide", leave);
     window.addEventListener("pageshow", show);
