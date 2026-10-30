@@ -45,7 +45,7 @@ CI runs these on every PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPac
 |---|---|
 | python | `uv run pytest`, `uv run ruff check runtime tools`, `uv run reachy-bridge-runtime --check` |
 | rust-web | `cargo test` and `cargo clippy --all-targets` in `controller/`; `bun run typecheck`, `bun test`, `bun run build` in `web/` |
-| shell | `shellcheck` on the scripts in `deploy/` and `tools/`, `bash tools/test_uninstall.sh` and `bash tools/test_control.sh` |
+| shell | `shellcheck` on the scripts in `deploy/` and `tools/`, and `bash tools/test_uninstall.sh` |
 | sim | `uv run python tools/sim/run.py`: the controller against a sim daemon (see [`tools/sim/README.md`](tools/sim/README.md)) |
 
 Run the sim tests before asking for hardware QA. CI doesn't check the UI in a browser;

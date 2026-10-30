@@ -70,7 +70,7 @@ impl AppState {
         Arc::new(Self {
             sim,
             auth,
-            control: Control::new(&state_dir, player.clone()),
+            control: Control::new(player.clone()),
             audio,
             setup: Setup::default(),
             apps: DaemonApps::new(daemon.clone()),
