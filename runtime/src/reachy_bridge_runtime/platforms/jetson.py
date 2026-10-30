@@ -117,5 +117,5 @@ PLATFORM = Platform(
     # Volume first: the asoundrc write doesn't touch the mixer. The speaker
     # tee goes on top of upstream's ~/.asoundrc.
     host_setup=(set_speaker_volume, ensure_asoundrc, audio_tee.ensure),
-    features=frozenset({"audio_levels", "camera"}),
+    features=frozenset({"audio_levels", "camera", "speaker_wobble"}),
 )

@@ -368,7 +368,7 @@ export function ControlsPanel(props: Props) {
           ></button>
         </div>
         <p className="note" id="wobble-hint" hidden={!wobbleHint}>
-          Reacts to audio: play the test sound (or run an app) to see the head move.
+          The head moves with whatever plays through the speaker: the test sound, an app, or Talk.
         </p>
         <button className="btn press" id="testsound" type="button" disabled={controlsDisabled} onClick={onTestSound}>
           {testLabel}
