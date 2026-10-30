@@ -871,6 +871,30 @@ async fn a_silent_holder_steps_away_and_comes_back() {
 }
 
 #[tokio::test]
+async fn an_idle_holder_loses_control_but_a_busy_one_keeps_it() {
+    let (h, admin, sam) = control_harness().await;
+    h.control(LAN, &sam, "take", None).await;
+    // The dashboard stays open and polls; an action now and then keeps control.
+    for _ in 0..3 {
+        for _ in 0..100 {
+            h.state.control.advance(5);
+            assert_eq!(h.view(LAN, &sam).await["holder"]["you"], true);
+        }
+        assert_eq!(h.act(LAN, &sam).await.status, StatusCode::OK);
+    }
+    // Ten minutes of polling with no action: control goes, with no claim to come back.
+    for _ in 0..120 {
+        h.state.control.advance(5);
+        h.view(LAN, &sam).await;
+    }
+    assert_eq!(h.view(LOOPBACK, &admin).await["holder"], Value::Null);
+    assert_eq!(h.view(LAN, &sam).await["holder"], Value::Null);
+    assert_eq!(h.view(LAN, &sam).await["you"]["can_take"], true);
+    let r = h.act(LAN, &sam).await;
+    assert_eq!(r.body["detail"], "take control of the robot first");
+}
+
+#[tokio::test]
 async fn control_details() {
     let (h, admin, sam) = control_harness().await;
     // Favorites are a preference, not a robot action.

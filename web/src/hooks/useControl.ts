@@ -15,7 +15,8 @@ export interface ControlApi {
  * Control (#221). Polls while the page is visible: the poll is also how
  * the controller knows the holder is still here, so a hidden tab lets
  * control go after about 10 s (and takes it back on return within 5 min,
- * unless someone else took it).
+ * unless someone else took it). Closing or reloading the page releases
+ * control at once.
  */
 export function useControl(visible: boolean): ControlApi {
   const [view, setView] = useState<ControlView | null>(null);
@@ -46,6 +47,18 @@ export function useControl(visible: boolean): ControlApi {
     const timer = setInterval(() => void reload(), CONTROL_POLL_MS);
     return () => clearInterval(timer);
   }, [visible, reload]);
+
+  // Closing, reloading or leaving the page releases control (not hiding it,
+  // nor a page kept in the back/forward cache: those wait out the quiet
+  // timeout and come back). keepalive: the request outlives the page.
+  useEffect(() => {
+    const leave = (event: PageTransitionEvent) => {
+      if (event.persisted || !latest.current?.holder?.you) return;
+      void fetch(paths.controlRelease, { method: "POST", keepalive: true }).catch(() => {});
+    };
+    window.addEventListener("pagehide", leave);
+    return () => window.removeEventListener("pagehide", leave);
+  }, []);
 
   const act = useCallback(
     async (path: string, method = "POST", body?: unknown) => {
