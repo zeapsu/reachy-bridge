@@ -67,7 +67,7 @@ limits under LAN access). Run
 
 If the dashboard's tailnet name won't load on an iPhone but works on other devices, turn off iCloud
 Private Relay (and "Limit IP Address Tracking" for the network). It sends Safari's DNS lookups past
-Tailscale, so the name resolves to Tailscale's public servers instead of the device.
+Tailscale, so public DNS answers for the name, and that answer never points at the device.
 
 The robot starts off; switch it on from the dashboard. `install.sh` is safe to re-run after a
 pull, and never restarts the daemon while the robot is on.
