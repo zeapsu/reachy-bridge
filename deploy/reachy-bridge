@@ -13,6 +13,9 @@
 #                                        approve a browser's login code
 #                                        (--admin: as the admin, #221)
 #   reachy-bridge devices [revoke <n|id>]  list or revoke paired browsers
+#   reachy-bridge control [grant <n|person> [minutes] | revoke <n|id>]
+#                                        who has control; grant or revoke control time
+#                                        (<n> in grant: a device from `devices`; no minutes: no end)
 #   reachy-bridge deploy <tag>           install a tag; reinstall the previous version if it fails
 #   reachy-bridge uninstall [--keep-data] [--dry-run] [--yes]
 #
@@ -865,6 +868,94 @@ if 1 <= n <= len(devices):
             *) die "devices takes list or revoke <n|id>" ;;
         esac
         ;;
+    control)
+        # Control time in admin mode (#221). Granting and revoking need the
+        # local key, which the controller treats as the admin.
+        need_key() {
+            [[ -r $STATE_DIR/controller.key ]] ||
+                die "can't read $STATE_DIR/controller.key: run this on the robot, as the user the bridge runs as"
+        }
+        command -v python3 >/dev/null || die "reachy-bridge control needs python3"
+        case "${args[0]:-list}" in
+            list)
+                view=$(controller_api GET /api/control)
+                python3 -c '
+import json, sys, time
+view = json.loads(sys.argv[1])
+if not view.get("admin_mode"):
+    print("no admin yet: anyone who reaches the dashboard can drive")
+    sys.exit()
+def at(t):
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
+holder = view.get("holder")
+if holder:
+    role = " (admin)" if holder.get("admin") else ""
+    print("in control: %s%s on %s since %s" % (holder["person"], role, holder.get("device") or "?", at(holder["since"])))
+else:
+    print("in control: nobody")
+grants = view.get("grants") or []
+print("grants:" if grants else "grants: none")
+for n, g in enumerate(grants, 1):
+    until = at(g["until"]) if g.get("until") else "no end"
+    print("  %d  %s  %s, %s to %s" % (n, g["id"], g["person"], at(g["from"]), until))
+requests = view.get("requests") or []
+if requests:
+    print("asking:")
+for r in requests:
+    how_long = "%d min" % r["minutes"] if r.get("minutes") else "no end"
+    note = ": " + r["note"] if r.get("note") else ""
+    print("  %s on %s, %s%s" % (r["person"], r.get("device") or "?", how_long, note))
+' "$view"
+                ;;
+            grant)
+                need_key
+                who=${args[1]:-} minutes=${args[2]:-}
+                [[ -n $who && ${#args[@]} -le 3 ]] || die "usage: reachy-bridge control grant <n|person> [minutes]"
+                [[ -z $minutes || $minutes =~ ^[0-9]{1,6}$ ]] || die "minutes is a number (leave it out for no end)"
+                # A short number is a device's line in `reachy-bridge devices`:
+                # grant its person.
+                if [[ $who =~ ^[0-9]{1,4}$ ]]; then
+                    list=$(controller_api GET /api/auth/devices)
+                    who=$(python3 -c '
+import json, sys
+devices, n = json.loads(sys.argv[1])["devices"], int(sys.argv[2])
+if 1 <= n <= len(devices):
+    print(devices[n - 1].get("person") or devices[n - 1]["name"])
+' "$list" "$who")
+                    [[ -n $who ]] || die "no device ${args[1]} (see reachy-bridge devices)"
+                fi
+                body="{\"person\": $(json_string "$who")" how_long="no end"
+                if [[ -n $minutes ]]; then
+                    body+=", \"minutes\": $((10#$minutes))"
+                    how_long="$((10#$minutes)) min"
+                fi
+                controller_api POST /api/control/grants -H 'Content-Type: application/json' --data "$body}" >/dev/null
+                echo "granted $who control time ($how_long); their browser takes control on its next action"
+                ;;
+            revoke)
+                need_key
+                id=${args[1]:-} person=
+                [[ $id =~ ^[0-9a-f]+$ && ${#args[@]} -eq 2 ]] || die "usage: reachy-bridge control revoke <n|id> (from reachy-bridge control)"
+                # A short number is the grant's line in `reachy-bridge control`;
+                # ids are 12 hex characters.
+                if [[ $id =~ ^[0-9]{1,4}$ ]]; then
+                    view=$(controller_api GET /api/control)
+                    id=$(python3 -c '
+import json, sys
+grants, n = json.loads(sys.argv[1]).get("grants") or [], int(sys.argv[2])
+if 1 <= n <= len(grants):
+    print(grants[n - 1]["id"], grants[n - 1]["person"], sep="\t")
+' "$view" "$id")
+                    [[ -n $id ]] || die "no grant ${args[1]} (see reachy-bridge control)"
+                    person=${id#*$'\t'}
+                    id=${id%%$'\t'*}
+                fi
+                controller_api DELETE "/api/control/grants/$id" >/dev/null
+                echo "revoked grant $id${person:+ ($person)}"
+                ;;
+            *) die "control takes list, grant <n|person> [minutes] or revoke <n|id>" ;;
+        esac
+        ;;
     deploy)
         # Exit from inside the case: install.sh replaces this file, and bash
         # would otherwise read on from the new one.
@@ -889,7 +980,7 @@ if 1 <= n <= len(devices):
         robot_power
         ;;
     -h|--help|help)
-        sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         die "unknown command '$cmd' (try: reachy-bridge help)"
