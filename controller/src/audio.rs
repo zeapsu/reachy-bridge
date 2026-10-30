@@ -60,6 +60,9 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 const WATCH: Duration = Duration::from_secs(2);
 /// Failed checks in a row after which the gateway counts as gone (10 s).
 const GATEWAY_GONE: u32 = 5;
+/// Checks in a row without a robot that's on (no answer, a crashed backend)
+/// after which the session ends (6 s); a robot that says it's off ends it at once.
+const ROBOT_GONE: u32 = 3;
 /// How long a freshly started gateway gets to answer.
 const START_WAIT: Duration = Duration::from_secs(10);
 
@@ -288,8 +291,13 @@ async fn open(
     let Json(body) = body.map_err(|_| ApiError::bad_body())?;
     not_sim(&state)?;
     // Listening and talking go with the robot: off means off.
-    if !state.daemon.status().await.is_some_and(|s| robot_on(&s)) {
-        return Err(ApiError::new(409, "Turn the robot on to listen or talk"));
+    match state.daemon.status().await {
+        None => return Err(ApiError::new(503, "The robot's daemon isn't answering")),
+        Some(s) if robot_state(&s) == "starting" => {
+            return Err(ApiError::new(409, "The robot is still starting; try again in a moment"));
+        }
+        Some(s) if !robot_on(&s) => return Err(ApiError::new(409, "Turn the robot on to listen or talk")),
+        Some(_) => {}
     }
     let audio = &state.audio;
     let _opening = audio.opening.lock().await;
@@ -343,7 +351,7 @@ async fn watch(state: Shared, owner: Owner, credential: Credential, local: bool)
     };
     let ticks = async {
         let mut errors = 0;
-        let mut daemon_gone = 0;
+        let mut robot_gone = 0;
         loop {
             tokio::time::sleep(WATCH).await;
             if state.sim.active() {
@@ -351,12 +359,13 @@ async fn watch(state: Shared, owner: Owner, credential: Credential, local: bool)
             }
             match state.daemon.status().await {
                 Some(status) if robot_off(&status) => return "the robot was turned off",
-                Some(_) => daemon_gone = 0,
-                // The daemon stopped (or restarts): no robot either, unless it's a blip.
-                None => {
-                    daemon_gone += 1;
-                    if daemon_gone >= 2 {
-                        return "the robot's daemon stopped";
+                Some(status) if robot_on(&status) => robot_gone = 0,
+                // No answer, or a robot in between (its backend crashed, or it's
+                // stopping): no robot either, unless it's a blip.
+                _ => {
+                    robot_gone += 1;
+                    if robot_gone >= ROBOT_GONE {
+                        return "the robot stopped answering";
                     }
                 }
             }
