@@ -13,8 +13,8 @@
 //! Admin mode (#221) starts when the first admin device pairs, which only the
 //! local key can approve (`reachy-bridge pair --admin`). From then on every
 //! browser logs in, LAN mode or not, and loopback is no longer trusted: a
-//! request through `tailscale serve` carries no identity, and control time is
-//! granted per person. Only an admin (or the local key) approves and revokes
+//! request through `tailscale serve` carries no identity, and control moves
+//! between one person's devices. Only an admin (or the local key) approves and revokes
 //! devices; a member can log out its own. Admin mode is kept in
 //! `devices.json`, so it stays on when the last admin device expires or is
 //! revoked; the CLI pairs a new one.
@@ -115,7 +115,7 @@ impl AuthConfig {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
-    /// Approves and revokes devices, and (with #221) grants control time.
+    /// Approves and revokes devices, and can always take control (#221).
     Admin,
     #[default]
     Member,
@@ -125,8 +125,8 @@ pub enum Role {
 struct Device {
     id: String,
     name: String,
-    /// Who uses the device: control time is granted per person, and one
-    /// person can have several devices. Older files have none: the name.
+    /// Who uses the device: control moves between one person's devices,
+    /// and one person can have several. Older files have none: the name.
     #[serde(default)]
     person: String,
     #[serde(default)]
@@ -434,6 +434,16 @@ impl Auth {
             }
         };
         let admin_mode = file.admin_mode || file.devices.iter().any(|d| d.role == Role::Admin);
+        // Unnamed devices used to default to "device at <peer>", name and
+        // person, so every tailnet browser shared one person and could move
+        // control between them (#245). Give each its own, from its id.
+        let mut devices = file.devices;
+        for d in &mut devices {
+            let who = if d.person.is_empty() { d.name.clone() } else { d.person.clone() };
+            if let Some(peer) = who.strip_prefix("device at ") {
+                d.person = format!("device {} at {peer}", d.id.get(..4).unwrap_or(&d.id));
+            }
+        }
         // Written in every mode: `reachy-bridge pair --admin` needs it.
         let key = random_token::<32>();
         let local_key = match write_private(&state_dir.join(LOCAL_KEY_FILE), format!("{key}\n").as_bytes()) {
@@ -446,7 +456,7 @@ impl Auth {
         Self {
             config,
             devices_path,
-            devices: Mutex::new(file.devices),
+            devices: Mutex::new(devices),
             pending: Mutex::new(Pending::default()),
             local_key,
             admin_mode: admin_mode.into(),
@@ -516,12 +526,7 @@ impl Auth {
         self.devices.lock().unwrap().iter().map(|d| (d.id.clone(), d.name.clone())).collect()
     }
 
-    /// Some paired device belongs to `person`.
-    pub fn has_person(&self, person: &str) -> bool {
-        self.devices.lock().unwrap().iter().any(|d| d.person == person || (d.person.is_empty() && d.name == person))
-    }
-
-    fn has_device(&self, id: &str) -> bool {
+    pub fn has_device(&self, id: &str) -> bool {
         self.devices.lock().unwrap().iter().any(|d| d.id == id)
     }
 
@@ -987,7 +992,10 @@ impl Auth {
         };
         let request = &mut pending.requests[index];
         let name = label(name);
-        let name = if name.is_empty() { format!("device at {}", request.peer) } else { name };
+        // Unnamed devices need distinct defaults: the person defaults to the
+        // name, and one person's devices pass control between them (#245),
+        // while every tailnet browser shares the loopback peer address.
+        let name = if name.is_empty() { format!("device {} at {}", random_hex(2), request.peer) } else { name };
         let person = label(person);
         let person = if person.is_empty() { name.clone() } else { person };
         request.approved = Some(Approval { name: name.clone(), person: person.clone(), role });
@@ -1048,6 +1056,9 @@ async fn revoke(
         return Err(ApiError::new(500, "could not save the device list"));
     }
     drop(devices);
+    // A revoked browser can't drive any more: it gives up control now, so
+    // nobody waits for it to go silent.
+    state.control.forget(&id);
     auth.revoked.send_modify(|n| *n += 1);
     let by = ctx.by();
     tracing::info!("auth: device {id} ({}) revoked by {by}", removed.name);

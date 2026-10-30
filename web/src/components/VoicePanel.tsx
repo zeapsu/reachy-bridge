@@ -1,10 +1,11 @@
 import { useState } from "react";
 import type { VoiceApi } from "../hooks/useVoice.ts";
 import type { ControlState } from "../logic/control.ts";
-import { isMine, talkBlocked, voiceBadge, voiceBlocked } from "../logic/voice.ts";
+import { isMine, onTailnet, talkBlocked, voiceBadge, voiceBlocked } from "../logic/voice.ts";
 import "./VoicePanel.css";
 
 const secure = typeof window !== "undefined" && window.isSecureContext;
+const tailnet = secure || (typeof location !== "undefined" && onTailnet(location.hostname));
 const hasMic = typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia);
 
 /**
@@ -15,7 +16,7 @@ const hasMic = typeof navigator !== "undefined" && Boolean(navigator.mediaDevice
 export function VoicePanel({ voice, control }: { voice: VoiceApi; control: ControlState }) {
   const [wanted, setWanted] = useState({ listen: true, talk: false, hear: false });
   const open = voice.status !== "off";
-  const blocked = voiceBlocked(voice.view, control, secure);
+  const blocked = voiceBlocked(voice.view, control, tailnet);
   const noTalk = talkBlocked(secure, hasMic);
   const route = open ? voice.route : wanted;
   const session = voice.view?.session;

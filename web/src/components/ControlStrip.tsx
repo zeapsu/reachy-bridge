@@ -1,25 +1,26 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CONTROL_NEEDED_EVENT, paths } from "../api.ts";
+import { CONTROL_NEEDED_EVENT, NEEDS_CONTROL, paths } from "../api.ts";
 import type { ControlApi } from "../hooks/useControl.ts";
-import { SLOTS, clock, controlNotice, controlState, showStrip, type Asking, type ControlState } from "../logic/control.ts";
+import { controlNotice, controlState, showStrip, type ControlState } from "../logic/control.ts";
 import "./ControlStrip.css";
+
+const sentence = (text: string) => (text ? `${text[0].toUpperCase()}${text.slice(1)}.` : text);
 
 /**
  * Who drives the robot (#221), one line inside a view that acts on it, and
- * only when this browser can't just act: someone else is in control, or
- * nobody is and this person has to ask. Nothing outside admin mode, while
- * this browser is in control, or when its first action can take control,
- * unless an action was refused without taking it (no tap behind it): then
- * it offers Take control.
+ * only when this browser can't just act: someone else is in control.
+ * Nothing outside admin mode, while this browser is in control, or when its
+ * first action can take control, unless an action was refused without
+ * taking it (no tap behind it): then it offers Take control.
  */
 export function ControlStrip({ control }: { control: ControlApi }) {
-  const [slot, setSlot] = useState(1);
   const [refused, setRefused] = useState(false);
   const state = controlState(control.view);
   const free = state.kind === "free";
 
   useEffect(() => {
-    const onRefused = () => setRefused(true);
+    // Only "nobody is in control": a refusal while someone else held it says nothing about later.
+    const onRefused = (event: Event) => setRefused((event as CustomEvent<unknown>).detail === NEEDS_CONTROL);
     window.addEventListener(CONTROL_NEEDED_EVENT, onRefused);
     return () => window.removeEventListener(CONTROL_NEEDED_EVENT, onRefused);
   }, []);
@@ -35,56 +36,14 @@ export function ControlStrip({ control }: { control: ControlApi }) {
     </button>
   );
 
-  const ask = (asking: Asking): [string, ReactNode] => {
-    switch (asking.kind) {
-      case "can_ask":
-        return [
-          "Ask the admin for control time.",
-          <span className="control-ask" key="ask">
-            <select className="field" aria-label="How long" value={slot} onChange={(e) => setSlot(Number(e.target.value))}>
-              {SLOTS.map((s, i) => (
-                <option key={s.label} value={i}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-            <button
-              className="btn primary press"
-              type="button"
-              disabled={busy}
-              onClick={() => void act(paths.controlRequest, "POST", { minutes: SLOTS[slot].minutes })}
-            >
-              Ask
-            </button>
-          </span>,
-        ];
-      case "asked":
-        return [
-          "Waiting for the admin.",
-          <button className="btn press" type="button" key="cancel" disabled={busy} onClick={() => void act(paths.controlRequest, "DELETE")}>
-            Cancel
-          </button>,
-        ];
-      case "cooldown":
-        return [`You can ask again at ${clock(asking.until)}.`, null];
-      case "none":
-        return ["", null];
-    }
-  };
-
   let text = "";
   let action: ReactNode = null;
   if (state.kind === "other" && showStrip(state)) {
-    text = `${state.person} is in control${state.until === null ? "" : ` until ${clock(state.until)}`}.`;
-    if (state.canTakeOver) {
-      action = takeButton("Take over");
-    } else {
-      const [more, button] = ask(state.asking);
-      if (more) text += ` ${more}`;
-      action = button;
-    }
+    const who = state.elsewhere !== undefined ? `You're in control on ${state.elsewhere || "another device"}` : `${state.person} is in control`;
+    text = state.canTakeOver ? `${who}.` : `${who}. You can drive once they let go.`;
+    if (state.canTakeOver) action = takeButton("Take over");
   } else if (state.kind === "free" && showStrip(state)) {
-    [text, action] = ask(state.asking);
+    text = "Log in from a paired browser to drive.";
   } else if (state.kind === "free" && refused) {
     text = "Nobody is in control.";
     action = takeButton("Take control", true, paths.controlTakeIfFree);
@@ -105,11 +64,10 @@ const hover = typeof window !== "undefined" && window.matchMedia?.("(hover: hove
 
 /**
  * A notice for a few seconds when who drives changes (#221): you took
- * control (with Release), someone took over, your time is nearly up; and
- * control actions that failed. `nudge` changing shows "You're in control"
- * again, from the status pill. It stays while hovered or focused.
+ * control (with Release), someone took over; and control actions or robot
+ * actions refused for control. It stays while hovered or focused.
  */
-export function ControlToast({ control, nudge }: { control: ControlApi; nudge: number }) {
+export function ControlToast({ control }: { control: ControlApi }) {
   const state = controlState(control.view);
   const key = JSON.stringify(state);
   const prev = useRef<ControlState>({ kind: "off" });
@@ -123,11 +81,15 @@ export function ControlToast({ control, nudge }: { control: ControlApi; nudge: n
     if (text) setToast({ text, release: next.kind === "mine" });
   }, [key]);
 
+  // A tap refused because someone else has control: say so wherever the tap was.
   useEffect(() => {
-    if (nudge === 0 || prev.current.kind !== "mine") return;
-    const mine = prev.current;
-    setToast({ text: mine.until === null ? "You're in control" : `You're in control until ${clock(mine.until)}`, release: true });
-  }, [nudge]);
+    const onRefused = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (typeof detail === "string") setToast({ text: sentence(detail), release: false, error: true });
+    };
+    window.addEventListener(CONTROL_NEEDED_EVENT, onRefused);
+    return () => window.removeEventListener(CONTROL_NEEDED_EVENT, onRefused);
+  }, []);
 
   useEffect(() => {
     if (control.error) setToast({ text: control.error, release: false, error: true });

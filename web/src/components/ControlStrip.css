@@ -15,8 +15,6 @@
   font-size: 14px;
 }
 .control-strip .btn { padding: 7px 14px; }
-.control-ask { display: flex; gap: 6px; }
-.control-ask .field { padding-block: 6px; }
 .control-error { flex-basis: 100%; margin: 0 8px 4px 0; }
 
 /* A short notice when who drives changes. */
@@ -49,15 +47,19 @@
   .control-toast { top: calc(max(16px, env(safe-area-inset-top, 0px)) + 60px); }
 }
 
-/* The holder's name in the status pill; "you" opens the notice again. */
+/* The holder's name in the status pill, and Release beside it while it's you. */
 .control-who { color: var(--ink-3); }
-button.control-who {
+.top .release {
+  --r: 999px;
+  --frost: 14px;
+  padding: 8px 14px;
   font: inherit;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--accent);
-  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+@media (max-width: 420px) {
+  .top .release { padding: 7px 11px; font-size: 12px; }
 }
 .control-toast.error { color: var(--danger); }
 .sr-only {

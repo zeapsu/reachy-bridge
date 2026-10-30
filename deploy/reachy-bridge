@@ -802,7 +802,7 @@ case "$cmd" in
         [[ ${args[0]:-} =~ ^[0-9]{6}$ ]] || die "usage: reachy-bridge pair [--admin] [--person=<who>] <6-digit code> [name]"
         body="{\"code\": \"${args[0]}\""
         [[ -n ${args[1]:-} ]] && body+=", \"name\": $(json_string "${args[*]:1}")"
-        # Control time is granted per person (#221); it defaults to the name.
+        # Control moves between one person's devices (#221); it defaults to the name.
         [[ -n $person ]] && body+=", \"person\": $(json_string "$person")"
         if (( admin )); then
             # Only the local key approves an admin.

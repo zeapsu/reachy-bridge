@@ -12,10 +12,10 @@ export interface ControlApi {
 }
 
 /**
- * Control time (#221). Polls while the page is visible: the poll is also how
+ * Control (#221). Polls while the page is visible: the poll is also how
  * the controller knows the holder is still here, so a hidden tab lets
- * control go after about 10 s (and takes it back on return, within the
- * grant).
+ * control go after about 10 s (and takes it back on return within 5 min,
+ * unless someone else took it).
  */
 export function useControl(visible: boolean): ControlApi {
   const [view, setView] = useState<ControlView | null>(null);
@@ -68,8 +68,9 @@ export function useControl(visible: boolean): ControlApi {
   // A robot action while nobody is in control takes it first (api/client.ts).
   useEffect(() => {
     setControlTaker(async () => {
+      // Nobody in control, or this person on another device (the server checks both again).
       const state = controlState(latest.current);
-      if (state.kind !== "free" || !state.canTake) return false;
+      if (!(state.kind === "free" && state.canTake) && !(state.kind === "other" && state.elsewhere !== undefined)) return false;
       try {
         await apiJson(paths.controlTakeIfFree, { method: "POST" });
         return true;

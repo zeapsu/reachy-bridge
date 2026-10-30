@@ -1,4 +1,5 @@
-// Control time (#221): who drives the robot in admin mode.
+// Control (#221, #245): who drives the robot in admin mode. Any paired
+// browser takes control while nobody has it; the admin can take it over.
 
 export const controlPaths = {
   control: "/api/control",
@@ -6,30 +7,7 @@ export const controlPaths = {
   /** Takes control only while nobody has it (the dashboard's take for a robot action). */
   controlTakeIfFree: "/api/control/take?if_free=true",
   controlRelease: "/api/control/release",
-  controlRequest: "/api/control/request",
-  controlRefuse: (person: string) => `/api/control/requests/${encodeURIComponent(person)}/refuse`,
-  controlGrants: "/api/control/grants",
-  controlGrant: (id: string) => `/api/control/grants/${encodeURIComponent(id)}`,
 } as const;
-
-export interface ControlGrant {
-  id: string;
-  person: string;
-  /** Unix seconds. */
-  from: number;
-  /** Unix seconds; null for no end. */
-  until: number | null;
-  by: string;
-}
-
-export interface ControlAsk {
-  person: string;
-  device: string;
-  at: number;
-  /** null: no end asked for. */
-  minutes: number | null;
-  note: string;
-}
 
 export interface ControlHolder {
   person: string;
@@ -37,7 +15,6 @@ export interface ControlHolder {
   device: string;
   admin: boolean;
   since: number;
-  until: number | null;
   /** This browser holds control. */
   you: boolean;
 }
@@ -50,11 +27,6 @@ export interface ControlView {
   you?: {
     admin: boolean;
     person: string | null;
-    grant: ControlGrant | null;
     can_take: boolean;
-    cooldown_until: number | null;
   };
-  /** An admin sees every grant and request; others their own. */
-  grants?: ControlGrant[];
-  requests?: ControlAsk[];
 }
