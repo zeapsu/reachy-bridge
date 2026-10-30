@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 
-from reachy_bridge_runtime import upstream
+from reachy_bridge_runtime import audio_tee, upstream
 from reachy_bridge_runtime.platforms import Platform
 
 logger = logging.getLogger(__name__)
@@ -114,7 +114,8 @@ def ensure_asoundrc() -> None:
 PLATFORM = Platform(
     name="jetson",
     tier="tested",
-    # Volume first: the asoundrc write doesn't touch the mixer.
-    host_setup=(set_speaker_volume, ensure_asoundrc),
+    # Volume first: the asoundrc write doesn't touch the mixer. The speaker
+    # tee goes on top of upstream's ~/.asoundrc.
+    host_setup=(set_speaker_volume, ensure_asoundrc, audio_tee.ensure),
     features=frozenset({"audio_levels", "camera"}),
 )

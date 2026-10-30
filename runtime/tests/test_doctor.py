@@ -154,3 +154,14 @@ def test_run_checks_never_powers_the_robot(tmp_path: Path, monkeypatch):
     assert results["JetPack"][0] == "pass"
     # Groups are checked for the uid's account, not $USER.
     assert "someone-else" not in results["dialout group"][1]
+
+
+def test_loopback_card(tmp_path: Path):
+    (tmp_path / "proc/asound").mkdir(parents=True)
+    cards = tmp_path / "proc/asound/cards"
+    cards.write_text(" 0 [Audio          ]: USB-Audio - Reachy Mini Audio\n")
+    missing = doctor.loopback(tmp_path)
+    assert missing.status == "warn" and "snd-aloop" in missing.detail
+    cards.write_text(cards.read_text() + "10 [Loopback       ]: Loopback - Loopback\n                      Loopback 1\n")
+    assert doctor.loopback(tmp_path).status == "pass"
+    assert doctor.loopback(tmp_path / "nowhere").status == "warn"

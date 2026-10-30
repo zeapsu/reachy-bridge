@@ -10,11 +10,11 @@ const hasMic = typeof navigator !== "undefined" && Boolean(navigator.mediaDevice
 
 /**
  * Listen and talk (#219), the Robot tab's Voice pane: hear the robot's mic on
- * this device, and speak through its speaker. Either can be switched while
- * connected.
+ * this device, hear what the robot says (its speaker goes quiet meanwhile),
+ * and speak through its speaker. Each can be switched while connected.
  */
 export function VoicePanel({ voice, control }: { voice: VoiceApi; control: ControlState }) {
-  const [wanted, setWanted] = useState({ listen: true, talk: false });
+  const [wanted, setWanted] = useState({ listen: true, talk: false, hear: false });
   const open = voice.status !== "off";
   const blocked = voiceBlocked(voice.view, control, tailnet);
   const noTalk = talkBlocked(secure, hasMic);
@@ -22,7 +22,7 @@ export function VoicePanel({ voice, control }: { voice: VoiceApi; control: Contr
   const session = voice.view?.session;
   const other = session && !isMine(session, voice.mine) ? voiceBadge(voice.view, voice.mine) : null;
 
-  const flip = (key: "listen" | "talk") => {
+  const flip = (key: "listen" | "talk" | "hear") => {
     const next = { ...route, [key]: !route[key] };
     if (open) void voice.setRoute(next);
     else setWanted(next);
@@ -38,7 +38,7 @@ export function VoicePanel({ voice, control }: { voice: VoiceApi; control: Contr
         </span>
       </div>
       <div className="row">
-        <label htmlFor="voice-listen">Hear the robot on this device</label>
+        <label htmlFor="voice-listen">Hear Reachy's surroundings (its mic)</label>
         <button
           className="switch"
           type="button"
@@ -49,6 +49,22 @@ export function VoicePanel({ voice, control }: { voice: VoiceApi; control: Contr
           onClick={() => flip("listen")}
         ></button>
       </div>
+      <div className="row">
+        <label htmlFor="voice-hear-robot">Hear what Reachy says (its speaker)</label>
+        <button
+          className="switch"
+          type="button"
+          role="switch"
+          id="voice-hear-robot"
+          aria-checked={route.hear}
+          aria-describedby="voice-hear-note"
+          disabled={voice.busy || (!open && blocked !== null)}
+          onClick={() => flip("hear")}
+        ></button>
+      </div>
+      <p className="note" id="voice-hear-note">
+        Its voice, an app's voice and its sounds play here instead of on the robot.
+      </p>
       <div className="row">
         <label htmlFor="voice-talk">Talk through the robot</label>
         <button
@@ -81,8 +97,8 @@ export function VoicePanel({ voice, control }: { voice: VoiceApi; control: Contr
           className="btn primary press"
           type="button"
           id="voice-start"
-          disabled={voice.busy || blocked !== null || !(wanted.listen || (wanted.talk && noTalk === null))}
-          onClick={() => void voice.start({ listen: wanted.listen, talk: wanted.talk && noTalk === null })}
+          disabled={voice.busy || blocked !== null || !(wanted.listen || wanted.hear || (wanted.talk && noTalk === null))}
+          onClick={() => void voice.start({ ...wanted, talk: wanted.talk && noTalk === null })}
         >
           Start
         </button>
