@@ -29,8 +29,11 @@ export function talkBlocked(secure: boolean, hasMic: boolean): string | null {
   return null;
 }
 
-const doing = (s: VoiceSession) =>
-  s.listen && s.talk ? "listening and talking" : s.talk ? "talking" : s.listen ? "listening" : "connected, muted";
+function doing(s: VoiceSession): string {
+  const parts = [s.listen && "listening", s.hear && "hearing what Reachy says", s.talk && "talking"].filter(Boolean);
+  if (parts.length === 0) return "connected, muted";
+  return parts.length === 1 ? String(parts[0]) : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
 
 /** The open session is this browser's: its login's, or the one it opened (`mine`, its ref). */
 export const isMine = (s: VoiceSession, mine: string | null) => s.you || (mine !== null && s.ref === mine);

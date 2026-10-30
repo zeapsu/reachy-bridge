@@ -8,6 +8,7 @@ const session = (over: Partial<VoiceSession> = {}): VoiceSession => ({
   person: "Sam",
   listen: true,
   talk: false,
+  hear: false,
   since: 1000,
   you: false,
   ...over,
@@ -47,6 +48,10 @@ describe("voiceBadge", () => {
     expect(voiceBadge({ available: true, session: session({ talk: true, you: true }) }, null)).toBe("You're listening and talking");
     expect(voiceBadge({ available: true, session: session({ listen: false, talk: true, person: null }) }, null)).toBe("Someone is talking");
     expect(voiceBadge({ available: true, session: session({ listen: false }) }, null)).toBe("Sam is connected, muted");
+    expect(voiceBadge({ available: true, session: session({ listen: false, hear: true }) }, null)).toBe("Sam is hearing what Reachy says");
+    expect(voiceBadge({ available: true, session: session({ hear: true, talk: true, you: true }) }, null)).toBe(
+      "You're listening, hearing what Reachy says and talking",
+    );
   });
   test("without logins, tells this browser's session by its ref", () => {
     const open = session({ person: null });

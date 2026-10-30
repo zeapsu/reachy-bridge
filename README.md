@@ -123,9 +123,11 @@ network you trust, and Tailscale (`reachy-bridge serve`, HTTPS) for anything bey
 ## Listen and talk
 
 The Robot tab's Voice pane plays the robot's microphone on your device and your
-device's microphone through the robot's speaker, either or both, switched while connected. One
-browser at a time; in admin mode, only the browser in control, and the session ends when control
-or the login does. Every dashboard shows a mic badge while a session is open.
+device's microphone through the robot's speaker, and can play what the robot says (its own sounds
+and an app's voice) on your device instead of its speaker. Each is switched while connected. One
+browser at a time, with the robot on; in admin mode, only the browser in control, and the session
+ends when control or the login does, or when the robot is turned off. Every dashboard shows a mic
+badge while a session is open.
 
 The controller starts `reachy-bridge-audio.service` on demand. Audio is WebRTC over UDP straight
 between the browser and the device, on tailnet addresses only (no STUN or TURN), using UDP ports
@@ -133,6 +135,19 @@ between the browser and the device, on tailnet addresses only (no STUN or TURN),
 (Tailscale) address: audio can't connect from a plain-http LAN page, and browsers only share a
 microphone with a secure page. Sim mode has no audio. The device needs GStreamer's libnice plugin
 (`sudo apt install gstreamer1.0-nice`); `reachy-bridge check` reports it.
+
+Hearing what the robot says needs an ALSA loopback card with the id `Loopback`, which the runtime
+then routes the robot's speaker output through (it rewrites upstream's `~/.asoundrc`, keeping its
+device names, and takes the change out again when the card is gone). Load it now and at boot:
+
+```bash
+sudo modprobe snd-aloop index=10 id=Loopback pcm_substreams=2
+echo snd-aloop | sudo tee /etc/modules-load.d/reachy-bridge-loopback.conf
+echo "options snd-aloop index=10 id=Loopback pcm_substreams=2" | sudo tee /etc/modprobe.d/reachy-bridge-loopback.conf
+```
+
+then reinstall with the robot off (`deploy/install.sh`), so the daemon picks up the new
+`~/.asoundrc`. `reachy-bridge check` reports the card.
 
 ## Development
 

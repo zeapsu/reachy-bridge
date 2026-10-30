@@ -1,8 +1,8 @@
 //! Listen and talk from the dashboard (#219): sessions on the audio gateway.
 //!
 //! The gateway (`reachy-bridge-audio-gateway`, loopback only) streams the
-//! robot mic to one browser and plays that browser's mic on the robot
-//! speaker, over WebRTC. The controller is its only client: it starts the
+//! robot mic (and, with its speaker tee, what the robot plays) to one
+//! browser and plays that browser's mic on the robot speaker, over WebRTC. The controller is its only client: it starts the
 //! gateway's unit on demand, opens a session for the browser that asks,
 //! passes its answer on, and ends the session when the browser's login or,
 //! in admin mode, its control (#221) ends. Starting a session is a robot
@@ -77,6 +77,7 @@ struct Owner {
     person: Option<String>,
     listen: bool,
     talk: bool,
+    hear: bool,
     since: u64,
     end: Arc<Notify>,
 }
@@ -252,6 +253,7 @@ async fn view(State(state): State<Shared>, Extension(ctx): Extension<AuthContext
             "person": o.person,
             "listen": o.listen,
             "talk": o.talk,
+            "hear": o.hear,
             "since": o.since,
             "you": you,
         })
@@ -263,6 +265,15 @@ async fn view(State(state): State<Shared>, Extension(ctx): Extension<AuthContext
 struct Route {
     listen: bool,
     talk: bool,
+    /// Hear what the robot plays (its speaker goes quiet meanwhile).
+    #[serde(default)]
+    hear: bool,
+}
+
+impl Route {
+    fn json(&self) -> Value {
+        json!({"listen": self.listen, "talk": self.talk, "hear": self.hear})
+    }
 }
 
 /// The robot is powered on (asleep counts: its motors are off, not it).
@@ -308,7 +319,7 @@ async fn open(
     // Waiting for the lock or the gateway can take a while: check again.
     robot_ready(&state).await?;
     let opened = audio
-        .call(reqwest::Method::POST, "/session", Some(json!({"listen": body.listen, "talk": body.talk})))
+        .call(reqwest::Method::POST, "/session", Some(body.json()))
         .await?
         .unwrap_or(Value::Null);
     let (Some(id), Some(offer)) = (opened["id"].as_str(), opened["offer"].as_str()) else {
@@ -321,6 +332,7 @@ async fn open(
         person: ctx.person.clone(),
         listen: body.listen,
         talk: body.talk,
+        hear: body.hear,
         since: state.control.now(),
         end: Arc::new(Notify::new()),
     };
@@ -330,11 +342,12 @@ async fn open(
     }
     // The log is readable from every dashboard: name the public ref, never the id.
     tracing::info!(
-        "audio: session {} for {} (listen={}, talk={})",
+        "audio: session {} for {} (listen={}, talk={}, hear={})",
         owner.public,
         ctx.person.as_deref().or(ctx.device.as_deref()).unwrap_or("this host"),
         body.listen,
-        body.talk
+        body.talk,
+        body.hear
     );
     let credential = ctx.credential.clone().unwrap_or(Credential::Trusted);
     let public = owner.public.clone();
@@ -440,13 +453,13 @@ async fn route(
 ) -> ApiResult<Json<Value>> {
     let Json(body) = body.map_err(|_| ApiError::bad_body())?;
     owned(&state, &ctx, &id)?;
-    let route = json!({"listen": body.listen, "talk": body.talk});
-    state.audio.call(reqwest::Method::POST, &format!("/session/{id}/route"), Some(route)).await?;
+    state.audio.call(reqwest::Method::POST, &format!("/session/{id}/route"), Some(body.json())).await?;
     if let Some(owner) = state.audio.owner.lock().unwrap().as_mut().filter(|o| o.id == id) {
         owner.listen = body.listen;
         owner.talk = body.talk;
+        owner.hear = body.hear;
     }
-    Ok(Json(json!({"listen": body.listen, "talk": body.talk})))
+    Ok(Json(body.json()))
 }
 
 /// End a session: its own browser. (An admin ends someone else's by taking

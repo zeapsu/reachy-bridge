@@ -7,11 +7,16 @@ session when control ends. This process listens on loopback only; media
 goes over UDP straight between the browser and this host.
 
 The gateway makes the offer (sendrecv Opus, all ICE candidates gathered, no
-trickle) and the browser answers. Listening and talking are valves in the
-pipeline, so switching either never renegotiates:
+trickle) and the browser answers. Listening, hearing and talking are valves
+in the pipeline, so switching any of them never renegotiates:
 
-    robot mic -> valve(listen) -> opus -> webrtcbin -> browser
+    robot mic -> valve(listen) -+-> opus -> webrtcbin -> browser
+    robot speaker's output -> valve(hear) -+
     browser -> webrtcbin -> opus -> valve(talk) -> robot speaker
+
+Hearing what the robot says needs the speaker tee (``audio_tee``: an ALSA
+loopback card); while it's on, the robot's own speaker is muted, so the
+sound plays on one device, and talking bypasses both the tee and the mute.
 
 ICE candidates are limited to UDP host candidates on ``AUDIO_GATEWAY_NETS``
 (the tailnet by default) in both directions, there's no STUN or TURN, and
@@ -30,10 +35,10 @@ the gateway. A session whose controller stops asking for its status ends.
 HTTP API (loopback, JSON):
 
 - ``GET /status``: ``{"session": {...} | null}``
-- ``POST /session`` ``{"listen", "talk"}``: replaces any session; returns
-  ``{"id", "offer"}``
+- ``POST /session`` ``{"listen", "talk", "hear"}``: replaces any session;
+  returns ``{"id", "offer"}``
 - ``POST /session/<id>/answer`` ``{"sdp"}``
-- ``POST /session/<id>/route`` ``{"listen", "talk"}``
+- ``POST /session/<id>/route`` ``{"listen", "talk", "hear"}``
 - ``DELETE /session/<id>``
 """
 
@@ -58,13 +63,21 @@ gi.require_version("GstSdp", "1.0")
 gi.require_version("GstWebRTC", "1.0")
 from gi.repository import GLib, Gst, GstSdp, GstWebRTC  # noqa: E402
 
+from . import audio_tee  # noqa: E402
 from .audio_policy import AUTH_HEADER, KEY_FILE, NETS, NONCE, PROOF_HEADER, filter_candidates, fresh, sign  # noqa: E402
 
 logger = logging.getLogger("reachy_bridge_runtime.audio_gateway")
 
 PORT = int(os.environ.get("AUDIO_GATEWAY_PORT", "8002"))
 SOURCE = os.environ.get("AUDIO_GATEWAY_SOURCE", "alsasrc device=reachymini_audio_src")
-SINK = os.environ.get("AUDIO_GATEWAY_SINK", "alsasink device=reachymini_audio_sink sync=false")
+_TEED = audio_tee.is_installed()
+# Talking skips the speaker tee: the browser shouldn't hear itself, and the
+# speaker's mute is for the robot's own sounds.
+_TALK = audio_tee.TALK_SINK if _TEED else audio_tee.SINK
+SINK = os.environ.get("AUDIO_GATEWAY_SINK", f"alsasink device={_TALK} sync=false")
+# What the robot plays, from the tee; empty without one.
+HEAR = os.environ.get("AUDIO_GATEWAY_HEAR", f"alsasrc device={audio_tee.HEAR_SOURCE}" if _TEED else "")
+NO_HEAR = "Hearing what Reachy says needs an ALSA loopback card (see reachy-bridge check)"
 # A session whose controller hasn't asked for its status this long ends: the
 # controller watches every session (it polls every 2 s) and may be gone.
 UNWATCHED_TIMEOUT = 30.0
@@ -86,6 +99,7 @@ REQUIRED = [
     "rtpopuspay",
     "rtpopusdepay",
     "valve",
+    "audiomixer",
     "audioconvert",
     "audioresample",
 ]
@@ -120,19 +134,29 @@ class Session:
     """One browser's audio: a pipeline with a webrtcbin. Built and driven on
     the GLib main loop."""
 
-    def __init__(self, listen: bool, talk: bool) -> None:
+    def __init__(self, listen: bool, talk: bool, hear: bool) -> None:
         self.id = secrets.token_hex(8)
         self.created = time.monotonic()
         # Last seen connected (or created): a session quiet this long ends.
         self.seen = self.created
         self.listen = listen
         self.talk = talk
+        self.hear = hear
         self.packets_in = 0
         self.last_in = 0.0
+        caps = "audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1"
+        # A closed valve sends gaps, so the mixer doesn't wait for its branch.
+        valve = "drop-mode=transform-to-gap"
+        mic = f"{SOURCE} ! {caps} ! valve name=listen drop={str(not listen).lower()} {valve}"
+        out = (
+            f"{mic} ! mix. {HEAR} ! {caps} ! valve name=hear drop={str(not hear).lower()} {valve} ! mix. "
+            f"audiomixer name=mix"
+            if HEAR
+            else mic
+        )
         self.pipeline = Gst.parse_launch(
             f"webrtcbin name=webrtc bundle-policy=max-bundle "
-            f"{SOURCE} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1 "
-            f"! valve name=listen drop={str(not listen).lower()} "
+            f"{out} "
             f"! opusenc bitrate=32000 inband-fec=true ! rtpopuspay pt=111 "
             # Browsers only accept Opus offered as opus/48000/2.
             f"! application/x-rtp,media=audio,encoding-name=OPUS,payload=111,clock-rate=48000,encoding-params=(string)2 "
@@ -220,9 +244,12 @@ class Session:
         self.answered = True
         return promise
 
-    def route(self, listen: bool, talk: bool) -> None:
-        self.listen, self.talk = listen, talk
+    def route(self, listen: bool, talk: bool, hear: bool) -> None:
+        self.listen, self.talk, self.hear = listen, talk, hear
         self.pipeline.get_by_name("listen").set_property("drop", not listen)
+        hear_valve = self.pipeline.get_by_name("hear")
+        if hear_valve is not None:
+            hear_valve.set_property("drop", not hear)
         talk_valve = self.pipeline.get_by_name("talk")
         if talk_valve is not None:
             talk_valve.set_property("drop", not talk)
@@ -236,6 +263,7 @@ class Session:
             "id": self.id,
             "listen": self.listen,
             "talk": self.talk,
+            "hear": self.hear,
             "answered": self.answered,
             "connected": connected,
             "ice": ice.value_nick,
@@ -260,12 +288,17 @@ class Gateway:
         if self.session is not None:
             logger.info("Audio session %s ended", self.session.id)
             session, self.session = self.session, None
-            on_main(session.stop)
+            try:
+                on_main(session.stop)
+            finally:
+                speaker(True)
 
-    def open(self, listen: bool, talk: bool) -> dict[str, Any]:
+    def open(self, listen: bool, talk: bool, hear: bool) -> dict[str, Any]:
+        if hear and not HEAR:
+            raise ValueError(NO_HEAR)
         with self.lock:
             self._end()
-            session = on_main(lambda: Session(listen, talk))
+            session = on_main(lambda: Session(listen, talk, hear))
             try:
                 on_main(session.start)
                 if not session.gathered.wait(GATHER_TIMEOUT):
@@ -276,8 +309,19 @@ class Gateway:
                 on_main(session.stop)
                 raise
             self.session = session
-            logger.info("Audio session %s opened (listen=%s, talk=%s)", session.id, listen, talk)
+            speaker(not hear)
+            logger.info("Audio session %s opened (listen=%s, talk=%s, hear=%s)", session.id, listen, talk, hear)
             return {"id": session.id, "offer": offer}
+
+    def route(self, sid: str, listen: bool, talk: bool, hear: bool) -> None:
+        if hear and not HEAR:
+            raise ValueError(NO_HEAR)
+        with self.lock:
+            if self.session is None or self.session.id != sid:
+                raise KeyError(sid)
+            session = self.session
+            on_main(lambda: session.route(listen, talk, hear))
+            speaker(not hear)
 
     def with_session(self, sid: str, func: Callable[[Session], Any]) -> Any:
         with self.lock:
@@ -317,6 +361,12 @@ class Gateway:
                 self._end()
                 return {"session": None}
             return {"session": state}
+
+
+def speaker(on: bool) -> None:
+    """The robot's speaker plays its own sounds unless a browser hears them."""
+    if HEAR:
+        audio_tee.set_speaker(on)
 
 
 GATEWAY = Gateway()
@@ -382,7 +432,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._reply(HTTPStatus.OK, GATEWAY.status())
             if method == "POST" and parts == ["session"]:
                 body = self._body()
-                return self._reply(HTTPStatus.OK, GATEWAY.open(bool(body.get("listen", True)), bool(body.get("talk", False))))
+                opened = GATEWAY.open(bool(body.get("listen", True)), bool(body.get("talk", False)), bool(body.get("hear", False)))
+                return self._reply(HTTPStatus.OK, opened)
             if len(parts) == 2 and parts[0] == "session" and method == "DELETE":
                 GATEWAY.close(parts[1])
                 return self._reply(HTTPStatus.NO_CONTENT)
@@ -400,8 +451,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError(f"the answer was refused: {reply.get_value('error').message}")
                     return self._reply(HTTPStatus.NO_CONTENT)
                 if parts[2] == "route":
-                    listen, talk = bool(body.get("listen")), bool(body.get("talk"))
-                    GATEWAY.with_session(parts[1], lambda s: s.route(listen, talk))
+                    GATEWAY.route(parts[1], bool(body.get("listen")), bool(body.get("talk")), bool(body.get("hear")))
                     return self._reply(HTTPStatus.NO_CONTENT)
             return self._reply(HTTPStatus.NOT_FOUND, {"detail": "not found"})
         except KeyError:
@@ -440,6 +490,8 @@ def main() -> None:
     if missing:
         hint = " (sudo apt install gstreamer1.0-nice)" if {"nicesrc", "nicesink"} & set(missing) else ""
         raise SystemExit(f"audio gateway: missing GStreamer elements: {', '.join(missing)}{hint}")
+    # A gateway that stopped mid-session may have left the speaker muted.
+    speaker(True)
     loop = GLib.MainLoop()
     threading.Thread(target=loop.run, name="glib", daemon=True).start()
     threading.Thread(target=reap, name="reap", daemon=True).start()

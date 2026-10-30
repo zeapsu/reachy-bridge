@@ -27,7 +27,6 @@ const LOOPBACK: &str = "127.0.0.1:50000";
 const LAN: &str = "192.168.1.50:50000";
 const LAN2: &str = "192.168.1.51:50000";
 
-/// A daemon whose robot is off until `on` is set.
 // The fake robot's power: ROBOT_OFF, ROBOT_ON, ROBOT_CRASHED (its backend
 // died), ROBOT_STARTING, or ROBOT_SILENT (the daemon doesn't answer).
 const ROBOT_OFF: u8 = 0;
@@ -36,6 +35,7 @@ const ROBOT_CRASHED: u8 = 2;
 const ROBOT_STARTING: u8 = 3;
 const ROBOT_SILENT: u8 = 4;
 
+/// A daemon that reports `power`.
 async fn fake_daemon(power: Arc<AtomicU8>) -> String {
     let app = Router::new().route(
         "/api/daemon/status",
@@ -965,6 +965,7 @@ async fn fake_gateway(deleted: Arc<AtomicU64>, key: Option<String>) -> String {
             "/session/s1/answer",
             post(|| async { StatusCode::NO_CONTENT }),
         )
+        .route("/session/s1/route", post(|| async { StatusCode::NO_CONTENT }))
         .route(
             "/session/s1",
             delete({
@@ -1033,7 +1034,7 @@ async fn voice_goes_with_the_robot() {
     refused(ROBOT_SILENT, StatusCode::SERVICE_UNAVAILABLE).await;
     // Turning the robot off (or its backend crashing) ends a session within
     // a check; a daemon that stops answering within a few.
-    for (power, within) in [(ROBOT_OFF, 4), (ROBOT_CRASHED, 4), (ROBOT_SILENT, 9)] {
+    for (power, within) in [(ROBOT_OFF, 6), (ROBOT_CRASHED, 6), (ROBOT_SILENT, 12)] {
         let before = deleted.load(Ordering::SeqCst);
         h.robot.store(ROBOT_ON, Ordering::SeqCst);
         assert_eq!(h.call("POST", "/api/audio/session", LOOPBACK, &[], Some(open.clone())).await.status, StatusCode::OK);
@@ -1047,6 +1048,24 @@ async fn voice_goes_with_the_robot() {
         .unwrap_or_else(|_| panic!("the session outlived power {power}"));
         assert_eq!(h.call("GET", "/api/audio", LOOPBACK, &[], None).await.body["session"], Value::Null);
     }
+}
+
+#[tokio::test]
+async fn hearing_what_the_robot_says_is_a_route() {
+    let h = harness(AuthConfig::default()).await;
+    h.robot.store(ROBOT_ON, Ordering::SeqCst);
+    let key = std::fs::read_to_string(h.state.state_dir.join(audio::KEY_FILE)).unwrap().trim().to_string();
+    h.state.audio.set_url(&fake_gateway(Arc::new(AtomicU64::new(0)), Some(key)).await);
+    // An older dashboard sends no "hear": off.
+    let r = h.call("POST", "/api/audio/session", LOOPBACK, &[], Some(json!({"listen": true, "talk": false}))).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let id = r.body["id"].as_str().unwrap().to_string();
+    assert_eq!(h.call("GET", "/api/audio", LOOPBACK, &[], None).await.body["session"]["hear"], false);
+    let route = json!({"listen": false, "talk": false, "hear": true});
+    let r = h.call("POST", &format!("/api/audio/session/{id}/route"), LOOPBACK, &[], Some(route.clone())).await;
+    assert_eq!((r.status, r.body.clone()), (StatusCode::OK, route));
+    let view = h.call("GET", "/api/audio", LOOPBACK, &[], None).await.body;
+    assert_eq!((view["session"]["listen"].clone(), view["session"]["hear"].clone()), (json!(false), json!(true)));
 }
 
 #[tokio::test]
