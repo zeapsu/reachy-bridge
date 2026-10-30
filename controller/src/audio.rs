@@ -9,6 +9,9 @@
 //! action, so in admin mode only the device in control can (control::guard);
 //! a connected session counts as that device being present.
 //!
+//! It goes with the robot: Start is refused while the robot is off, and
+//! turning it off (or its daemon stopping) ends the session.
+//!
 //! One session at a time: a new one replaces the old. Sim mode has no
 //! audio (its daemon has no media), so the routes refuse there instead of
 //! opening the real robot's mic.
@@ -24,6 +27,7 @@ use serde_json::{json, Value};
 use tokio::sync::Notify;
 
 use crate::auth::{AuthContext, Credential};
+use crate::daemon::{backend_up, robot_state};
 use crate::error::{ApiError, ApiResult};
 use crate::state::Shared;
 
@@ -258,6 +262,17 @@ struct Route {
     talk: bool,
 }
 
+/// The robot is powered on (asleep counts: its motors are off, not it).
+fn robot_on(status: &Value) -> bool {
+    let robot = robot_state(status);
+    matches!(robot.as_str(), "running" | "asleep") || (robot == "error" && backend_up(status))
+}
+
+/// The robot is definitely off: its backend is gone and the daemon says so.
+fn robot_off(status: &Value) -> bool {
+    !backend_up(status) && matches!(robot_state(status).as_str(), "stopped" | "not_initialized")
+}
+
 fn not_sim(state: &Shared) -> ApiResult<()> {
     if state.sim.active() {
         return Err(ApiError::new(409, "The simulation has no microphone or speaker; leave sim mode to listen or talk"));
@@ -272,6 +287,10 @@ async fn open(
 ) -> ApiResult<Json<Value>> {
     let Json(body) = body.map_err(|_| ApiError::bad_body())?;
     not_sim(&state)?;
+    // Listening and talking go with the robot: off means off.
+    if !state.daemon.status().await.is_some_and(|s| robot_on(&s)) {
+        return Err(ApiError::new(409, "Turn the robot on to listen or talk"));
+    }
     let audio = &state.audio;
     let _opening = audio.opening.lock().await;
     audio.ensure_running().await?;
@@ -324,10 +343,22 @@ async fn watch(state: Shared, owner: Owner, credential: Credential, local: bool)
     };
     let ticks = async {
         let mut errors = 0;
+        let mut daemon_gone = 0;
         loop {
             tokio::time::sleep(WATCH).await;
             if state.sim.active() {
                 return "sim mode started";
+            }
+            match state.daemon.status().await {
+                Some(status) if robot_off(&status) => return "the robot was turned off",
+                Some(_) => daemon_gone = 0,
+                // The daemon stopped (or restarts): no robot either, unless it's a blip.
+                None => {
+                    daemon_gone += 1;
+                    if daemon_gone >= 2 {
+                        return "the robot's daemon stopped";
+                    }
+                }
             }
             let status = audio.status().await;
             errors = if status.is_err() { errors + 1 } else { 0 };
