@@ -69,6 +69,7 @@ class Gate:
         """Offsets reached the backend; anything but our own came from an app."""
         if not getattr(self._ours, "active", False):
             self._app_at = self._clock()
+            self._at_zero = False
 
 
 class Tap:
@@ -96,7 +97,7 @@ class Tap:
             pipeline.get_by_name("sink").connect("new-sample", self._on_sample, server)
             bus = pipeline.get_bus()
             bus.add_signal_watch()
-            bus.connect("message::error", self._on_error)
+            bus.connect("message::error", self._on_error, server)
             if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
                 self._close(pipeline)
                 logger.warning("Couldn't read %s; the wobble only follows the daemon's own sounds.", audio_tee.WOBBLE_SOURCE)
@@ -117,10 +118,14 @@ class Tap:
         pipeline.get_bus().remove_signal_watch()
         pipeline.set_state(Gst.State.NULL)
 
-    def _on_error(self, _bus: Any, message: Any) -> None:
+    def _on_error(self, _bus: Any, message: Any, server: Any) -> None:
         error, _ = message.parse_error()
         logger.warning("Head wobble stopped following the speaker: %s", error)
         self.stop()
+        # No more audio is coming to bring the head back.
+        wobbler = upstream.head_wobbler(server)
+        if wobbler is not None:
+            wobbler.reset()
 
     @staticmethod
     def _on_sample(appsink: Any, server: Any) -> Any:

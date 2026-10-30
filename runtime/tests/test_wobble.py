@@ -40,3 +40,12 @@ def test_tap_holds_off_while_an_app_sends_offsets_then_resumes():
     now[0] += Gate.APP_HOLD_S + 0.1
     tap(ZERO)
     assert sent == [MOVE, ZERO]
+
+
+def test_a_zero_still_goes_out_after_an_app_moved_the_head():
+    _, tap, app, sent, now = make()
+    tap(ZERO)
+    app(MOVE)
+    now[0] += Gate.APP_HOLD_S + 0.1
+    tap(ZERO)
+    assert sent == [ZERO, MOVE, ZERO]
