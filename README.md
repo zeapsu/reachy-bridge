@@ -119,8 +119,9 @@ pair a new admin from the robot and revoke the old one with `reachy-bridge devic
 Admin mode stays on even with no admin device left.
 
 In admin mode one browser at a time drives the robot. Any approved browser takes control with its
-first robot action while nobody else has it, and keeps it until it lets go or goes quiet for 10
-seconds; the admin can always take over. Approving a browser is what lets someone drive, and
+first robot action while nobody else has it, and keeps it until it lets go (closing the dashboard
+does), does nothing with the robot for 10 minutes, or goes quiet for a minute; the admin can always
+take over. A browser that went quiet gets control back when it returns, unless someone took it. Approving a browser is what lets someone drive, and
 revoking it takes that away (and frees the robot at once if that browser was driving).
 
 An installed app runs as the bridge's user
