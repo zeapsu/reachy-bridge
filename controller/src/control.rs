@@ -283,7 +283,8 @@ async fn view(State(state): State<Shared>, Extension(ctx): Extension<AuthContext
             })
         });
         let person = ctx.person.clone().unwrap_or_default();
-        let held_by_other = inner.holder.as_ref().is_some_and(|h| h.person != person);
+        // As in take: another person, or an admin when this browser isn't one.
+        let held_by_other = inner.holder.as_ref().is_some_and(|h| h.person != person || (h.admin && ctx.role != Some(Role::Admin)));
         json!({
             "admin_mode": true,
             "now": now,

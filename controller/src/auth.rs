@@ -434,6 +434,16 @@ impl Auth {
             }
         };
         let admin_mode = file.admin_mode || file.devices.iter().any(|d| d.role == Role::Admin);
+        // Unnamed devices used to default to "device at <peer>", name and
+        // person, so every tailnet browser shared one person and could move
+        // control between them (#245). Give each its own, from its id.
+        let mut devices = file.devices;
+        for d in &mut devices {
+            let who = if d.person.is_empty() { d.name.clone() } else { d.person.clone() };
+            if let Some(peer) = who.strip_prefix("device at ") {
+                d.person = format!("device {} at {peer}", d.id.get(..4).unwrap_or(&d.id));
+            }
+        }
         // Written in every mode: `reachy-bridge pair --admin` needs it.
         let key = random_token::<32>();
         let local_key = match write_private(&state_dir.join(LOCAL_KEY_FILE), format!("{key}\n").as_bytes()) {
@@ -446,7 +456,7 @@ impl Auth {
         Self {
             config,
             devices_path,
-            devices: Mutex::new(file.devices),
+            devices: Mutex::new(devices),
             pending: Mutex::new(Pending::default()),
             local_key,
             admin_mode: admin_mode.into(),

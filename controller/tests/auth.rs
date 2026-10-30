@@ -835,6 +835,7 @@ async fn one_person_drives_at_a_time_and_revoking_the_browser_ends_control() {
     // A member's device under the admin's person can't take control from the admin.
     let shared = h.paired_as(LAN, &[("cookie", &admin)], json!({"name": "spare", "person": "Andry"})).await;
     assert_eq!(h.control(LOOPBACK, &admin, "take", None).await.status, StatusCode::OK);
+    assert_eq!(h.view(LAN, &shared).await["you"]["can_take"], false);
     assert_eq!(h.control(LAN, &shared, "take", None).await.status, StatusCode::CONFLICT);
     assert_eq!(h.control(LAN, &shared, "take?if_free=true", None).await.status, StatusCode::CONFLICT);
     assert_eq!(h.view(LOOPBACK, &admin).await["holder"]["you"], true);
@@ -908,6 +909,29 @@ async fn devices_paired_before_people_use_their_name() {
     };
     let r = restarted.call("GET", "/api/auth/status", LAN, &[("cookie", &old)], None).await;
     assert_eq!(r.body["person"], "phone");
+}
+
+#[tokio::test]
+async fn unnamed_devices_from_before_get_a_person_each() {
+    let h = harness(lan()).await;
+    let one = h.paired(LAN).await;
+    let two = h.paired(LAN).await;
+    // As paired before #245: unnamed, so both "device at <peer>", one with no person at all.
+    let mut file: Value = serde_json::from_str(&h.devices_file()).unwrap();
+    for (i, person) in [(0, json!("device at 192.168.1.20")), (1, json!(""))] {
+        file["devices"][i]["name"] = json!("device at 192.168.1.20");
+        file["devices"][i]["person"] = person;
+    }
+    std::fs::write(h.dir.0.join("devices.json"), file.to_string()).unwrap();
+    let restarted = Harness {
+        state: AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), lan()),
+        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")), robot: Default::default(),
+    };
+    let person = |r: Reply| r.body["person"].as_str().unwrap().to_string();
+    let a = person(restarted.call("GET", "/api/auth/status", LAN, &[("cookie", &one)], None).await);
+    let b = person(restarted.call("GET", "/api/auth/status", LAN, &[("cookie", &two)], None).await);
+    assert_ne!(a, b);
+    assert!(a.starts_with("device ") && a.ends_with(" at 192.168.1.20"), "{a}");
 }
 
 // Listen and talk (#219) -----------------------------------------------------
