@@ -76,6 +76,7 @@ describe("control notices, label and strip", () => {
   test("says when this person's other device took control", () => {
     const desk: ControlState = { kind: "other", person: "Andry", until: null, canTakeOver: true, asking, elsewhere: "desktop" };
     expect(controlNotice(mine, desk)).toBe("You took control on desktop");
+    expect(controlNotice(free, desk)).toBe("You took control on desktop");
     const grant = { id: "g", person: "Sam", from: 900, until: null, by: "a" };
     const view = base({
       holder: { ...holder, device: "laptop", until: null, you: false },

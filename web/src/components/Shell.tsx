@@ -47,10 +47,12 @@ interface Props {
   holder: string | null;
   /** Let go of control: shown while this browser has it. */
   onRelease: () => void;
+  /** A control action is running. */
+  controlBusy: boolean;
 }
 
 /** Brand, the section tabs (a bottom bar on phones), robot status and power. */
-export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, sim, voice, holder, onRelease }: Props) {
+export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, sim, voice, holder, onRelease, controlBusy }: Props) {
   const tabs = useLens<HTMLDivElement>();
   const status = robotStatus(power, daemonOnline, activeApp);
   return (
@@ -80,11 +82,14 @@ export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, si
         <span className="glass status" role="status">
           <span className={`dot ${status.dot}`}></span>
           {sim ? <span className="sim-badge">Sim</span> : null}
-          {status.text}
-          {holder ? <span className="control-who">· {holder}</span> : null}
+          <span className="status-text">
+            {status.text}
+            {/* Release beside the pill says it's you. */}
+            {holder && holder !== "you" ? <span className="control-who"> · {holder}</span> : null}
+          </span>
         </span>
         {holder === "you" ? (
-          <button className="glass release press" type="button" title="Let go of control, so others can drive" onClick={onRelease}>
+          <button className="glass release press" type="button" title="Let go of control, so others can drive" disabled={controlBusy} onClick={onRelease}>
             Release
           </button>
         ) : null}

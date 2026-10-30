@@ -114,9 +114,15 @@
 }
 .phone-tabs svg { width: 20px; height: 20px; }
 
+/* A long status (an app's name, someone in control) shortens before the top bar overflows. */
+.top-right { min-width: 0; }
+.status { min-width: 0; }
+.status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.status .sim-badge, .status .dot, .top .power, .top .release, .top .voice-badge { flex: none; }
+
 @media (max-width: 860px) {
   .app { padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px)); }
-  .top { grid-template-columns: 1fr auto; }
+  .top { grid-template-columns: auto minmax(0, 1fr); }
   .tabs-glass { display: none; }
   .phone-tabs { display: block; }
 }

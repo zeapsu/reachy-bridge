@@ -163,6 +163,7 @@ function Dashboard() {
           voice={voiceBadge(voice.view, voice.mine)}
           holder={holderLabel(controlState(control.view))}
           onRelease={() => void control.act(paths.controlRelease)}
+          controlBusy={control.busy}
         />
 
         <main className={`view robot${pane === "drive" ? " driving" : ""}`} id="view-robot" role="tabpanel" hidden={tab !== "robot"} aria-label="Robot">

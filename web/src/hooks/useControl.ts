@@ -70,7 +70,7 @@ export function useControl(visible: boolean): ControlApi {
     setControlTaker(async () => {
       // Nobody in control, or this person on another device (the server checks both again).
       const state = controlState(latest.current);
-      if (!(state.kind === "free" && state.canTake) && !(state.kind === "other" && state.elsewhere)) return false;
+      if (!(state.kind === "free" && state.canTake) && !(state.kind === "other" && state.elsewhere !== undefined)) return false;
       try {
         await apiJson(paths.controlTakeIfFree, { method: "POST" });
         return true;

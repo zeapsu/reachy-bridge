@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CONTROL_NEEDED_EVENT, paths } from "../api.ts";
-
-const sentence = (text: string) => (text ? `${text[0].toUpperCase()}${text.slice(1)}.` : text);
+import { CONTROL_NEEDED_EVENT, NEEDS_CONTROL, paths } from "../api.ts";
 import type { ControlApi } from "../hooks/useControl.ts";
 import { SLOTS, clock, controlNotice, controlState, showStrip, type Asking, type ControlState } from "../logic/control.ts";
 import "./ControlStrip.css";
+
+const sentence = (text: string) => (text ? `${text[0].toUpperCase()}${text.slice(1)}.` : text);
 
 /**
  * Who drives the robot (#221), one line inside a view that acts on it, and
@@ -21,7 +21,8 @@ export function ControlStrip({ control }: { control: ControlApi }) {
   const free = state.kind === "free";
 
   useEffect(() => {
-    const onRefused = () => setRefused(true);
+    // Only "nobody is in control": a refusal while someone else held it says nothing about later.
+    const onRefused = (event: Event) => setRefused((event as CustomEvent<unknown>).detail === NEEDS_CONTROL);
     window.addEventListener(CONTROL_NEEDED_EVENT, onRefused);
     return () => window.removeEventListener(CONTROL_NEEDED_EVENT, onRefused);
   }, []);
@@ -77,7 +78,7 @@ export function ControlStrip({ control }: { control: ControlApi }) {
   let text = "";
   let action: ReactNode = null;
   if (state.kind === "other" && showStrip(state)) {
-    const who = state.elsewhere ? `You're in control on ${state.elsewhere}` : `${state.person} is in control`;
+    const who = state.elsewhere !== undefined ? `You're in control on ${state.elsewhere}` : `${state.person} is in control`;
     text = `${who}${state.until === null ? "" : ` until ${clock(state.until)}`}.`;
     if (state.canTakeOver) {
       action = takeButton("Take over");

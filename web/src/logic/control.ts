@@ -40,7 +40,7 @@ export type ControlState =
       until: number | null;
       canTakeOver: boolean;
       asking: Asking;
-      /** The holder is this person on another device: its name. A robot action here moves control over. */
+      /** The holder is this person on another device: its name (maybe ""). A robot action here moves control over. */
       elsewhere?: string;
     }
   | { kind: "free"; canTake: boolean; asking: Asking };
@@ -91,8 +91,9 @@ export function controlNotice(prev: ControlState, next: ControlState): string | 
       if (prev.kind !== "mine") return next.until === null ? "You're in control" : `You're in control until ${clock(next.until)}`;
       return next.endingSoon && !prev.endingSoon ? "Your control time ends in under a minute" : null;
     case "other":
-      if (prev.kind === "mine") return next.elsewhere ? `You took control on ${next.elsewhere}` : `${next.person} took over`;
-      return prev.kind === "other" && prev.person === next.person ? null : `${next.person} took control`;
+      if (prev.kind === "other" && prev.person === next.person) return null;
+      if (next.elsewhere !== undefined) return `You took control on ${next.elsewhere || "another device"}`;
+      return prev.kind === "mine" ? `${next.person} took over` : `${next.person} took control`;
     case "free":
       if (prev.kind === "mine") return "You're no longer in control";
       return prev.kind === "other" ? `${prev.person} let go of control` : null;
