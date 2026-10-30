@@ -163,5 +163,6 @@ jobs:
           tar -xJf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
       - run: shellcheck --version
-      - run: shellcheck deploy/install.sh deploy/uninstall.sh deploy/reachy-bridge tools/build_webrtcsink_jetson.sh tools/test_uninstall.sh
+      - run: shellcheck deploy/install.sh deploy/uninstall.sh deploy/reachy-bridge tools/build_webrtcsink_jetson.sh tools/test_uninstall.sh tools/test_control.sh
       - run: bash tools/test_uninstall.sh
+      - run: bash tools/test_control.sh

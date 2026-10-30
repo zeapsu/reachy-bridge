@@ -112,7 +112,16 @@ and the person using it) and revokes them, installs, updates and removes apps, s
 Face token, and switches the kinematics engine. Other people's browsers
 can log themselves out. The dashboard won't revoke the last admin device; to recover a lost one,
 pair a new admin from the robot and revoke the old one with `reachy-bridge devices revoke <n>`.
-Admin mode stays on even with no admin device left. An installed app runs as the bridge's user
+Admin mode stays on even with no admin device left.
+
+In admin mode one browser at a time drives the robot: the admin, or a person the admin gave
+control time. Without the admin's browser, grant it from the robot: `reachy-bridge control`
+shows who is in control, the grants and who is asking; `reachy-bridge control grant <n|person> [minutes]`
+gives a person control time (`<n>` is a device's number in `reachy-bridge devices`; no minutes
+means no end); `reachy-bridge control revoke <n>` ends a grant. Grants can't overlap, so revoke
+the current one first to give control to someone else.
+
+An installed app runs as the bridge's user
 and can read the local key, so it could approve an admin too; install apps you trust.
 
 LAN traffic is plain HTTP, so anyone on the network can read it, including the device cookie,
