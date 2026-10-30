@@ -77,17 +77,70 @@ def test_loopback_present():
 
 def test_ensure_adds_and_removes_the_tee(tmp_path: Path, monkeypatch):
     rc, cards = tmp_path / ".asoundrc", tmp_path / "cards"
+    rules = {tmp_path / "wp/main.lua.d/rule.lua": "lua rule\n", tmp_path / "wp/wireplumber.conf.d/rule.conf": "conf rule\n"}
     monkeypatch.setattr(audio_tee, "ASOUNDRC", rc)
     monkeypatch.setattr(audio_tee, "CARDS", cards)
+    monkeypatch.setattr(audio_tee, "WIREPLUMBER_RULES", rules)
     switched: list[bool] = []
+    ran: list[list[str]] = []
     monkeypatch.setattr(audio_tee, "set_speaker", lambda on: switched.append(on) or True)
+    monkeypatch.setattr(audio_tee, "_run", lambda args: ran.append(args) or True)
     # No ~/.asoundrc (a board without upstream's): nothing to do.
-    audio_tee.ensure()
-    assert not rc.exists() and switched == []
-    rc.write_text(UPSTREAM)
     cards.write_text(CARDS)
     audio_tee.ensure()
-    assert audio_tee.is_installed() and switched == [True]
-    cards.write_text(CARDS.split("10 [")[0])
+    assert not rc.exists() and switched == [] and ran == []
+    rc.write_text(UPSTREAM)
     audio_tee.ensure()
-    assert rc.read_text().strip() == UPSTREAM.strip() and switched == [True]
+    assert audio_tee.is_installed() and switched == [True]
+    assert all(path.read_text() == rule for path, rule in rules.items())
+    assert ran == [["systemctl", "--user", "try-restart", "wireplumber.service"]]
+    assert not list(tmp_path.glob("**/*.tmp"))
+    # Already in place: WirePlumber isn't restarted again.
+    audio_tee.ensure()
+    assert len(ran) == 1 and switched == [True, True]
+    cards.write_text(CARDS.split("10 [")[0])
+    assert not audio_tee.is_installed()
+    audio_tee.ensure()
+    assert rc.read_text().strip() == UPSTREAM.strip() and switched == [True, True]
+
+
+def test_set_speaker_creates_the_switch_once(monkeypatch):
+    calls: list[str] = []
+    answers = iter([False, True, True])
+    monkeypatch.setattr(audio_tee, "_run", lambda args: calls.append(args[0]) or next(answers))
+    # The switch isn't there yet: a moment of silence makes it, then it's set.
+    assert audio_tee.set_speaker(False)
+    assert calls == ["amixer", "aplay", "amixer"]
+    calls.clear()
+    monkeypatch.setattr(audio_tee, "_run", lambda args: calls.append(args) or True)
+    assert audio_tee.set_speaker(True)
+    assert calls == [["amixer", "-q", "-c", "Loopback", "cset", "name=Reachy Bridge Speaker", "on"]]
+
+
+def test_run_reports_failures(monkeypatch):
+    import subprocess
+
+    def missing(*_args, **_kwargs):
+        raise FileNotFoundError("amixer")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    assert not audio_tee._run(["amixer"])
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "no such control"))
+    assert not audio_tee._run(["amixer"])
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+    assert audio_tee._run(["amixer"])
+
+
+def test_ensure_never_stops_the_daemon(tmp_path: Path, monkeypatch):
+    rc = tmp_path / ".asoundrc"
+    rc.write_text(UPSTREAM)
+    (tmp_path / "cards").write_text(CARDS)
+    monkeypatch.setattr(audio_tee, "ASOUNDRC", rc)
+    monkeypatch.setattr(audio_tee, "CARDS", tmp_path / "cards")
+
+    def broken(*_args):
+        raise PermissionError("read-only home")
+
+    monkeypatch.setattr(audio_tee, "_write", broken)
+    audio_tee.ensure()
+    assert rc.read_text() == UPSTREAM

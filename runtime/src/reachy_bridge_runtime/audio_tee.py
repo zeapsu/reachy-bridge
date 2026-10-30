@@ -16,11 +16,16 @@ Nothing here is board-specific: any board whose ``~/.asoundrc`` has upstream's
 devices gets it once the loopback card exists, and loses it again when the
 card is gone. The upstream device names stay, so upstream's own check still
 accepts the file.
+
+The speaker and the loopback open together (ALSA's ``multi``), so something
+else holding the loopback would silence the robot: WirePlumber, which would
+otherwise offer the card as a sound device, is told to leave it alone.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -84,6 +89,25 @@ pcm.{TALK_SINK} {{
 
 ASOUNDRC = Path.home() / ".asoundrc"
 CARDS = Path("/proc/asound/cards")
+# WirePlumber 0.4 (Lua) and 0.5 (SPA-JSON) read different files; each ignores
+# the other's.
+_WIREPLUMBER = Path.home() / ".config/wireplumber"
+WIREPLUMBER_RULES = {
+    _WIREPLUMBER / "main.lua.d/51-reachy-bridge-loopback.lua": """-- reachy-bridge (#219): the loopback carries the robot's speaker; leave it alone.
+table.insert(alsa_monitor.rules, {
+  matches = { { { "device.name", "matches", "alsa_card.platform-snd_aloop*" } } },
+  apply_properties = { ["device.disabled"] = true },
+})
+""",
+    _WIREPLUMBER / "wireplumber.conf.d/51-reachy-bridge-loopback.conf": """# reachy-bridge (#219): the loopback carries the robot's speaker; leave it alone.
+monitor.alsa.rules = [
+  {
+    matches = [ { device.name = "~alsa_card.platform-snd_aloop*" } ]
+    actions = { update-props = { device.disabled = true } }
+  }
+]
+""",
+}
 
 
 def loopback_present(cards: str) -> bool:
@@ -132,35 +156,70 @@ def untee(text: str) -> str:
 
 
 def is_installed() -> bool:
+    """The tee is in ``~/.asoundrc`` and its loopback card is there."""
     try:
-        return installed(ASOUNDRC.read_text(errors="ignore"))
+        return installed(ASOUNDRC.read_text(errors="ignore")) and loopback_present(CARDS.read_text())
     except OSError:
         return False
 
 
-def set_speaker(on: bool) -> bool:
-    """Unmute (or mute) the robot's speaker for its own sounds; False if the
-    switch isn't there (it appears once something has played)."""
+def _run(args: list[str]) -> bool:
     try:
-        result = subprocess.run(
-            ["amixer", "-q", "-c", LOOPBACK, "cset", f"name={SPEAKER_SWITCH}", "on" if on else "off"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        result = subprocess.run(args, capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired) as error:
-        logger.warning("Couldn't switch the robot's speaker %s: %s", "on" if on else "off", error)
+        logger.warning("%s failed: %s", args[0], error)
         return False
     if result.returncode != 0:
-        logger.debug("Speaker switch not set: %s", (result.stderr or result.stdout).strip())
-        return False
-    return True
+        logger.warning("%s failed: %s", args[0], (result.stderr or result.stdout).strip())
+    return result.returncode == 0
+
+
+def set_speaker(on: bool) -> bool:
+    """Unmute (or mute) the robot's speaker for its own sounds."""
+    switch = ["amixer", "-q", "-c", LOOPBACK, "cset", f"name={SPEAKER_SWITCH}", "on" if on else "off"]
+    if _run(switch):
+        return True
+    # The switch only exists once its device has been opened: play a moment
+    # of silence through it, then try again.
+    silence = ["aplay", "-q", "-D", "reachy_bridge_speaker", "-t", "raw", "-f", "S16_LE", "-r", "16000", "-c", "2", "-d", "1", "/dev/zero"]
+    return _run(silence) and _run(switch)
+
+
+def _write(path: Path, text: str) -> None:
+    """Replace ``path`` whole: ALSA never reads half a file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".reachy-bridge.tmp")
+    temporary.write_text(text)
+    os.replace(temporary, path)
+
+
+def _leave_loopback_to_us() -> None:
+    written = False
+    for path, rule in WIREPLUMBER_RULES.items():
+        try:
+            if path.read_text() == rule:
+                continue
+        except OSError:
+            pass
+        _write(path, rule)
+        written = True
+    if written:
+        # Only the user's own session manager; nothing if there's none.
+        _run(["systemctl", "--user", "try-restart", "wireplumber.service"])
+        logger.info("Told WirePlumber to leave the ALSA loopback card alone.")
 
 
 def ensure() -> None:
     """Host setup: add the tee when there's a loopback card, take it out when
     there isn't, and leave the speaker unmuted. Runs after upstream's
-    ``~/.asoundrc`` is written."""
+    ``~/.asoundrc`` is written; a failure here never stops the daemon."""
+    try:
+        _ensure()
+    except Exception as error:  # noqa: BLE001 - the robot works without it
+        logger.warning("Couldn't set up hearing what Reachy says: %s", error)
+
+
+def _ensure() -> None:
     try:
         text = ASOUNDRC.read_text(errors="ignore")
     except OSError:
@@ -173,10 +232,11 @@ def ensure() -> None:
         new = tee(text)
         if new is None:
             return
-        ASOUNDRC.write_text(new)
+        _write(ASOUNDRC, new)
         logger.info("Added the speaker tee to ~/.asoundrc (the dashboard can hear what Reachy says).")
     elif not present and installed(text):
-        ASOUNDRC.write_text(untee(text))
+        _write(ASOUNDRC, untee(text))
         logger.info("No ALSA loopback card; took the speaker tee out of ~/.asoundrc.")
-    if present:
+    if present and installed(ASOUNDRC.read_text(errors="ignore")):
+        _leave_loopback_to_us()
         set_speaker(True)

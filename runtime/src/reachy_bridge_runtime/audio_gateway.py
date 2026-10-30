@@ -284,21 +284,28 @@ class Gateway:
         self.session: Session | None = None
         self.polled = time.monotonic()
 
-    def _end(self) -> None:
+    def _end(self, unmute: bool = True) -> None:
         if self.session is not None:
             logger.info("Audio session %s ended", self.session.id)
             session, self.session = self.session, None
             try:
                 on_main(session.stop)
             finally:
-                speaker(True)
+                if unmute:
+                    speaker(True)
 
     def open(self, listen: bool, talk: bool, hear: bool) -> dict[str, Any]:
         if hear and not HEAR:
             raise ValueError(NO_HEAR)
         with self.lock:
-            self._end()
-            session = on_main(lambda: Session(listen, talk, hear))
+            # The new session sets the speaker: don't let the robot speak up
+            # between the two.
+            self._end(unmute=False)
+            try:
+                session = on_main(lambda: Session(listen, talk, hear))
+            except Exception:
+                speaker(True)
+                raise
             try:
                 on_main(session.start)
                 if not session.gathered.wait(GATHER_TIMEOUT):
@@ -307,6 +314,7 @@ class Gateway:
             except Exception:
                 # Don't leave its pipeline holding the mic, speaker and ports.
                 on_main(session.stop)
+                speaker(True)
                 raise
             self.session = session
             speaker(not hear)
