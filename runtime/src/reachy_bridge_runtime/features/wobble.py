@@ -11,6 +11,13 @@ behaviour stays.
 An app using the SDK's wobble (the Conversation app does) sends its own
 offsets to the daemon. The last writer wins, so two sources would jitter: the
 tap holds off while an app's offsets are arriving.
+
+While the speaker is muted for hearing, only Talk still comes out of it, so
+only Talk moves the head.
+
+The daemon doesn't check offsets against the robot's limits, and a driven head
+can already be near them. ``Limits`` scales down any offsets, from any source,
+that would make the head unreachable, pass a motor's limit or jump its joints.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ logger = logging.getLogger(__name__)
 FEATURE = "speaker_wobble"
 
 _ZERO = (0.0,) * 6
+_SPEAKER_CHECK_S = 0.25
 
 
 class Gate:
@@ -72,12 +80,82 @@ class Gate:
             self._at_zero = False
 
 
+class SpeakerSwitch:
+    """Whether the speaker is on, read at most a few times a second."""
+
+    def __init__(self, read: Callable[[], bool] = audio_tee.speaker_on, clock: Callable[[], float] = time.monotonic) -> None:
+        self._read = read
+        self._clock = clock
+        self._at: float | None = None
+        self._on = True
+
+    def on(self) -> bool:
+        now = self._clock()
+        if self._at is None or now - self._at >= _SPEAKER_CHECK_S:
+            self._at = now
+            self._on = self._read()
+        return self._on
+
+
+def heard_from_speaker(stereo: Any, speaker_on: Callable[[], bool]) -> Any:
+    """Mono audio that comes out of the speaker, from interleaved robot audio
+    (left) and Talk (right)."""
+    robot, talk = stereo[0::2], stereo[1::2]
+    # The switch only matters when the robot is making a sound.
+    if np.any(robot) and speaker_on():
+        return robot + talk
+    return talk
+
+
+class Limits:
+    """Scales offsets so the head stays where the motors can safely go."""
+
+    SCALES = (1.0, 0.5, 0.25)
+    MARGIN_TICKS = 40.0
+    MAX_JOINT_CHANGE_RAD = 0.35
+
+    def __init__(self, solve: Callable[[Any, Any], Any], motor_limits: list[tuple[float, float, float]]) -> None:
+        # solve(backend, offsets or None) -> the seven joints; motor_limits has
+        # (offset ticks, lowest, highest) for each of the six head motors.
+        self._solve = solve
+        self._motors = motor_limits
+
+    def _ok(self, joints: Any, base: Any) -> bool:
+        if np.any(np.isnan(joints)):
+            return False
+        if np.max(np.abs(joints[1:] - base[1:])) > self.MAX_JOINT_CHANGE_RAD:
+            return False
+        for angle, (offset, low, high) in zip(joints[1:], self._motors, strict=True):
+            ticks = upstream.motor_ticks(angle, offset)
+            if not low + self.MARGIN_TICKS <= ticks <= high - self.MARGIN_TICKS:
+                return False
+        return True
+
+    def scale(self, backend: Any, offsets: Any) -> tuple[float, ...]:
+        """``offsets``, reduced as far as needed; zero if nothing is safe."""
+        offsets = tuple(offsets)
+        if offsets == _ZERO:
+            return offsets
+        try:
+            base = np.asarray(self._solve(backend, None))
+            if np.any(np.isnan(base)):
+                return _ZERO
+            for scale in self.SCALES:
+                scaled = tuple(scale * value for value in offsets)
+                if self._ok(np.asarray(self._solve(backend, scaled)), base):
+                    return scaled
+        except Exception:  # noqa: BLE001 - never move the head on a failed check
+            logger.exception("Couldn't check the head wobble against the robot's limits")
+        return _ZERO
+
+
 class Tap:
     """Feeds the speaker's audio to the media server's wobbler."""
 
     def __init__(self) -> None:
         self._pipeline: Any = None
         self._lock = threading.Lock()
+        self._speaker = SpeakerSwitch()
 
     @property
     def running(self) -> bool:
@@ -90,8 +168,8 @@ class Tap:
             if self._pipeline is not None:
                 return
             pipeline = Gst.parse_launch(
-                f"alsasrc device={audio_tee.WOBBLE_SOURCE} ! audioconvert ! audioresample ! "
-                f"audio/x-raw,format=F32LE,channels=1,rate={upstream.wobbler_sample_rate(server)},layout=interleaved ! "
+                f"alsasrc device={audio_tee.WOBBLE_SOURCE} ! audio/x-raw,channels=2 ! audioconvert ! audioresample ! "
+                f"audio/x-raw,format=F32LE,channels=2,rate={upstream.wobbler_sample_rate(server)},layout=interleaved ! "
                 "appsink name=sink drop=true max-buffers=5 sync=false emit-signals=true"
             )
             pipeline.get_by_name("sink").connect("new-sample", self._on_sample, server)
@@ -127,21 +205,22 @@ class Tap:
         if wobbler is not None:
             wobbler.reset()
 
-    @staticmethod
-    def _on_sample(appsink: Any, server: Any) -> Any:
+    def _on_sample(self, appsink: Any, server: Any) -> Any:
         from gi.repository import Gst
 
         sample = appsink.emit("pull-sample")
         wobbler = upstream.head_wobbler(server)
         if sample is not None and wobbler is not None:
             buffer = sample.get_buffer()
-            wobbler.feed(np.frombuffer(buffer.extract_dup(0, buffer.get_size()), dtype=np.float32), time.monotonic_ns())
+            stereo = np.frombuffer(buffer.extract_dup(0, buffer.get_size()), dtype=np.float32)
+            wobbler.feed(heard_from_speaker(stereo, self._speaker.on), time.monotonic_ns())
         return Gst.FlowReturn.OK
 
 
 def apply() -> None:
     gate = Gate()
     tap = Tap()
+    limits = Limits(*upstream.wobble_limits())
 
     def enable(original: Any, server: Any, callback: Any) -> None:
         original(server, gate.wrap(callback))
@@ -165,7 +244,7 @@ def apply() -> None:
 
     def set_offsets(original: Any, backend: Any, offsets: Any) -> None:
         gate.saw_offsets()
-        original(backend, offsets)
+        original(backend, limits.scale(backend, offsets))
 
     upstream.wrap_wobbling(enable, disable, on_sample, set_offsets)
     logger.info("Speaker wobble: on")

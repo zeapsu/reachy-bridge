@@ -211,9 +211,10 @@ def test_talk_reaches_the_wobble_but_not_hearing():
     assert "bindings { 0 2 1 3 }" in _ttable(teed, "reachy_bridge_loop_talk")
     assert "bindings { 0 0 1 1 }" in _ttable(teed, "reachy_bridge_loop_out")
     assert "0.0 1 1.1 1 }" in _ttable(teed, audio_tee.HEAR_SOURCE)
-    assert "0.0 1 0.2 1 1.1 1 1.3 1" in _ttable(teed, audio_tee.WOBBLE_SOURCE)
+    # Robot audio on the wobble's left channel, Talk on its right.
+    assert "0.0 0.5 0.1 0.5 1.2 0.5 1.3 0.5" in _ttable(teed, audio_tee.WOBBLE_SOURCE)
     assert "reachy_bridge_talk_both" in _ttable(teed, audio_tee.TALK_SINK)
 
 
 def test_tee_marker_keeps_earlier_versions_markers():
-    assert "speaker tee (#219)" in audio_tee.MARKER and "and mic tee (v2)" in audio_tee.MARKER
+    assert "speaker tee (#219)" in audio_tee.MARKER and "and mic tee (v2)" in audio_tee.MARKER and "(v3)" in audio_tee.MARKER
