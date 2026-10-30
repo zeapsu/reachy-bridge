@@ -196,3 +196,24 @@ def test_wireplumber_rules_stay_when_the_restart_fails(tmp_path: Path, monkeypat
     # They apply when WirePlumber next starts; not rewritten every time.
     audio_tee._leave_loopback_to_us()
     assert (tmp_path / "wp/rule.lua").read_text() == "lua rule\n" and len(ran) == 1
+
+
+def _ttable(teed: str, name: str) -> str:
+    block = audio_tee._block(teed, name)
+    assert block is not None
+    return teed[block[0] : block[1]]
+
+
+def test_talk_reaches_the_wobble_but_not_hearing():
+    teed = audio_tee.tee(UPSTREAM)
+    assert teed is not None
+    # Talk writes the loopback's last two channels, the robot's audio the first two.
+    assert "bindings { 0 2 1 3 }" in _ttable(teed, "reachy_bridge_loop_talk")
+    assert "bindings { 0 0 1 1 }" in _ttable(teed, "reachy_bridge_loop_out")
+    assert "0.0 1 1.1 1 }" in _ttable(teed, audio_tee.HEAR_SOURCE)
+    assert "0.0 1 0.2 1 1.1 1 1.3 1" in _ttable(teed, audio_tee.WOBBLE_SOURCE)
+    assert "reachy_bridge_talk_both" in _ttable(teed, audio_tee.TALK_SINK)
+
+
+def test_tee_marker_keeps_earlier_versions_markers():
+    assert "speaker tee (#219)" in audio_tee.MARKER and "and mic tee (v2)" in audio_tee.MARKER

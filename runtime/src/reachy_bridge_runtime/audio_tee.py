@@ -10,7 +10,12 @@ robot goes quiet while a browser hears it instead:
 
     reachymini_audio_sink -> speaker (mute switch) + loopback
     loopback -> reachy_bridge_hear -> audio gateway -> browser
-    browser -> audio gateway -> reachy_bridge_talk -> speaker (no mute, no loopback)
+    browser -> audio gateway -> reachy_bridge_talk -> speaker (no mute) + loopback
+
+The speaker's loopback has four channels: the robot's own audio on the first
+two and Talk on the last two. Hearing reads the first two, so a browser
+doesn't get its own voice back. ``reachy_bridge_wobble`` reads all four, so
+the head wobble follows everything sent to the speaker (features/wobble.py).
 
 The mic gets the same treatment the other way round, on the loopback's
 second subdevice: what apps read as the robot's mic (``reachymini_audio_src``)
@@ -44,14 +49,15 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Every version's marker starts with PREFIX; MARKER is this version's. It
-# contains the first version's marker, so that version's runtime, if a failed
-# deploy rolls back to it, leaves this tee alone instead of wrapping it.
+# contains the earlier versions' markers, so their runtimes, if a failed deploy
+# rolls back to one, leave this tee alone instead of wrapping it.
 PREFIX = "# reachy-bridge: "
-MARKER = PREFIX + "speaker tee (#219), and mic tee (v2)"
+MARKER = PREFIX + "speaker tee (#219), and mic tee (v2), with Talk on the loopback (v3)"
 LOOPBACK = "Loopback"
 SPEAKER_SWITCH = "Reachy Bridge Speaker"
 HEAR_SOURCE = "reachy_bridge_hear"
 TALK_SINK = "reachy_bridge_talk"
+WOBBLE_SOURCE = "reachy_bridge_wobble"
 SINK = "reachymini_audio_sink"
 SOURCE = "reachymini_audio_src"
 APP_VOICE_SINK = "reachy_bridge_app_voice"
@@ -73,8 +79,15 @@ pcm.reachy_bridge_speaker {{
 pcm.reachy_bridge_loop_out {{
     type dmix
     ipc_key 4251
-    slave {{ pcm "hw:{LOOPBACK},0,0" channels 2 period_size 256 buffer_size 1024 rate 16000 format S16_LE }}
+    slave {{ pcm "hw:{LOOPBACK},0,0" channels 4 period_size 256 buffer_size 1024 rate 16000 format S16_LE }}
     bindings {{ 0 0 1 1 }}
+}}
+
+pcm.reachy_bridge_loop_talk {{
+    type dmix
+    ipc_key 4251
+    slave {{ pcm "hw:{LOOPBACK},0,0" channels 4 period_size 256 buffer_size 1024 rate 16000 format S16_LE }}
+    bindings {{ 0 2 1 3 }}
 }}
 
 pcm.reachy_bridge_both {{
@@ -93,15 +106,44 @@ pcm.{SINK} {{
     }}
 }}
 
-pcm.{HEAR_SOURCE} {{
+pcm.reachy_bridge_loop_in {{
     type dsnoop
     ipc_key 4252
-    slave {{ pcm "hw:{LOOPBACK},1,0" channels 2 period_size 256 buffer_size 1024 rate 16000 format S16_LE }}
+    slave {{ pcm "hw:{LOOPBACK},1,0" channels 4 period_size 256 buffer_size 1024 rate 16000 format S16_LE }}
+}}
+
+pcm.{HEAR_SOURCE} {{
+    type plug
+    slave.pcm {{
+        type route
+        slave {{ pcm "reachy_bridge_loop_in" channels 4 }}
+        ttable {{ 0.0 1 1.1 1 }}
+    }}
+}}
+
+pcm.{WOBBLE_SOURCE} {{
+    type plug
+    slave.pcm {{
+        type route
+        slave {{ pcm "reachy_bridge_loop_in" channels 4 }}
+        ttable {{ 0.0 1 0.2 1 1.1 1 1.3 1 }}
+    }}
+}}
+
+pcm.reachy_bridge_talk_both {{
+    type multi
+    slaves.a {{ pcm "{SPEAKER}" channels 2 }}
+    slaves.b {{ pcm "reachy_bridge_loop_talk" channels 2 }}
+    bindings {{ 0 {{ slave a channel 0 }} 1 {{ slave a channel 1 }} 2 {{ slave b channel 0 }} 3 {{ slave b channel 1 }} }}
 }}
 
 pcm.{TALK_SINK} {{
     type plug
-    slave.pcm "{SPEAKER}"
+    slave.pcm {{
+        type route
+        slave {{ pcm "reachy_bridge_talk_both" channels 4 }}
+        ttable {{ 0.0 1 1.1 1 0.2 1 1.3 1 }}
+    }}
 }}
 
 pcm.reachy_bridge_app_voice_in {{

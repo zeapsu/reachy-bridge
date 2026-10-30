@@ -242,6 +242,25 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         _source_mentions(_DAEMON, "Daemon", "_media_server", "media_released"),
     ),
     Requirement(
+        "speaker_wobble",
+        "GstMediaServer wobbling methods",
+        lambda: (
+            _function(_MEDIA_SERVER, "GstMediaServer.enable_wobbling", "callback")(),
+            _function(_MEDIA_SERVER, "GstMediaServer.disable_wobbling")(),
+            _function(_MEDIA_SERVER, "GstMediaServer._on_wobbler_sample", "appsink")(),
+        ),
+    ),
+    Requirement(
+        "speaker_wobble",
+        "the media server keeps its wobbler and its sample rate",
+        _source_mentions(_MEDIA_SERVER, "GstMediaServer", "_head_wobbler", "WOBBLER_SAMPLE_RATE"),
+    ),
+    Requirement(
+        "speaker_wobble",
+        "Backend.set_speech_offsets(offsets)",
+        _function(_BACKEND, "Backend.set_speech_offsets", "offsets"),
+    ),
+    Requirement(
         "camera",
         "GStreamerCamera reads the daemon's shared camera feed",
         _function("reachy_mini.media.camera_gstreamer", "GStreamerCamera", "log_level"),
@@ -509,6 +528,26 @@ def wrap_configure_webrtc(wrapper: Callable[..., Any]) -> None:
     from reachy_mini.media.media_server import GstMediaServer
 
     _wrap(GstMediaServer, "_configure_webrtc", wrapper)
+
+
+def wrap_wobbling(enable: Callable[..., None], disable: Callable[..., None], on_sample: Callable[..., Any], set_offsets: Callable[..., None]) -> None:
+    """Wrap the media server's wobbling and the backend's offsets, each as
+    ``wrapper(original, self, *args)``."""
+    from reachy_mini.daemon.backend.abstract import Backend
+    from reachy_mini.media.media_server import GstMediaServer
+
+    _wrap(GstMediaServer, "enable_wobbling", enable)
+    _wrap(GstMediaServer, "disable_wobbling", disable)
+    _wrap(GstMediaServer, "_on_wobbler_sample", on_sample)
+    _wrap(Backend, "set_speech_offsets", set_offsets)
+
+
+def head_wobbler(server: Any) -> Any | None:
+    return getattr(server, "_head_wobbler", None)
+
+
+def wobbler_sample_rate(server: Any) -> int:
+    return int(server.WOBBLER_SAMPLE_RATE)
 
 
 def media_server(daemon: Any) -> Any | None:
