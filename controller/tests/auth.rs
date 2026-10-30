@@ -5,7 +5,7 @@
 //! puts the real socket address in production.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,10 +27,28 @@ const LOOPBACK: &str = "127.0.0.1:50000";
 const LAN: &str = "192.168.1.50:50000";
 const LAN2: &str = "192.168.1.51:50000";
 
-async fn fake_daemon() -> String {
+/// A daemon whose robot is off until `on` is set.
+// The fake robot's power: ROBOT_OFF, ROBOT_ON, ROBOT_CRASHED (its backend
+// died), ROBOT_STARTING, or ROBOT_SILENT (the daemon doesn't answer).
+const ROBOT_OFF: u8 = 0;
+const ROBOT_ON: u8 = 1;
+const ROBOT_CRASHED: u8 = 2;
+const ROBOT_STARTING: u8 = 3;
+const ROBOT_SILENT: u8 = 4;
+
+async fn fake_daemon(power: Arc<AtomicU8>) -> String {
     let app = Router::new().route(
         "/api/daemon/status",
-        get(|| async { Json(json!({"state": "stopped", "backend_status": null, "error": null})) }),
+        get(move || async move {
+            let (state, backend) = match power.load(Ordering::SeqCst) {
+                ROBOT_ON => ("running", json!({"motor_control_mode": "enabled"})),
+                ROBOT_CRASHED => ("error", Value::Null),
+                ROBOT_STARTING => ("starting", Value::Null),
+                ROBOT_SILENT => return Err(StatusCode::SERVICE_UNAVAILABLE),
+                _ => ("stopped", Value::Null),
+            };
+            Ok(Json(json!({"state": state, "backend_status": backend, "error": null})))
+        }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -49,6 +67,8 @@ impl Drop for TempDir {
 struct Harness {
     state: Shared,
     dir: TempDir,
+    /// The fake robot's power.
+    robot: Arc<AtomicU8>,
 }
 
 struct Reply {
@@ -71,7 +91,8 @@ impl Reply {
 }
 
 async fn harness(config: AuthConfig) -> Harness {
-    let url = fake_daemon().await;
+    let robot = Arc::new(AtomicU8::new(ROBOT_OFF));
+    let url = fake_daemon(robot.clone()).await;
     // A counter, not the clock: macOS clocks tick in microseconds, so tests
     // starting together got the same directory and deleted each other's.
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -84,7 +105,7 @@ async fn harness(config: AuthConfig) -> Harness {
         Duration::from_millis(10),
         config,
     );
-    Harness { state, dir: TempDir(dir) }
+    Harness { state, dir: TempDir(dir), robot }
 }
 
 fn lan() -> AuthConfig {
@@ -290,7 +311,7 @@ async fn devices_survive_a_restart() {
     let h = harness(lan()).await;
     let device = h.paired(LAN).await;
     let state = AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), lan());
-    let restarted = Harness { state, dir: TempDir(std::env::temp_dir().join("rc-auth-unused")) };
+    let restarted = Harness { state, dir: TempDir(std::env::temp_dir().join("rc-auth-unused")), robot: Default::default() };
     assert_eq!(restarted.call("GET", "/api/logs/sources", LAN, &[("cookie", &device)], None).await.status, StatusCode::OK);
 }
 
@@ -497,7 +518,7 @@ async fn idle_devices_expire_and_a_bad_file_is_kept_aside() {
     parsed["devices"][0]["last_seen"] = json!(1);
     std::fs::write(h.dir.0.join("devices.json"), parsed.to_string()).unwrap();
     let restart = || AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), lan());
-    let restarted = Harness { state: restart(), dir: TempDir(std::env::temp_dir().join("rc-auth-unused")) };
+    let restarted = Harness { state: restart(), dir: TempDir(std::env::temp_dir().join("rc-auth-unused")), robot: Default::default() };
     assert_eq!(restarted.call("GET", "/api/logs/sources", LAN, &[("cookie", &device)], None).await.status, StatusCode::UNAUTHORIZED);
     assert!(h.devices_file().contains("[]"), "expired device removed: {}", h.devices_file());
 
@@ -598,7 +619,7 @@ async fn the_last_admin_is_revoked_only_from_the_robot_and_admin_mode_stays() {
     assert_eq!(h.call("GET", "/api/logs/sources", LOOPBACK, &[], None).await.status, StatusCode::UNAUTHORIZED);
     let restarted = Harness {
         state: AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), AuthConfig::default()),
-        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")),
+        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")), robot: Default::default(),
     };
     assert_eq!(restarted.call("GET", "/api/logs/sources", LOOPBACK, &[], None).await.status, StatusCode::UNAUTHORIZED);
     // The CLI pairs a new admin.
@@ -618,7 +639,7 @@ async fn devices_paired_before_roles_are_members() {
     std::fs::write(h.dir.0.join("devices.json"), old.to_string()).unwrap();
     let restarted = Harness {
         state: AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), lan()),
-        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")),
+        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")), robot: Default::default(),
     };
     assert!(!restarted.state.auth.admin_mode());
     let devices = restarted.call("GET", "/api/auth/devices", LOOPBACK, &[], None).await.body["devices"].clone();
@@ -902,7 +923,7 @@ async fn devices_paired_before_people_use_their_name() {
     std::fs::write(h.dir.0.join("devices.json"), file.to_string()).unwrap();
     let restarted = Harness {
         state: AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), lan()),
-        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")),
+        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")), robot: Default::default(),
     };
     let r = restarted.call("GET", "/api/auth/status", LAN, &[("cookie", &old)], None).await;
     assert_eq!(r.body["person"], "phone");
@@ -982,6 +1003,7 @@ fn signs_like_the_gateway() {
 #[tokio::test]
 async fn a_squatter_on_the_gateway_port_is_not_believed() {
     let h = harness(AuthConfig::default()).await;
+    h.robot.store(ROBOT_ON, Ordering::SeqCst);
     let deleted = Arc::new(AtomicU64::new(0));
     h.state.audio.set_url(&fake_gateway(deleted, None).await);
     let r = h.call("POST", "/api/audio/session", LOOPBACK, &[], Some(json!({"listen": true, "talk": true}))).await;
@@ -990,8 +1012,47 @@ async fn a_squatter_on_the_gateway_port_is_not_believed() {
 }
 
 #[tokio::test]
+async fn voice_goes_with_the_robot() {
+    let h = harness(AuthConfig::default()).await;
+    let deleted = Arc::new(AtomicU64::new(0));
+    let key = std::fs::read_to_string(h.state.state_dir.join(audio::KEY_FILE)).unwrap().trim().to_string();
+    h.state.audio.set_url(&fake_gateway(deleted.clone(), Some(key)).await);
+    let open = json!({"listen": true, "talk": false});
+    let refused = |power, status| {
+        let (h, open) = (&h, open.clone());
+        async move {
+            h.robot.store(power, Ordering::SeqCst);
+            let r = h.call("POST", "/api/audio/session", LOOPBACK, &[], Some(open)).await;
+            assert_eq!(r.status, status, "power {power}: {:?}", r.body);
+            r.body["detail"].as_str().unwrap_or_default().to_string()
+        }
+    };
+    assert!(refused(ROBOT_OFF, StatusCode::CONFLICT).await.contains("Turn the robot on"));
+    assert!(refused(ROBOT_STARTING, StatusCode::CONFLICT).await.contains("still starting"));
+    assert!(refused(ROBOT_CRASHED, StatusCode::CONFLICT).await.contains("Turn the robot on"));
+    refused(ROBOT_SILENT, StatusCode::SERVICE_UNAVAILABLE).await;
+    // Turning the robot off (or its backend crashing) ends a session within
+    // a check; a daemon that stops answering within a few.
+    for (power, within) in [(ROBOT_OFF, 4), (ROBOT_CRASHED, 4), (ROBOT_SILENT, 9)] {
+        let before = deleted.load(Ordering::SeqCst);
+        h.robot.store(ROBOT_ON, Ordering::SeqCst);
+        assert_eq!(h.call("POST", "/api/audio/session", LOOPBACK, &[], Some(open.clone())).await.status, StatusCode::OK);
+        h.robot.store(power, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(within), async {
+            while deleted.load(Ordering::SeqCst) == before {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the session outlived power {power}"));
+        assert_eq!(h.call("GET", "/api/audio", LOOPBACK, &[], None).await.body["session"], Value::Null);
+    }
+}
+
+#[tokio::test]
 async fn only_the_holder_listens_and_talks_and_loses_it_with_control() {
     let (h, admin, sam) = control_harness().await;
+    h.robot.store(ROBOT_ON, Ordering::SeqCst);
     let deleted = Arc::new(AtomicU64::new(0));
     let key = std::fs::read_to_string(h.state.state_dir.join(audio::KEY_FILE)).unwrap().trim().to_string();
     h.state.audio.set_url(&fake_gateway(deleted.clone(), Some(key)).await);
