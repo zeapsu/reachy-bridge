@@ -46,7 +46,7 @@ EOF
 chmod +x "$ROOT/stubs/curl"
 
 cat >"$ROOT/devices" <<'EOF'
-{"devices":[{"id":"111111111111","name":"Phone","person":"Andry","role":"admin","last_seen":0,"peer":"x"},{"id":"222222222222","name":"Laptop","person":"Guest \"G\"","last_seen":0,"peer":"y"}]}
+{"devices":[{"id":"111111111111","name":"Phone","person":"Andry","role":"admin","last_seen":0,"peer":"x"},{"id":"222222222222","name":"Laptop","person":"Guest \"G\"","last_seen":0,"peer":"y"},{"id":"333333333333","name":"Mac","person":"Desk","last_seen":0,"peer":"z"}]}
 EOF
 cat >"$ROOT/control" <<'EOF'
 {"admin_mode":true,"now":0,"holder":{"person":"Desk","device":"Mac","admin":false,"since":0,"until":null},"grants":[{"id":"0123456789ab","person":"Desk","from":0,"until":null,"by":"x"}],"requests":[{"person":"Guest","device":"222222222222","at":0,"minutes":30,"note":"hi"}]}
@@ -61,7 +61,7 @@ run() {
 echo "== list"
 run || { fail "list exited $?"; cat "$ROOT/out"; }
 check "shows the holder" 'grep -q "in control: Desk on Mac" "$ROOT/out"'
-check "numbers the grants" 'grep -q "1  0123456789ab  Desk, .* to no end" "$ROOT/out"'
+check "lists the grants" 'grep -q "^  0123456789ab  Desk, .* to no end" "$ROOT/out"'
 check "shows requests" 'grep -q "Guest on Laptop, 30 min: hi" "$ROOT/out"'
 check "sends the local key" 'grep -q "| X-Reachy-Bridge-Key: testkey" "$ROOT/log"'
 cp "$ROOT/control" "$ROOT/control.bak"
@@ -93,12 +93,21 @@ if run grant Andry; then fail "granted without the key"; else check "needs the l
 mv "$S/key.bak" "$S/controller.key"
 
 echo "== revoke"
-run revoke 1 || { fail "revoke exited $?"; cat "$ROOT/out"; }
-check "revokes the numbered grant" 'grep -q "^DELETE http://127.0.0.1:7861/api/control/grants/0123456789ab " "$ROOT/log"'
+run revoke 3 || { fail "revoke exited $?"; cat "$ROOT/out"; }
+check "revokes the grant of device 3's person" 'grep -q "^DELETE http://127.0.0.1:7861/api/control/grants/0123456789ab " "$ROOT/log"'
 check "names whose grant" 'grep -q "revoked grant 0123456789ab (Desk)" "$ROOT/out"'
 run revoke 0123456789ab || fail "revoke by id exited $?"
 check "revokes by id without a lookup" 'grep -q "^DELETE .*/api/control/grants/0123456789ab " "$ROOT/log" && ! grep -q "^GET" "$ROOT/log"'
 if run revoke ../x; then fail "took a bad id"; else check "rejects a bad id" '! grep -q DELETE "$ROOT/log"'; fi
+run revoke Desk || fail "revoke by person exited $?"
+check "revokes the person's grant" 'grep -q "^DELETE .*/api/control/grants/0123456789ab " "$ROOT/log" && grep -q "(Desk)" "$ROOT/out"'
+if run revoke 1; then fail "revoked for a device without a grant"; else check "device's person has no grant" 'grep -q "Andry has no grant" "$ROOT/out" && ! grep -q DELETE "$ROOT/log"'; fi
+if run revoke 9; then fail "revoked for a missing device"; else check "no such device" 'grep -q "no device 9" "$ROOT/out" && ! grep -q DELETE "$ROOT/log"'; fi
+if run revoke Nobody; then fail "revoked for nobody"; else check "no grant for a person" 'grep -q "Nobody has no grant" "$ROOT/out"'; fi
+cp "$ROOT/control" "$ROOT/control.bak"
+sed -i 's/"grants":\[/"grants":[{"id":"ba9876543210","person":"Desk","from":9,"until":null,"by":"x"},/' "$ROOT/control"
+if run revoke Desk; then fail "revoked one of several grants by name"; else check "asks for an id when a person has several grants" 'grep -q "more than one grant" "$ROOT/out" && ! grep -q DELETE "$ROOT/log"'; fi
+mv "$ROOT/control.bak" "$ROOT/control"
 
 if (( fails )); then echo "$fails failed"; exit 1; fi
 echo "all passed"
