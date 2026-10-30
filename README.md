@@ -137,9 +137,10 @@ or the login does. Every dashboard shows a mic badge while a session is open.
 The controller starts `reachy-bridge-audio.service` on demand. Audio is WebRTC over UDP straight
 between the browser and the device, on tailnet addresses only (no STUN or TURN), using UDP ports
 47100-47199; a Tailscale ACL that limits ports must allow them. Use a tailnet address: audio
-can't connect from a home-network address. Listening also works on the device's plain-http
-tailnet IP (LAN mode), but talking needs the HTTPS (Tailscale) name, since browsers only share a
-microphone with a secure page. Sim mode has no audio. The device needs GStreamer's libnice plugin
+can't connect from a home-network address. Listening also works on the device's raw tailnet IP,
+over plain http (LAN mode) or https, but talking needs the HTTPS MagicDNS name: browsers only share
+a microphone with a secure page, and the certificate names the host, not the IP, so an https page
+on the IP opens only after a warning and doesn't count as secure. Sim mode has no audio. The device needs GStreamer's libnice plugin
 (`sudo apt install gstreamer1.0-nice`); `reachy-bridge check` reports it.
 
 ## Development

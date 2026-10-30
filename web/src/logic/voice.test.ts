@@ -15,7 +15,7 @@ const session = (over: Partial<VoiceSession> = {}): VoiceSession => ({
 
 describe("voiceBlocked", () => {
   test("needs a tailnet address", () => {
-    expect(voiceBlocked({ available: true, session: null }, { kind: "off" }, false)).toContain("https");
+    expect(voiceBlocked({ available: true, session: null }, { kind: "off" }, false)).toContain("Tailscale address");
   });
   test("refuses in sim mode", () => {
     expect(voiceBlocked({ available: false, session: null }, { kind: "off" })).toContain("simulation");
@@ -47,7 +47,7 @@ describe("onTailnet", () => {
 
 describe("talkBlocked", () => {
   test("needs a secure page and a mic", () => {
-    expect(talkBlocked(false, true)).toContain("https");
+    expect(talkBlocked(false, true)).toContain("certificate");
     expect(talkBlocked(true, false)).toContain("microphone");
     expect(talkBlocked(true, true)).toBeNull();
   });

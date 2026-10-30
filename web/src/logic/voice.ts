@@ -25,7 +25,7 @@ export function voiceBlocked(view: VoiceView | null, control: ControlState, tail
   // Audio only connects between tailnet addresses; a LAN page would open the
   // robot's mic and never connect. Listening needs no secure page, so a plain-http
   // page on the device's tailnet IP works too.
-  if (!tailnet) return "Listening and talking work from the dashboard's Tailscale address (its https name or 100.x IP).";
+  if (!tailnet) return "Listening and talking work from the dashboard's Tailscale address (its name or 100.x IP).";
   if (!view) return "Checking the robot's audio…";
   if (!view.available) return "Listening and talking work with the real robot, not the simulation.";
   if (control.kind === "other") return `${control.person} is in control of the robot.`;
@@ -36,7 +36,9 @@ export function voiceBlocked(view: VoiceView | null, control: ControlState, tail
 
 /** Why this browser can't talk at all, or null. */
 export function talkBlocked(secure: boolean, hasMic: boolean): string | null {
-  if (!secure) return "Talking needs the dashboard's https address: browsers only share a mic over https.";
+  // An https page on the raw IP isn't secure either: the certificate names the
+  // MagicDNS host, so the browser only shows it after a warning.
+  if (!secure) return "Talking needs the dashboard's Tailscale name (https://<name>.ts.net…): browsers only share a mic with a page whose certificate matches its address.";
   if (!hasMic) return "This browser can't share a microphone.";
   return null;
 }
