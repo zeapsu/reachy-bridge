@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { VoiceSession } from "../api/voice.ts";
-import { onTailnet, talkBlocked, turnsOff, voiceBadge, voiceBlocked } from "./voice.ts";
+import { onTailnet, talkBlocked, voiceBadge, voiceBlocked } from "./voice.ts";
 
 const session = (over: Partial<VoiceSession> = {}): VoiceSession => ({
   id: null,
@@ -75,15 +75,5 @@ describe("voiceBadge", () => {
     expect(voiceBadge({ available: true, session: open }, "r1")).toBe("You're listening");
     expect(voiceBadge({ available: true, session: open }, null)).toBe("Someone is listening");
     expect(voiceBadge({ available: true, session: open }, "r0")).toBe("Someone is listening");
-  });
-});
-
-describe("turnsOff", () => {
-  const off = { listen: false, talk: false, hear: false, apps: false };
-  test("only when something on goes off", () => {
-    expect(turnsOff({ ...off, apps: true }, off)).toBe(true);
-    expect(turnsOff({ ...off, talk: true, apps: true }, { ...off, talk: true })).toBe(true);
-    expect(turnsOff(off, { ...off, hear: true })).toBe(false);
-    expect(turnsOff({ ...off, listen: true }, { ...off, listen: true, apps: true })).toBe(false);
   });
 });

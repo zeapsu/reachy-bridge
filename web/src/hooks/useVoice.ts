@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson, errorText, paths, takeControlIfFree, type VoiceOffer, type VoiceRoute, type VoiceView } from "../api.ts";
-import { DISCONNECT_GRACE_MS, ICE_WAIT_MS, turnsOff, VOICE_POLL_MS } from "../logic/voice.ts";
+import { DISCONNECT_GRACE_MS, ICE_WAIT_MS, VOICE_POLL_MS } from "../logic/voice.ts";
 
 export type VoiceStatus = "off" | "connecting" | "live";
 
@@ -218,11 +218,19 @@ export function useVoice(visible: boolean): VoiceApi {
         const sid = id.current;
         const sender = pc.current?.getTransceivers()[0]?.sender;
         if (!sid || !sender) return;
-        try {
-          if (speaks(next) && !mic.current) {
+        if (speaks(next) && !mic.current) {
+          // Nothing has changed yet, so a refused mic just leaves the switch off.
+          try {
             mic.current = await microphone();
+          } catch (e) {
+            setError(errorText(e, "Couldn't switch the audio."));
+            return;
+          }
+        }
+        try {
+          if (speaks(next)) {
             await sender.replaceTrack(mic.current);
-          } else if (!speaks(next) && mic.current) {
+          } else if (mic.current) {
             // Release the mic, so the browser's own mic indicator goes off too.
             await sender.replaceTrack(null);
             mic.current.stop();
@@ -232,25 +240,14 @@ export function useVoice(visible: boolean): VoiceApi {
           setRouteState(next);
           await apiJson(paths.voiceRoute(sid), { method: "POST", body: JSON.stringify(next) });
         } catch (e) {
-          // Something may still be on that the switches say is off: stop it all.
-          if (turnsOff(route, next)) {
-            teardown();
-            void apiJson(paths.voiceEnd(sid), { method: "DELETE" }, { take: false }).catch(() => {});
-            setError(`${errorText(e, "Couldn't switch the audio.")} Audio stopped.`);
-            return;
-          }
-          // A refused switch stays off, and its mic goes back.
-          if (!speaks(route) && mic.current) {
-            await sender.replaceTrack(null).catch(() => {});
-            mic.current.stop();
-            mic.current = null;
-          }
-          if (speaker.current) speaker.current.muted = !(route.listen || route.hear);
-          setRouteState(route);
-          setError(errorText(e, "Couldn't switch the audio."));
+          // A failed reply doesn't say whether the switch applied, on or off, so
+          // the switches can't be trusted: stop it all.
+          teardown();
+          void apiJson(paths.voiceEnd(sid), { method: "DELETE" }, { take: false }).catch(() => {});
+          setError(`${errorText(e, "Couldn't switch the audio.")} Audio stopped.`);
         }
       }),
-    [run, route, teardown],
+    [run, teardown],
   );
 
   const stop = useCallback(

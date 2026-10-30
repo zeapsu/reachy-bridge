@@ -1,6 +1,6 @@
 // Listen and talk (#219). Pure: the hook and panel use these.
 
-import type { VoiceRoute, VoiceSession, VoiceView } from "../api/voice.ts";
+import type { VoiceSession, VoiceView } from "../api/voice.ts";
 import type { ControlState } from "./control.ts";
 
 export const VOICE_POLL_MS = 2000;
@@ -35,10 +35,6 @@ export function voiceBlocked(view: VoiceView | null, control: ControlState, tail
   if (control.kind === "free" && !control.canTake) return "Log in from a paired browser to listen or talk.";
   return null;
 }
-
-/** Going from `from` to `to` switches something off. */
-export const turnsOff = (from: VoiceRoute, to: VoiceRoute) =>
-  (from.listen && !to.listen) || (from.talk && !to.talk) || (from.hear && !to.hear) || (from.apps && !to.apps);
 
 /** Why this browser can't talk at all, or null. */
 export function talkBlocked(secure: boolean, hasMic: boolean): string | null {
