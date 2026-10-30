@@ -13,9 +13,9 @@
 #                                        approve a browser's login code
 #                                        (--admin: as the admin, #221)
 #   reachy-bridge devices [revoke <n|id>]  list or revoke paired browsers
-#   reachy-bridge control [grant <n|person> [minutes] | revoke <n|id>]
-#                                        who has control; grant or revoke control time
-#                                        (<n> in grant: a device from `devices`; no minutes: no end)
+#   reachy-bridge control [grant <n|person> [minutes] | revoke <n|person|id>]
+#                                        who has control; grant (no minutes: no end) or revoke
+#                                        control time (grant <n>: a device in `devices`; revoke <n>: a grant in `control`)
 #   reachy-bridge deploy <tag>           install a tag; reinstall the previous version if it fails
 #   reachy-bridge uninstall [--keep-data] [--dry-run] [--yes]
 #
@@ -943,26 +943,41 @@ if 1 <= n <= len(devices):
             revoke)
                 need_key
                 id=${args[1]:-} person=
-                [[ $id =~ ^[0-9a-f]+$ && ${#args[@]} -eq 2 ]] || die "usage: reachy-bridge control revoke <n|id> (from reachy-bridge control)"
-                # A short number is the grant's line in `reachy-bridge control`;
-                # ids are 12 hex characters.
-                if [[ $id =~ ^[0-9]{1,4}$ ]]; then
+                [[ -n $id && ${#args[@]} -eq 2 ]] || die "usage: reachy-bridge control revoke <n|person|id> (from reachy-bridge control)"
+                # A grant id (12 hex characters) goes as is. Otherwise a short
+                # number is the grant's line in `reachy-bridge control`, and
+                # anything else a person, who must have exactly one grant.
+                if [[ ! $id =~ ^[0-9a-f]{12}$ ]]; then
                     need_python
                     view=$(controller_api GET /api/control)
                     id=$(python3 -c '
-import json, sys
-grants, n = json.loads(sys.argv[1]).get("grants") or [], int(sys.argv[2])
-if 1 <= n <= len(grants):
-    print(grants[n - 1]["id"], grants[n - 1]["person"], sep="\t")
+import json, re, sys
+grants, arg = json.loads(sys.argv[1]).get("grants") or [], sys.argv[2]
+if re.fullmatch("[0-9]{1,4}", arg):
+    n = int(arg)
+    found = [grants[n - 1]] if 1 <= n <= len(grants) else []
+else:
+    found = [g for g in grants if g["person"] == arg.strip()]
+if len(found) > 1:
+    print("many")
+elif found:
+    print(found[0]["id"], found[0]["person"], sep="\t")
 ' "$view" "$id")
-                    [[ -n $id ]] || die "no grant ${args[1]} (see reachy-bridge control)"
+                    if [[ $id == many ]]; then
+                        die "${args[1]} has more than one grant; revoke by number (see reachy-bridge control)"
+                    elif [[ ${args[1]} =~ ^[0-9]{1,4}$ ]]; then
+                        [[ -n $id ]] || die "no grant ${args[1]}: the numbers are the grants in reachy-bridge control, not devices"
+                    else
+                        [[ -n $id ]] || die "no grant for ${args[1]} (see reachy-bridge control)"
+                    fi
                     person=${id#*$'\t'}
                     id=${id%%$'\t'*}
+                    [[ $id =~ ^[0-9a-f]+$ ]] || die "the controller sent an unexpected grant id"
                 fi
                 controller_api DELETE "/api/control/grants/$id" >/dev/null
                 echo "revoked grant $id${person:+ ($person)}"
                 ;;
-            *) die "control takes list, grant <n|person> [minutes] or revoke <n|id>" ;;
+            *) die "control takes list, grant <n|person> [minutes] or revoke <n|person|id>" ;;
         esac
         ;;
     deploy)

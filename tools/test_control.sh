@@ -99,6 +99,14 @@ check "names whose grant" 'grep -q "revoked grant 0123456789ab (Desk)" "$ROOT/ou
 run revoke 0123456789ab || fail "revoke by id exited $?"
 check "revokes by id without a lookup" 'grep -q "^DELETE .*/api/control/grants/0123456789ab " "$ROOT/log" && ! grep -q "^GET" "$ROOT/log"'
 if run revoke ../x; then fail "took a bad id"; else check "rejects a bad id" '! grep -q DELETE "$ROOT/log"'; fi
+run revoke Desk || fail "revoke by person exited $?"
+check "revokes the person's grant" 'grep -q "^DELETE .*/api/control/grants/0123456789ab " "$ROOT/log" && grep -q "(Desk)" "$ROOT/out"'
+if run revoke 2; then fail "revoked a missing grant"; else check "says grant numbers aren't devices" 'grep -q "not devices" "$ROOT/out" && ! grep -q DELETE "$ROOT/log"'; fi
+if run revoke Nobody; then fail "revoked for nobody"; else check "no grant for a person" 'grep -q "no grant for Nobody" "$ROOT/out"'; fi
+cp "$ROOT/control" "$ROOT/control.bak"
+sed -i 's/"grants":\[/"grants":[{"id":"ba9876543210","person":"Desk","from":9,"until":null,"by":"x"},/' "$ROOT/control"
+if run revoke Desk; then fail "revoked one of several grants by name"; else check "asks for a number when a person has several grants" 'grep -q "more than one grant" "$ROOT/out" && ! grep -q DELETE "$ROOT/log"'; fi
+mv "$ROOT/control.bak" "$ROOT/control"
 
 if (( fails )); then echo "$fails failed"; exit 1; fi
 echo "all passed"
