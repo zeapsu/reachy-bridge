@@ -49,7 +49,7 @@ cat >"$ROOT/devices" <<'EOF'
 {"devices":[{"id":"111111111111","name":"Phone","person":"Andry","role":"admin","last_seen":0,"peer":"x"},{"id":"222222222222","name":"Laptop","person":"Guest \"G\"","last_seen":0,"peer":"y"}]}
 EOF
 cat >"$ROOT/control" <<'EOF'
-{"admin_mode":true,"now":0,"holder":{"person":"Desk","device":"Mac","admin":false,"since":0,"until":null},"grants":[{"id":"0123456789ab","person":"Desk","from":0,"until":null,"by":"x"}],"requests":[{"person":"Guest","device":"Laptop","at":0,"minutes":30,"note":"hi"}]}
+{"admin_mode":true,"now":0,"holder":{"person":"Desk","device":"Mac","admin":false,"since":0,"until":null},"grants":[{"id":"0123456789ab","person":"Desk","from":0,"until":null,"by":"x"}],"requests":[{"person":"Guest","device":"222222222222","at":0,"minutes":30,"note":"hi"}]}
 EOF
 
 run() {
@@ -64,6 +64,11 @@ check "shows the holder" 'grep -q "in control: Desk on Mac" "$ROOT/out"'
 check "numbers the grants" 'grep -q "1  0123456789ab  Desk, .* to no end" "$ROOT/out"'
 check "shows requests" 'grep -q "Guest on Laptop, 30 min: hi" "$ROOT/out"'
 check "sends the local key" 'grep -q "| X-Reachy-Bridge-Key: testkey" "$ROOT/log"'
+cp "$ROOT/control" "$ROOT/control.bak"
+echo '{"admin_mode":false}' >"$ROOT/control"
+run || fail "list without admin exited $?"
+check "says when there's no admin" 'grep -q "no admin yet" "$ROOT/out"'
+mv "$ROOT/control.bak" "$ROOT/control"
 
 echo "== grant by person, no end"
 run grant Andry || { fail "grant exited $?"; cat "$ROOT/out"; }
@@ -78,6 +83,7 @@ check "says the minutes" 'grep -q "(45 min)" "$ROOT/out"'
 echo "== refusals"
 if run grant 9; then fail "granted a missing device"; else check "no such device" 'grep -q "no device 9" "$ROOT/out"'; fi
 if run grant Andry soon; then fail "took bad minutes"; else check "bad minutes" 'grep -q "minutes is a number" "$ROOT/out" && ! grep -q POST "$ROOT/log"'; fi
+if run grant Andry ""; then fail "took empty minutes as no end"; else check "empty minutes" 'grep -q "minutes is a number" "$ROOT/out" && ! grep -q POST "$ROOT/log"'; fi
 if run grant; then fail "granted nobody"; else check "usage without a person" 'grep -q "usage: reachy-bridge control grant" "$ROOT/out"'; fi
 echo 409 >"$ROOT/status"
 if run grant Andry; then fail "ignored a 409"; else check "shows the controller's reason" 'grep -q "overlaps Desk" "$ROOT/out"'; fi
@@ -90,6 +96,8 @@ echo "== revoke"
 run revoke 1 || { fail "revoke exited $?"; cat "$ROOT/out"; }
 check "revokes the numbered grant" 'grep -q "^DELETE http://127.0.0.1:7861/api/control/grants/0123456789ab " "$ROOT/log"'
 check "names whose grant" 'grep -q "revoked grant 0123456789ab (Desk)" "$ROOT/out"'
+run revoke 0123456789ab || fail "revoke by id exited $?"
+check "revokes by id without a lookup" 'grep -q "^DELETE .*/api/control/grants/0123456789ab " "$ROOT/log" && ! grep -q "^GET" "$ROOT/log"'
 if run revoke ../x; then fail "took a bad id"; else check "rejects a bad id" '! grep -q DELETE "$ROOT/log"'; fi
 
 if (( fails )); then echo "$fails failed"; exit 1; fi
