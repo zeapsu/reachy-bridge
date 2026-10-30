@@ -23,7 +23,9 @@ export interface VoiceApi {
   stop: () => Promise<void>;
 }
 
-const OFF: VoiceRoute = { listen: false, talk: false, hear: false };
+const OFF: VoiceRoute = { listen: false, talk: false, hear: false, apps: false };
+/** Either way of talking needs this browser's mic. */
+const speaks = (r: VoiceRoute) => r.talk || r.apps;
 
 async function microphone(): Promise<MediaStreamTrack> {
   const stream = await navigator.mediaDevices.getUserMedia({
@@ -157,7 +159,7 @@ export function useVoice(visible: boolean): VoiceApi {
           // Take control now: the mic prompt below can outlast the tap's activation.
           await takeControlIfFree(true);
           // Ask for the mic first: a refusal shouldn't open the robot's.
-          const track = next.talk ? await microphone() : null;
+          const track = speaks(next) ? await microphone() : null;
           mic.current = track;
           const { id: sid, ref, offer } = await apiJson<VoiceOffer>(paths.voiceSession, { method: "POST", body: JSON.stringify(next) });
           opened = sid;
@@ -217,10 +219,10 @@ export function useVoice(visible: boolean): VoiceApi {
         const sender = pc.current?.getTransceivers()[0]?.sender;
         if (!sid || !sender) return;
         try {
-          if (next.talk && !mic.current) {
+          if (speaks(next) && !mic.current) {
             mic.current = await microphone();
             await sender.replaceTrack(mic.current);
-          } else if (!next.talk && mic.current) {
+          } else if (!speaks(next) && mic.current) {
             // Release the mic, so the browser's own mic indicator goes off too.
             await sender.replaceTrack(null);
             mic.current.stop();

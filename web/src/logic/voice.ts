@@ -9,7 +9,6 @@ export const DISCONNECT_GRACE_MS = 8000;
 /** How long the browser gathers its ICE candidates before answering. */
 export const ICE_WAIT_MS = 3000;
 
-/** Why this browser can't start listening or talking now, or null. */
 /**
  * Whether the page was opened on a tailnet address (100.64.0.0/10 or
  * Tailscale's fd7a:115c:a1e0::/48), the raw IP rather than the https name.
@@ -20,7 +19,10 @@ export function onTailnet(hostname: string): boolean {
   return /^\[?fd7a:115c:a1e0:/i.test(hostname);
 }
 
-/** `tailnet`: the page is secure (the https name) or on a tailnet IP. */
+/**
+ * Why this browser can't start listening or talking now, or null.
+ * `tailnet`: the page is secure (the https name) or on a tailnet IP.
+ */
 export function voiceBlocked(view: VoiceView | null, control: ControlState, tailnet = true): string | null {
   // Audio only connects between tailnet addresses; a LAN page would open the
   // robot's mic and never connect. Listening needs no secure page, so a plain-http
@@ -42,7 +44,12 @@ export function talkBlocked(secure: boolean, hasMic: boolean): string | null {
 }
 
 function doing(s: VoiceSession): string {
-  const parts = [s.listen && "listening", s.hear && "hearing what Reachy says", s.talk && "talking"].filter(Boolean);
+  const parts = [
+    s.listen && "listening",
+    s.hear && "hearing what Reachy says",
+    s.talk && "talking",
+    s.apps && "talking to its apps",
+  ].filter(Boolean);
   if (parts.length === 0) return "connected, muted";
   return parts.length === 1 ? String(parts[0]) : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 }

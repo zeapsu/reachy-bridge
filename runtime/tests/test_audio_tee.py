@@ -64,6 +64,28 @@ def test_tee_keeps_upstreams_names_and_round_trips():
     assert audio_tee.untee(UPSTREAM) == UPSTREAM
 
 
+def test_tee_mixes_app_voice_into_the_mic():
+    teed = audio_tee.tee(UPSTREAM)
+    assert teed is not None
+    # Upstream's mic dsnoop keeps its ipc_key under its new name; apps read
+    # the mix under upstream's name.
+    mic = teed[teed.index(f"pcm.{audio_tee.MIC} {{") :]
+    assert mic.index("ipc_key 4242") < mic.index("pcm.reachy_bridge_app_voice_in")
+    assert teed.count("pcm.reachymini_audio_src {") == 1
+    assert teed.index(audio_tee.MARKER) < teed.index("pcm.reachymini_audio_src {")
+    # Capture tables are <client>.<slave>: each client channel sums the mic and the voice.
+    assert "ttable { 0.0 1 0.2 1 1.1 1 1.3 1 }" in teed
+
+
+def test_an_older_tee_is_replaced():
+    v1 = audio_tee.untee(audio_tee.tee(UPSTREAM)).rstrip("\n").replace(
+        "pcm.reachymini_audio_sink {", "pcm.reachy_bridge_speaker_hw {", 1
+    ) + "\n\n# reachy-bridge: speaker tee (#219)\npcm.reachymini_audio_sink { type plug slave.pcm \"x\" }\n"
+    assert not audio_tee.installed(v1)
+    assert audio_tee.untee(v1).strip() == UPSTREAM.strip()
+    assert audio_tee.tee(v1) == audio_tee.tee(UPSTREAM)
+
+
 def test_no_upstream_sink_no_tee():
     assert audio_tee.tee("pcm.!default { type hw card 1 }\n") is None
 

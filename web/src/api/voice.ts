@@ -15,6 +15,8 @@ export interface VoiceRoute {
   talk: boolean;
   /** Hear what the robot plays here (its speaker goes quiet meanwhile). */
   hear: boolean;
+  /** Play this browser's mic into what the robot's apps hear as its mic. */
+  apps: boolean;
 }
 
 /** The open session, as every dashboard sees it. */
