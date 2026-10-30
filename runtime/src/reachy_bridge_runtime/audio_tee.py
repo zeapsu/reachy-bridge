@@ -43,9 +43,11 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Every version's marker starts with PREFIX; MARKER is this version's.
+# Every version's marker starts with PREFIX; MARKER is this version's. It
+# contains the first version's marker, so that version's runtime, if a failed
+# deploy rolls back to it, leaves this tee alone instead of wrapping it.
 PREFIX = "# reachy-bridge: "
-MARKER = PREFIX + "speaker and mic tee (#219, v2)"
+MARKER = PREFIX + "speaker tee (#219), and mic tee (v2)"
 LOOPBACK = "Loopback"
 SPEAKER_SWITCH = "Reachy Bridge Speaker"
 HEAR_SOURCE = "reachy_bridge_hear"
@@ -138,6 +140,8 @@ pcm.{APP_VOICE_SINK} {{
 
 ASOUNDRC = Path.home() / ".asoundrc"
 CARDS = Path("/proc/asound/cards")
+# The mic side needs the card's second subdevice (snd-aloop's default is 8).
+SECOND_SUBDEVICE = Path(f"/proc/asound/{LOOPBACK}/pcm0p/sub1")
 # WirePlumber 0.4 (Lua) and 0.5 (SPA-JSON) read different files; each ignores
 # the other's.
 _WIREPLUMBER = Path.home() / ".config/wireplumber"
@@ -207,10 +211,17 @@ def untee(text: str) -> str:
     return _rename(_rename(plain, SPEAKER, SINK), MIC, SOURCE)
 
 
+def _card_usable() -> bool:
+    try:
+        return loopback_present(CARDS.read_text()) and SECOND_SUBDEVICE.exists()
+    except OSError:
+        return False
+
+
 def is_installed() -> bool:
     """The tee is in ``~/.asoundrc`` and its loopback card is there."""
     try:
-        return installed(ASOUNDRC.read_text(errors="ignore")) and loopback_present(CARDS.read_text())
+        return installed(ASOUNDRC.read_text(errors="ignore")) and _card_usable()
     except OSError:
         return False
 
@@ -280,10 +291,7 @@ def _ensure() -> None:
         text = ASOUNDRC.read_text(errors="ignore")
     except OSError:
         return
-    try:
-        present = loopback_present(CARDS.read_text())
-    except OSError:
-        present = False
+    present = _card_usable()
     if present and not installed(text):
         new = tee(text)
         if new is None:

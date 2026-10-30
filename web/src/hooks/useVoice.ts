@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson, errorText, paths, takeControlIfFree, type VoiceOffer, type VoiceRoute, type VoiceView } from "../api.ts";
-import { DISCONNECT_GRACE_MS, ICE_WAIT_MS, VOICE_POLL_MS } from "../logic/voice.ts";
+import { DISCONNECT_GRACE_MS, ICE_WAIT_MS, turnsOff, VOICE_POLL_MS } from "../logic/voice.ts";
 
 export type VoiceStatus = "off" | "connecting" | "live";
 
@@ -229,14 +229,28 @@ export function useVoice(visible: boolean): VoiceApi {
             mic.current = null;
           }
           if (speaker.current) speaker.current.muted = !(next.listen || next.hear);
-          // The switches show what this browser does now, even if the gateway refuses.
           setRouteState(next);
           await apiJson(paths.voiceRoute(sid), { method: "POST", body: JSON.stringify(next) });
         } catch (e) {
+          // Something may still be on that the switches say is off: stop it all.
+          if (turnsOff(route, next)) {
+            teardown();
+            void apiJson(paths.voiceEnd(sid), { method: "DELETE" }, { take: false }).catch(() => {});
+            setError(`${errorText(e, "Couldn't switch the audio.")} Audio stopped.`);
+            return;
+          }
+          // A refused switch stays off, and its mic goes back.
+          if (!speaks(route) && mic.current) {
+            await sender.replaceTrack(null).catch(() => {});
+            mic.current.stop();
+            mic.current = null;
+          }
+          if (speaker.current) speaker.current.muted = !(route.listen || route.hear);
+          setRouteState(route);
           setError(errorText(e, "Couldn't switch the audio."));
         }
       }),
-    [run],
+    [run, route, teardown],
   );
 
   const stop = useCallback(

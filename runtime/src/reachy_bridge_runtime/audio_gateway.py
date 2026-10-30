@@ -223,6 +223,11 @@ class Session:
             True,
         )
         self.pipeline.add(sink)
+        # A route that came while this was being built found no valves yet.
+        for name, on in (("talk", self.talk), ("apps", self.apps)):
+            valve = sink.get_by_name(name)
+            if valve is not None:
+                valve.set_property("drop", not on)
         sink.sync_state_with_parent()
         pad.link(sink.get_static_pad("sink"))
         pad.add_probe(Gst.PadProbeType.BUFFER, self._count_in)

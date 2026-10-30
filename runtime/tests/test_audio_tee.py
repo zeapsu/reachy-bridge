@@ -86,6 +86,22 @@ def test_an_older_tee_is_replaced():
     assert audio_tee.tee(v1) == audio_tee.tee(UPSTREAM)
 
 
+def test_the_first_version_leaves_this_tee_alone():
+    # A failed deploy rolls back to it; it looks for its own marker.
+    assert "# reachy-bridge: speaker tee (#219)" in audio_tee.MARKER
+
+
+def test_a_card_without_a_second_subdevice_gets_no_tee(tmp_path: Path, monkeypatch):
+    rc, cards = tmp_path / ".asoundrc", tmp_path / "cards"
+    rc.write_text(UPSTREAM)
+    cards.write_text(CARDS)
+    monkeypatch.setattr(audio_tee, "ASOUNDRC", rc)
+    monkeypatch.setattr(audio_tee, "CARDS", cards)
+    monkeypatch.setattr(audio_tee, "SECOND_SUBDEVICE", tmp_path / "missing")
+    audio_tee.ensure()
+    assert rc.read_text() == UPSTREAM
+
+
 def test_no_upstream_sink_no_tee():
     assert audio_tee.tee("pcm.!default { type hw card 1 }\n") is None
 
@@ -102,6 +118,7 @@ def test_ensure_adds_and_removes_the_tee(tmp_path: Path, monkeypatch):
     rules = {tmp_path / "wp/main.lua.d/rule.lua": "lua rule\n", tmp_path / "wp/wireplumber.conf.d/rule.conf": "conf rule\n"}
     monkeypatch.setattr(audio_tee, "ASOUNDRC", rc)
     monkeypatch.setattr(audio_tee, "CARDS", cards)
+    monkeypatch.setattr(audio_tee, "SECOND_SUBDEVICE", tmp_path)
     monkeypatch.setattr(audio_tee, "WIREPLUMBER_RULES", rules)
     switched: list[bool] = []
     ran: list[list[str]] = []
@@ -160,6 +177,7 @@ def test_ensure_never_stops_the_daemon(tmp_path: Path, monkeypatch):
     (tmp_path / "cards").write_text(CARDS)
     monkeypatch.setattr(audio_tee, "ASOUNDRC", rc)
     monkeypatch.setattr(audio_tee, "CARDS", tmp_path / "cards")
+    monkeypatch.setattr(audio_tee, "SECOND_SUBDEVICE", tmp_path)
 
     def broken(*_args):
         raise PermissionError("read-only home")

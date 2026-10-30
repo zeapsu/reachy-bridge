@@ -94,7 +94,8 @@ export function VoicePanel({ voice, control }: { voice: VoiceApi; control: Contr
         ></button>
       </div>
       <p className="note" id="voice-apps-note">
-        For a conversation app: it hears you as if you were next to the robot.
+        For a conversation app: it hears you as if you were next to the robot. Anything else using the
+        robot's mic, such as a remote session, hears you too.
       </p>
       {noTalk ? (
         <p className="note" id="voice-talk-note">

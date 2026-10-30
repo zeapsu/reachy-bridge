@@ -137,7 +137,9 @@ The Robot tab's Voice pane plays the robot's microphone on your device and your
 device's microphone through the robot's speaker. It can also play what the robot says (its own
 sounds and an app's voice) on your device instead of its speaker, and send your voice to the
 robot's apps, mixed into what they hear as its microphone, so you can hold a conversation with an
-app from anywhere. (Talking through the speaker doesn't reach apps: the robot's audio board
+app from anywhere. Everything that reads the robot's microphone hears you, including a remote
+session connected through the daemon, and nothing in the room signals it; the dashboards' badge
+does. (Talking through the speaker doesn't reach apps: the robot's audio board
 cancels its own speaker output from its microphone.) Each is switched while connected. One
 browser at a time, with the robot on; in admin mode, only the browser in control, and the session
 ends when control or the login does, or when the robot is turned off. Every dashboard shows a mic
