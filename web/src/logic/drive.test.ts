@@ -4,7 +4,9 @@ import {
   CENTRED,
   DEFAULT_LIMITS,
   HOME,
+  centred,
   driveBlocked,
+  inPad,
   driveMessage,
   parseLimits,
   stepToward,
@@ -92,4 +94,19 @@ test("driveBlocked names the first thing in the way", () => {
   expect(driveBlocked({ ...ok, appActive: true, motorMode: "disabled" })).toContain("app");
   expect(driveBlocked({ ...ok, exprBusy: true })).toContain("move");
   expect(driveBlocked({ ...ok, controlBusy: true })).not.toBeNull();
+});
+
+describe("hold mode helpers", () => {
+  test("centred is only every stick at zero", () => {
+    expect(centred(CENTRED)).toBe(true);
+    expect(centred({ ...CENTRED, head: { x: 0, y: 0.2 } })).toBe(false);
+    expect(centred({ ...CENTRED, antennas: [0, -0.5] })).toBe(false);
+  });
+
+  test("inPad keeps a knob inside the circle", () => {
+    expect(inPad(0.3, -0.4)).toEqual({ x: 0.3, y: -0.4 });
+    const out = inPad(3, 4);
+    expect(out.x).toBeCloseTo(0.6);
+    expect(out.y).toBeCloseTo(0.8);
+  });
 });

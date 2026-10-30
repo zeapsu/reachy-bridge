@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import type { DriveState } from "../hooks/useDrive.ts";
+import { read, write } from "../logic/appearance.ts";
+import { HOLD_KEY, inPad } from "../logic/drive.ts";
 import "./DrivePanel.css";
 
 interface Props {
@@ -15,40 +17,65 @@ const KEYS: Record<string, [number, number]> = {
   ArrowDown: [0, 1],
 };
 
+/** A held arrow key moves a hold-mode knob this far per key event (repeats included). */
+const NUDGE = 0.08;
+
 interface PadProps {
   label: string;
   hint: string;
   disabled: boolean;
+  /** Hold mode: the knob stays where it is let go, and a drag moves it from there. */
+  sticky: boolean;
+  /** Each change puts the knob back in the centre. */
+  reset: number;
   onHold: () => void;
   onRelease: () => void;
   onMove: (x: number, y: number) => void;
 }
 
-/** A thumb pad: drag the knob (or hold arrow keys); it springs back on release. */
-function Pad({ label, hint, disabled, onHold, onRelease, onMove }: PadProps) {
+/**
+ * A thumb pad: drag the knob (or hold arrow keys); it springs back on release.
+ * A sticky pad keeps the knob where it was let go instead.
+ */
+function Pad({ label, hint, disabled, sticky, reset, onHold, onRelease, onMove }: PadProps) {
   const [knob, setKnob] = useState({ x: 0, y: 0 });
   const [held, setHeld] = useState(false);
   const pad = useRef<HTMLDivElement>(null);
   const keys = useRef(new Set<string>());
+  const at = useRef({ x: 0, y: 0 });
+  /** Knob minus finger at the grab, so a sticky knob doesn't jump to the finger. */
+  const grip = useRef({ x: 0, y: 0 });
 
   const place = (x: number, y: number) => {
-    const length = Math.hypot(x, y);
-    const [cx, cy] = length > 1 ? [x / length, y / length] : [x, y];
-    setKnob({ x: cx, y: cy });
-    onMove(cx, cy);
+    const next = inPad(x, y);
+    at.current = next;
+    setKnob(next);
+    onMove(next.x, next.y);
   };
-  const fromPointer = (event: PointerEvent) => {
+  const finger = (event: PointerEvent) => {
     const rect = pad.current!.getBoundingClientRect();
     const r = rect.width / 2;
-    place((event.clientX - rect.left - r) / r, (event.clientY - rect.top - r) / r);
+    return { x: (event.clientX - rect.left - r) / r, y: (event.clientY - rect.top - r) / r };
+  };
+  const fromPointer = (event: PointerEvent) => {
+    const f = finger(event);
+    place(f.x + grip.current.x, f.y + grip.current.y);
   };
   const letGo = () => {
     setHeld(false);
     keys.current.clear();
-    place(0, 0);
+    if (!sticky) place(0, 0);
     onRelease();
   };
-  const fromKeys = () => {
+  useEffect(() => {
+    if (reset) place(0, 0);
+    // Only a new reset recentres.
+  }, [reset]);
+  const fromKeys = (key: string) => {
+    if (sticky) {
+      place(at.current.x + KEYS[key][0] * NUDGE, at.current.y + KEYS[key][1] * NUDGE);
+      return;
+    }
     let x = 0;
     let y = 0;
     for (const key of keys.current) {
@@ -72,6 +99,8 @@ function Pad({ label, hint, disabled, onHold, onRelease, onMove }: PadProps) {
           event.currentTarget.setPointerCapture(event.pointerId);
           setHeld(true);
           onHold();
+          const f = finger(event);
+          grip.current = sticky ? { x: at.current.x - f.x, y: at.current.y - f.y } : { x: 0, y: 0 };
           fromPointer(event);
         }}
         onPointerMove={(event) => {
@@ -85,12 +114,12 @@ function Pad({ label, hint, disabled, onHold, onRelease, onMove }: PadProps) {
           event.preventDefault();
           if (!keys.current.size) onHold();
           keys.current.add(event.key);
-          fromKeys();
+          fromKeys(event.key);
         }}
         onKeyUp={(event: KeyboardEvent) => {
           if (!keys.current.delete(event.key)) return;
-          if (keys.current.size) fromKeys();
-          else letGo();
+          if (!keys.current.size) letGo();
+          else if (!sticky) fromKeys(event.key);
         }}
         onBlur={() => keys.current.size && letGo()}
       >
@@ -111,13 +140,17 @@ const SLIDER_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", 
 interface AntennaProps {
   side: "Left" | "Right";
   disabled: boolean;
+  /** Hold mode: the slider stays where it is let go. */
+  sticky: boolean;
+  /** Each change puts the slider back on park. */
+  reset: number;
   onHold: () => void;
   onRelease: () => void;
   onMove: (value: number) => void;
 }
 
-/** An antenna slider: -100..100 around park, back to park on release. */
-function Antenna({ side, disabled, onHold, onRelease, onMove }: AntennaProps) {
+/** An antenna slider: -100..100 around park, back to park on release unless sticky. */
+function Antenna({ side, disabled, sticky, reset, onHold, onRelease, onMove }: AntennaProps) {
   const [value, setValue] = useState(0);
   const held = useRef(false);
   const id = `drive-antenna-${side.toLowerCase()}`;
@@ -132,9 +165,12 @@ function Antenna({ side, disabled, onHold, onRelease, onMove }: AntennaProps) {
   const letGo = () => {
     if (!held.current) return;
     held.current = false;
-    set(0);
+    if (!sticky) set(0);
     onRelease();
   };
+  useEffect(() => {
+    if (reset) set(0);
+  }, [reset]);
   // A drag that ends outside the slider (or turns into a pan) still lets go.
   const release = useRef(letGo);
   release.current = letGo;
@@ -177,9 +213,27 @@ function Antenna({ side, disabled, onHold, onRelease, onMove }: AntennaProps) {
  * Manual drive (#152): the head pad aims the head, the body pad turns the
  * body and raises or lowers the head, and the sliders swing the antennas.
  * Everything springs back on release, and the robot goes home once it has.
+ * With hold on, everything stays where it was let go, and so does the robot,
+ * until Home (or the session ends, when everything recentres).
  */
 export function DrivePanel({ drive, blocked }: Props) {
   const disabled = blocked !== null;
+  const [hold, setHold] = useState(() => read(HOLD_KEY) === "1");
+  const [reset, setReset] = useState(0);
+  const recentre = () => setReset((n) => n + 1);
+  // A session that ended sent the robot home: the controls follow.
+  const wasLive = useRef(false);
+  useEffect(() => {
+    if (drive.phase === "idle" && wasLive.current) recentre();
+    wasLive.current = drive.phase !== "idle";
+  }, [drive.phase]);
+  const toggleHold = () => {
+    const next = !hold;
+    setHold(next);
+    write(HOLD_KEY, next ? "1" : null);
+    // Hold off: spring back now, and the robot eases home.
+    if (!next) recentre();
+  };
   const antennas = useRef<[number, number]>([0, 0]);
   const moveAntenna = (index: 0 | 1) => (value: number) => {
     antennas.current = index === 0 ? [value, antennas.current[1]] : [antennas.current[0], value];
@@ -194,18 +248,34 @@ export function DrivePanel({ drive, blocked }: Props) {
           <span className={`dot ${status === "driving" ? "live" : status === "connecting" ? "loading" : status === "ready" ? "ok" : ""}`}></span>
           {status}
         </span>
-        <button className="btn" type="button" disabled={drive.phase === "idle"} onClick={drive.home}>
-          Home
-        </button>
+        <div className="drive-actions">
+          <button
+            className={`btn icon hold${hold ? " on" : ""}`}
+            type="button"
+            aria-pressed={hold}
+            aria-label="Hold pose"
+            title="Hold pose"
+            onClick={toggleHold}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9 3.5h6l-1 5.5 3 3v1.5H7V12l3-3-1-5.5ZM12 13.5V21"></path>
+            </svg>
+          </button>
+          <button className="btn" type="button" disabled={drive.phase === "idle"} onClick={drive.home}>
+            Home
+          </button>
+        </div>
       </div>
-      <p className={`note${drive.error && !disabled ? " error" : ""}`} id="drive-hint">
-        {blocked ?? drive.error ?? "Drag a pad. Let go and Reachy goes home."}
-      </p>
+      {(blocked ?? drive.error) && (
+        <p className={`note${drive.error && !disabled ? " error" : ""}`}>{blocked ?? drive.error}</p>
+      )}
       <div className="pads">
         <Pad
           label="Head"
           hint="drag to look around"
           disabled={disabled}
+          sticky={hold}
+          reset={reset}
           onHold={() => drive.hold("head")}
           onRelease={() => drive.release("head")}
           onMove={(x, y) => drive.move({ head: { x, y } })}
@@ -214,6 +284,8 @@ export function DrivePanel({ drive, blocked }: Props) {
           label="Body"
           hint="drag sideways to turn, up or down to raise or lower the head"
           disabled={disabled}
+          sticky={hold}
+          reset={reset}
           onHold={() => drive.hold("body")}
           onRelease={() => drive.release("body")}
           onMove={(x, y) => drive.move({ body: { x, y } })}
@@ -225,6 +297,8 @@ export function DrivePanel({ drive, blocked }: Props) {
             key={side}
             side={side}
             disabled={disabled}
+            sticky={hold}
+            reset={reset}
             onHold={() => drive.hold(side)}
             onRelease={() => drive.release(side)}
             onMove={moveAntenna(i as 0 | 1)}
