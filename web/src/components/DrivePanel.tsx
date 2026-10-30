@@ -175,7 +175,10 @@ function Antenna({ side, disabled, sticky, reset, onHold, onRelease, onMove }: A
     onRelease();
   };
   useEffect(() => {
-    if (reset) set(0);
+    if (!reset) return;
+    // As for a pad: the rest of a drag under way is ignored.
+    held.current = false;
+    set(0);
   }, [reset]);
   // A drag that ends outside the slider (or turns into a pan) still lets go.
   const release = useRef(letGo);
