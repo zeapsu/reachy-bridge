@@ -1031,9 +1031,9 @@ async fn voice_goes_with_the_robot() {
     assert!(refused(ROBOT_STARTING, StatusCode::CONFLICT).await.contains("still starting"));
     assert!(refused(ROBOT_CRASHED, StatusCode::CONFLICT).await.contains("Turn the robot on"));
     refused(ROBOT_SILENT, StatusCode::SERVICE_UNAVAILABLE).await;
-    // Turning the robot off ends a session within a check; a crashed backend
-    // within a few.
-    for (power, within) in [(ROBOT_OFF, 4), (ROBOT_CRASHED, 9)] {
+    // Turning the robot off (or its backend crashing) ends a session within
+    // a check; a daemon that stops answering within a few.
+    for (power, within) in [(ROBOT_OFF, 4), (ROBOT_CRASHED, 4), (ROBOT_SILENT, 9)] {
         let before = deleted.load(Ordering::SeqCst);
         h.robot.store(ROBOT_ON, Ordering::SeqCst);
         assert_eq!(h.call("POST", "/api/audio/session", LOOPBACK, &[], Some(open.clone())).await.status, StatusCode::OK);

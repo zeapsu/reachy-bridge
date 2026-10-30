@@ -271,9 +271,10 @@ fn robot_on(status: &Value) -> bool {
     matches!(robot.as_str(), "running" | "asleep") || (robot == "error" && backend_up(status))
 }
 
-/// The robot is definitely off: its backend is gone and the daemon says so.
+/// The robot is definitely off: its backend is gone and the daemon says it
+/// stopped (or failed, as the power route counts it).
 fn robot_off(status: &Value) -> bool {
-    !backend_up(status) && matches!(robot_state(status).as_str(), "stopped" | "not_initialized")
+    !backend_up(status) && matches!(robot_state(status).as_str(), "stopped" | "not_initialized" | "error")
 }
 
 fn not_sim(state: &Shared) -> ApiResult<()> {
@@ -283,25 +284,29 @@ fn not_sim(state: &Shared) -> ApiResult<()> {
     Ok(())
 }
 
+/// Listening and talking go with the robot: off means off.
+async fn robot_ready(state: &Shared) -> ApiResult<()> {
+    not_sim(state)?;
+    match state.daemon.status().await {
+        None => Err(ApiError::new(503, "The robot's daemon isn't answering")),
+        Some(s) if robot_state(&s) == "starting" => Err(ApiError::new(409, "The robot is still starting; try again in a moment")),
+        Some(s) if !robot_on(&s) => Err(ApiError::new(409, "Turn the robot on to listen or talk")),
+        Some(_) => Ok(()),
+    }
+}
+
 async fn open(
     State(state): State<Shared>,
     Extension(ctx): Extension<AuthContext>,
     body: Result<Json<Route>, axum::extract::rejection::JsonRejection>,
 ) -> ApiResult<Json<Value>> {
     let Json(body) = body.map_err(|_| ApiError::bad_body())?;
-    not_sim(&state)?;
-    // Listening and talking go with the robot: off means off.
-    match state.daemon.status().await {
-        None => return Err(ApiError::new(503, "The robot's daemon isn't answering")),
-        Some(s) if robot_state(&s) == "starting" => {
-            return Err(ApiError::new(409, "The robot is still starting; try again in a moment"));
-        }
-        Some(s) if !robot_on(&s) => return Err(ApiError::new(409, "Turn the robot on to listen or talk")),
-        Some(_) => {}
-    }
+    robot_ready(&state).await?;
     let audio = &state.audio;
     let _opening = audio.opening.lock().await;
     audio.ensure_running().await?;
+    // Waiting for the lock or the gateway can take a while: check again.
+    robot_ready(&state).await?;
     let opened = audio
         .call(reqwest::Method::POST, "/session", Some(json!({"listen": body.listen, "talk": body.talk})))
         .await?
