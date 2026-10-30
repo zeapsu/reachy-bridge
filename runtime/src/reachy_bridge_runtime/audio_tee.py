@@ -194,7 +194,7 @@ def _write(path: Path, text: str) -> None:
 
 
 def _leave_loopback_to_us() -> None:
-    written = False
+    written = []
     for path, rule in WIREPLUMBER_RULES.items():
         try:
             if path.read_text() == rule:
@@ -202,11 +202,16 @@ def _leave_loopback_to_us() -> None:
         except OSError:
             pass
         _write(path, rule)
-        written = True
-    if written:
-        # Only the user's own session manager; nothing if there's none.
-        _run(["systemctl", "--user", "try-restart", "wireplumber.service"])
+        written.append(path)
+    if not written:
+        return
+    # Only the user's own session manager; nothing if there's none.
+    if _run(["systemctl", "--user", "try-restart", "wireplumber.service"]):
         logger.info("Told WirePlumber to leave the ALSA loopback card alone.")
+    else:
+        # Take them back out, so the next start tries again.
+        for path in written:
+            path.unlink(missing_ok=True)
 
 
 def ensure() -> None:

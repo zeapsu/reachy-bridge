@@ -300,8 +300,8 @@ class Gateway:
         with self.lock:
             # The new session sets the speaker: don't let the robot speak up
             # between the two.
-            self._end(unmute=False)
             try:
+                self._end(unmute=False)
                 session = on_main(lambda: Session(listen, talk, hear))
             except Exception:
                 speaker(True)
