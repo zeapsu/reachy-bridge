@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { VoiceSession } from "../api/voice.ts";
-import { talkBlocked, voiceBadge, voiceBlocked } from "./voice.ts";
+import { onTailnet, talkBlocked, voiceBadge, voiceBlocked } from "./voice.ts";
 
 const session = (over: Partial<VoiceSession> = {}): VoiceSession => ({
   id: null,
@@ -14,7 +14,7 @@ const session = (over: Partial<VoiceSession> = {}): VoiceSession => ({
 });
 
 describe("voiceBlocked", () => {
-  test("needs the https (tailnet) address", () => {
+  test("needs a tailnet address", () => {
     expect(voiceBlocked({ available: true, session: null }, { kind: "off" }, false)).toContain("https");
   });
   test("refuses in sim mode", () => {
@@ -28,6 +28,20 @@ describe("voiceBlocked", () => {
     expect(voiceBlocked(view, { kind: "free", canTake: true })).toBeNull();
     expect(voiceBlocked(view, { kind: "free", canTake: false })).toContain("paired browser");
     expect(voiceBlocked(view, { kind: "other", person: "Kim", canTakeOver: false })).toContain("Kim is in control");
+  });
+});
+
+describe("onTailnet", () => {
+  test("knows tailnet IPs", () => {
+    expect(onTailnet("100.64.0.1")).toBe(true);
+    expect(onTailnet("100.101.2.3")).toBe(true);
+    expect(onTailnet("100.127.255.255")).toBe(true);
+    expect(onTailnet("[fd7a:115c:a1e0::1]")).toBe(true);
+    expect(onTailnet("100.63.0.1")).toBe(false);
+    expect(onTailnet("100.128.0.1")).toBe(false);
+    expect(onTailnet("192.168.1.20")).toBe(false);
+    expect(onTailnet("robot.example.ts.net")).toBe(false);
+    expect(onTailnet("100.64.0.1.example.com")).toBe(false);
   });
 });
 
