@@ -147,12 +147,12 @@ def test_ensure_never_stops_the_daemon(tmp_path: Path, monkeypatch):
     assert rc.read_text() == UPSTREAM
 
 
-def test_wireplumber_rules_retry_when_the_restart_fails(tmp_path: Path, monkeypatch):
+def test_wireplumber_rules_stay_when_the_restart_fails(tmp_path: Path, monkeypatch):
     rules = {tmp_path / "wp/rule.lua": "lua rule\n"}
     monkeypatch.setattr(audio_tee, "WIREPLUMBER_RULES", rules)
-    monkeypatch.setattr(audio_tee, "_run", lambda args: False)
+    ran: list[list[str]] = []
+    monkeypatch.setattr(audio_tee, "_run", lambda args: ran.append(args) or False)
     audio_tee._leave_loopback_to_us()
-    assert not (tmp_path / "wp/rule.lua").exists()
-    monkeypatch.setattr(audio_tee, "_run", lambda args: True)
+    # They apply when WirePlumber next starts; not rewritten every time.
     audio_tee._leave_loopback_to_us()
-    assert (tmp_path / "wp/rule.lua").read_text() == "lua rule\n"
+    assert (tmp_path / "wp/rule.lua").read_text() == "lua rule\n" and len(ran) == 1

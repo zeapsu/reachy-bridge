@@ -205,13 +205,12 @@ def _leave_loopback_to_us() -> None:
         written.append(path)
     if not written:
         return
-    # Only the user's own session manager; nothing if there's none.
+    # Only the user's own session manager, if it runs; otherwise the rules
+    # apply whenever it next starts.
     if _run(["systemctl", "--user", "try-restart", "wireplumber.service"]):
         logger.info("Told WirePlumber to leave the ALSA loopback card alone.")
     else:
-        # Take them back out, so the next start tries again.
-        for path in written:
-            path.unlink(missing_ok=True)
+        logger.warning("Couldn't restart WirePlumber; it leaves the loopback card alone from its next start.")
 
 
 def ensure() -> None:
