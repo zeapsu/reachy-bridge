@@ -317,15 +317,26 @@ async fn take(
 ) -> ApiResult<Json<Value>> {
     let (device, person) = me(&ctx)?;
     let admin = ctx.role == Some(Role::Admin);
+    // Nothing needs control before an admin exists; a holder recorded then
+    // would outlive the logout that admin mode starts with.
+    if !state.auth.admin_mode() {
+        return Err(ApiError::new(409, "control applies once an admin exists"));
+    }
     state.control.with(|inner, now| {
+        // Under the control lock, so a revoke (which forgets the device under
+        // the same lock, after removing it) can't be undone by a take that
+        // passed the login check just before it.
+        if !state.auth.has_device(&device) {
+            return Err(ApiError::new(401, "this browser was logged out"));
+        }
         if let Some(holder) = &inner.holder {
             if holder.device == device {
                 return Ok(());
             }
-            if query.if_free && holder.person != person {
-                return Err(ApiError::new(409, format!("{} is in control of the robot", holder.person)));
-            }
-            if !admin && holder.person != person {
+            // Another device of the same person may move control over, but
+            // only an admin takes it from an admin.
+            let other = holder.person != person || (holder.admin && !admin);
+            if (query.if_free || !admin) && other {
                 return Err(ApiError::new(409, format!("{} is in control of the robot", holder.person)));
             }
         }

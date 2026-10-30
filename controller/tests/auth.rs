@@ -797,7 +797,7 @@ async fn a_paired_person_takes_control_and_the_admin_overrides() {
     assert_eq!(r.body["detail"], "Andry is in control of the robot");
     assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::CONFLICT);
     assert_eq!(h.act(LOOPBACK, &admin).await.status, StatusCode::OK);
-    // Released, Sam takes control back within the grant.
+    // Released, Sam takes control back.
     assert_eq!(h.control(LOOPBACK, &admin, "release", None).await.status, StatusCode::OK);
     assert_eq!(h.control(LAN, &sam, "take?if_free=true", None).await.status, StatusCode::OK);
     // Sam's other device moves Sam's control over, conditional take or not.
@@ -832,6 +832,21 @@ async fn one_person_drives_at_a_time_and_revoking_the_browser_ends_control() {
     assert_eq!(r.status, StatusCode::NO_CONTENT);
     assert_eq!(h.view(LAN, &sam).await["holder"], Value::Null);
     assert_eq!(h.control(LAN, &sam, "take?if_free=true", None).await.status, StatusCode::OK);
+    // A member's device under the admin's person can't take control from the admin.
+    let shared = h.paired_as(LAN, &[("cookie", &admin)], json!({"name": "spare", "person": "Andry"})).await;
+    assert_eq!(h.control(LOOPBACK, &admin, "take", None).await.status, StatusCode::OK);
+    assert_eq!(h.control(LAN, &shared, "take", None).await.status, StatusCode::CONFLICT);
+    assert_eq!(h.control(LAN, &shared, "take?if_free=true", None).await.status, StatusCode::CONFLICT);
+    assert_eq!(h.view(LOOPBACK, &admin).await["holder"]["you"], true);
+    // Unnamed browsers on one address (every tailnet browser) are different people.
+    let one = h.paired_as(LAN, &[("cookie", &admin)], json!({})).await;
+    let two = h.paired_as(LAN, &[("cookie", &admin)], json!({})).await;
+    let person = |v: Value| v["you"]["person"].as_str().unwrap().to_string();
+    assert_ne!(person(h.view(LAN, &one).await), person(h.view(LAN, &two).await));
+    h.control(LOOPBACK, &admin, "release", None).await;
+    assert_eq!(h.control(LAN, &one, "take", None).await.status, StatusCode::OK);
+    assert_eq!(h.control(LAN, &two, "take", None).await.status, StatusCode::CONFLICT);
+    h.control(LAN, &one, "release", None).await;
     // The old grant and request routes are gone.
     let r = h.control(LOOPBACK, &admin, "grants", Some(json!({"person": "Sam"}))).await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);

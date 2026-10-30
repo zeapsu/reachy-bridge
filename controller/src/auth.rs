@@ -516,12 +516,7 @@ impl Auth {
         self.devices.lock().unwrap().iter().map(|d| (d.id.clone(), d.name.clone())).collect()
     }
 
-    /// Some paired device belongs to `person`.
-    pub fn has_person(&self, person: &str) -> bool {
-        self.devices.lock().unwrap().iter().any(|d| d.person == person || (d.person.is_empty() && d.name == person))
-    }
-
-    fn has_device(&self, id: &str) -> bool {
+    pub fn has_device(&self, id: &str) -> bool {
         self.devices.lock().unwrap().iter().any(|d| d.id == id)
     }
 
@@ -987,7 +982,10 @@ impl Auth {
         };
         let request = &mut pending.requests[index];
         let name = label(name);
-        let name = if name.is_empty() { format!("device at {}", request.peer) } else { name };
+        // Unnamed devices need distinct defaults: the person defaults to the
+        // name, and one person's devices pass control between them (#245),
+        // while every tailnet browser shares the loopback peer address.
+        let name = if name.is_empty() { format!("device {} at {}", random_hex(2), request.peer) } else { name };
         let person = label(person);
         let person = if person.is_empty() { name.clone() } else { person };
         request.approved = Some(Approval { name: name.clone(), person: person.clone(), role });
