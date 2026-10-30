@@ -403,6 +403,7 @@ async fn watch(state: Shared, owner: Owner, credential: Credential, local: bool)
                         && let Some(device) = &owner.device
                     {
                         state.control.touch(device);
+                        state.control.active(device);
                     }
                 }
                 Ok(_) => return "gone from the gateway",

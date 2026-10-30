@@ -241,9 +241,10 @@ async fn drive(
                 None | Some(Err(_)) => break "Daemon unavailable".to_string(),
             },
             _ = recheck.tick() => {
-                // An open session counts as the holder being here.
+                // An open session counts as the holder being here, and busy.
                 if let Some(device) = &holder {
                     state.control.touch(device);
+                    state.control.active(device);
                 }
                 if !state.player.driving(epoch) {
                     break MODE_CHANGED.to_string();

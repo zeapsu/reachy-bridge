@@ -10,7 +10,10 @@
 //! Control ends when its holder releases it, when the admin takes over, or
 //! when the holder's device has been silent for [`AWAY_AFTER`]. A holder
 //! that comes back within [`AWAY_KEEP`] gets control back, unless someone
-//! else took it meanwhile. Ending control ends the holder's drive session
+//! else took it meanwhile. A holder whose device stays but does nothing
+//! with the robot for [`IDLE_AFTER`] loses control for good, so an
+//! abandoned open tab doesn't keep it. Closing the dashboard tab releases
+//! control right away. Ending control ends the holder's drive session
 //! (which sends the robot home) and stops a playing expression; a running
 //! app keeps running.
 //!
@@ -47,6 +50,10 @@ pub const AWAY_AFTER: u64 = 10;
 /// A holder that went silent gets control back on return only within this
 /// long.
 pub const AWAY_KEEP: u64 = 300;
+/// A holder that does nothing with the robot this long (no robot action,
+/// no open drive or voice session) loses control, with no claim to come
+/// back: its next action takes control again while nobody else has it.
+pub const IDLE_AFTER: u64 = 600;
 
 #[derive(Clone, Debug, PartialEq)]
 struct Holder {
@@ -54,6 +61,8 @@ struct Holder {
     person: String,
     admin: bool,
     since: u64,
+    /// The last robot action (unix seconds).
+    active: u64,
 }
 
 #[derive(Default)]
@@ -84,6 +93,13 @@ impl Inner {
             // ran a refresh meanwhile: a holder gone that long isn't restored.
             let away = Holder { since: seen, ..holder };
             self.away = (!stale(&away)).then_some(away);
+            return true;
+        }
+        // After the silence check: a holder cut off by the network steps away
+        // (and comes back) instead of counting as idle.
+        if now.saturating_sub(holder.active) >= IDLE_AFTER {
+            tracing::info!("control: {} ({}) lost control: idle", holder.person, holder.device);
+            self.holder = None;
             return true;
         }
         false
@@ -148,7 +164,7 @@ impl Control {
             if inner.holder.is_none() && inner.away.as_ref().is_some_and(|h| h.device == device) {
                 let holder = inner.away.take().expect("checked");
                 tracing::info!("control: {} ({}) is back in control", holder.person, holder.device);
-                inner.holder = Some(Holder { since: now, ..holder });
+                inner.holder = Some(Holder { since: now, active: now, ..holder });
             }
         });
     }
@@ -164,6 +180,16 @@ impl Control {
                 inner.away = None;
             }
             inner.seen.remove(device);
+        });
+    }
+
+    /// Record a robot action (or an open drive or voice session) from
+    /// `device`, if it holds control: it isn't idle.
+    pub fn active(&self, device: &str) {
+        self.with(|inner, now| {
+            if let Some(holder) = inner.holder.as_mut().filter(|h| h.device == device) {
+                holder.active = now;
+            }
         });
     }
 
@@ -228,6 +254,9 @@ pub async fn guard(State(state): State<Shared>, request: Request, next: Next) ->
         if !holds {
             return not_holding(&state.control).into_response();
         }
+        if let Some(device) = &device {
+            state.control.active(device);
+        }
     }
     next.run(request).await
 }
@@ -243,6 +272,9 @@ pub fn app_proxy_allows(state: &Shared, method: &axum::http::Method, upgrade: bo
     }
     if (!method.is_safe() || upgrade) && !device.is_some_and(|d| state.control.holds(d)) {
         return Err(not_holding(&state.control).detail);
+    }
+    if let (Some(device), true) = (device, !method.is_safe() || upgrade) {
+        state.control.active(device);
     }
     Ok(())
 }
@@ -341,7 +373,7 @@ async fn take(
                 return Err(ApiError::new(409, format!("{} is in control of the robot", holder.person)));
             }
         }
-        let previous = inner.holder.replace(Holder { device: device.clone(), person: person.clone(), admin, since: now });
+        let previous = inner.holder.replace(Holder { device: device.clone(), person: person.clone(), admin, since: now, active: now });
         inner.away = None;
         inner.seen.insert(device.clone(), now);
         match previous {
@@ -373,7 +405,7 @@ mod tests {
 
     #[test]
     fn a_silent_holder_steps_away_and_is_forgotten_after_a_while() {
-        let holder = Holder { device: "d1".into(), person: "sam".into(), admin: false, since: 100 };
+        let holder = Holder { device: "d1".into(), person: "sam".into(), admin: false, since: 100, active: 100 };
         let mut inner = Inner { holder: Some(holder), ..Inner::default() };
         inner.seen.insert("d1".into(), 100);
         assert!(!inner.refresh(105));
@@ -382,5 +414,38 @@ mod tests {
         // Gone too long, there's nothing to come back to.
         inner.refresh(100 + AWAY_KEEP);
         assert!(inner.away.is_none());
+    }
+
+    #[test]
+    fn an_idle_holder_loses_control_with_no_claim_to_come_back() {
+        let holder = Holder { device: "d1".into(), person: "sam".into(), admin: false, since: 100, active: 100 };
+        let mut inner = Inner { holder: Some(holder), ..Inner::default() };
+        // Present the whole time (the dashboard polls), but doing nothing.
+        for t in (100..100 + IDLE_AFTER).step_by(2) {
+            inner.seen.insert("d1".into(), t);
+            assert!(!inner.refresh(t), "still in control at {t}");
+        }
+        inner.seen.insert("d1".into(), 100 + IDLE_AFTER);
+        assert!(inner.refresh(100 + IDLE_AFTER));
+        assert!(inner.holder.is_none() && inner.away.is_none());
+    }
+
+    #[test]
+    fn an_action_keeps_the_holder_in_control() {
+        let holder = Holder { device: "d1".into(), person: "sam".into(), admin: false, since: 100, active: 100 + IDLE_AFTER - 1 };
+        let mut inner = Inner { holder: Some(holder), ..Inner::default() };
+        inner.seen.insert("d1".into(), 100 + IDLE_AFTER);
+        assert!(!inner.refresh(100 + IDLE_AFTER));
+        assert!(inner.holder.is_some());
+    }
+
+    #[test]
+    fn a_holder_cut_off_while_idle_steps_away_rather_than_losing_control() {
+        let holder = Holder { device: "d1".into(), person: "sam".into(), admin: false, since: 100, active: 100 };
+        let mut inner = Inner { holder: Some(holder), ..Inner::default() };
+        // Polling until 100 + 500, then the network drops; nothing refreshes until it's back.
+        inner.seen.insert("d1".into(), 600);
+        assert!(inner.refresh(100 + IDLE_AFTER));
+        assert!(inner.holder.is_none() && inner.away.is_some());
     }
 }
