@@ -78,7 +78,7 @@ export function ControlStrip({ control }: { control: ControlApi }) {
   let text = "";
   let action: ReactNode = null;
   if (state.kind === "other" && showStrip(state)) {
-    const who = state.elsewhere !== undefined ? `You're in control on ${state.elsewhere}` : `${state.person} is in control`;
+    const who = state.elsewhere !== undefined ? `You're in control on ${state.elsewhere || "another device"}` : `${state.person} is in control`;
     text = `${who}${state.until === null ? "" : ` until ${clock(state.until)}`}.`;
     if (state.canTakeOver) {
       action = takeButton("Take over");
