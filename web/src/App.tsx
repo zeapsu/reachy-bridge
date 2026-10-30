@@ -69,7 +69,6 @@ function Dashboard() {
   const look = useAppearance();
   const [tab, setTabState] = useState<Tab>(() => parseTab(read(TAB_KEY)));
   const [pane, setPane] = useState<"expressions" | "drive" | "controls" | "voice">("expressions");
-  const [controlNudge, setControlNudge] = useState(0);
   const side = useLens<HTMLElement>();
 
   const reloadKinematics = useCallback(async () => {
@@ -163,7 +162,7 @@ function Dashboard() {
           sim={sim.target === "sim"}
           voice={voiceBadge(voice.view, voice.mine)}
           holder={holderLabel(controlState(control.view))}
-          onHolder={() => setControlNudge((n) => n + 1)}
+          onRelease={() => void control.act(paths.controlRelease)}
         />
 
         <main className={`view robot${pane === "drive" ? " driving" : ""}`} id="view-robot" role="tabpanel" hidden={tab !== "robot"} aria-label="Robot">
@@ -234,7 +233,7 @@ function Dashboard() {
         </main>
       </div>
       <PhoneTabs tab={tab} onTab={setTab} />
-      <ControlToast control={control} nudge={controlNudge} />
+      <ControlToast control={control} />
       {apps.appView ? (
         <AppView
           view={apps.appView}

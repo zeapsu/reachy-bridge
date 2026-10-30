@@ -45,12 +45,12 @@ interface Props {
   voice: string | null;
   /** Who is in control (#221): "you" or a person; null outside admin mode or when nobody is. */
   holder: string | null;
-  /** Tapping "you" shows the control notice again, with Release. */
-  onHolder: () => void;
+  /** Let go of control: shown while this browser has it. */
+  onRelease: () => void;
 }
 
 /** Brand, the section tabs (a bottom bar on phones), robot status and power. */
-export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, sim, voice, holder, onHolder }: Props) {
+export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, sim, voice, holder, onRelease }: Props) {
   const tabs = useLens<HTMLDivElement>();
   const status = robotStatus(power, daemonOnline, activeApp);
   return (
@@ -81,14 +81,13 @@ export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, si
           <span className={`dot ${status.dot}`}></span>
           {sim ? <span className="sim-badge">Sim</span> : null}
           {status.text}
-          {holder === "you" ? (
-            <button type="button" className="control-who" aria-label="You're in control: show Release" onClick={onHolder}>
-              · you
-            </button>
-          ) : holder ? (
-            <span className="control-who">· {holder}</span>
-          ) : null}
+          {holder ? <span className="control-who">· {holder}</span> : null}
         </span>
+        {holder === "you" ? (
+          <button className="glass release press" type="button" title="Let go of control, so others can drive" onClick={onRelease}>
+            Release
+          </button>
+        ) : null}
         <button
           className={`glass power press ${power.powerClass}`}
           type="button"

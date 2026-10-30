@@ -73,6 +73,16 @@ describe("control notices, label and strip", () => {
     expect(controlNotice(mine, free)).toBe("You're no longer in control");
     expect(controlNotice(kim, free)).toBe("Kim let go of control");
   });
+  test("says when this person's other device took control", () => {
+    const desk: ControlState = { kind: "other", person: "Andry", until: null, canTakeOver: true, asking, elsewhere: "desktop" };
+    expect(controlNotice(mine, desk)).toBe("You took control on desktop");
+    const grant = { id: "g", person: "Sam", from: 900, until: null, by: "a" };
+    const view = base({
+      holder: { ...holder, device: "laptop", until: null, you: false },
+      you: { admin: false, person: "Sam", grant, can_take: true, cooldown_until: null },
+    });
+    expect(controlState(view)).toMatchObject({ kind: "other", elsewhere: "laptop", canTakeOver: true });
+  });
   test("stays quiet while nothing changes, and warns once before time ends", () => {
     expect(controlNotice(mine, mine)).toBeNull();
     expect(controlNotice(kim, kim)).toBeNull();

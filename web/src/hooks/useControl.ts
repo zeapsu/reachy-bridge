@@ -68,8 +68,9 @@ export function useControl(visible: boolean): ControlApi {
   // A robot action while nobody is in control takes it first (api/client.ts).
   useEffect(() => {
     setControlTaker(async () => {
+      // Nobody in control, or this person on another device (the server checks both again).
       const state = controlState(latest.current);
-      if (state.kind !== "free" || !state.canTake) return false;
+      if (!(state.kind === "free" && state.canTake) && !(state.kind === "other" && state.elsewhere)) return false;
       try {
         await apiJson(paths.controlTakeIfFree, { method: "POST" });
         return true;

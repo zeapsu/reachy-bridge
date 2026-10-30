@@ -793,6 +793,11 @@ async fn a_person_asks_gets_time_takes_control_and_the_admin_overrides() {
     // Released, Sam takes control back within the grant.
     assert_eq!(h.control(LOOPBACK, &admin, "release", None).await.status, StatusCode::OK);
     assert_eq!(h.control(LAN, &sam, "take?if_free=true", None).await.status, StatusCode::OK);
+    // Sam's other device moves Sam's control over, conditional take or not.
+    let laptop = h.paired_as(LAN, &[("cookie", &admin)], json!({"name": "laptop", "person": "Sam"})).await;
+    assert_eq!(h.control(LAN, &laptop, "take?if_free=true", None).await.status, StatusCode::OK);
+    assert_eq!(h.view(LAN, &laptop).await["holder"]["you"], true);
+    assert_eq!(h.view(LAN, &sam).await["holder"]["you"], false);
     // The CLI's key isn't held back by control.
     let key = h.key();
     assert_eq!(h.call("POST", "/api/expressions/stop", LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await.status, StatusCode::OK);

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CONTROL_NEEDED_EVENT, paths } from "../api.ts";
+
+const sentence = (text: string) => (text ? `${text[0].toUpperCase()}${text.slice(1)}.` : text);
 import type { ControlApi } from "../hooks/useControl.ts";
 import { SLOTS, clock, controlNotice, controlState, showStrip, type Asking, type ControlState } from "../logic/control.ts";
 import "./ControlStrip.css";
@@ -75,7 +77,8 @@ export function ControlStrip({ control }: { control: ControlApi }) {
   let text = "";
   let action: ReactNode = null;
   if (state.kind === "other" && showStrip(state)) {
-    text = `${state.person} is in control${state.until === null ? "" : ` until ${clock(state.until)}`}.`;
+    const who = state.elsewhere ? `You're in control on ${state.elsewhere}` : `${state.person} is in control`;
+    text = `${who}${state.until === null ? "" : ` until ${clock(state.until)}`}.`;
     if (state.canTakeOver) {
       action = takeButton("Take over");
     } else {
@@ -106,10 +109,10 @@ const hover = typeof window !== "undefined" && window.matchMedia?.("(hover: hove
 /**
  * A notice for a few seconds when who drives changes (#221): you took
  * control (with Release), someone took over, your time is nearly up; and
- * control actions that failed. `nudge` changing shows "You're in control"
- * again, from the status pill. It stays while hovered or focused.
+ * control actions or robot actions refused for control. It stays while
+ * hovered or focused.
  */
-export function ControlToast({ control, nudge }: { control: ControlApi; nudge: number }) {
+export function ControlToast({ control }: { control: ControlApi }) {
   const state = controlState(control.view);
   const key = JSON.stringify(state);
   const prev = useRef<ControlState>({ kind: "off" });
@@ -123,11 +126,15 @@ export function ControlToast({ control, nudge }: { control: ControlApi; nudge: n
     if (text) setToast({ text, release: next.kind === "mine" });
   }, [key]);
 
+  // A tap refused because someone else has control: say so wherever the tap was.
   useEffect(() => {
-    if (nudge === 0 || prev.current.kind !== "mine") return;
-    const mine = prev.current;
-    setToast({ text: mine.until === null ? "You're in control" : `You're in control until ${clock(mine.until)}`, release: true });
-  }, [nudge]);
+    const onRefused = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (typeof detail === "string") setToast({ text: sentence(detail), release: false, error: true });
+    };
+    window.addEventListener(CONTROL_NEEDED_EVENT, onRefused);
+    return () => window.removeEventListener(CONTROL_NEEDED_EVENT, onRefused);
+  }, []);
 
   useEffect(() => {
     if (control.error) setToast({ text: control.error, release: false, error: true });
