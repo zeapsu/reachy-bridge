@@ -267,7 +267,10 @@ REQUIREMENTS: tuple[Requirement, ...] = (
     Requirement(
         "speaker_wobble",
         "the head kinematics, pose helpers and motor config for the limit check",
-        lambda: (wobble_limits(),),
+        lambda: (
+            wobble_limits(),
+            _source_mentions(_BACKEND, "Backend.update_target_head_joints_from_ik", "_tracking_aim", "_tracking_weight")(),
+        ),
     ),
     Requirement(
         "camera",
@@ -551,25 +554,26 @@ def wrap_wobbling(enable: Callable[..., None], disable: Callable[..., None], on_
     _wrap(Backend, "set_speech_offsets", set_offsets)
 
 
-def motor_ticks(angle: float, offset: float) -> float:
-    """A head joint's angle as motor ticks. Worked out from the hardware config:
-    with this sign, every head motor's home position is inside its limits."""
-    return 2048.0 - angle * 4096.0 / (2.0 * math.pi) + offset
+def motor_ticks(angle: float) -> float:
+    """A head joint's angle as motor ticks. Upstream's conversion is compiled;
+    its hardware config gives limits as 2048 + degrees, and its setup writes each
+    motor's offset to the homing register, so the firmware applies that itself."""
+    return 2048.0 + angle * 4096.0 / (2.0 * math.pi)
 
 
-def wobble_limits() -> tuple[Callable[[Any, Any], Any], list[tuple[float, float, float]]]:
+def wobble_limits() -> tuple[Callable[[Any, Any], Any], list[tuple[float, float]]]:
     """``solve(backend, offsets)``, the seven joints for the backend's target
-    pose with offsets added, and each head motor's (offset, lowest, highest).
+    pose with offsets added, and each head motor's (lowest, highest).
 
     It has its own kinematics, so it shares no state with the motor loop."""
     from reachy_mini.kinematics.analytical_kinematics import AnalyticalKinematics
     from reachy_mini.utils import create_head_pose
-    from reachy_mini.utils.interpolation import compose_world_offset
+    from reachy_mini.utils.interpolation import compose_world_offset, linear_pose_interpolation
 
     config = yaml.safe_load((Path(inspect.getfile(AnalyticalKinematics)).parents[1] / "assets/config/hardware_config.yaml").read_text())
     motors = {name: motor for entry in config["motors"] for name, motor in entry.items()}
     limits = [
-        (float(motors[f"stewart_{i}"]["offset"]), float(motors[f"stewart_{i}"]["lower_limit"]), float(motors[f"stewart_{i}"]["upper_limit"]))
+        (float(motors[f"stewart_{i}"]["lower_limit"]), float(motors[f"stewart_{i}"]["upper_limit"]))
         for i in range(1, 7)
     ]
     kinematics = AnalyticalKinematics()
@@ -577,9 +581,13 @@ def wobble_limits() -> tuple[Callable[[Any, Any], Any], list[tuple[float, float,
     def solve(backend: Any, offsets: Any) -> Any:
         pose = backend.target_head_pose if backend.target_head_pose is not None else np.eye(4)
         body_yaw = backend.target_body_yaw if backend.target_body_yaw is not None else 0.0
+        aim = backend._tracking_aim
+        if aim is not None and backend._tracking_weight > 0.0:
+            pose = linear_pose_interpolation(pose, aim, min(backend._tracking_weight, 1.0))
         if offsets is not None:
             x, y, z, roll, pitch, yaw = offsets
             pose = compose_world_offset(pose, create_head_pose(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw, degrees=False))
+        kinematics.set_automatic_body_yaw(backend.head_kinematics.automatic_body_yaw)
         return kinematics.ik(pose, body_yaw=body_yaw)
 
     return solve, limits

@@ -114,9 +114,9 @@ class Limits:
     MARGIN_TICKS = 40.0
     MAX_JOINT_CHANGE_RAD = 0.35
 
-    def __init__(self, solve: Callable[[Any, Any], Any], motor_limits: list[tuple[float, float, float]]) -> None:
+    def __init__(self, solve: Callable[[Any, Any], Any], motor_limits: list[tuple[float, float]]) -> None:
         # solve(backend, offsets or None) -> the seven joints; motor_limits has
-        # (offset ticks, lowest, highest) for each of the six head motors.
+        # (lowest, highest) for each of the six head motors.
         self._solve = solve
         self._motors = motor_limits
 
@@ -125,8 +125,8 @@ class Limits:
             return False
         if np.max(np.abs(joints[1:] - base[1:])) > self.MAX_JOINT_CHANGE_RAD:
             return False
-        for angle, (offset, low, high) in zip(joints[1:], self._motors, strict=True):
-            ticks = upstream.motor_ticks(angle, offset)
+        for angle, (low, high) in zip(joints[1:], self._motors, strict=True):
+            ticks = upstream.motor_ticks(angle)
             if not low + self.MARGIN_TICKS <= ticks <= high - self.MARGIN_TICKS:
                 return False
         return True

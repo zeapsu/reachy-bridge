@@ -77,8 +77,8 @@ def test_speaker_switch_is_read_at_most_a_few_times_a_second():
     assert len(reads) == 2
 
 
-# Motor ticks for an angle of 0 are 2048 + offset 0, inside these limits.
-MOTORS = [(0.0, 1000.0, 3000.0)] * 6
+# Motor ticks for an angle of 0 are 2048, inside these limits.
+MOTORS = [(1000.0, 3000.0)] * 6
 OFFSETS = (0.01, 0.0, 0.0, 0.0, 0.0, 0.1)
 
 
