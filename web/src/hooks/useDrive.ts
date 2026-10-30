@@ -52,9 +52,10 @@ const wsUrl = () => {
  * streams the stick pose at ~30 Hz while it changes, and closes once nothing
  * has been held and the robot has been at the home pose for IDLE_MS, which
  * hands it to the controller's return home. A stick left off centre (hold
- * mode) keeps the robot posed, and the session open, until Home. It also closes when `allowed`
- * goes false. A start refused while a control is held (the last session's
- * return home still running) is retried for RETRY_FOR_MS.
+ * mode) keeps the robot posed, and the session open, until Home. It also
+ * closes when `allowed` goes false. A start refused while a control is held
+ * or off centre (the last session's return home still running) is retried
+ * for RETRY_FOR_MS.
  */
 export function useDrive(allowed: boolean): DriveState {
   const [phase, setPhase] = useState<DrivePhase>("idle");
@@ -154,7 +155,7 @@ export function useDrive(allowed: boolean): DriveState {
         retry.current = setTimeout(() => (wanted() ? connect() : close()), RETRY_MS);
         return;
       }
-      if (!opened && wanted()) setError("Couldn't start driving. Let go and try again.");
+      if (!opened && wanted()) setError("Couldn't start driving. Try again.");
       close();
     };
   }, [close]);

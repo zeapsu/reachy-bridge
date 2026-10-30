@@ -68,7 +68,13 @@ function Pad({ label, hint, disabled, sticky, reset, onHold, onRelease, onMove }
     onRelease();
   };
   useEffect(() => {
-    if (reset) place(0, 0);
+    if (!reset) return;
+    // Recentred under a finger (the session ended, Home, hold off): the
+    // rest of that drag and its keys are ignored, so the knob can't come
+    // back off centre with no session behind it.
+    setHeld(false);
+    keys.current.clear();
+    place(0, 0);
     // Only a new reset recentres.
   }, [reset]);
   const fromKeys = (key: string) => {
