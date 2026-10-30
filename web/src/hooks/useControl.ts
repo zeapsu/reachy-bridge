@@ -50,14 +50,38 @@ export function useControl(visible: boolean): ControlApi {
 
   // Closing, reloading or leaving the page releases control (not hiding it,
   // nor a page kept in the back/forward cache: those wait out the quiet
-  // timeout and come back). keepalive: the request outlives the page.
+  // timeout and come back), unless another dashboard tab of this browser,
+  // which shares its control, is still open. keepalive: the request
+  // outlives the page.
   useEffect(() => {
+    const me = Math.random().toString(36).slice(2);
+    const others = new Set<string>();
+    const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("reachy-control-tabs");
+    if (channel) {
+      channel.onmessage = ({ data }: MessageEvent<{ kind: string; tab: string }>) => {
+        if (data.kind === "bye") others.delete(data.tab);
+        else others.add(data.tab);
+        if (data.kind === "hello") channel.postMessage({ kind: "here", tab: me });
+      };
+      channel.postMessage({ kind: "hello", tab: me });
+    }
     const leave = (event: PageTransitionEvent) => {
-      if (event.persisted || !latest.current?.holder?.you) return;
+      channel?.postMessage({ kind: "bye", tab: me });
+      if (event.persisted || others.size > 0 || !latest.current?.holder?.you) return;
       void fetch(paths.controlRelease, { method: "POST", keepalive: true }).catch(() => {});
     };
+    // Back from the back/forward cache: say hello again.
+    const show = (event: PageTransitionEvent) => {
+      if (event.persisted) channel?.postMessage({ kind: "hello", tab: me });
+    };
     window.addEventListener("pagehide", leave);
-    return () => window.removeEventListener("pagehide", leave);
+    window.addEventListener("pageshow", show);
+    return () => {
+      window.removeEventListener("pagehide", leave);
+      window.removeEventListener("pageshow", show);
+      channel?.postMessage({ kind: "bye", tab: me });
+      channel?.close();
+    };
   }, []);
 
   const act = useCallback(

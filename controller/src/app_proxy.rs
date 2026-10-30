@@ -284,14 +284,20 @@ async fn websocket(
             Credential::Device(id) => Some(id.clone()),
             _ => None,
         };
+        // A message from the browser is the holder acting through the app.
+        let acted = || {
+            if let Some(device) = &holder {
+                state.control.active(device);
+            }
+        };
         let lost = async {
-            match holder {
+            match holder.clone() {
                 Some(device) => state.control.lost(&state.auth, device).await,
                 None => std::future::pending().await,
             }
         };
         tokio::select! {
-            () = pipe(browser, app) => {}
+            () = pipe(browser, app, acted) => {}
             () = state.auth.ended(credential) => tracing::info!("app proxy: WebSocket closed, its login ended"),
             () = lost => tracing::info!("app proxy: WebSocket closed, its device lost control"),
         }
@@ -301,8 +307,9 @@ async fn websocket(
 type AppSocket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Copy messages until either side closes. Pings and pongs stay per hop:
-/// both WebSocket stacks answer pings themselves.
-async fn pipe(browser: WebSocket, app: AppSocket) {
+/// both WebSocket stacks answer pings themselves. `acted` runs on each
+/// message from the browser.
+async fn pipe(browser: WebSocket, app: AppSocket, acted: impl Fn()) {
     let (mut browser_tx, mut browser_rx) = browser.split();
     let (mut app_tx, mut app_rx) = app.split();
     let up = async {
@@ -320,6 +327,7 @@ async fn pipe(browser: WebSocket, app: AppSocket) {
                 }
                 ws::Message::Ping(_) | ws::Message::Pong(_) => continue,
             };
+            acted();
             if app_tx.send(message).await.is_err() {
                 break;
             }

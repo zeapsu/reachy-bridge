@@ -85,11 +85,6 @@ impl Inner {
             self.away = None;
         }
         let Some(holder) = self.holder.clone() else { return false };
-        if now.saturating_sub(holder.active) >= IDLE_AFTER {
-            tracing::info!("control: {} ({}) lost control: idle", holder.person, holder.device);
-            self.holder = None;
-            return true;
-        }
         let seen = self.seen.get(&holder.device).copied().unwrap_or(holder.since);
         if now.saturating_sub(seen) >= AWAY_AFTER {
             tracing::info!("control: {} ({}) lost control: device silent", holder.person, holder.device);
@@ -98,6 +93,13 @@ impl Inner {
             // ran a refresh meanwhile: a holder gone that long isn't restored.
             let away = Holder { since: seen, ..holder };
             self.away = (!stale(&away)).then_some(away);
+            return true;
+        }
+        // After the silence check: a holder cut off by the network steps away
+        // (and comes back) instead of counting as idle.
+        if now.saturating_sub(holder.active) >= IDLE_AFTER {
+            tracing::info!("control: {} ({}) lost control: idle", holder.person, holder.device);
+            self.holder = None;
             return true;
         }
         false
@@ -435,5 +437,15 @@ mod tests {
         inner.seen.insert("d1".into(), 100 + IDLE_AFTER);
         assert!(!inner.refresh(100 + IDLE_AFTER));
         assert!(inner.holder.is_some());
+    }
+
+    #[test]
+    fn a_holder_cut_off_while_idle_steps_away_rather_than_losing_control() {
+        let holder = Holder { device: "d1".into(), person: "sam".into(), admin: false, since: 100, active: 100 };
+        let mut inner = Inner { holder: Some(holder), ..Inner::default() };
+        // Polling until 100 + 500, then the network drops; nothing refreshes until it's back.
+        inner.seen.insert("d1".into(), 600);
+        assert!(inner.refresh(100 + IDLE_AFTER));
+        assert!(inner.holder.is_none() && inner.away.is_some());
     }
 }
