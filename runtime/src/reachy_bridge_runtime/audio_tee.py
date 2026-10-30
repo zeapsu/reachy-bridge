@@ -14,8 +14,9 @@ robot goes quiet while a browser hears it instead:
 
 The speaker's loopback has four channels: the robot's own audio on the first
 two and Talk on the last two. Hearing reads the first two, so a browser
-doesn't get its own voice back. ``reachy_bridge_wobble`` reads all four, so
-the head wobble follows everything sent to the speaker (features/wobble.py).
+doesn't get its own voice back. ``reachy_bridge_wobble`` gives the robot's audio
+on its left channel and Talk on its right, so the head wobble can follow what
+actually comes out of the speaker (features/wobble.py).
 
 The mic gets the same treatment the other way round, on the loopback's
 second subdevice: what apps read as the robot's mic (``reachymini_audio_src``)
@@ -52,7 +53,7 @@ logger = logging.getLogger(__name__)
 # contains the earlier versions' markers, so their runtimes, if a failed deploy
 # rolls back to one, leave this tee alone instead of wrapping it.
 PREFIX = "# reachy-bridge: "
-MARKER = PREFIX + "speaker tee (#219), and mic tee (v2), with Talk on the loopback (v3)"
+MARKER = PREFIX + "speaker tee (#219), and mic tee (v2), with Talk on the loopback (v3), wobble split (v4)"
 LOOPBACK = "Loopback"
 SPEAKER_SWITCH = "Reachy Bridge Speaker"
 HEAR_SOURCE = "reachy_bridge_hear"
@@ -126,7 +127,7 @@ pcm.{WOBBLE_SOURCE} {{
     slave.pcm {{
         type route
         slave {{ pcm "reachy_bridge_loop_in" channels 4 }}
-        ttable {{ 0.0 1 0.2 1 1.1 1 1.3 1 }}
+        ttable {{ 0.0 0.5 0.1 0.5 1.2 0.5 1.3 0.5 }}
     }}
 }}
 
@@ -288,6 +289,17 @@ def set_speaker(on: bool) -> bool:
     # of silence through it, then try again.
     silence = ["aplay", "-q", "-D", "reachy_bridge_speaker", "-t", "raw", "-f", "S16_LE", "-r", "16000", "-c", "2", "-d", "1", "/dev/zero"]
     return _run(silence) and _run(switch)
+
+
+def speaker_on() -> bool:
+    """The speaker switch isn't muted. If it can't be read, assume it's on."""
+    try:
+        result = subprocess.run(
+            ["amixer", "-c", LOOPBACK, "cget", f"name={SPEAKER_SWITCH}"], capture_output=True, text=True, timeout=2
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return ": values=off" not in result.stdout
 
 
 def _write(path: Path, text: str) -> None:
