@@ -9,6 +9,9 @@
 //! action, so in admin mode only the device in control can (control::guard);
 //! a connected session counts as that device being present.
 //!
+//! It goes with the robot: Start is refused while the robot is off, and
+//! turning it off (or its daemon stopping) ends the session.
+//!
 //! One session at a time: a new one replaces the old. Sim mode has no
 //! audio (its daemon has no media), so the routes refuse there instead of
 //! opening the real robot's mic.
@@ -24,6 +27,7 @@ use serde_json::{json, Value};
 use tokio::sync::Notify;
 
 use crate::auth::{AuthContext, Credential};
+use crate::daemon::{backend_up, robot_state};
 use crate::error::{ApiError, ApiResult};
 use crate::state::Shared;
 
@@ -56,6 +60,9 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 const WATCH: Duration = Duration::from_secs(2);
 /// Failed checks in a row after which the gateway counts as gone (10 s).
 const GATEWAY_GONE: u32 = 5;
+/// Checks in a row without a robot that's on (no answer, a crashed backend)
+/// after which the session ends (6 s); a robot that says it's off ends it at once.
+const ROBOT_GONE: u32 = 3;
 /// How long a freshly started gateway gets to answer.
 const START_WAIT: Duration = Duration::from_secs(10);
 
@@ -258,11 +265,34 @@ struct Route {
     talk: bool,
 }
 
+/// The robot is powered on (asleep counts: its motors are off, not it).
+fn robot_on(status: &Value) -> bool {
+    let robot = robot_state(status);
+    matches!(robot.as_str(), "running" | "asleep") || (robot == "error" && backend_up(status))
+}
+
+/// The robot is definitely off: its backend is gone and the daemon says it
+/// stopped (or failed, as the power route counts it).
+fn robot_off(status: &Value) -> bool {
+    !backend_up(status) && matches!(robot_state(status).as_str(), "stopped" | "not_initialized" | "error")
+}
+
 fn not_sim(state: &Shared) -> ApiResult<()> {
     if state.sim.active() {
         return Err(ApiError::new(409, "The simulation has no microphone or speaker; leave sim mode to listen or talk"));
     }
     Ok(())
+}
+
+/// Listening and talking go with the robot: off means off.
+async fn robot_ready(state: &Shared) -> ApiResult<()> {
+    not_sim(state)?;
+    match state.daemon.status().await {
+        None => Err(ApiError::new(503, "The robot's daemon isn't answering")),
+        Some(s) if robot_state(&s) == "starting" => Err(ApiError::new(409, "The robot is still starting; try again in a moment")),
+        Some(s) if !robot_on(&s) => Err(ApiError::new(409, "Turn the robot on to listen or talk")),
+        Some(_) => Ok(()),
+    }
 }
 
 async fn open(
@@ -271,10 +301,12 @@ async fn open(
     body: Result<Json<Route>, axum::extract::rejection::JsonRejection>,
 ) -> ApiResult<Json<Value>> {
     let Json(body) = body.map_err(|_| ApiError::bad_body())?;
-    not_sim(&state)?;
+    robot_ready(&state).await?;
     let audio = &state.audio;
     let _opening = audio.opening.lock().await;
     audio.ensure_running().await?;
+    // Waiting for the lock or the gateway can take a while: check again.
+    robot_ready(&state).await?;
     let opened = audio
         .call(reqwest::Method::POST, "/session", Some(json!({"listen": body.listen, "talk": body.talk})))
         .await?
@@ -324,10 +356,23 @@ async fn watch(state: Shared, owner: Owner, credential: Credential, local: bool)
     };
     let ticks = async {
         let mut errors = 0;
+        let mut robot_gone = 0;
         loop {
             tokio::time::sleep(WATCH).await;
             if state.sim.active() {
                 return "sim mode started";
+            }
+            match state.daemon.status().await {
+                Some(status) if robot_off(&status) => return "the robot was turned off",
+                Some(status) if robot_on(&status) => robot_gone = 0,
+                // No answer, or a robot in between (its backend crashed, or it's
+                // stopping): no robot either, unless it's a blip.
+                _ => {
+                    robot_gone += 1;
+                    if robot_gone >= ROBOT_GONE {
+                        return "the robot stopped answering";
+                    }
+                }
             }
             let status = audio.status().await;
             errors = if status.is_err() { errors + 1 } else { 0 };
