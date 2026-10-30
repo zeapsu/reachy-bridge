@@ -15,8 +15,6 @@
   font-size: 14px;
 }
 .control-strip .btn { padding: 7px 14px; }
-.control-ask { display: flex; gap: 6px; }
-.control-ask .field { padding-block: 6px; }
 .control-error { flex-basis: 100%; margin: 0 8px 4px 0; }
 
 /* A short notice when who drives changes. */

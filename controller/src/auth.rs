@@ -13,8 +13,8 @@
 //! Admin mode (#221) starts when the first admin device pairs, which only the
 //! local key can approve (`reachy-bridge pair --admin`). From then on every
 //! browser logs in, LAN mode or not, and loopback is no longer trusted: a
-//! request through `tailscale serve` carries no identity, and control time is
-//! granted per person. Only an admin (or the local key) approves and revokes
+//! request through `tailscale serve` carries no identity, and control moves
+//! between one person's devices. Only an admin (or the local key) approves and revokes
 //! devices; a member can log out its own. Admin mode is kept in
 //! `devices.json`, so it stays on when the last admin device expires or is
 //! revoked; the CLI pairs a new one.
@@ -115,7 +115,7 @@ impl AuthConfig {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
-    /// Approves and revokes devices, and (with #221) grants control time.
+    /// Approves and revokes devices, and can always take control (#221).
     Admin,
     #[default]
     Member,
@@ -125,8 +125,8 @@ pub enum Role {
 struct Device {
     id: String,
     name: String,
-    /// Who uses the device: control time is granted per person, and one
-    /// person can have several devices. Older files have none: the name.
+    /// Who uses the device: control moves between one person's devices,
+    /// and one person can have several. Older files have none: the name.
     #[serde(default)]
     person: String,
     #[serde(default)]
@@ -1048,6 +1048,9 @@ async fn revoke(
         return Err(ApiError::new(500, "could not save the device list"));
     }
     drop(devices);
+    // A revoked browser can't drive any more: it gives up control now, so
+    // nobody waits for it to go silent.
+    state.control.forget(&id);
     auth.revoked.send_modify(|n| *n += 1);
     let by = ctx.by();
     tracing::info!("auth: device {id} ({}) revoked by {by}", removed.name);

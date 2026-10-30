@@ -12,10 +12,10 @@ export interface ControlApi {
 }
 
 /**
- * Control time (#221). Polls while the page is visible: the poll is also how
+ * Control (#221). Polls while the page is visible: the poll is also how
  * the controller knows the holder is still here, so a hidden tab lets
- * control go after about 10 s (and takes it back on return, within the
- * grant).
+ * control go after about 10 s (and takes it back on return within 5 min,
+ * unless someone else took it).
  */
 export function useControl(visible: boolean): ControlApi {
   const [view, setView] = useState<ControlView | null>(null);

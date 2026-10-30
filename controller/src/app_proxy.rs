@@ -161,7 +161,7 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
     let Some(credential) = proxy.state.auth.app_proxy_credential(&parts.headers, peer.map(|p| p.ip().to_canonical())) else {
         return login_required(dashboard.as_deref());
     };
-    // Control time (#221): watchers load the app's pages, only the holder acts.
+    // Control (#221): watchers load the app's pages, only the holder acts.
     let (device, local) = match &credential {
         Credential::Device(id) => (Some(id.clone()), false),
         Credential::Local => (None, true),

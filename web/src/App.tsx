@@ -5,7 +5,6 @@ import { CatalogPanel } from "./components/CatalogPanel.tsx";
 import { AudioPanel } from "./components/AudioPanel.tsx";
 import { ControlsPanel, type ControlHint } from "./components/ControlsPanel.tsx";
 import { ControlStrip, ControlToast } from "./components/ControlStrip.tsx";
-import { ControlPanel } from "./components/ControlPanel.tsx";
 import { DevicesPanel } from "./components/DevicesPanel.tsx";
 import { DrivePanel } from "./components/DrivePanel.tsx";
 import { ExpressionsPanel } from "./components/ExpressionsPanel.tsx";
@@ -228,7 +227,6 @@ function Dashboard() {
           <AudioPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
           <SimPanel sim={sim} sounds={simSounds} powerStatus={power.status} control={control} />
           <LogsPanel live={visible && tab === "system"} />
-          <ControlPanel control={control} />
           <DevicesPanel />
           <AppearancePanel look={look} />
         </main>

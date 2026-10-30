@@ -114,12 +114,10 @@ can log themselves out. The dashboard won't revoke the last admin device; to rec
 pair a new admin from the robot and revoke the old one with `reachy-bridge devices revoke <n>`.
 Admin mode stays on even with no admin device left.
 
-In admin mode one browser at a time drives the robot: the admin, or a person the admin gave
-control time. Without the admin's browser, grant it from the robot: `reachy-bridge control`
-shows who is in control, the grants and who is asking; `reachy-bridge control grant <n|person> [minutes]`
-gives a person control time (`<n>` is a device's number in `reachy-bridge devices`; no minutes
-means no end); `reachy-bridge control revoke <n|person>` ends that person's grant. Grants can't
-overlap, so revoke the current one first to give control to someone else.
+In admin mode one browser at a time drives the robot. Any approved browser takes control with its
+first robot action while nobody else has it, and keeps it until it lets go or goes quiet for 10
+seconds; the admin can always take over. Approving a browser is what lets someone drive, and
+revoking it takes that away (and frees the robot at once if that browser was driving).
 
 An installed app runs as the bridge's user
 and can read the local key, so it could approve an admin too; install apps you trust.
