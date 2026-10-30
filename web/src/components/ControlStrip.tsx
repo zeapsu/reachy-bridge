@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CONTROL_NEEDED_EVENT, paths } from "../api.ts";
+import { CONTROL_NEEDED_EVENT, NEEDS_CONTROL, paths } from "../api.ts";
 import type { ControlApi } from "../hooks/useControl.ts";
 import { SLOTS, clock, controlNotice, controlState, showStrip, type Asking, type ControlState } from "../logic/control.ts";
 import "./ControlStrip.css";
+
+const sentence = (text: string) => (text ? `${text[0].toUpperCase()}${text.slice(1)}.` : text);
 
 /**
  * Who drives the robot (#221), one line inside a view that acts on it, and
@@ -19,7 +21,8 @@ export function ControlStrip({ control }: { control: ControlApi }) {
   const free = state.kind === "free";
 
   useEffect(() => {
-    const onRefused = () => setRefused(true);
+    // Only "nobody is in control": a refusal while someone else held it says nothing about later.
+    const onRefused = (event: Event) => setRefused((event as CustomEvent<unknown>).detail === NEEDS_CONTROL);
     window.addEventListener(CONTROL_NEEDED_EVENT, onRefused);
     return () => window.removeEventListener(CONTROL_NEEDED_EVENT, onRefused);
   }, []);
@@ -75,7 +78,8 @@ export function ControlStrip({ control }: { control: ControlApi }) {
   let text = "";
   let action: ReactNode = null;
   if (state.kind === "other" && showStrip(state)) {
-    text = `${state.person} is in control${state.until === null ? "" : ` until ${clock(state.until)}`}.`;
+    const who = state.elsewhere !== undefined ? `You're in control on ${state.elsewhere || "another device"}` : `${state.person} is in control`;
+    text = `${who}${state.until === null ? "" : ` until ${clock(state.until)}`}.`;
     if (state.canTakeOver) {
       action = takeButton("Take over");
     } else {
@@ -106,10 +110,10 @@ const hover = typeof window !== "undefined" && window.matchMedia?.("(hover: hove
 /**
  * A notice for a few seconds when who drives changes (#221): you took
  * control (with Release), someone took over, your time is nearly up; and
- * control actions that failed. `nudge` changing shows "You're in control"
- * again, from the status pill. It stays while hovered or focused.
+ * control actions or robot actions refused for control. It stays while
+ * hovered or focused.
  */
-export function ControlToast({ control, nudge }: { control: ControlApi; nudge: number }) {
+export function ControlToast({ control }: { control: ControlApi }) {
   const state = controlState(control.view);
   const key = JSON.stringify(state);
   const prev = useRef<ControlState>({ kind: "off" });
@@ -123,11 +127,15 @@ export function ControlToast({ control, nudge }: { control: ControlApi; nudge: n
     if (text) setToast({ text, release: next.kind === "mine" });
   }, [key]);
 
+  // A tap refused because someone else has control: say so wherever the tap was.
   useEffect(() => {
-    if (nudge === 0 || prev.current.kind !== "mine") return;
-    const mine = prev.current;
-    setToast({ text: mine.until === null ? "You're in control" : `You're in control until ${clock(mine.until)}`, release: true });
-  }, [nudge]);
+    const onRefused = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (typeof detail === "string") setToast({ text: sentence(detail), release: false, error: true });
+    };
+    window.addEventListener(CONTROL_NEEDED_EVENT, onRefused);
+    return () => window.removeEventListener(CONTROL_NEEDED_EVENT, onRefused);
+  }, []);
 
   useEffect(() => {
     if (control.error) setToast({ text: control.error, release: false, error: true });

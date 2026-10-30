@@ -27,8 +27,14 @@ export const getBelievedTarget = (): string | null => believedTarget;
 
 /** The controller's refusal while nobody is in control (control.rs not_holding). */
 export const NEEDS_CONTROL = "take control of the robot first";
+/** Its refusal while someone holds control: "<person> is in control of the robot". */
+const HELD = / is in control of the robot$/;
 
-/** Fired when a robot action was refused because nobody is in control and none could be taken. */
+/**
+ * Fired (a CustomEvent, the refusal as its detail) when a robot action was
+ * refused for control and none could be taken: nobody, or someone else, is
+ * in control.
+ */
 export const CONTROL_NEEDED_EVENT = "reachy:control-needed";
 
 let controlTaker: (() => Promise<boolean>) | null = null;
@@ -39,8 +45,9 @@ export function setControlTaker(taker: (() => Promise<boolean>) | null): void {
 }
 
 /**
- * Take control for a robot action when nobody is in control (#221), so the
- * person doesn't have to tap Take control first. Only for something the
+ * Take control for a robot action when nobody is in control, or this
+ * person holds it on another device (#221), so they don't have to tap Take
+ * control first. Only for something the
  * person just did: a request with no user gesture behind it (a cleanup, a
  * poll) never takes control. `gesture`: the caller knows it is one (a drive
  * pad press, which on touch screens isn't a user activation yet, or a step
@@ -91,10 +98,11 @@ export async function apiJson<T = unknown>(
       payload && typeof payload === "object" && "detail" in payload
         ? (payload as { detail: unknown }).detail
         : `HTTP ${response.status}`;
-    // Nobody is in control: take it and try once more.
-    if (response.status === 403 && detail === NEEDS_CONTROL && flags.take !== false && !flags.retried) {
+    // Nobody is in control, or this person on another device: take it and try once more.
+    const control = response.status === 403 && typeof detail === "string" && (detail === NEEDS_CONTROL || HELD.test(detail));
+    if (control && flags.take !== false && !flags.retried) {
       if (await takeControlIfFree()) return apiJson<T>(path, options, { ...flags, retried: true });
-      if (typeof window !== "undefined") window.dispatchEvent(new Event(CONTROL_NEEDED_EVENT));
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(CONTROL_NEEDED_EVENT, { detail }));
     }
     throw new ApiError(String(detail), response.status);
   }

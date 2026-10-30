@@ -34,7 +34,15 @@ export type Asking = { kind: "none" } | { kind: "can_ask" } | { kind: "asked" } 
 export type ControlState =
   | { kind: "off" }
   | { kind: "mine"; until: number | null; endingSoon: boolean }
-  | { kind: "other"; person: string; until: number | null; canTakeOver: boolean; asking: Asking }
+  | {
+      kind: "other";
+      person: string;
+      until: number | null;
+      canTakeOver: boolean;
+      asking: Asking;
+      /** The holder is this person on another device: its name (maybe ""). A robot action here moves control over. */
+      elsewhere?: string;
+    }
   | { kind: "free"; canTake: boolean; asking: Asking };
 
 /** What the control bar shows for this browser. */
@@ -53,7 +61,9 @@ export function controlState(view: ControlView | null): ControlState {
   else if (person && (view.requests ?? []).some((r) => r.person === person)) asking = { kind: "asked" };
   else if (view.you.cooldown_until) asking = { kind: "cooldown", until: view.you.cooldown_until };
   if (holder) {
-    return { kind: "other", person: holder.person, until: holder.until, canTakeOver: view.you.admin || view.you.can_take, asking };
+    const canTakeOver = view.you.admin || view.you.can_take;
+    const elsewhere = holder.person === person && view.you.can_take ? { elsewhere: holder.device } : {};
+    return { kind: "other", person: holder.person, until: holder.until, canTakeOver, asking, ...elsewhere };
   }
   return { kind: "free", canTake: view.you.can_take, asking };
 }
@@ -81,8 +91,9 @@ export function controlNotice(prev: ControlState, next: ControlState): string | 
       if (prev.kind !== "mine") return next.until === null ? "You're in control" : `You're in control until ${clock(next.until)}`;
       return next.endingSoon && !prev.endingSoon ? "Your control time ends in under a minute" : null;
     case "other":
-      if (prev.kind === "mine") return `${next.person} took over`;
-      return prev.kind === "other" && prev.person === next.person ? null : `${next.person} took control`;
+      if (prev.kind === "other" && prev.person === next.person) return null;
+      if (next.elsewhere !== undefined) return `You took control on ${next.elsewhere || "another device"}`;
+      return prev.kind === "mine" ? `${next.person} took over` : `${next.person} took control`;
     case "free":
       if (prev.kind === "mine") return "You're no longer in control";
       return prev.kind === "other" ? `${prev.person} let go of control` : null;
