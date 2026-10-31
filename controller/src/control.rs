@@ -167,7 +167,10 @@ impl Control {
             if inner.holder.is_none() && inner.away.as_ref().is_some_and(|h| h.device == device) {
                 let holder = inner.away.take().expect("checked");
                 tracing::info!("control: {} ({}) is back in control", holder.person, holder.device);
-                inner.holder = Some(Holder { since: now, active: now, ..holder });
+                // Coming back isn't a robot action: the idle clock runs on
+                // from the last one, so a tab that keeps going quiet (hidden,
+                // a locked phone) doesn't keep control for good.
+                inner.holder = Some(Holder { since: now, ..holder });
             }
         });
     }
@@ -440,6 +443,31 @@ mod tests {
         inner.seen.insert("d1".into(), 100 + IDLE_AFTER);
         assert!(!inner.refresh(100 + IDLE_AFTER));
         assert!(inner.holder.is_some());
+    }
+
+    #[test]
+    fn coming_back_does_not_restart_the_idle_clock() {
+        let daemon = crate::daemon::Daemon::new("http://127.0.0.1:9", Duration::from_secs(1));
+        let control = Control::new(ExpressionPlayer::new(daemon, Duration::from_secs(1)));
+        let start = control.now();
+        control.with(|inner, now| {
+            inner.holder = Some(Holder { device: "d1".into(), person: "sam".into(), admin: false, since: now, active: now });
+        });
+        control.touch("d1");
+        // Hidden for a while: the device goes silent and steps away, then comes back.
+        control.advance(AWAY_AFTER as i64 + 1);
+        assert!(!control.holds("d2"));
+        control.touch("d1");
+        assert!(control.holds("d1"), "back in control after {}", control.now() - start);
+        // Present from then on, but doing nothing: it loses control on the
+        // original clock, not 10 minutes after coming back.
+        let mut t = control.now() - start;
+        while t < IDLE_AFTER {
+            control.advance(2);
+            t += 2;
+            control.touch("d1");
+        }
+        assert!(!control.holds("d1"), "still in control {t} s after the last action");
     }
 
     #[test]
