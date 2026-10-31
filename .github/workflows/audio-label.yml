@@ -39,9 +39,10 @@ jobs:
           # setup that installs them, the controller's audio routes and ALSA
           # volume, the dashboard's voice pane, their units and the CLI that
           # tees and checks them.
-          audio='^(runtime/src/reachy_bridge_runtime/((audio_(gateway|tee)|mic_mixer|upstream)\.py|features/wobble\.py|platforms/[a-z_]+\.py)|controller/src/(audio|host)\.rs|web/src/(hooks/useVoice|components/VoicePanel|logic/voice|api/voice)\.tsx?|deploy/systemd/reachy-bridge-(audio|mic)\.service|deploy/reachy-bridge)$'
-          # Both names of a renamed file.
-          files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
+          audio='^(runtime/src/reachy_bridge_runtime/((audio_[a-z_]+|mic_mixer|upstream)\.py|features/wobble\.py|platforms/[a-z_]+\.py)|controller/src/(audio|host)\.rs|web/src/(hooks/useVoice|components/VoicePanel|logic/voice|api/voice)\.tsx?|deploy/systemd/reachy-bridge-(audio|mic)\.service|deploy/reachy-bridge)$'
+          # Both names of a renamed file. audio_policy.py is only request signing.
+          files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)' |
+            grep -vxF runtime/src/reachy_bridge_runtime/audio_policy.py || true)
           label() { gh api -X POST "repos/$GH_REPO/issues/$PR/labels" -f "labels[]=$1" >/dev/null; }
           unlabel() { gh api -X DELETE "repos/$GH_REPO/issues/$PR/labels/$(jq -rn --arg l "$1" '$l|@uri')" >/dev/null 2>&1 || true; }
           if ! grep -qE "$audio" <<<"$files"; then
