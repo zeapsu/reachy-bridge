@@ -28,11 +28,11 @@ _WAIT_S = 5.0
 
 
 def command() -> list[str]:
-    launch = shutil.which("gst-launch-1.0") or "gst-launch-1.0"
+    launch = shutil.which("gst-launch-1.0") or "/usr/bin/gst-launch-1.0"
     pipeline = (
         f"audiomixer name=m ! {_CAPS} ! alsasink device={audio_tee.MIC_OUT} "
-        f"alsasrc device={audio_tee.MIC} ! {_CAPS} ! queue ! m. "
-        f"alsasrc device={audio_tee.APP_VOICE_SOURCE} ! {_CAPS} ! queue ! m."
+        f"alsasrc device={audio_tee.MIC} ! audioconvert ! audioresample ! {_CAPS} ! queue ! m. "
+        f"alsasrc device={audio_tee.APP_VOICE_SOURCE} ! audioconvert ! audioresample ! {_CAPS} ! queue ! m."
     )
     return [launch, *pipeline.split()]
 
