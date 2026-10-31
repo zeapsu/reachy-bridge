@@ -238,6 +238,9 @@ def test_mixer_takes_the_real_mic_and_the_voice_and_writes_the_mixer_channels():
     assert f"device={audio_tee.APP_VOICE_SOURCE}" in command
     assert f"alsasink device={audio_tee.MIC_OUT}" in command
     assert audio_tee.SOURCE not in command
+    # The real mic's clock runs it, and the output follows by resampling.
+    assert f"device={audio_tee.APP_VOICE_SOURCE} provide-clock=false" in command
+    assert "slave-method=resample" in command
 
 
 def test_remove_puts_asoundrc_back_as_upstream_wrote_it(tmp_path, monkeypatch):

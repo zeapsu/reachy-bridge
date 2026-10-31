@@ -4,7 +4,9 @@ Every app reads ``reachymini_audio_src``. A mic device that joined the USB mic
 and the loopback directly in ALSA made apps lose pieces of their own playback,
 because the app's one GStreamer pipeline ran on that device's clock while the
 two sides have separate clocks. Here a pipeline of its own takes that drift,
-and apps read a single device on the loopback's clock (see ``audio_tee``).
+and apps read a single device on the loopback's clock (see ``audio_tee``). The
+real mic's clock runs the pipeline, and the output resamples to the loopback's.
+Without that, the mixed mic lost more and more audio after about 5 minutes.
 
 The mic depends on this running, so systemd restarts it, and it waits for the
 tee rather than failing while the daemon hasn't written it yet. Without a tee,
@@ -30,9 +32,9 @@ _WAIT_S = 5.0
 def command() -> list[str]:
     launch = shutil.which("gst-launch-1.0") or "/usr/bin/gst-launch-1.0"
     pipeline = (
-        f"audiomixer name=m ! {_CAPS} ! alsasink device={audio_tee.MIC_OUT} "
+        f"audiomixer name=m ! {_CAPS} ! alsasink device={audio_tee.MIC_OUT} slave-method=resample buffer-time=100000 latency-time=10000 "
         f"alsasrc device={audio_tee.MIC} ! audioconvert ! audioresample ! {_CAPS} ! queue ! m. "
-        f"alsasrc device={audio_tee.APP_VOICE_SOURCE} ! audioconvert ! audioresample ! {_CAPS} ! queue ! m."
+        f"alsasrc device={audio_tee.APP_VOICE_SOURCE} provide-clock=false ! audioconvert ! audioresample ! {_CAPS} ! queue ! m."
     )
     return [launch, *pipeline.split()]
 
