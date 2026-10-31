@@ -64,17 +64,22 @@ def test_tee_keeps_upstreams_names_and_round_trips():
     assert audio_tee.untee(UPSTREAM) == UPSTREAM
 
 
-def test_tee_mixes_app_voice_into_the_mic():
+def test_tee_leaves_the_mic_device_as_upstream_wrote_it():
     teed = audio_tee.tee(UPSTREAM)
     assert teed is not None
-    # Upstream's mic dsnoop keeps its ipc_key under its new name; apps read
-    # the mix under upstream's name.
-    mic = teed[teed.index(f"pcm.{audio_tee.MIC} {{") :]
-    assert mic.index("ipc_key 4242") < mic.index("pcm.reachy_bridge_app_voice_in")
-    assert teed.count("pcm.reachymini_audio_src {") == 1
-    assert teed.index(audio_tee.MARKER) < teed.index("pcm.reachymini_audio_src {")
-    # Capture tables are <client>.<slave>: each client channel sums the mic and the voice.
-    assert "ttable { 0.0 1 0.2 1 1.1 1 1.3 1 }" in teed
+    mic = audio_tee._block(teed, audio_tee.SOURCE)
+    plain = audio_tee._block(UPSTREAM, audio_tee.SOURCE)
+    assert mic is not None and plain is not None
+    assert teed[mic[0] : mic[1]] == UPSTREAM[plain[0] : plain[1]]
+    assert "reachy_bridge_mics" not in teed
+
+
+def test_an_older_tee_with_the_mic_mix_goes_back_to_upstreams_mic():
+    old = audio_tee._rename(UPSTREAM.replace("pcm.reachymini_audio_sink", f"pcm.{audio_tee.SPEAKER}"), audio_tee.SOURCE, audio_tee.OLD_MIC)
+    old += "\n# reachy-bridge: speaker tee (#219), and mic tee (v2)\npcm.reachymini_audio_src { type plug }\n"
+    assert audio_tee.untee(old).strip() == UPSTREAM.strip()
+    new = audio_tee.tee(old)
+    assert new is not None and audio_tee.installed(new) and audio_tee.OLD_MIC not in new
 
 
 def test_an_older_tee_is_replaced():
@@ -217,4 +222,4 @@ def test_talk_reaches_the_wobble_but_not_hearing():
 
 
 def test_tee_marker_keeps_earlier_versions_markers():
-    assert "speaker tee (#219)" in audio_tee.MARKER and "and mic tee (v2)" in audio_tee.MARKER and "(v3)" in audio_tee.MARKER
+    assert "speaker tee (#219)" in audio_tee.MARKER and "and mic tee (v2)" in audio_tee.MARKER and "(v3)" in audio_tee.MARKER and "(v4)" in audio_tee.MARKER

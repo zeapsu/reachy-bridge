@@ -75,8 +75,7 @@ logger = logging.getLogger("reachy_bridge_runtime.audio_gateway")
 PORT = int(os.environ.get("AUDIO_GATEWAY_PORT", "8002"))
 _TEED = audio_tee.is_installed()
 # The real mic: with the tee, apps' mic also carries the browser's voice.
-_MIC = audio_tee.MIC if _TEED else audio_tee.SOURCE
-SOURCE = os.environ.get("AUDIO_GATEWAY_SOURCE", f"alsasrc device={_MIC}")
+SOURCE = os.environ.get("AUDIO_GATEWAY_SOURCE", f"alsasrc device={audio_tee.SOURCE}")
 # Talking skips the speaker tee: the browser shouldn't hear itself, and the
 # speaker's mute is for the robot's own sounds.
 _TALK = audio_tee.TALK_SINK if _TEED else audio_tee.SINK
