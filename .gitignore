@@ -57,3 +57,6 @@ Thumbs.db
 # --- Browser test output ---
 /web/test-results/
 /web/playwright-report/
+
+# --- Coverage ---
+/.coverage
