@@ -13,7 +13,7 @@ offsets to the daemon. The last writer wins, so two sources would jitter: the
 tap holds off while an app's offsets are arriving.
 
 While the speaker is muted for hearing, only Talk still comes out of it, so
-only Talk moves the head.
+only Talk moves the head, and an app's own offsets are ignored.
 
 The daemon doesn't check offsets against the robot's limits, and a driven head
 can already be near them. ``Limits`` scales down any offsets, from any source,
@@ -73,9 +73,12 @@ class Gate:
         self._at_zero = offsets == _ZERO
         return True
 
+    def ours(self) -> bool:
+        return getattr(self._ours, "active", False)
+
     def saw_offsets(self) -> None:
         """Offsets reached the backend; anything but our own came from an app."""
-        if not getattr(self._ours, "active", False):
+        if not self.ours():
             self._app_at = self._clock()
             self._at_zero = False
 
@@ -221,6 +224,7 @@ def apply() -> None:
     gate = Gate()
     tap = Tap()
     limits = Limits(*upstream.wobble_limits())
+    speaker = SpeakerSwitch()
 
     def enable(original: Any, server: Any, callback: Any) -> None:
         original(server, gate.wrap(callback))
@@ -243,6 +247,8 @@ def apply() -> None:
         return Gst.FlowReturn.OK
 
     def set_offsets(original: Any, backend: Any, offsets: Any) -> None:
+        if not gate.ours() and any(offsets) and not speaker.on():
+            return
         gate.saw_offsets()
         original(backend, limits.scale(backend, offsets))
 

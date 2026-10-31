@@ -1,0 +1,21 @@
+[Unit]
+Description=reachy-bridge mic mixer (the robot's mic plus a browser's voice)
+After=reachy-bridge.service
+# Runs with the daemon, which writes the ALSA devices it uses (#219). Apps read
+# the robot's mic through this, so it restarts whatever happens to it.
+PartOf=reachy-bridge.service
+StartLimitIntervalSec=0
+# A rollback to a version without the mixer leaves this unit behind; do nothing then.
+ConditionPathExists=%h/.local/share/reachy-bridge/.venv/bin/reachy-bridge-mic-mixer
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/reachy-bridge/.venv/bin/reachy-bridge-mic-mixer
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=1
+KillSignal=SIGINT
+TimeoutStopSec=5
+
+[Install]
+WantedBy=reachy-bridge.service
