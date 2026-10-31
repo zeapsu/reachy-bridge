@@ -3,6 +3,7 @@ import { getBelievedTarget, takeControlIfFree } from "../api.ts";
 import {
   CENTRED,
   DEFAULT_LIMITS,
+  centred,
   HOME,
   driveMessage,
   parseLimits,
@@ -50,9 +51,11 @@ const wsUrl = () => {
  * One drive session over `/api/drive/ws` (#152). It opens on the first touch,
  * streams the stick pose at ~30 Hz while it changes, and closes once nothing
  * has been held and the robot has been at the home pose for IDLE_MS, which
- * hands it to the controller's return home. It also closes when `allowed`
- * goes false. A start refused while a control is held (the last session's
- * return home still running) is retried for RETRY_FOR_MS.
+ * hands it to the controller's return home. A stick left off centre (hold
+ * mode) keeps the robot posed, and the session open, until Home. It also
+ * closes when `allowed` goes false. A start refused while a control is held
+ * or off centre (the last session's return home still running) is retried
+ * for RETRY_FOR_MS.
  */
 export function useDrive(allowed: boolean): DriveState {
   const [phase, setPhase] = useState<DrivePhase>("idle");
@@ -71,6 +74,8 @@ export function useDrive(allowed: boolean): DriveState {
   const held = useRef(new Set<string>());
   const firstTry = useRef(0);
   const retry = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** A control is held, or one was left off centre (hold mode): keep the session. */
+  const wanted = () => held.current.size > 0 || !centred(sticks.current);
 
   const close = useCallback(() => {
     if (timer.current !== null) clearInterval(timer.current);
@@ -145,12 +150,12 @@ export function useDrive(allowed: boolean): DriveState {
       // A refused upgrade gives the page no status to read. Most often the
       // last session's return home is still running, so keep trying while
       // a control is held.
-      if (!opened && held.current.size && performance.now() - firstTry.current < RETRY_FOR_MS) {
-        // Let go meanwhile: nothing to drive, so don't take the robot.
-        retry.current = setTimeout(() => (held.current.size ? connect() : close()), RETRY_MS);
+      if (!opened && wanted() && performance.now() - firstTry.current < RETRY_FOR_MS) {
+        // Let go and centred meanwhile: nothing to drive, so don't take the robot.
+        retry.current = setTimeout(() => (wanted() ? connect() : close()), RETRY_MS);
         return;
       }
-      if (!opened && held.current.size) setError("Couldn't start driving. Let go and try again.");
+      if (!opened && wanted()) setError("Couldn't start driving. Try again.");
       close();
     };
   }, [close]);
@@ -169,7 +174,7 @@ export function useDrive(allowed: boolean): DriveState {
     taking.current = true;
     void takeControlIfFree(true).finally(() => {
       taking.current = false;
-      if (held.current.size) connect();
+      if (wanted()) connect();
       else close();
     });
     last.current = performance.now();

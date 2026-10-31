@@ -56,6 +56,20 @@ export interface Sticks {
 
 export const CENTRED: Sticks = { head: { x: 0, y: 0 }, body: { x: 0, y: 0 }, antennas: [0, 0] };
 
+export function centred(sticks: Sticks): boolean {
+  const { head, body, antennas } = sticks;
+  return !head.x && !head.y && !body.x && !body.y && !antennas[0] && !antennas[1];
+}
+
+/** Hold mode (per browser): a control let go stays where it was, and so does the robot. */
+export const HOLD_KEY = "reachy-drive-hold";
+
+/** A knob position kept inside the pad's circle. */
+export function inPad(x: number, y: number): { x: number; y: number } {
+  const length = Math.hypot(x, y);
+  return length > 1 ? { x: x / length, y: y / length } : { x, y };
+}
+
 /** Robot targets in radians and metres; head yaw is relative to the body. */
 export interface Pose {
   pitch: number;
