@@ -1,0 +1,9 @@
+# The toolchain, for local work (`mise install`) and CI, which reads these
+# versions instead of pinning its own. Bump here, by hand: Dependabot
+# doesn't track toolchains. shellcheck's release checksum is pinned in
+# .github/workflows/ci.yml and needs updating with it.
+[tools]
+rust = "1.96.0"
+bun = "1.4.3"
+uv = "0.11.24"
+shellcheck = "0.11.0"
