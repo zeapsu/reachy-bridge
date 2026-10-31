@@ -16,9 +16,20 @@ CLI=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/deploy/reachy-bridge
 ROOT=$(mktemp -d)
 trap 'rm -rf "$ROOT"' EXIT
 fails=0
+REPO=
+# Leave the developer's git config (signing, hooks, templates) out of it.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
 fail() { echo "FAIL: $*"; fails=$((fails + 1)); }
 check() { if eval "$2"; then echo "ok: $1"; else fail "$1"; fi; }
+# refuse NAME TEXT ARGS...: the command fails, saying TEXT.
+refuse() {
+    local name=$1 text=$2
+    shift 2
+    if run "$@"; then fail "$name: not refused"
+    elif grep -qF -- "$text" "$ROOT/out"; then echo "ok: $name"
+    else fail "$name: refused without saying '$text'"; cat "$ROOT/out"; fi
+}
 
 stub() {
     printf '#!/usr/bin/env bash\n%s\n' "$2" >"$ROOT/stubs/$1"
@@ -27,8 +38,8 @@ stub() {
 
 # What the fake daemon and controller answer, one word per file in $ROOT/state:
 #   daemon      down (nothing listening), slow (curl times out), off, on, garbage
-#   app         none, running
-#   sim         off, on, down (controller not running), garbage
+#   app         none, running, garbage
+#   sim         off, on, down (controller not running), slow, garbage
 #   controller  up, down (its status route, for the health check)
 set_state() { printf '%s' "$2" >"$ROOT/state/$1"; }
 
@@ -49,12 +60,13 @@ exit 0"
 s='$ROOT/state'
 url=\${*: -1}
 write=0
-for a in \"\$@\"; do [[ \$a == -w ]] && write=1; done
+for a in \"\$@\"; do [[ \$a == -w ]] && write=1; [[ \$a == @- ]] && cat >>'$ROOT/stdin'; done
 reply() { if (( write )); then printf '%s\n%s' \"\$1\" \"\$2\"; else printf '%s' \"\$1\"; fi; }
 case \$url in
     *:7861/api/sim)
         case \$(<\$s/sim) in
             down) exit 7 ;;
+            slow) exit 28 ;;
             on) reply '{\"active\":true}' 200 ;;
             off) reply '{\"active\":false}' 200 ;;
             *) reply 'oops' 200 ;;
@@ -74,15 +86,23 @@ case \$url in
         esac ;;
     */api/apps/current-app-status)
         [[ \$(<\$s/daemon) == down ]] && exit 7
-        if [[ \$(<\$s/app) == running ]]; then reply '{\"state\":\"running\"}' 200; else reply null 200; fi ;;
+        case \$(<\$s/app) in
+            running) reply '{\"state\":\"running\"}' 200 ;;
+            none) reply null 200 ;;
+            *) reply 'oops' 502 ;;
+        esac ;;
 esac"
     stub tailscale "$log
 exit 0"
     stub sleep "$log"
+    # Never the real thing: a failed tailscale call retries with sudo.
+    stub sudo "$log"
+    : >"$ROOT/stdin"
 }
 
 run() {
-    HOME=$H XDG_STATE_HOME='' REACHY_BRIDGE_STATE_DIR='' REACHY_BRIDGE_REPO=${REPO:-$ROOT/none} \
+    env -u DAEMON_URL -u CONTROLLER_PORT -u CONTROLLER_APP_PORT -u REACHY_BRIDGE_SERVE_PORT \
+        HOME="$H" XDG_CONFIG_HOME="" XDG_STATE_HOME="" REACHY_BRIDGE_STATE_DIR="" REACHY_BRIDGE_REPO="${REPO:-$ROOT/none}" \
         PATH="$ROOT/stubs:$PATH" bash "$H/.local/bin/reachy-bridge" "$@" >"$ROOT/out" 2>&1
 }
 
@@ -99,7 +119,8 @@ echo "install.sh \$(git -C "\$(dirname "\$0")/.." describe --tags --always)" >>'
 rc=0
 if [[ -s '$ROOT/install-rcs' ]]; then
     rc=\$(head -n 1 '$ROOT/install-rcs')
-    sed -i 1d '$ROOT/install-rcs'
+    tail -n +2 '$ROOT/install-rcs' >'$ROOT/install-rcs.tmp'
+    mv '$ROOT/install-rcs.tmp' '$ROOT/install-rcs'
 fi
 exit "\$rc"
 EOF
@@ -135,6 +156,7 @@ check "restarts nothing" '! grep -q "systemctl --user restart" "$ROOT/log"'
 set_state daemon slow
 if run restart daemon; then fail "restarted with the robot unknown"; else echo "ok: refused when unknown"; fi
 check "a slow daemon restarts nothing" '! grep -q "systemctl --user restart" "$ROOT/log"'
+set_state daemon on
 run restart controller || fail "controller restart exited $?"
 check "the controller alone restarts with the robot on" 'grep -q "systemctl --user restart reachy-bridge-controller.service" "$ROOT/log"'
 set_state daemon on
@@ -148,11 +170,13 @@ check "restarts with the robot off" 'grep -q "systemctl --user restart reachy-br
 
 echo "== sim mode belongs to the dashboard"
 setup
-if run start sim; then fail "started the sim unit"; else echo "ok: refused the sim unit"; fi
+refuse "refuses the sim unit" "the sim is started from the dashboard" start sim
 set_state sim on
-if run start daemon; then fail "started the daemon in sim mode"; else echo "ok: refused in sim mode"; fi
+refuse "refuses the daemon in sim mode" "sim mode is on;" start daemon
 set_state sim garbage
-if run start; then fail "started on an unreadable sim answer"; else echo "ok: refused when sim mode is unknown"; fi
+refuse "refuses an unreadable sim answer" "can't tell whether sim mode is on" start
+set_state sim slow
+refuse "refuses a controller too slow to say" "can't tell whether sim mode is on" start
 check "starts nothing" '! grep -q "systemctl --user start" "$ROOT/log"'
 set_state sim down
 run start || fail "start with no controller exited $?"
@@ -163,6 +187,7 @@ setup
 run serve on || fail "serve on exited $?"
 check "maps the dashboard and app ports" 'grep -q "tailscale serve --bg --https=10000 http://127.0.0.1:7861" "$ROOT/log" && grep -q "tailscale serve --bg --https=8043 http://127.0.0.1:7863" "$ROOT/log"'
 run serve off || fail "serve off exited $?"
+check "unmaps the same two ports" 'grep -q "tailscale serve --https=10000 off" "$ROOT/log" && grep -q "tailscale serve --https=8043 off" "$ROOT/log"'
 check "never the root mapping, 8443 or a reset" '! grep -qE "https=(443|8443) |serve reset" "$ROOT/log"'
 
 echo "== pair"
@@ -176,16 +201,19 @@ echo "== deploy refuses an unsafe start"
 setup
 make_checkout
 set_state daemon on
-if run deploy v2; then fail "deployed with the robot on"; else echo "ok: refused with the robot on"; fi
+refuse "refuses with the robot on" "isn't confirmed off" deploy v2
 set_state daemon off
 set_state app running
-if run deploy v2; then fail "deployed with an app running"; else echo "ok: refused with an app running"; fi
+refuse "refuses with an app running" "an app is running" deploy v2
+set_state app garbage
+refuse "refuses when the daemon can't say" "an app is running, or the daemon didn't say" deploy v2
 set_state app none
-echo dirty >"$REPO/VERSION.txt"
-if run deploy v2; then fail "deployed over local changes"; else echo "ok: refused local changes"; fi
-git -C "$REPO" checkout -q -- VERSION.txt
-if run deploy v9; then fail "deployed a missing tag"; else echo "ok: refused a missing tag"; fi
-if run deploy v2 --force; then fail "took --force"; else echo "ok: refused --force"; fi
+# A file both tags share, so only the guard can stop it.
+echo dirty >>"$REPO/deploy/install.sh"
+refuse "refuses local changes" "has local changes" deploy v2
+git -C "$REPO" checkout -q -- deploy/install.sh
+refuse "refuses a missing tag" "no tag v9" deploy v9
+refuse "refuses --force" "usage: reachy-bridge deploy" deploy v2 --force
 check "ran no install" '! grep -q "install.sh" "$ROOT/log"'
 
 echo "== deploy installs a tag"
@@ -208,9 +236,10 @@ check "keeps the v1 record" '[[ $(<"$H/.local/share/reachy-bridge/VERSION") == $
 echo "== deploy rolls back an unhealthy install"
 setup
 make_checkout
+git -C "$REPO" rev-parse v1 >"$H/.local/share/reachy-bridge/VERSION"
 set_state controller down
 if run deploy v2; then fail "reported success"; else echo "ok: reported the failure"; fi
-check "reinstalls the previous version" '[[ $(grep -c "install.sh" "$ROOT/log") == 2 ]]'
+check "reinstalls the previous version" '[[ $(grep -c "install.sh" "$ROOT/log") == 2 && $(grep "install.sh" "$ROOT/log" | tail -n 1) == "install.sh v1" ]]'
 check "forgets the record when nothing is healthy" '[[ ! -e $H/.local/share/reachy-bridge/VERSION ]]'
 
 echo "== deploy refused by install.sh changes nothing"
@@ -221,10 +250,29 @@ if run deploy v2; then fail "reported success"; else echo "ok: reported the refu
 check "no rollback install" '[[ $(grep -c "install.sh" "$ROOT/log") == 1 ]]'
 check "the checkout is back on its branch" '[[ $(git -C "$REPO" symbolic-ref --short HEAD) == main-local ]]'
 
+echo "== deploy rolls back to what was installed, not the checkout"
+setup
+make_checkout
+git -C "$REPO" rev-parse v2 >"$H/.local/share/reachy-bridge/VERSION"
+git -C "$REPO" tag v3 v1
+echo 1 >"$ROOT/install-rcs"
+if run deploy v3; then fail "reported success"; else echo "ok: reported the failure"; fi
+check "reinstalls v2, the recorded version" '[[ $(grep "install.sh" "$ROOT/log" | tail -n 1) == "install.sh v2" ]]'
+check "says the checkout is detached" 'grep -q "detached at v2" "$ROOT/out"'
+
+echo "== the local key goes over stdin"
+setup
+mkdir -p "$H/.local/state/reachy-bridge"
+echo secret-key-123 >"$H/.local/state/reachy-bridge/controller.key"
+run start || fail "start exited $?"
+run pair 123456 || fail "pair exited $?"
+check "sends the key header" '(( $(grep -c "X-Reachy-Bridge-Key: secret-key-123" "$ROOT/stdin") == 2 ))'
+check "never in the arguments" '! grep -q secret-key-123 "$ROOT/log"'
+
 echo "== unknown commands"
 setup
-if run frobnicate; then fail "took an unknown command"; else echo "ok: refused"; fi
-if run start robot; then fail "took an unknown service"; else echo "ok: refused an unknown service"; fi
+refuse "refuses an unknown command" "unknown command 'frobnicate'" frobnicate
+refuse "refuses an unknown service" "unknown service 'robot'" start robot
 
 if (( fails )); then echo "$fails failed"; exit 1; fi
 echo "all passed"
