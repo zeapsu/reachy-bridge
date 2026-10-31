@@ -44,9 +44,12 @@ use crate::error::{ApiError, ApiResult};
 use crate::expressions::ExpressionPlayer;
 use crate::state::Shared;
 
-/// A holder silent this long (no request, no open drive session) loses
-/// control; the dashboard polls every 2 s.
-pub const AWAY_AFTER: u64 = 10;
+/// A holder silent this long (no request, no open drive or voice session)
+/// loses control; until then it keeps control through a network blip or a
+/// locked phone, and nobody but an admin can take it. The dashboard polls
+/// every 2 s; a drive session ends on its own much sooner (see
+/// `routes::drive`).
+pub const AWAY_AFTER: u64 = 60;
 /// A holder that went silent gets control back on return only within this
 /// long.
 pub const AWAY_KEEP: u64 = 300;

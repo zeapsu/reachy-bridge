@@ -236,6 +236,24 @@ async fn invalid_target_ends_the_session() {
 }
 
 #[tokio::test]
+async fn a_silent_browser_ends_the_session() {
+    let h = harness(Some("enabled")).await;
+    let mut client = h.connect().await.unwrap();
+    next_json(&mut client).await;
+    // Targets now and then keep the session going.
+    for _ in 0..3 {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        client.send(tungstenite::Message::text(r#"{"head": {"pitch": 0.1}}"#)).await.unwrap();
+    }
+    assert_eq!(h.state.player.current()["phase"], "driving");
+    // Then nothing, as from a lost connection: the robot goes home.
+    let error = tokio::time::timeout(Duration::from_secs(5), next_json(&mut client)).await.expect("session didn't end");
+    assert_eq!(error, json!({"type": "error", "detail": "Connection lost: drive again"}));
+    h.wait("the return home", |f| f.gotos == 1).await;
+    h.wait_idle().await;
+}
+
+#[tokio::test]
 async fn a_motor_mode_change_ends_the_session() {
     let h = harness(Some("enabled")).await;
     let mut client = h.connect().await.unwrap();

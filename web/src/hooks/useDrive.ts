@@ -20,6 +20,8 @@ const TICK_MS = 33;
  * go from one control to another without waiting out a return home.
  */
 const IDLE_MS = 4000;
+/** An unchanged target is sent again this often, as a keepalive. */
+const KEEPALIVE_MS = 1000;
 /** A refused start is retried this often, while a control is still held... */
 const RETRY_MS = 250;
 /** ...for this long: the controller's return home takes about 1.5 s. */
@@ -65,6 +67,7 @@ export function useDrive(allowed: boolean): DriveState {
   const sticks = useRef<Sticks>(CENTRED);
   const pose = useRef<Pose>(HOME);
   const sent = useRef<Pose | null>(null);
+  const sentAt = useRef(0);
   const limits = useRef(DEFAULT_LIMITS);
   /** Targets wait for the `ready` message, which carries the limits. */
   const limitsRead = useRef(false);
@@ -107,9 +110,12 @@ export function useDrive(allowed: boolean): DriveState {
     const goal = stickPose(sticks.current, limits.current);
     pose.current = stepToward(pose.current, goal, (now - last.current) / 1000);
     last.current = now;
-    if (!sent.current || !samePose(sent.current, pose.current)) {
+    // Unchanged targets go again every KEEPALIVE_MS: the controller ends a
+    // session it hasn't heard from in 3 s.
+    if (!sent.current || !samePose(sent.current, pose.current) || now - sentAt.current >= KEEPALIVE_MS) {
       ws.send(driveMessage(pose.current));
       sent.current = pose.current;
+      sentAt.current = now;
     }
     if (!held.current.size && samePose(pose.current, HOME)) {
       if (!idleSince.current) idleSince.current = now;
