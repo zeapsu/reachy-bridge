@@ -1601,6 +1601,7 @@ dependencies = [
     { name = "numpy" },
     { name = "opencv-python-headless" },
     { name = "placo" },
+    { name = "pyyaml" },
     { name = "reachy-mini" },
 ]
 
@@ -1617,6 +1618,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "opencv-python-headless", specifier = "<5" },
     { name = "placo", specifier = "==0.9.14" },
+    { name = "pyyaml" },
     { name = "reachy-mini", specifier = ">=1.12" },
 ]
 provides-extras = ["sim"]

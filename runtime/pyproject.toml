@@ -10,6 +10,7 @@ dependencies = [
     # reachy_bridge_runtime/upstream.py.
     "reachy-mini>=1.12",
     "numpy",
+    "pyyaml",
     # JPEG encoding for /api/camera/stream.mjpg. reachy-mini ships OpenCV only
     # as an extra; <5 matches that extra's bound.
     "opencv-python-headless<5",
