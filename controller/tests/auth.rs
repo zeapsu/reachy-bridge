@@ -1234,8 +1234,7 @@ async fn another_browser_cant_drive_or_end_someones_audio() {
         ("DELETE", "/api/audio/session/s1", None),
     ] {
         // Lee can't reach the session: only the control holder drives, and
-        // taking control ends Sam's audio first. (The session's own device
-        // check behind that can't be reached from a browser.)
+        // taking control ends Sam's audio first.
         let r = h.call(method, uri, LAN, &[("cookie", &lee)], body.clone()).await;
         assert_eq!(
             (r.status, r.body["detail"].clone()),
@@ -1293,4 +1292,35 @@ async fn audio_ends_when_its_browser_is_revoked_or_closes_it() {
     })
     .await
     .expect("the controller still lists the revoked browser's session");
+}
+
+#[tokio::test]
+async fn the_control_holder_cant_drive_the_command_lines_audio() {
+    // A session the local key opened isn't tied to control, so it outlives
+    // a browser taking control; that browser still can't drive or end it.
+    let (h, _admin, sam) = control_harness().await;
+    h.robot.store(ROBOT_ON, Ordering::SeqCst);
+    let deleted = Arc::new(AtomicU64::new(0));
+    let key = std::fs::read_to_string(h.state.state_dir.join(audio::KEY_FILE)).unwrap().trim().to_string();
+    h.state.audio.set_url(&fake_gateway(deleted.clone(), Some(key)).await);
+    let cli = h.key();
+    let local = [("x-reachy-bridge-key", cli.as_str())];
+    let r = h.call("POST", "/api/audio/session", LOOPBACK, &local, Some(json!({"listen": true, "talk": false}))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+    let route = json!({"listen": true, "talk": true, "hear": false, "apps": false});
+    for (method, uri, body) in [
+        ("POST", "/api/audio/session/s1/answer", Some(json!({"sdp": "v=0\r\n"}))),
+        ("POST", "/api/audio/session/s1/route", Some(route)),
+        ("DELETE", "/api/audio/session/s1", None),
+    ] {
+        let r = h.call(method, uri, LAN, &[("cookie", &sam)], body).await;
+        assert_eq!(
+            (r.status, r.body["detail"].clone()),
+            (StatusCode::FORBIDDEN, json!("another browser's audio session")),
+            "Sam: {method} {uri}"
+        );
+    }
+    assert_eq!(deleted.load(Ordering::SeqCst), 0);
+    assert_eq!(h.call("DELETE", "/api/audio/session/s1", LOOPBACK, &local, None).await.status, StatusCode::OK);
 }
