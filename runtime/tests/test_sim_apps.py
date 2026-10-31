@@ -169,12 +169,25 @@ def reached_with_uvloop(site_packages: Path, port: int) -> str:
     return result.stdout.strip()
 
 
+def resolves(host: str) -> bool:
+    try:
+        socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    return True
+
+
 def test_shim_keeps_uvloop_out_and_resolves_names(tmp_path: Path) -> None:
     robot = tagged_server(b"robot")
     sim = tagged_server(b"sim")
     site_packages = sim_apps.install_shim(fake_venv(tmp_path / "apps_venv"), robot, sim)
     assert reached_with_uvloop(site_packages, robot) == "no-uvloop"
-    for host in ("127.1", "LOCALHOST", "localhost."):
+    hosts = ["127.1", "LOCALHOST"]
+    # Some resolvers (gVisor sandboxes, minimal images) don't resolve the
+    # fully qualified form; the shim then refuses it, which is the safe side.
+    if resolves("localhost."):
+        hosts.append("localhost.")
+    for host in hosts:
         code = (
             "import site, socket\n"
             f"site.addsitedir({str(site_packages)!r})\n"

@@ -23,6 +23,15 @@ def fake_venv(root: Path) -> Path:
     return root / "bin/python"
 
 
+def ipv6_works() -> bool:
+    """Whether this host can open IPv6 sockets (``socket.has_ipv6`` only says Python was built with it)."""
+    try:
+        socket.socket(socket.AF_INET6, socket.SOCK_STREAM).close()
+    except OSError:
+        return False
+    return True
+
+
 def bound_host(
     site_packages: Path, host: str, family: int = socket.AF_INET, v6only: bool | None = None, port: int = 0
 ) -> str:
@@ -61,7 +70,7 @@ def test_shim_moves_every_non_loopback_tcp_bind_to_loopback(tmp_path: Path) -> N
     # Loopback stays as asked.
     assert bound_host(site_packages, "127.0.0.1") == "127.0.0.1"
     assert bound_host(site_packages, "localhost") in ("127.0.0.1", "::1")
-    if socket.has_ipv6:
+    if ipv6_works():
         assert bound_host(site_packages, "::", socket.AF_INET6, v6only=True) == "::1"
         # Dual stack: IPv4 loopback, so 127.0.0.1 clients (the proxy) still reach it.
         assert bound_host(site_packages, "::", socket.AF_INET6, v6only=False) == "::ffff:127.0.0.1"

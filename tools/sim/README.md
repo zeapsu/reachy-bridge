@@ -12,7 +12,8 @@ uv run python tools/sim/run.py
 ```
 
 `run.py` starts its own sim daemon and controller on free ports, installs the
-test apps into a fresh apps venv, waits for both servers, runs `smoke.py`
+test apps into a fresh apps venv, downloads the dashboard's move datasets
+(so the daemon doesn't block on Hugging Face mid-test), waits for both servers, runs `smoke.py`
 and stops everything. It doesn't touch a daemon or controller you already
 run, or the checkout's `apps_venv`. A run takes about 40 s. Logs, state and
 the apps venv go in a temporary directory that is kept (and printed) when a
