@@ -148,7 +148,16 @@ jobs:
           restore-keys: hf-datasets-
       - name: Sim tests
         run: uv run python tools/sim/run.py --work-dir "$RUNNER_TEMP/sim"
-      - if: inputs.ref == '' && steps.hf-cache.outputs.cache-hit != 'true'
+      # Only a complete download is worth keeping: a partial one would stick
+      # under this key.
+      - id: hf-complete
+        if: inputs.ref == '' && steps.hf-cache.outputs.cache-hit != 'true'
+        run: |
+          for name in emotions dances; do
+            ls -d ~/.cache/huggingface/hub/datasets--pollen-robotics--reachy-mini-$name-library/snapshots/*/ >/dev/null 2>&1 || exit 0
+          done
+          echo save=true >> "$GITHUB_OUTPUT"
+      - if: steps.hf-complete.outputs.save == 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         # Nothing to save when Hugging Face was down; that isn't a test failure.
         continue-on-error: true
@@ -168,8 +177,10 @@ jobs:
   # The dashboard in Chromium against the sim stack, at desktop and phone
   # sizes: what a person does with it, plus axe-core accessibility checks and
   # layout/copy checks counted against web/e2e/baselines/. Not a required
-  # check yet, while its numbers settle.
+  # check yet, while its numbers settle, and the upstream watch's lock-bump
+  # runs leave it out.
   browser:
+    if: inputs.ref == ''
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:

@@ -27,10 +27,18 @@ export async function setPower(page: Page, on: boolean): Promise<void> {
   await expect(page.getByRole("button", { name: want })).toBeVisible({ timeout: 60_000 });
 }
 
-/** Errors the page logged, and requests that failed, while `run` ran. */
+/**
+ * Errors the page threw or logged, and requests that never got an answer.
+ * Error statuses aren't counted: the sim answers some with 404 or 503 (no
+ * setup, volume or platform), and the dashboard shows those itself.
+ */
 export function watchErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(`page error: ${error.message}`));
+  page.on("requestfailed", (request) => {
+    // Leaving or reloading the page aborts its open requests.
+    if (request.failure()?.errorText !== "net::ERR_ABORTED") errors.push(`request failed: ${request.url()} ${request.failure()?.errorText}`);
+  });
   page.on("console", (message) => {
     if (message.type() === "error" && !message.text().startsWith("Failed to load resource")) {
       errors.push(`console: ${message.text()}`);

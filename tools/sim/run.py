@@ -114,6 +114,8 @@ def main() -> int:
         help="run this against the servers instead of smoke.py (after --), with SIM_DAEMON and SIM_CONTROLLER set",
     )
     args = parser.parse_args()
+    if args.command and args.command[0] != "--":
+        parser.error(f"unexpected argument {args.command[0]!r} (a command goes after --)")
 
     controller_bin = Path(
         os.getenv("SIM_CONTROLLER_BIN", ROOT / "controller" / "target" / "release" / "reachy-controller")
@@ -122,8 +124,7 @@ def main() -> int:
         print(f"controller binary not found: {controller_bin} (see tools/sim/README.md)", file=sys.stderr)
         return 2
 
-    command = args.command[1:] if args.command[:1] == ["--"] else args.command
-    command = command or [sys.executable, str(SIM / "smoke.py")]
+    command = args.command[1:] or [sys.executable, str(SIM / "smoke.py")]
     temporary = args.work_dir is None
     work = Path(tempfile.mkdtemp(prefix="rb-sim-")) if temporary else args.work_dir.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -173,7 +174,7 @@ def main() -> int:
             command,
             env={**os.environ, "SIM_DAEMON": daemon_url, "SIM_CONTROLLER": controller_url},
         ).returncode
-    except (RuntimeError, subprocess.CalledProcessError) as e:
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as e:
         print(f"sim run failed: {e}", file=sys.stderr)
     finally:
         stop(controller)

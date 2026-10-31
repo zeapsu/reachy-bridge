@@ -17,7 +17,11 @@ else {
     const name = file.replace(/\.json$/, "");
     const keys = [...new Set([...Object.keys(counts), ...Object.keys(baseline)])].sort();
     if (keys.length === 0) lines.push(`| ${name} | 0 | 0 |`);
-    for (const key of keys) lines.push(`| ${name}: ${key} | ${counts[key] ?? 0} | ${baseline[key] ?? 0} |`);
+    for (const key of keys) {
+      const [n, base] = [counts[key] ?? 0, baseline[key] ?? 0];
+      const flag = n > base ? " ❌" : n < base ? " (lower the baseline)" : "";
+      lines.push(`| ${name}: ${key} | ${n}${flag} | ${base} |`);
+    }
     if (typeof details?.loadMs === "number") lines.push(`| ${name}: load time (ms) | ${details.loadMs} | |`);
   }
 }

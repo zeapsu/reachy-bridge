@@ -30,7 +30,7 @@ async function audit(page: Page, name: string): Promise<{ overflow: number; find
         'button, a[href], input:not([type="hidden"]), select, textarea, [role="button"], [role="switch"], [role="tab"], [role="slider"]',
       );
       for (const el of controls) {
-        if (!visible(el) || el.closest("iframe")) continue;
+        if (!visible(el)) continue;
         const r = el.getBoundingClientRect();
         if (r.width < MIN_TARGET || r.height < MIN_TARGET) {
           findings.push({ tab: name, what: "small-target", detail: `${label(el)} (${Math.round(r.width)}×${Math.round(r.height)})` });

@@ -49,7 +49,8 @@ test("an expression plays on the robot", async ({ page, request }) => {
   const play = page.getByRole("button", { name: "Play" });
   await expect(play).toBeEnabled();
   await play.click();
-  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+  // While it plays, Play turns busy, then becomes Cancel.
+  await expect(page.getByRole("button", { name: "Cancel" }).or(page.locator('button[aria-busy="true"]'))).toBeVisible();
 });
 
 test("an app starts, shows its UI and stops", async ({ page }) => {
@@ -59,8 +60,11 @@ test("an app starts, shows its UI and stops", async ({ page }) => {
   const row = page.getByRole("listitem").filter({ has: page.getByRole("button", { name: /^Sim Ui App/ }) });
   await row.getByRole("button", { name: "Start" }).click();
   await expect(row.getByRole("button", { name: /^Sim Ui App Running/ })).toBeVisible({ timeout: 60_000 });
+  // Starting may open the app's view by itself; otherwise open it.
   const view = page.getByRole("dialog", { name: "Sim Ui App interface" });
-  if (!(await view.isVisible())) await row.getByRole("button", { name: "Open" }).click();
+  const openButton = row.getByRole("button", { name: "Open" });
+  await expect(view.or(openButton).first()).toBeVisible();
+  if (!(await view.isVisible())) await openButton.click();
   await expect(view.frameLocator("iframe").locator("body")).toContainText(/\S/, { timeout: 60_000 });
   await view.getByRole("button", { name: "Stop" }).click();
   await expect(view).toBeHidden({ timeout: 60_000 });

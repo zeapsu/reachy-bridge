@@ -26,7 +26,7 @@ for (const power of ["off", "on"] as const) {
         );
       }
     }
-    ratchet(info, `a11y-${power}`, counts, details);
     await setPower(page, false);
+    ratchet(info, `a11y-${power}`, counts, details);
   });
 }
