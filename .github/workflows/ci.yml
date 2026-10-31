@@ -22,9 +22,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # ubuntu-24.04-arm ships GStreamer 1.24.2, the same version as JetPack 7.
+# Every job has a timeout a few times its usual length, so a hung test fails
+# the run instead of holding a runner for GitHub's default six hours.
 jobs:
   python:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,6 +57,7 @@ jobs:
 
   rust-web:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -143,6 +147,7 @@ jobs:
 
   shell:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     env:
       SHELLCHECK_VERSION: "0.11.0"
       # sha256 of shellcheck-v0.11.0.linux.aarch64.tar.xz from the GitHub release.

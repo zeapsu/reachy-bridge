@@ -34,6 +34,13 @@ ROOT = Path(__file__).resolve().parents[2]
 SIM = ROOT / "tools" / "sim"
 APPS = sorted(p for p in (SIM / "apps").iterdir() if (p / "pyproject.toml").exists())
 READY_TIMEOUT = 120.0
+# The dashboard's move datasets (controller/src/datasets.rs). The controller
+# lists them at startup, and the daemon loads a dataset it doesn't have on its
+# event loop, blocking every other request until the Hugging Face download
+# finishes. smoke.py calls the daemon directly, past the power lock that keeps
+# the controller's own requests clear of it, so a slow download timed its
+# first request out. Downloading them first makes that load quick.
+DATASETS = ("pollen-robotics/reachy-mini-emotions-library", "pollen-robotics/reachy-mini-dances-library")
 
 
 def free_port() -> int:
@@ -55,6 +62,17 @@ def install_apps(apps_root: Path) -> None:
         ["uv", "pip", "install", "--quiet", "--python", str(venv / "bin" / "python"), *map(str, APPS)],
         check=True,
     )
+
+
+def download_datasets() -> None:
+    """Put the datasets in the Hugging Face cache, where the daemon looks first."""
+    from huggingface_hub import snapshot_download
+
+    for dataset in DATASETS:
+        try:
+            snapshot_download(dataset, repo_type="dataset", token=False)
+        except Exception as e:  # noqa: BLE001 - the checks can run without them
+            print(f"could not download {dataset}, running without it: {e}", flush=True)
 
 
 def wait_up(url: str, proc: subprocess.Popen, name: str) -> None:
@@ -114,6 +132,7 @@ def main() -> int:
     code = 1
     try:
         install_apps(work / "apps")
+        download_datasets()
         with open(work / "daemon.log", "wb") as log:
             daemon = subprocess.Popen(
                 [

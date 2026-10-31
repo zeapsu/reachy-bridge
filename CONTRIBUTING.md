@@ -71,6 +71,8 @@ check UI changes yourself in a headless browser against the sim stack.
 `reachy-mini` is tracked, not pinned: `runtime/pyproject.toml` sets a floor and `uv.lock`
 holds the tested version. The upstream watch workflow opens a PR when Pollen releases a
 new one (#155); a new daemon version needs hardware QA before it merges.
+Dependabot (`.github/dependabot.yml`) proposes everything else once a week, grouped per
+ecosystem; Python updates run on the robot, so they get hardware QA after merge too.
 
 ## Robot safety
 
