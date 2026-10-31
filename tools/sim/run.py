@@ -21,7 +21,8 @@ of the robot's sound sources and files in place of its outputs (``AUDIO``),
 so the browser tests can check which sound goes where (``web/e2e/voice.spec.ts``).
 It needs GStreamer's WebRTC elements (gstreamer1.0-plugins-bad,
 gstreamer1.0-nice) and a local address on the gateway's ICE networks
-(``AUDIO_GATEWAY_NETS``, the tailnet by default).
+(``AUDIO_GATEWAY_NETS``, the tailnet by default). Not on a robot: the gateway
+would mute and unmute the robot's real speaker as the tests switch hearing.
 """
 
 from __future__ import annotations
@@ -65,7 +66,7 @@ def _tone(freq: int) -> str:
 
 
 def _file(path: Path) -> str:
-    return f"audioconvert ! audioresample ! {_RAW} ! filesink location={path} buffer-mode=unbuffered sync=false"
+    return f'audioconvert ! audioresample ! {_RAW} ! filesink location="{path}" buffer-mode=unbuffered sync=false'
 
 
 def audio_env(audio: Path, port: int, key_file: Path) -> dict[str, str]:
@@ -77,6 +78,8 @@ def audio_env(audio: Path, port: int, key_file: Path) -> dict[str, str]:
         "AUDIO_GATEWAY_HEAR": _tone(TONES["robot"]),
         "AUDIO_GATEWAY_SINK": _file(audio / "speaker.raw"),
         "AUDIO_GATEWAY_APPS": _file(audio / "apps.raw"),
+        # Clear of a real gateway's 47100-47199.
+        "AUDIO_GATEWAY_PORTS": "47300-47399",
         "PYTHONUNBUFFERED": "1",
     }
 
@@ -237,6 +240,7 @@ def main() -> int:
                 )
             wait_port(audio_port, gateway, "audio gateway")
             extra = {"SIM_AUDIO": str(audio), "SIM_AUDIO_RATE": str(AUDIO_RATE),
+                     "SIM_AUDIO_GATEWAY": audio_url, "SIM_AUDIO_KEY": str(work / "controller-state" / "audio.key"),
                      **{f"SIM_TONE_{name.upper()}": str(freq) for name, freq in TONES.items()}}
         code = subprocess.run(
             command,

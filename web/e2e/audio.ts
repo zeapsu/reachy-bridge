@@ -1,5 +1,5 @@
-import { mkdirSync, openSync, readSync, closeSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
@@ -21,10 +21,12 @@ export const SILENT = 0.005;
 
 /**
  * The browser mic's WAV: the browser tone in 300 ms bursts, so the browser's
- * noise suppression doesn't take it for steady noise. Written once per run.
+ * noise suppression doesn't take it for steady noise. Written once, in the
+ * run's audio dir.
  */
 export function browserMicFile(): string {
-  const path = join(tmpdir(), `reachy-bridge-voice-${TONES.browser}.wav`);
+  const path = join(env("SIM_AUDIO", "."), `browser-mic-${TONES.browser}.wav`);
+  if (existsSync(path)) return path;
   const rate = 48000;
   const seconds = 2;
   const samples = rate * seconds;
@@ -46,7 +48,6 @@ export function browserMicFile(): string {
   header.writeUInt16LE(16, 34);
   header.write("data", 36);
   header.writeUInt32LE(data.length, 40);
-  mkdirSync(tmpdir(), { recursive: true });
   writeFileSync(path, Buffer.concat([header, data]));
   return path;
 }
@@ -119,25 +120,42 @@ export function heardIn(output: Output, from: number): { seconds: number; tones:
   return { seconds: samples.length / FILE_RATE, tones: levels(samples, FILE_RATE, FILE_RATE / 10) };
 }
 
+type Recording = { rate: number; samples: number[]; state: string; packets: number };
+type Tap = { __record: (ms: number) => Promise<Recording> };
+
 /**
- * Before the page loads: keep every audio track a peer connection receives,
- * and let the test measure the tones in it (what this browser hears).
+ * Before the page loads: keep every peer connection and the audio tracks it
+ * receives, and let the test record the latest one (what this browser hears).
  */
 export async function tapIncomingAudio(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const tracks: MediaStreamTrack[] = [];
+    const peers: RTCPeerConnection[] = [];
     const Original = window.RTCPeerConnection;
     class Tapped extends Original {
       constructor(config?: RTCConfiguration) {
         super(config);
+        peers.push(this);
         this.addEventListener("track", (event) => tracks.push(event.track));
       }
     }
     window.RTCPeerConnection = Tapped as typeof RTCPeerConnection;
-    // Samples of the latest live track for `ms`, at the context's rate.
-    (window as unknown as { __record: (ms: number) => Promise<{ rate: number; samples: number[] }> }).__record = async (ms) => {
+    const packets = async () => {
+      let total = 0;
+      for (const peer of peers) {
+        if (peer.connectionState === "closed") continue;
+        (await peer.getStats()).forEach((s: { type: string; kind?: string; packetsReceived?: number }) => {
+          if (s.type === "inbound-rtp" && s.kind === "audio") total += s.packetsReceived ?? 0;
+        });
+      }
+      return total;
+    };
+    // Samples of the latest live track for `ms`, at the context's rate, and
+    // the RTP packets received meanwhile.
+    (window as unknown as Tap).__record = async (ms) => {
       const track = [...tracks].reverse().find((t) => t.readyState === "live");
-      if (!track) return { rate: 48000, samples: [] };
+      if (!track) return { rate: 48000, samples: [], state: "no track", packets: 0 };
+      const before = await packets();
       const context = new AudioContext();
       await context.resume();
       const source = context.createMediaStreamSource(new MediaStream([track]));
@@ -147,24 +165,35 @@ export async function tapIncomingAudio(page: Page): Promise<void> {
       const samples: number[] = [];
       const block = new Float32Array(analyser.fftSize);
       const end = performance.now() + ms;
-      // Whole blocks, back to back as near as timers allow.
       while (performance.now() < end) {
         analyser.getFloatTimeDomainData(block);
         samples.push(...block);
         await new Promise((r) => setTimeout(r, (analyser.fftSize / context.sampleRate) * 1000));
       }
-      const rate = context.sampleRate;
+      const { sampleRate: rate, state } = context;
       await context.close();
-      return { rate, samples };
+      return { rate, samples, state, packets: (await packets()) - before };
     };
   });
 }
 
-/** The tones this browser receives over `ms`. */
-export async function heardInBrowser(page: Page, ms = 1000): Promise<Record<Tone, number>> {
-  const { rate, samples } = await page.evaluate(
-    (ms) => (window as unknown as { __record: (ms: number) => Promise<{ rate: number; samples: number[] }> }).__record(ms),
-    ms,
-  );
-  return levels(Float32Array.from(samples), rate, 2048);
+/**
+ * What this browser receives over `ms`: each tone's level, how many seconds
+ * were recorded, whether WebAudio was running, and the RTP packets that came.
+ */
+export async function heardInBrowser(page: Page, ms = 1000) {
+  const { rate, samples, state, packets } = await page.evaluate((ms) => (window as unknown as Tap).__record(ms), ms);
+  return { tones: levels(Float32Array.from(samples), rate, 2048), seconds: samples.length / rate, state, packets };
+}
+
+/** The audio gateway's session, asked as the controller does (signed with its key). */
+export async function gatewaySession(): Promise<null | Record<string, unknown>> {
+  const key = readFileSync(env("SIM_AUDIO_KEY", ""), "utf8").trim();
+  const seconds = Math.floor(Date.now() / 1000);
+  const nonce = randomBytes(16).toString("hex");
+  const body = createHash("sha256").update("").digest("hex");
+  const mac = createHmac("sha256", key).update(`request:${seconds}:${nonce}:GET:/status:${body}`).digest("hex");
+  const reply = await fetch(`${env("SIM_AUDIO_GATEWAY", "")}/status`, { headers: { "X-Audio-Auth": `${seconds}.${nonce}.${mac}` } });
+  if (!reply.ok) throw new Error(`audio gateway status: ${reply.status}`);
+  return ((await reply.json()) as { session: null | Record<string, unknown> }).session;
 }
