@@ -42,6 +42,9 @@ def main() -> None:
     if sys.argv[1:] == ["--untee"]:
         audio_tee.remove()
         return
+    if sys.argv[1:] == ["--tee"]:
+        audio_tee.ensure()
+        return
     while not audio_tee.is_installed():
         time.sleep(_WAIT_S)
     logger.info("Mixing the mic and browser voice.")

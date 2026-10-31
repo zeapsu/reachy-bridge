@@ -185,6 +185,12 @@ remove_audio_tee() {
     "$mixer" --untee || echo "warning: couldn't take the audio tee out of ~/.asoundrc" >&2
 }
 
+restore_audio_tee() {
+    local mixer="$HOME/.local/share/reachy-bridge/.venv/bin/reachy-bridge-mic-mixer"
+    [[ -x $mixer ]] || return 0
+    "$mixer" --tee || echo "warning: couldn't put the audio tee back in ~/.asoundrc" >&2
+}
+
 # deploy <tag>: install a tag from the checkout with deploy/install.sh, check
 # the services come back, and reinstall the previous version if not (#200).
 # The robot must be off and no app running; install.sh checks the robot again.
@@ -222,6 +228,8 @@ deploy_tag() {
     git -C "$repo" checkout --quiet --detach "refs/tags/$tag"
     remove_audio_tee
     "$repo/deploy/install.sh" || rc=$?
+    # Refused before anything changed: the running daemon needs its tee back.
+    if (( rc == 3 )); then restore_audio_tee; fi
     # The record is written here too, not only by install.sh: an older tag's
     # install.sh doesn't write one.
     if (( rc == 0 )) && healthy; then
