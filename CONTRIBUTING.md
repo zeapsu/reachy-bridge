@@ -50,6 +50,7 @@ CI runs these on every PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPac
 | shell | `shellcheck` on the scripts in `deploy/` and `tools/`; `bash tools/test_uninstall.sh` and `bash tools/test_cli.sh` (the `reachy-bridge` command's robot-off gate, sim mode, deploy and rollback) |
 | sim | `uv run python tools/sim/run.py`: the controller against a sim daemon (see [`tools/sim/README.md`](tools/sim/README.md)) |
 | browser | `uv run python tools/sim/run.py -- bash -c 'cd web && bunx playwright test'`: the dashboard in Chromium against the sim stack, at desktop and phone sizes (not required yet) |
+| install | `deploy/install.sh` on a fresh runner with a systemd user manager, checked by `tools/check_install.sh`; run twice, then `reachy-bridge uninstall --yes` and `check_install.sh --gone` (not required yet) |
 
 Run the sim tests before asking for hardware QA. The python and rust-web jobs report line
 coverage in their job summaries (pytest-cov, `bun test --coverage`, cargo-llvm-cov); it's
