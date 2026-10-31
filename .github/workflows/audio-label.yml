@@ -1,0 +1,53 @@
+name: Audio device test label
+# CI can't run the robot's ALSA audio path (the speaker and mic tee, the mic
+# mixer, the speaker mute): its runners have no sound card. So a PR that
+# changes audio code gets "audio: needs device test" until someone runs the
+# on-device check against its latest commit and labels it
+# "audio: device-tested". A new push puts it back to needs device test.
+#
+# pull_request_target runs this file as it is on main, and it checks nothing
+# out: it only reads the PR's file list and sets labels.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled]
+permissions:
+  contents: read
+concurrency:
+  group: audio-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+env:
+  NEEDS: "audio: needs device test"
+  TESTED: "audio: device-tested"
+jobs:
+  label:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+        run: |
+          # The audio path: the gateway, tee, mic mixer and wobble, the
+          # controller's audio routes, the dashboard's voice pane, their units.
+          audio='^(runtime/src/reachy_bridge_runtime/(audio_[a-z_]+|mic_mixer)\.py|runtime/src/reachy_bridge_runtime/features/wobble\.py|controller/src/audio\.rs|web/src/(hooks/useVoice|components/VoicePanel|logic/voice|api/voice)\.tsx?|deploy/systemd/reachy-bridge-(audio|mic)\.service)$'
+          files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/files" --jq '.[].filename')
+          if ! grep -qE "$audio" <<<"$files"; then
+            echo "No audio code changed."
+            exit 0
+          fi
+          grep -E "$audio" <<<"$files" | sed 's/^/audio: /'
+          gh label create "$NEEDS" --color D93F0B --description "Changes audio code; not yet checked on a device" 2>/dev/null || true
+          gh label create "$TESTED" --color 0E8A16 --description "Audio checked on a device at the latest commit" 2>/dev/null || true
+          if [[ $ACTION == labeled ]]; then
+            # Someone marked it tested: the needs label goes.
+            [[ $LABEL == "$TESTED" ]] && gh pr edit "$PR" --remove-label "$NEEDS"
+            exit 0
+          fi
+          # Opened, reopened or a new push: the device test, if any, was of older code.
+          gh pr edit "$PR" --add-label "$NEEDS" --remove-label "$TESTED"

@@ -49,7 +49,7 @@ CI runs these on every PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPac
 | rust-web | `cargo test` and `cargo clippy --all-targets` in `controller/`; `bun run typecheck`, `bun test`, `bun run build` in `web/` |
 | shell | `shellcheck` on the scripts in `deploy/` and `tools/`; `bash tools/test_uninstall.sh` and `bash tools/test_cli.sh` (the `reachy-bridge` command's robot-off gate, sim mode, deploy and rollback) |
 | sim | `uv run python tools/sim/run.py`: the controller against a sim daemon (see [`tools/sim/README.md`](tools/sim/README.md)) |
-| browser | `uv run python tools/sim/run.py -- bash -c 'cd web && bunx playwright test'`: the dashboard in Chromium against the sim stack, at desktop and phone sizes (not required yet) |
+| browser | `uv run python tools/sim/run.py --audio -- bash -c 'cd web && bunx playwright test'`: the dashboard in Chromium against the sim stack, at desktop and phone sizes, and the voice pane's audio routing over WebRTC with a test tone per source (`--audio`; needs gstreamer1.0-plugins-bad and gstreamer1.0-nice, and an address on the tailnet or in `AUDIO_GATEWAY_NETS`) (not required yet) |
 | install | `deploy/install.sh` on a fresh runner with a systemd user manager, checked by `tools/check_install.sh`; run twice, then `reachy-bridge uninstall --yes` and `check_install.sh --gone` (not required yet) |
 
 Run the sim tests before asking for hardware QA. The python and rust-web jobs report line
@@ -63,6 +63,11 @@ targets and long text are counted. Those counts and axe's are kept in
 `UPDATE_BASELINES=1` and commit the new baselines. The job summary shows each count and
 the load time, and the HTML report is in the `browser-report` artifact. Locally, run
 `bunx playwright install chromium` once in `web/` first.
+
+CI has no sound card, so it can't run the robot's ALSA side of the audio (the speaker
+and mic tee, the mic mixer, the speaker mute). A PR that changes audio code gets the
+`audio: needs device test` label; after checking its latest commit on a robot (robot
+off), label it `audio: device-tested`. A new push puts the first label back.
 
 ## How the bridge fits together
 

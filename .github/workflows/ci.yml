@@ -250,7 +250,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libgirepository1.0-dev libcairo2-dev \
-            gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
+            gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gir1.2-gst-plugins-bad-1.0 \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-nice
+      # The audio gateway only connects over the tailnet (100.64.0.0/10), so
+      # give the runner an address there for the voice tests.
+      - name: Add a tailnet address
+        run: |
+          sudo ip link add tailnet0 type dummy
+          sudo ip addr add 100.64.0.1/32 dev tailnet0
+          sudo ip link set tailnet0 up
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: ${{ steps.tools.outputs.uv }}
@@ -285,7 +293,7 @@ jobs:
         working-directory: controller
         run: cargo build --release --locked
       - name: Browser tests
-        run: uv run python tools/sim/run.py --work-dir "$RUNNER_TEMP/sim" -- bash -c 'cd web && bunx playwright test'
+        run: uv run python tools/sim/run.py --audio --work-dir "$RUNNER_TEMP/sim" -- bash -c 'cd web && bunx playwright test'
       - name: Summary
         if: always()
         working-directory: web
@@ -369,21 +377,6 @@ jobs:
       - name: Service logs
         if: failure()
         run: sudo journalctl _UID="$(id -u)" --no-pager -n 300 || true
-
-  audio-probe:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
-    steps:
-      - run: |
-          uname -r
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq alsa-utils "linux-modules-extra-$(uname -r)" || echo "no modules-extra"
-          sudo modprobe snd-aloop enable=1,1 index=10,11 id=Loopback,FakeBoard pcm_substreams=4 && echo LOADED || echo "modprobe failed"
-          cat /proc/asound/cards || true
-          ls -l /dev/snd || true
-          id; getent group audio
-          sudo ip link add dummy0 type dummy && sudo ip addr add 100.64.0.1/32 dev dummy0 && sudo ip link set dummy0 up && ip addr show dummy0
 
   shell:
     runs-on: ubuntu-24.04-arm
