@@ -15,7 +15,7 @@ import os
 import secrets
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -284,13 +284,53 @@ def test_a_failed_open_unmutes_and_frees_the_pipeline(gw: tuple[Any, list[bool]]
 
 def test_hearing_and_apps_need_the_tee(gw: tuple[Any, list[bool]], monkeypatch: pytest.MonkeyPatch) -> None:
     g, _ = gw
+    g.open(True, False, False, False)
+    current = g.session
     monkeypatch.setattr(gateway, "HEAR", "")
     monkeypatch.setattr(gateway, "APPS", "")
-    with pytest.raises(ValueError, match="loopback"):
+    with pytest.raises(ValueError) as refused:
         g.open(True, False, True, False)
-    with pytest.raises(ValueError, match="loopback"):
+    assert str(refused.value) == gateway.NO_HEAR
+    with pytest.raises(ValueError) as refused:
         g.open(True, False, False, True)
-    assert g.session is None
+    assert str(refused.value) == gateway.NO_APPS
+    # A refused route leaves the session there was alone.
+    assert g.session is current and not current.stopped
+
+
+def _end_by_close(g: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    g.close(g.session.id)
+
+
+def _end_by_failure(g: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    g.session.failed = "ICE failed"
+    assert g.status() == {"session": None}
+
+
+def _end_unconnected(g: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    g.session.quiet = gateway.CONNECT_TIMEOUT + 1
+    assert g.status() == {"session": None}
+
+
+def _end_unwatched(g: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    g.session.connected = True
+    later = time.monotonic() + gateway.UNWATCHED_TIMEOUT + 1
+    monkeypatch.setattr(gateway.time, "monotonic", lambda: later)
+    assert g.status(polled=False) == {"session": None}
+
+
+@pytest.mark.parametrize("end", [_end_by_close, _end_by_failure, _end_unconnected, _end_unwatched])
+def test_however_a_hearing_session_ends_the_speaker_comes_back(
+    gw: tuple[Any, list[bool]], monkeypatch: pytest.MonkeyPatch, end: Callable[[Any, pytest.MonkeyPatch], None]
+) -> None:
+    g, speaker = gw
+    monkeypatch.setattr(gateway, "HEAR", "alsasrc")
+    g.open(True, False, True, False)
+    session = g.session
+    assert speaker == [False]  # the browser hears the robot instead
+    end(g, monkeypatch)
+    assert g.session is None and session.stopped
+    assert speaker == [False, True]
 
 
 def test_a_failed_session_ends_at_the_next_status(gw: tuple[Any, list[bool]]) -> None:
@@ -299,7 +339,7 @@ def test_a_failed_session_ends_at_the_next_status(gw: tuple[Any, list[bool]]) ->
     g.session.failed = "ICE failed"
     session = g.session
     assert g.status() == {"session": None}
-    assert session.stopped and speaker[-1] is True
+    assert session.stopped
 
 
 def test_a_session_that_never_connects_ends(gw: tuple[Any, list[bool]]) -> None:

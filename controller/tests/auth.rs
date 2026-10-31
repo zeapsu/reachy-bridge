@@ -972,7 +972,10 @@ static ROUTED: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
 
 /// A stand-in audio gateway: one session "s1", always connected; records
 /// deletes. It signs its replies with `key` (None: a squatter that can't).
+/// A request for any other session gets 418, so a test sees one the
+/// controller should have stopped.
 async fn fake_gateway(deleted: Arc<AtomicU64>, key: Option<String>) -> String {
+    use axum::extract::Path as AxumPath;
     use axum::routing::{delete, post};
     let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let app = Router::new()
@@ -1001,21 +1004,32 @@ async fn fake_gateway(deleted: Arc<AtomicU64>, key: Option<String>) -> String {
             }),
         )
         .route(
-            "/session/s1/answer",
-            post(|| async { StatusCode::NO_CONTENT }),
+            "/session/{id}/answer",
+            post(|AxumPath(id): AxumPath<String>| async move {
+                if id != "s1" {
+                    return StatusCode::IM_A_TEAPOT;
+                }
+                StatusCode::NO_CONTENT
+            }),
         )
         .route(
-            "/session/s1/route",
-            post(|Json(body): Json<Value>| async move {
+            "/session/{id}/route",
+            post(|AxumPath(id): AxumPath<String>, Json(body): Json<Value>| async move {
+                if id != "s1" {
+                    return StatusCode::IM_A_TEAPOT;
+                }
                 *ROUTED.lock().unwrap() = Some(body);
                 StatusCode::NO_CONTENT
             }),
         )
         .route(
-            "/session/s1",
+            "/session/{id}",
             delete({
                 let open = open.clone();
-                move || async move {
+                move |AxumPath(id): AxumPath<String>| async move {
+                    if id != "s1" {
+                        return StatusCode::IM_A_TEAPOT;
+                    }
                     open.store(false, Ordering::SeqCst);
                     deleted.fetch_add(1, Ordering::SeqCst);
                     StatusCode::NO_CONTENT
@@ -1219,8 +1233,15 @@ async fn another_browser_cant_drive_or_end_someones_audio() {
         ("POST", "/api/audio/session/s1/route", Some(route.clone())),
         ("DELETE", "/api/audio/session/s1", None),
     ] {
+        // Lee can't reach the session: only the control holder drives, and
+        // taking control ends Sam's audio first. (The session's own device
+        // check behind that can't be reached from a browser.)
         let r = h.call(method, uri, LAN, &[("cookie", &lee)], body.clone()).await;
-        assert_eq!(r.status, StatusCode::FORBIDDEN, "Lee: {method} {uri}: {:?}", r.body);
+        assert_eq!(
+            (r.status, r.body["detail"].clone()),
+            (StatusCode::FORBIDDEN, json!("Sam is in control of the robot")),
+            "Lee: {method} {uri}"
+        );
         let r = h.call(method, &uri.replace("s1", "s2"), LAN, &[("cookie", &sam)], body).await;
         assert_eq!(r.status, StatusCode::NOT_FOUND, "Sam, another id: {method} {uri}");
     }
@@ -1264,5 +1285,12 @@ async fn audio_ends_when_its_browser_is_revoked_or_closes_it() {
     let id = devices["devices"].as_array().unwrap().iter().find(|d| d["person"] == "Sam").unwrap()["id"].as_str().unwrap().to_string();
     assert_eq!(h.call("DELETE", &format!("/api/auth/devices/{id}"), LOOPBACK, &[("cookie", &admin)], None).await.status, StatusCode::NO_CONTENT);
     assert!(gone(2).await, "a revoked browser's audio session stayed open");
-    assert_eq!(h.call("GET", "/api/audio", LOOPBACK, &[("cookie", &admin)], None).await.body["session"], Value::Null);
+    // The controller forgets it once the gateway's delete returns.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while h.call("GET", "/api/audio", LOOPBACK, &[("cookie", &admin)], None).await.body["session"] != Value::Null {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the controller still lists the revoked browser's session");
 }
