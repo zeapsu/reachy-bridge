@@ -18,7 +18,7 @@ where ``audio_tee`` routes it and nowhere else:
 - the speaker mute switch turns off and back on.
 
 What the robot plays is checked with the speaker muted, so it stays quiet.
-Talk can't be muted: it plays a quiet one-second beep on the speaker. Uses
+Talk can't be muted: it plays two quiet one-second beeps on the speaker. Uses
 only aplay, arecord and amixer, no robot motion. Exit code 0 means every
 check passed.
 """
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import signal
 import struct
 import subprocess
 import sys
@@ -45,6 +46,7 @@ HEARD = 0.01
 SILENT = 0.003
 # Talk plays on the speaker for real: keep it quiet.
 VOLUME = {"robot": 0.25, "talk": 0.05, "voice": 0.25}
+GATEWAY_UNIT = "reachy-bridge-audio.service"
 
 
 def tone(freq: int, volume: float, seconds: float, channels: int = 2) -> bytes:
@@ -81,6 +83,11 @@ def play_and_record(
 ) -> list[list[float]]:
     """Record ``record_device`` while ``sound`` plays on ``play_device``; the
     middle of the recording, per channel."""
+    # The robot or a browser may have come on since: either could turn the
+    # tones into head motion, or have its speaker mute undone.
+    why = preflight()
+    if why:
+        raise Refused(why)
     record = subprocess.Popen(
         [
             "arecord",
@@ -128,7 +135,15 @@ def play_and_record(
         raise RuntimeError(f"arecord -D {record_device}: {err.decode().strip()}")
     # The tone starts 0.5 s in: measure its middle.
     start, length = int(0.7 * RATE), int((SECONDS - 0.4) * RATE)
-    return [ch[start : start + length] for ch in channels_of(raw, channels)]
+    measured = [ch[start : start + length] for ch in channels_of(raw, channels)]
+    # A short recording would pass every "doesn't reach" check.
+    if len(measured) != channels or any(len(ch) < length for ch in measured):
+        raise RuntimeError(f"arecord -D {record_device}: recording too short")
+    return measured
+
+
+class Refused(Exception):
+    """It isn't safe to go on."""
 
 
 class Checks:
@@ -145,30 +160,27 @@ class Checks:
         print(f"{'ok' if ok else 'FAIL'}: {what}")
 
 
+def gateway_active() -> bool:
+    return (
+        subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", GATEWAY_UNIT]
+        ).returncode
+        == 0
+    )
+
+
 def preflight() -> str | None:
     """Why this can't run now, or None."""
     if not audio_tee.is_installed():
         return "the speaker and mic tee isn't installed (no ALSA loopback card?); see reachy-bridge check"
-    power = subprocess.run(
-        [str(Path.home() / ".local/bin/reachy-bridge"), "robot-power"],
-        capture_output=True,
-        text=True,
-    )
+    cli = Path.home() / ".local/bin/reachy-bridge"
+    if not cli.exists():
+        return f"{cli} isn't installed"
+    power = subprocess.run([str(cli), "robot-power"], capture_output=True, text=True)
     if power.stdout.strip() != "off":
         return f"the robot isn't confirmed off ({power.stdout.strip() or power.stderr.strip()}); turn it off first"
-    for unit, why in (
-        (
-            "reachy-bridge-audio.service",
-            "someone may be listening or talking; stop it from the dashboard",
-        ),
-    ):
-        if (
-            subprocess.run(
-                ["systemctl", "--user", "is-active", "--quiet", unit]
-            ).returncode
-            == 0
-        ):
-            return f"{unit} is running: {why}"
+    if gateway_active():
+        return f"{GATEWAY_UNIT} is running: someone may be listening or talking; stop it from the dashboard"
     if (
         subprocess.run(
             ["systemctl", "--user", "is-active", "--quiet", "reachy-bridge-mic.service"]
@@ -186,13 +198,20 @@ def main() -> int:
         print(f"check_audio: {why}", file=sys.stderr)
         return 2
     checks = Checks()
-    was_on = audio_tee.speaker_on()
+
+    # A dropped ssh session or a stop must still put the speaker mute back.
+    def stop(signum: int, _frame: object) -> None:
+        raise Refused(f"stopped by signal {signum}")
+
+    for sig in (signal.SIGHUP, signal.SIGTERM):
+        signal.signal(sig, stop)
     try:
         # What the robot plays, with the speaker muted as while a browser hears it.
-        checks.check(
-            "the speaker mute switch turns off",
-            audio_tee.set_speaker(False) and not audio_tee.speaker_on(),
-        )
+        muted = audio_tee.set_speaker(False) and not audio_tee.speaker_on()
+        checks.check("the speaker mute switch turns off", muted)
+        if not muted:
+            # The robot's tones would play out loud.
+            raise Refused("the speaker didn't mute")
         robot = tone(TONES["robot"], VOLUME["robot"], SECONDS)
         hear = play_and_record(audio_tee.SINK, robot, audio_tee.HEAR_SOURCE, 2)
         checks.expect(
@@ -252,13 +271,21 @@ def main() -> int:
             audio_tee.APP_VOICE_SINK, voice, audio_tee.HEAR_SOURCE, 2
         )
         checks.expect("...nor 'hear'", amplitude(hear[0], TONES["voice"]), False)
+    except Refused as why:
+        checks.check(f"stopped early: {why}", False)
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
         checks.check(f"audio devices work ({error})", False)
     finally:
-        checks.check(
-            "the speaker mute switch is put back",
-            audio_tee.set_speaker(was_on) and audio_tee.speaker_on() == was_on,
-        )
+        # With no browser session the speaker is always on, so put it on: that
+        # also mends a check that was killed. A session that started since
+        # owns the switch.
+        if gateway_active():
+            print("the audio gateway started: it keeps the speaker mute switch")
+        else:
+            checks.check(
+                "the speaker mute switch is back on",
+                audio_tee.set_speaker(True) and audio_tee.speaker_on(),
+            )
     version_file = Path.home() / ".local/share/reachy-bridge/VERSION"
     version = version_file.read_text().strip() if version_file.exists() else "unknown"
     print(
