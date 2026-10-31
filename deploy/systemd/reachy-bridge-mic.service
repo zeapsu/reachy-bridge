@@ -5,6 +5,8 @@ After=reachy-bridge.service
 # the robot's mic through this, so it restarts whatever happens to it.
 PartOf=reachy-bridge.service
 StartLimitIntervalSec=0
+# A rollback to a version without the mixer leaves this unit behind; do nothing then.
+ConditionPathExists=%h/.local/share/reachy-bridge/.venv/bin/reachy-bridge-mic-mixer
 
 [Service]
 Type=simple

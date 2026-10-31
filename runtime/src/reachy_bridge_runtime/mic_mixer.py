@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import sys
 import time
 
 from reachy_bridge_runtime import audio_tee
@@ -38,6 +39,9 @@ def command() -> list[str]:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    if sys.argv[1:] == ["--untee"]:
+        audio_tee.remove()
+        return
     while not audio_tee.is_installed():
         time.sleep(_WAIT_S)
     logger.info("Mixing the mic and browser voice.")

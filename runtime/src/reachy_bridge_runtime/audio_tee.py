@@ -347,6 +347,16 @@ def _leave_loopback_to_us() -> None:
         logger.warning("Couldn't restart WirePlumber; it leaves the loopback card alone from its next start.")
 
 
+def remove() -> None:
+    """Put ``~/.asoundrc`` back as upstream wrote it, if it has a tee."""
+    try:
+        text = ASOUNDRC.read_text(errors="ignore")
+    except OSError:
+        return
+    if PREFIX in text:
+        _write(ASOUNDRC, untee(text))
+
+
 def ensure() -> None:
     """Host setup: add the tee when there's a loopback card, take it out when
     there isn't, and leave the speaker unmuted. Runs after upstream's

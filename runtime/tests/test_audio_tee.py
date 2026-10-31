@@ -230,3 +230,13 @@ def test_mixer_takes_the_real_mic_and_the_voice_and_writes_the_mixer_channels():
     assert f"device={audio_tee.APP_VOICE_SOURCE}" in command
     assert f"alsasink device={audio_tee.MIC_OUT}" in command
     assert audio_tee.SOURCE not in command
+
+
+def test_remove_puts_asoundrc_back_as_upstream_wrote_it(tmp_path, monkeypatch):
+    path = tmp_path / "asoundrc"
+    path.write_text(audio_tee.tee(UPSTREAM))
+    monkeypatch.setattr(audio_tee, "ASOUNDRC", path)
+    audio_tee.remove()
+    assert path.read_text().strip() == UPSTREAM.strip()
+    audio_tee.remove()
+    assert path.read_text().strip() == UPSTREAM.strip()

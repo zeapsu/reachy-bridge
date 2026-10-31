@@ -248,7 +248,6 @@ def apply() -> None:
 
     def set_offsets(original: Any, backend: Any, offsets: Any) -> None:
         if not gate.ours() and any(offsets) and not speaker.on():
-            original(backend, _ZERO)
             return
         gate.saw_offsets()
         original(backend, limits.scale(backend, offsets))

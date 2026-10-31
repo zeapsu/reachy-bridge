@@ -60,7 +60,8 @@ units_for() {
         controller) UNITS=("$CONTROLLER") ;;
         sim) UNITS=("$SIM") ;;
         audio) UNITS=("$AUDIO") ;;
-        *) die "unknown service '$1' (daemon, controller, sim, audio)" ;;
+        mic) UNITS=("$MIC") ;;
+        *) die "unknown service '$1' (daemon, controller, sim, audio, mic)" ;;
     esac
 }
 
@@ -175,6 +176,15 @@ healthy() {
     return 1
 }
 
+# Put ~/.asoundrc back as upstream wrote it. Apps read the mic through the mic
+# mixer once it's teed, so a version without that mixer (an older tag, or none
+# after an uninstall) must not inherit it; the runtime adds the tee again.
+remove_audio_tee() {
+    local mixer="$HOME/.local/share/reachy-bridge/.venv/bin/reachy-bridge-mic-mixer"
+    [[ -x $mixer ]] || return 0
+    "$mixer" --untee || echo "warning: couldn't take the audio tee out of ~/.asoundrc" >&2
+}
+
 # deploy <tag>: install a tag from the checkout with deploy/install.sh, check
 # the services come back, and reinstall the previous version if not (#200).
 # The robot must be off and no app running; install.sh checks the robot again.
@@ -210,6 +220,7 @@ deploy_tag() {
     fi
     echo "deploying: $tag"
     git -C "$repo" checkout --quiet --detach "refs/tags/$tag"
+    remove_audio_tee
     "$repo/deploy/install.sh" || rc=$?
     # The record is written here too, not only by install.sh: an older tag's
     # install.sh doesn't write one.
@@ -230,6 +241,7 @@ deploy_tag() {
         die "deploying $tag failed, and checking out $prev_name again failed too; the checkout is still at $tag"
     echo "reachy-bridge: deploying $tag failed; reinstalling $prev_name" >&2
     rc=0
+    remove_audio_tee
     "$repo/deploy/install.sh" || rc=$?
     if (( rc == 3 )); then
         die "deploying $tag failed, and reinstalling $prev_name was refused before it changed anything (see above); check reachy-bridge status"
@@ -415,6 +427,7 @@ uninstall_bridge() {
     done
     systemctl --user daemon-reload || echo "warning: systemctl --user daemon-reload failed" >&2
     systemctl --user reset-failed "${units[@]}" 2>/dev/null || true
+    remove_audio_tee
 
     for value in "${ports[@]}"; do
         tailscale_serve --https="$value" off ||
