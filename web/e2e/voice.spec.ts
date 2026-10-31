@@ -12,7 +12,7 @@ import { open, setPower } from "./helpers.ts";
 //
 // The ALSA side (the speaker and mic tee, the mic mixer, the speaker mute)
 // needs a loopback sound card, which CI runners don't have: PRs that change
-// audio code are labelled for a check on a robot.
+// audio code are labelled for tools/check_audio.py on a robot.
 
 test.skip(!process.env.SIM_AUDIO, "needs the audio gateway (tools/sim/run.py --audio)");
 

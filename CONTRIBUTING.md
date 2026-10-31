@@ -66,8 +66,10 @@ the load time, and the HTML report is in the `browser-report` artifact. Locally,
 
 CI has no sound card, so it can't run the robot's ALSA side of the audio (the speaker
 and mic tee, the mic mixer, the speaker mute). A PR that changes audio code gets the
-`audio: needs device test` label; after checking its latest commit on a robot (robot
-off), label it `audio: device-tested`. A new push puts the first label back.
+`audio: needs device test` label. To clear it, deploy its latest commit to a robot and,
+with the robot off and nobody listening or talking, run `python3 tools/check_audio.py`
+there (it plays test tones through the tee, and two quiet beeps on the speaker); when it
+passes, label the PR `audio: device-tested`. A new push puts the first label back.
 
 ## How the bridge fits together
 
