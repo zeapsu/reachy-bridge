@@ -4,7 +4,7 @@
 # `pair`. Runs in a throwaway HOME with curl, systemctl, tailscale and sleep
 # replaced by stubs that log their calls, and a scratch git checkout with two
 # tags whose install.sh only logs. Changes nothing outside a temp directory.
-# Needs bash 4.4+ and git. (Uninstall has its own test: test_uninstall.sh.)
+# Needs bash 4.4+ and git 2.32+. (Uninstall has its own test: test_uninstall.sh.)
 #
 #   bash tools/test_cli.sh
 #
@@ -159,7 +159,6 @@ check "a slow daemon restarts nothing" '! grep -q "systemctl --user restart" "$R
 set_state daemon on
 run restart controller || fail "controller restart exited $?"
 check "the controller alone restarts with the robot on" 'grep -q "systemctl --user restart reachy-bridge-controller.service" "$ROOT/log"'
-set_state daemon on
 : >"$ROOT/log"
 run restart --force || fail "forced restart exited $?"
 check "--force restarts both" 'grep -q "systemctl --user restart reachy-bridge.service reachy-bridge-controller.service" "$ROOT/log"'
