@@ -37,8 +37,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from reachy_bridge_runtime import audio_tee, upstream
-from reachy_bridge_runtime.features import app_voice
+from reachy_bridge_runtime import upstream
 
 logger = logging.getLogger(__name__)
 
@@ -122,15 +121,6 @@ async def _start_app(original: Any, manager: Any, app_name: str, *args: Any, **k
     except Exception as exc:
         logger.exception("Not starting %s: could not keep its UI on loopback", app_name)
         raise RuntimeError(f"Not starting {app_name}: could not keep its UI on loopback ({exc})") from exc
-    try:
-        # Only with the loopback a browser's voice reaches apps through.
-        target = site_packages(python)
-        if audio_tee.is_installed():
-            app_voice.install(target)
-        else:
-            app_voice.remove(target)
-    except Exception:
-        logger.exception("%s won't hear a browser talking to apps", app_name)
     return await original(manager, app_name, *args, **kwargs)
 
 

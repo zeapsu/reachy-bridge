@@ -27,6 +27,8 @@ CONTROLLER=reachy-bridge-controller.service
 SIM=reachy-bridge-sim.service
 # The audio gateway behind listen and talk (#219); the controller starts it.
 AUDIO=reachy-bridge-audio.service
+# The always-on mic mixer apps read the mic through (#219); runs with the daemon.
+MIC=reachy-bridge-mic.service
 DAEMON_URL=${DAEMON_URL:-http://127.0.0.1:8000}
 
 # tailscale serve: dedicated HTTPS ports only. Never the root mapping, never
@@ -746,7 +748,7 @@ done
 
 case "$cmd" in
     status)
-        systemctl --user --no-pager --lines=0 status $DAEMON $CONTROLLER $SIM $AUDIO || true
+        systemctl --user --no-pager --lines=0 status $DAEMON $CONTROLLER $SIM $AUDIO $MIC || true
         echo "robot: $(robot_state)"
         ;;
     start)
@@ -772,6 +774,7 @@ case "$cmd" in
             controller) unit=$CONTROLLER ;;
             sim) unit=$SIM ;;
             audio) unit=$AUDIO ;;
+            mic) unit=$MIC ;;
             *) die "unknown service '${args[0]}'" ;;
         esac
         # --user-unit reads the system journal, where user services log when

@@ -32,6 +32,7 @@ DAEMON=reachy-bridge.service
 CONTROLLER=reachy-bridge-controller.service
 SIM=reachy-bridge-sim.service
 AUDIO=reachy-bridge-audio.service
+MIC=reachy-bridge-mic.service
 MANIFEST=$DEST/install-manifest
 
 # record KIND VALUE: note something this install added, for the uninstaller.
@@ -112,6 +113,7 @@ systemctl --user stop "$DAEMON" 2>/dev/null || true
 systemctl --user stop "$SIM" 2>/dev/null || true
 # Its venv is replaced too; the next listen or talk starts it again.
 systemctl --user stop "$AUDIO" 2>/dev/null || true
+systemctl --user stop "$MIC" 2>/dev/null || true
 mkdir -p "$DEST/bin" "$DEST/sim"
 # --no-editable, so the service doesn't depend on this checkout. The sim extra
 # (MuJoCo) is for the sim daemon.
@@ -122,16 +124,17 @@ mv -f "$DEST/bin/reachy-controller.new" "$DEST/bin/reachy-controller"
 install -D -m 755 "$CLI" "$BIN_DIR/reachy-bridge"
 mkdir -p "$UNIT_DIR"
 # rm first: never write through a symlinked unit file to its target.
-rm -f "$UNIT_DIR/$DAEMON" "$UNIT_DIR/$CONTROLLER" "$UNIT_DIR/$SIM" "$UNIT_DIR/$AUDIO"
+rm -f "$UNIT_DIR/$DAEMON" "$UNIT_DIR/$CONTROLLER" "$UNIT_DIR/$SIM" "$UNIT_DIR/$AUDIO" "$UNIT_DIR/$MIC"
 sed "s|@UV_DIR@|$uv_dir|" "$REPO/deploy/systemd/$DAEMON" >"$UNIT_DIR/$DAEMON"
 install -m 644 "$REPO/deploy/systemd/$CONTROLLER" "$UNIT_DIR/$CONTROLLER"
 sed "s|@UV_DIR@|$uv_dir|" "$REPO/deploy/systemd/$SIM" >"$UNIT_DIR/$SIM"
 install -m 644 "$REPO/deploy/systemd/$AUDIO" "$UNIT_DIR/$AUDIO"
+install -m 644 "$REPO/deploy/systemd/$MIC" "$UNIT_DIR/$MIC"
 systemctl --user daemon-reload
-systemctl --user enable "$DAEMON" "$CONTROLLER"
+systemctl --user enable "$DAEMON" "$CONTROLLER" "$MIC"
 record dir "$DEST"
 record file "$BIN_DIR/reachy-bridge"
-for unit in "$DAEMON" "$CONTROLLER" "$SIM" "$AUDIO"; do record unit "$unit"; done
+for unit in "$DAEMON" "$CONTROLLER" "$SIM" "$AUDIO" "$MIC"; do record unit "$unit"; done
 
 step "Start"
 systemctl --user start "$DAEMON"

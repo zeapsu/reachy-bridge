@@ -137,15 +137,16 @@ network you trust, and Tailscale (`reachy-bridge serve`, HTTPS) for anything bey
 The Robot tab's Voice pane plays the robot's microphone on your device and your
 device's microphone through the robot's speaker. It can also play what the robot says (its own
 sounds and an app's voice) on your device instead of its speaker, and send your voice to the
-robot's apps, added to what they read from its microphone through Reachy's SDK, so you can hold a
-conversation with an app from anywhere. Every running app that reads the microphone that way hears
-you, and nothing in the room signals it; the dashboards' badge does. (Talking through the speaker doesn't reach apps: the robot's audio board
+robot's apps, mixed into what they hear as its microphone, so you can hold a conversation with an
+app from anywhere. Everything that reads the robot's microphone hears you, including a remote
+session connected through the daemon, and nothing in the room signals it; the dashboards' badge
+does. (Talking through the speaker doesn't reach apps: the robot's audio board
 cancels its own speaker output from its microphone.) Each is switched while connected. One
 browser at a time, with the robot on; in admin mode, only the browser in control, and the session
 ends when control or the login does, or when the robot is turned off. Every dashboard shows a mic
 badge while a session is open.
 
-The controller starts `reachy-bridge-audio.service` on demand. Audio is WebRTC over UDP straight
+The controller starts `reachy-bridge-audio.service` on demand. `reachy-bridge-mic.service` runs with the daemon and mixes the real microphone with a browser's voice; with a loopback card, apps read the microphone through it. Audio is WebRTC over UDP straight
 between the browser and the device, on tailnet addresses only (no STUN or TURN), using UDP ports
 47100-47199; a Tailscale ACL that limits ports must allow them. Use a tailnet address: audio
 can't connect from a home-network address. Listening also works on the device's plain-http

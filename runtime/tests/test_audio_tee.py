@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from reachy_bridge_runtime import audio_tee
+from reachy_bridge_runtime import audio_tee, mic_mixer
 
 # What upstream's write_asoundrc_to_home() writes (reachy_mini 1.12.0).
 UPSTREAM = """
@@ -64,22 +64,20 @@ def test_tee_keeps_upstreams_names_and_round_trips():
     assert audio_tee.untee(UPSTREAM) == UPSTREAM
 
 
-def test_tee_leaves_the_mic_device_as_upstream_wrote_it():
+def test_apps_read_the_mic_through_the_mixer():
     teed = audio_tee.tee(UPSTREAM)
     assert teed is not None
-    mic = audio_tee._block(teed, audio_tee.SOURCE)
-    plain = audio_tee._block(UPSTREAM, audio_tee.SOURCE)
-    assert mic is not None and plain is not None
-    assert teed[mic[0] : mic[1]] == UPSTREAM[plain[0] : plain[1]]
-    assert "reachy_bridge_mics" not in teed
-
-
-def test_an_older_tee_with_the_mic_mix_goes_back_to_upstreams_mic():
-    old = audio_tee._rename(UPSTREAM.replace("pcm.reachymini_audio_sink", f"pcm.{audio_tee.SPEAKER}"), audio_tee.SOURCE, audio_tee.OLD_MIC)
-    old += "\n# reachy-bridge: speaker tee (#219), and mic tee (v2)\npcm.reachymini_audio_src { type plug }\n"
-    assert audio_tee.untee(old).strip() == UPSTREAM.strip()
-    new = audio_tee.tee(old)
-    assert new is not None and audio_tee.installed(new) and audio_tee.OLD_MIC not in new
+    # Upstream's mic dsnoop keeps its ipc_key under its new name; apps read
+    # the mix under upstream's name.
+    mic = teed[teed.index(f"pcm.{audio_tee.MIC} {{") :]
+    assert mic.index("ipc_key 4242") < mic.index("pcm.reachy_bridge_mic_loop_in")
+    assert teed.count("pcm.reachymini_audio_src {") == 1
+    assert teed.index(audio_tee.MARKER) < teed.index("pcm.reachymini_audio_src {")
+    # Apps read the mixer's channels, and the voice and the mixer write different ones.
+    assert "ttable { 0.2 1 1.3 1 }" in _ttable(teed, audio_tee.SOURCE)
+    assert "ttable { 0.0 1 1.1 1 }" in _ttable(teed, audio_tee.APP_VOICE_SOURCE)
+    assert "bindings { 0 0 1 1 }" in _ttable(teed, audio_tee.APP_VOICE_SINK)
+    assert "bindings { 0 2 1 3 }" in _ttable(teed, audio_tee.MIC_OUT)
 
 
 def test_an_older_tee_is_replaced():
@@ -221,5 +219,14 @@ def test_talk_reaches_the_wobble_but_not_hearing():
     assert "reachy_bridge_talk_both" in _ttable(teed, audio_tee.TALK_SINK)
 
 
-def test_tee_marker_keeps_earlier_versions_markers():
-    assert "speaker tee (#219)" in audio_tee.MARKER and "and mic tee (v2)" in audio_tee.MARKER and "(v3)" in audio_tee.MARKER and "(v4)" in audio_tee.MARKER
+def test_marker_lets_a_rolled_back_runtime_replace_this_tee():
+    for older in ("speaker tee (#219)", "and mic tee (v2)", "(v3)", "(v4)"):
+        assert older not in audio_tee.MARKER
+
+
+def test_mixer_takes_the_real_mic_and_the_voice_and_writes_the_mixer_channels():
+    command = " ".join(mic_mixer.command())
+    assert f"device={audio_tee.MIC}" in command
+    assert f"device={audio_tee.APP_VOICE_SOURCE}" in command
+    assert f"alsasink device={audio_tee.MIC_OUT}" in command
+    assert audio_tee.SOURCE not in command
