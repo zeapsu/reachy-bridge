@@ -100,7 +100,11 @@ manifest_complete() {
     [[ -z $(sort "$manifest" | uniq -d) ]]
 }
 no_wants_links() { [[ -z $(find "$UNIT_DIR" -name 'reachy-bridge*' 2>/dev/null) ]]; }
-none_loaded() { [[ -z $(systemctl --user list-units --all --plain --no-legend 'reachy-bridge*') ]]; }
+none_loaded() {
+    local units
+    units=$(systemctl --user list-units --all --plain --no-legend 'reachy-bridge*') || return 1
+    [[ -z $units ]]
+}
 
 if [[ ${1:-} == --gone ]]; then
     for unit in "${UNITS[@]}"; do

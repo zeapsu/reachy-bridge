@@ -324,8 +324,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libgirepository1.0-dev libcairo2-dev \
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gir1.2-gst-plugins-bad-1.0
-      # setup-uv's tool cache is a stable path, which install.sh needs (the
-      # daemon unit's PATH).
+      # setup-uv's tool-cache path has no /installs/ component, which
+      # install.sh requires of the uv it writes into the daemon unit's PATH.
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: ${{ steps.tools.outputs.uv }}
