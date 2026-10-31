@@ -12,7 +12,8 @@ name: Dependabot auto-merge
 # pull_request_target runs this file as it is on main, so a PR that bumps
 # fetch-metadata can't change how its own PR is judged. It checks nothing out.
 #
-# Needs the repository settings "Allow auto-merge" and "Allow squash merging".
+# Needs the repository settings "Allow auto-merge" and "Allow squash merging",
+# and squash among the allowed merge methods of the main ruleset.
 on: pull_request_target
 permissions:
   contents: read
@@ -33,18 +34,25 @@ jobs:
       - id: metadata
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
       # update-type skips updates Dependabot couldn't classify, so check each
-      # one: all of them must be patch or minor.
+      # one: all of them must be patch or minor. And judge the branch, not
+      # whoever caused this run ("@dependabot rebase" or a label runs it as
+      # that person): every commit must be Dependabot's, or a merge of main by
+      # the branch updater (the workflow token).
       - id: decide
         env:
-          ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           DEPS: ${{ steps.metadata.outputs.updated-dependencies-json }}
           TYPE: ${{ steps.metadata.outputs.update-type }}
         run: |
           safe=$(jq 'length > 0 and all(.[]; .updateType == "version-update:semver-patch" or .updateType == "version-update:semver-minor")' <<< "${DEPS:-[]}")
-          if [[ "$ACTOR" == 'dependabot[bot]' && "$safe" == true ]]; then
+          others=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/commits" \
+            --jq '.[] | select(.author.login != "dependabot[bot]" and (.author.login != "github-actions[bot]" or (.parents | length) < 2)) | .sha')
+          if [[ "$safe" == true && -z "$others" ]]; then
             echo merge=true >> "$GITHUB_OUTPUT"
           else
-            echo "Leaving it for review: update type '${TYPE:-unknown}', pushed by $ACTOR."
+            echo "Leaving it for review: update type '${TYPE:-unknown}'${others:+, commits from someone else: $others}."
             echo merge=false >> "$GITHUB_OUTPUT"
           fi
       - name: Turn on auto-merge
