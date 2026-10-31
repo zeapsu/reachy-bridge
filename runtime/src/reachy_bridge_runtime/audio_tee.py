@@ -52,10 +52,11 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Every version's marker starts with PREFIX; MARKER is this version's. It
-# doesn't contain the earlier versions' markers: a runtime rolled back to one of
-# them must replace this tee with its own, since its install has no mic mixer.
+# contains the first version's marker, whose runtime would otherwise wrap it,
+# but not those of v2 to v4: rolled back to one of them, a runtime replaces this
+# tee with its own, since its install has no mic mixer.
 PREFIX = "# reachy-bridge: "
-MARKER = PREFIX + "speaker tee and mic mixer (#219, v5)"
+MARKER = PREFIX + "speaker tee (#219) with mic mixer (v5)"
 LOOPBACK = "Loopback"
 SPEAKER_SWITCH = "Reachy Bridge Speaker"
 HEAR_SOURCE = "reachy_bridge_hear"

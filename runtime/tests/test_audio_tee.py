@@ -220,7 +220,7 @@ def test_talk_reaches_the_wobble_but_not_hearing():
 
 
 def test_marker_lets_a_rolled_back_runtime_replace_this_tee():
-    for older in ("speaker tee (#219)", "and mic tee (v2)", "(v3)", "(v4)"):
+    for older in ("and mic tee (v2)", "(v3)", "(v4)"):
         assert older not in audio_tee.MARKER
 
 

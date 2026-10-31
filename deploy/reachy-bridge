@@ -7,7 +7,7 @@
 #   reachy-bridge setup                   first-run setup: dashboard access, HF login, then a
 #                                        setup page on the LAN (device check, robot test, admin) (#135)
 #   reachy-bridge start | stop | restart [daemon|controller|sim|audio]   (default: daemon and controller)
-#   reachy-bridge logs [daemon|controller|sim|audio]
+#   reachy-bridge logs [daemon|controller|sim|audio|mic]
 #   reachy-bridge serve [on|off|status]
 #   reachy-bridge pair [--admin] [--person=<who>] <code> [name]
 #                                        approve a browser's login code
