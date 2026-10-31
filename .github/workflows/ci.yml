@@ -38,13 +38,14 @@ jobs:
           persist-credentials: false
       # PyGObject and pycairo have no Linux wheels, so uv builds them from
       # source against the girepository and cairo headers. reachy_mini's media
-      # modules load the Gst and GstApp typelibs at import, which --check does.
+      # modules load the Gst and GstApp typelibs at import, which --check does;
+      # the audio gateway's tests load GstWebRTC (plugins-bad).
       - name: Install system packages
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libgirepository1.0-dev libcairo2-dev \
-            gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
+            gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gir1.2-gst-plugins-bad-1.0
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.11.24"
