@@ -276,6 +276,9 @@ def main() -> int:
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
         checks.check(f"audio devices work ({error})", False)
     finally:
+        # A second signal (or Ctrl-C) mustn't skip putting the switch back.
+        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, signal.SIG_IGN)
         # With no browser session the speaker is always on, so put it on: that
         # also mends a check that was killed. A session that started since
         # owns the switch.
