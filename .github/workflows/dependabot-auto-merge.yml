@@ -6,10 +6,13 @@ name: Dependabot auto-merge
 # branch) stays open for the owner. Python updates run on the robot, so they
 # still get hardware QA after they land on main.
 #
+# Dependabot PRs squash: one commit per update on main, without the merges of
+# main the branch updater adds. Everything else merges with a merge commit.
+#
 # pull_request_target runs this file as it is on main, so a PR that bumps
 # fetch-metadata can't change how its own PR is judged. It checks nothing out.
 #
-# Needs the repository setting "Allow auto-merge".
+# Needs the repository settings "Allow auto-merge" and "Allow squash merging".
 on: pull_request_target
 permissions:
   contents: read
@@ -49,7 +52,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --auto --merge "$PR"
+        run: gh pr merge --auto --squash "$PR"
       - name: Leave it for review
         if: steps.decide.outputs.merge != 'true'
         env:
