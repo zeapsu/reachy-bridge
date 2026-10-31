@@ -1,6 +1,14 @@
 from pathlib import Path
 
+import pytest
+
 from reachy_bridge_runtime import audio_tee, mic_mixer
+
+@pytest.fixture(autouse=True)
+def gst_launch(monkeypatch):
+    """CI has no GStreamer tools."""
+    monkeypatch.setattr(audio_tee.shutil, "which", lambda _name: "/usr/bin/gst-launch-1.0")
+
 
 # What upstream's write_asoundrc_to_home() writes (reachy_mini 1.12.0).
 UPSTREAM = """
@@ -240,3 +248,13 @@ def test_remove_puts_asoundrc_back_as_upstream_wrote_it(tmp_path, monkeypatch):
     assert path.read_text().strip() == UPSTREAM.strip()
     audio_tee.remove()
     assert path.read_text().strip() == UPSTREAM.strip()
+
+
+def test_without_gst_launch_the_tee_stays_out(tmp_path, monkeypatch):
+    cards = tmp_path / "cards"
+    cards.write_text(CARDS)
+    monkeypatch.setattr(audio_tee, "CARDS", cards)
+    monkeypatch.setattr(audio_tee, "SECOND_SUBDEVICE", tmp_path)
+    assert audio_tee._card_usable()
+    monkeypatch.setattr(audio_tee.shutil, "which", lambda _name: None)
+    assert not audio_tee._card_usable()

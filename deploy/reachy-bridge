@@ -162,13 +162,25 @@ app_state() {
     fi
 }
 
+# The mic mixer stays up: a crash-looping unit reads active between restarts.
+mic_steady() {
+    local before
+    systemctl --user is-active --quiet "$MIC" || return 1
+    before=$(systemctl --user show "$MIC" -p NRestarts --value)
+    sleep 5
+    systemctl --user is-active --quiet "$MIC" &&
+        [[ $(systemctl --user show "$MIC" -p NRestarts --value) == "$before" ]]
+}
+
 # Waits up to 90 s for the daemon and the controller to answer their status
-# routes after an install (the daemon starts with the robot off).
+# routes after an install (the daemon starts with the robot off), and for the
+# mic mixer where the audio tee has apps depend on it.
 healthy() {
     local i
     for (( i = 0; i < 45; i++ )); do
         if [[ $(curl -s -m 5 "$DAEMON_URL/api/daemon/status") == *'"state":"'* ]] &&
-            (controller_api GET /api/daemon/status >/dev/null 2>&1); then
+            (controller_api GET /api/daemon/status >/dev/null 2>&1) &&
+            { ! grep -q 'with mic mixer' "$HOME/.asoundrc" 2>/dev/null || mic_steady; }; then
             return 0
         fi
         sleep 2

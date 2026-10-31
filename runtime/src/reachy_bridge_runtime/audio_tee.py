@@ -46,6 +46,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -272,6 +273,10 @@ def untee(text: str) -> str:
 
 
 def _card_usable() -> bool:
+    """The tee can work here: with it, apps' mic depends on the mixer, which
+    runs on gst-launch."""
+    if shutil.which("gst-launch-1.0") is None:
+        return False
     try:
         return loopback_present(CARDS.read_text()) and SECOND_SUBDEVICE.exists()
     except OSError:

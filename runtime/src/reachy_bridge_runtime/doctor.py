@@ -203,6 +203,16 @@ def loopback(root: Path) -> Result:
     )
 
 
+def mic_mixer(run: Callable[[list[str]], str | None]) -> Result:
+    """With the tee in place, apps hear silence unless the mixer is running."""
+    if not audio_tee.is_installed():
+        return Result("Mic mixer", "skip", "no audio tee; apps read the mic directly")
+    state = (run(["systemctl", "--user", "is-active", "reachy-bridge-mic.service"]) or "").strip()
+    if state == "active":
+        return Result("Mic mixer", "pass", "running")
+    return Result("Mic mixer", "warn", "reachy-bridge-mic.service isn't running; apps hear silence without it (reachy-bridge logs mic)")
+
+
 def disk(home: Path) -> Result:
     try:
         free = shutil.disk_usage(home).free / 1e9
@@ -275,6 +285,7 @@ def run_checks(root: Path = Path("/"), run: Callable[[list[str]], str | None] = 
     results.append(group("plugdev", user, active, _members, "the udev rule gives it the audio device"))
     results.append(udev_rule(root))
     results.append(loopback(root))
+    results.append(mic_mixer(run))
     results.append(disk(Path.home()))
     results.append(memory(root))
     results.append(Result("Power supply", "skip", "needs the motors on; the setup's on/off test checks it"))

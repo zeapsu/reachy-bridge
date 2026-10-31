@@ -167,3 +167,12 @@ def test_loopback_card(tmp_path: Path):
     (tmp_path / "proc/asound/Loopback/pcm0p/sub1").mkdir(parents=True)
     assert doctor.loopback(tmp_path).status == "pass"
     assert doctor.loopback(tmp_path / "nowhere").status == "warn"
+
+
+def test_mic_mixer(monkeypatch):
+    monkeypatch.setattr(doctor.audio_tee, "is_installed", lambda: False)
+    assert doctor.mic_mixer(lambda _args: None).status == "skip"
+    monkeypatch.setattr(doctor.audio_tee, "is_installed", lambda: True)
+    assert doctor.mic_mixer(lambda _args: "active\n").status == "pass"
+    down = doctor.mic_mixer(lambda _args: None)
+    assert down.status == "warn" and "silence" in down.detail
