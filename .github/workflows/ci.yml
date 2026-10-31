@@ -324,13 +324,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libgirepository1.0-dev libcairo2-dev \
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gir1.2-gst-plugins-bad-1.0
-      # uv at a stable path, as install.sh asks (the daemon unit's PATH).
-      - name: Install uv
-        env:
-          UV_VERSION: ${{ steps.tools.outputs.uv }}
-        run: |
-          curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" | env UV_NO_MODIFY_PATH=1 sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # setup-uv's tool cache is a stable path, which install.sh needs (the
+      # daemon unit's PATH).
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ steps.tools.outputs.uv }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ steps.tools.outputs.bun }}
@@ -344,17 +342,17 @@ jobs:
         with:
           workspaces: controller
           save-if: ${{ inputs.ref == '' }}
-      # The runner has no login session; lingering starts its user manager.
+      # The runner has no login session; lingering starts its user manager,
+      # which systemctl --user reaches through XDG_RUNTIME_DIR.
       - name: Start a systemd user manager
         timeout-minutes: 2
         run: |
           sudo loginctl enable-linger "$USER"
           runtime=/run/user/$(id -u)
           echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
-          for _ in $(seq 30); do
-            [[ -S $runtime/bus ]] && break
-            sleep 1
-          done
+          # Where install.sh puts the reachy-bridge command.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          until [[ -S $runtime/systemd/private ]]; do sleep 1; done
           XDG_RUNTIME_DIR=$runtime systemctl --user is-system-running --wait || true
       - name: Install
         run: bash deploy/install.sh
@@ -370,7 +368,7 @@ jobs:
           bash tools/check_install.sh --gone
       - name: Service logs
         if: failure()
-        run: journalctl --user --no-pager -n 300 || true
+        run: sudo journalctl _UID="$(id -u)" --no-pager -n 300 || true
 
   shell:
     runs-on: ubuntu-24.04-arm
