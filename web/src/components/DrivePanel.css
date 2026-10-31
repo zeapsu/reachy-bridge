@@ -92,3 +92,9 @@
 @media (prefers-reduced-motion: reduce) {
   .pad-knob { transition: none; }
 }
+
+.drive-actions { display: flex; align-items: center; gap: 8px; }
+.drive-head .btn.hold { min-width: 0; color: var(--ink-2); }
+.btn.hold svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
+.btn.hold.on { color: var(--accent); }
+.btn.hold.on svg { fill: currentColor; }
