@@ -25,4 +25,24 @@ else {
     if (typeof details?.loadMs === "number") lines.push(`| ${name}: load time (ms) | ${details.loadMs} | |`);
   }
 }
+
+// The voice tests' audio traffic: each tone's level at each output, per route.
+const traffic = join("test-results", "voice-traffic");
+const runs = existsSync(traffic) ? readdirSync(traffic).filter((f) => f.endsWith(".json")).sort() : [];
+if (runs.length) {
+  const on = (route: Record<string, boolean>) => Object.keys(route).filter((k) => route[k]).join(" + ") || "all off";
+  const cell = (tones: Record<string, number>) =>
+    Object.entries(tones)
+      .map(([tone, level]) => `${tone} ${level.toFixed(3)}`)
+      .join(", ");
+  lines.push("", "### Audio traffic", "", "Tone levels (0 to 1) at each output: mic = the robot's mic, robot = what it plays, browser = this browser's mic.");
+  for (const file of runs) {
+    const { title, steps } = JSON.parse(readFileSync(join(traffic, file), "utf8")) as {
+      title: string;
+      steps: { route: Record<string, boolean>; heard: Record<string, Record<string, number>> }[];
+    };
+    lines.push("", `**${title}**`, "", "| Switches on | This browser | Robot speaker | Apps' mic |", "|---|---|---|---|");
+    for (const { route, heard } of steps) lines.push(`| ${on(route)} | ${cell(heard.browser)} | ${cell(heard.speaker)} | ${cell(heard.apps)} |`);
+  }
+}
 console.log(lines.join("\n"));

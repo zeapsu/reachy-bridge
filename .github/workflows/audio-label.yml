@@ -1,0 +1,66 @@
+name: Audio device test label
+# CI can't run the robot's ALSA audio path (the speaker and mic tee, the mic
+# mixer, the speaker mute): its runners have no sound card. So a PR that
+# changes audio code gets "audio: needs device test" until someone checks its
+# latest commit on a robot and labels it "audio: device-tested". A new push
+# puts it back to needs device test.
+#
+# pull_request_target runs this file as it is on main, and it checks nothing
+# out: it only reads the PR's file list and sets labels.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled]
+permissions:
+  contents: read
+env:
+  NEEDS: "audio: needs device test"
+  TESTED: "audio: device-tested"
+jobs:
+  label:
+    # Other labels are none of its business, and a run for one would queue
+    # behind (and could cancel) a run that matters.
+    if: "github.event.action != 'labeled' || github.event.label.name == 'audio: device-tested'"
+    concurrency:
+      group: audio-label-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          ACTION: ${{ github.event.action }}
+        run: |
+          # The audio path: the gateway, tee, mic mixer and wobble, the host
+          # setup that installs them, the controller's audio routes and ALSA
+          # volume, the dashboard's voice pane, their units and the CLI that
+          # tees and checks them.
+          audio='^(runtime/src/reachy_bridge_runtime/((audio_[a-z_]+|mic_mixer|upstream)\.py|features/wobble\.py|platforms/[a-z_]+\.py)|controller/src/(audio|host)\.rs|web/src/(hooks/useVoice|components/VoicePanel|logic/voice|api/voice)\.tsx?|deploy/systemd/reachy-bridge-(audio|mic)\.service|deploy/reachy-bridge)$'
+          # Both names of a renamed file. audio_policy.py is only request signing.
+          files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)' |
+            grep -vxF runtime/src/reachy_bridge_runtime/audio_policy.py || true)
+          label() { gh api -X POST "repos/$GH_REPO/issues/$PR/labels" -f "labels[]=$1" >/dev/null; }
+          unlabel() { gh api -X DELETE "repos/$GH_REPO/issues/$PR/labels/$(jq -rn --arg l "$1" '$l|@uri')" >/dev/null 2>&1 || true; }
+          if ! grep -qE "$audio" <<<"$files"; then
+            echo "No audio code changed."
+            # Later commits may have taken the audio changes out again.
+            unlabel "$NEEDS"
+            exit 0
+          fi
+          grep -E "$audio" <<<"$files" | sed 's/^/audio: /'
+          gh label create "$NEEDS" --color D93F0B --description "Changes audio code; not yet checked on a device" 2>/dev/null || true
+          gh label create "$TESTED" --color 0E8A16 --description "Audio checked on a device at the latest commit" 2>/dev/null || true
+          if [[ $ACTION == labeled ]]; then
+            # Marked tested: the needs label goes, if the mark still stands.
+            if gh api "repos/$GH_REPO/issues/$PR/labels" --jq '.[].name' | grep -qxF "$TESTED"; then
+              unlabel "$NEEDS"
+            fi
+            exit 0
+          fi
+          # Opened, reopened or a new push: any device test was of older code.
+          unlabel "$TESTED"
+          label "$NEEDS"
