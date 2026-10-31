@@ -91,10 +91,13 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: controller
+          # The coverage build has its own target dir; a new key caches it.
+          key: llvm-cov
           save-if: ${{ inputs.ref == '' }}
       - name: Web
         working-directory: web
         run: |
+          set -o pipefail  # bun test's failure, not tee's success
           bun install --frozen-lockfile
           bun run typecheck
           bun test --coverage 2>&1 | tee "$RUNNER_TEMP/bun-coverage.txt"
@@ -104,6 +107,7 @@ jobs:
         working-directory: controller
         run: |
           cargo clippy --locked --all-targets -- -D warnings
+          # cargo test under coverage; it skips doctests (the crate has none).
           cargo llvm-cov --locked --no-report
       - name: Coverage summary
         if: always()
