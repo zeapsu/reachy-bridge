@@ -7,7 +7,7 @@ name: Dependabot branch updater
 # spent on branches the next merge would leave behind again; when that CI run
 # finishes, this runs again for the next one. A PR it can't update (main
 # changed a workflow file, which the workflow token can't push) gets a
-# "@dependabot rebase" comment instead, and it moves on to the next.
+# "@dependabot recreate" comment and the owner as reviewer, and it moves on.
 #
 # Once this has pushed to a branch, Dependabot stops rebasing that PR on its
 # own; a PR that later conflicts needs "@dependabot recreate".
@@ -59,15 +59,18 @@ jobs:
             echo "Merging main into #$number ($branch)."
             # Refuses if the branch moved since the list above. Also refused
             # when main's new commits change a workflow file, which the
-            # workflow token may not push; Dependabot can rebase it instead.
+            # workflow token may not push. Dependabot can recreate the PR
+            # instead ("rebase" won't do once this has pushed to it), and the
+            # owner is asked to review, so a PR stuck here doesn't go unseen.
             if ! gh api -X PUT "repos/$GH_REPO/pulls/$number/update-branch" -f expected_head_sha="$old_sha"; then
               # Ask once per head commit, not on every run.
-              asked=$(gh pr view "$number" --json comments,commits --jq '(.commits | last | .committedDate) as $head | any(.comments[]; .body == "@dependabot rebase" and .createdAt > $head)')
+              asked=$(gh pr view "$number" --json comments,commits --jq '(.commits | last | .committedDate) as $head | any(.comments[]; .body == "@dependabot recreate" and .createdAt > $head)') || asked=false
               if [[ "$asked" != true ]]; then
-                echo "::warning::Couldn't update #$number; asking Dependabot to rebase it."
-                gh pr comment "$number" --body "@dependabot rebase" || true
+                echo "::warning::Couldn't update #$number; asking Dependabot to recreate it."
+                gh pr comment "$number" --body "@dependabot recreate" || true
+                gh pr edit "$number" --add-reviewer zeapsu || true
               else
-                echo "::warning::Couldn't update #$number; Dependabot was already asked to rebase it."
+                echo "::warning::Couldn't update #$number; Dependabot was already asked to recreate it."
               fi
               continue
             fi
