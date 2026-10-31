@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # The Dependabot branch updater starts CI this way after it merges main into
+  # a branch, since its own push doesn't trigger workflows.
+  workflow_dispatch:
   # The release workflow runs these jobs before it publishes; the upstream
   # watch runs them against a lock-bump branch (ref).
   workflow_call:

@@ -72,7 +72,9 @@ check UI changes yourself in a headless browser against the sim stack.
 holds the tested version. The upstream watch workflow opens a PR when Pollen releases a
 new one (#155); a new daemon version needs hardware QA before it merges.
 Dependabot (`.github/dependabot.yml`) proposes everything else once a week, grouped per
-ecosystem; Python updates run on the robot, so they get hardware QA after merge too.
+ecosystem. Patch and minor updates merge on their own once CI passes, and a workflow keeps
+them up to date with `main` until they do; a major bump waits for the owner. Python
+updates run on the robot, so they get hardware QA after merge too.
 
 ## Robot safety
 

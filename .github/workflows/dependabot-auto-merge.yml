@@ -1,0 +1,60 @@
+name: Dependabot auto-merge
+# Patch and minor updates from Dependabot merge on their own once the
+# required checks (python, rust-web, sim, shell) pass; GitHub's auto-merge
+# waits for them. Anything else (a major bump, a group that contains one, an
+# update Dependabot can't classify, or a commit someone else pushed onto the
+# branch) stays open for the owner. Python updates run on the robot, so they
+# still get hardware QA after they land on main.
+#
+# pull_request_target runs this file as it is on main, so a PR that bumps
+# fetch-metadata can't change how its own PR is judged. It checks nothing out.
+#
+# Needs the repository setting "Allow auto-merge".
+on: pull_request_target
+permissions:
+  contents: read
+# One run per PR at a time, in event order, so a run for someone else's push
+# can't be overtaken by an earlier run that turns auto-merge back on.
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'zeapsu/reachy-bridge'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+      # update-type skips updates Dependabot couldn't classify, so check each
+      # one: all of them must be patch or minor.
+      - id: decide
+        env:
+          ACTOR: ${{ github.actor }}
+          DEPS: ${{ steps.metadata.outputs.updated-dependencies-json }}
+          TYPE: ${{ steps.metadata.outputs.update-type }}
+        run: |
+          safe=$(jq 'length > 0 and all(.[]; .updateType == "version-update:semver-patch" or .updateType == "version-update:semver-minor")' <<< "${DEPS:-[]}")
+          if [[ "$ACTOR" == 'dependabot[bot]' && "$safe" == true ]]; then
+            echo merge=true >> "$GITHUB_OUTPUT"
+          else
+            echo "Leaving it for review: update type '${TYPE:-unknown}', pushed by $ACTOR."
+            echo merge=false >> "$GITHUB_OUTPUT"
+          fi
+      - name: Turn on auto-merge
+        if: steps.decide.outputs.merge == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --merge "$PR"
+      - name: Leave it for review
+        if: steps.decide.outputs.merge != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr merge --disable-auto "$PR" || true
+          gh pr edit "$PR" --add-reviewer zeapsu
