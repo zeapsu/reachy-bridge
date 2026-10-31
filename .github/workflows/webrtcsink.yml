@@ -3,7 +3,8 @@ name: webrtcsink
 # Builds the gst-plugins-rs webrtc plugin (libgstrswebrtc.so) that the daemon
 # needs, so releases can ship it and devices skip a 7-minute build (#132).
 # ubuntu-24.04-arm has GStreamer 1.24.2, the same as JetPack 7. Runs on its own
-# when this workflow or the build script changes, and from release.yml.
+# when this workflow, the build script or the toolchain changes, and from
+# release.yml.
 
 on:
   workflow_call:
@@ -11,6 +12,8 @@ on:
     paths:
       - .github/workflows/webrtcsink.yml
       - tools/build_webrtcsink_jetson.sh
+      - mise.toml
+      - tools/toolchain_versions.py
 
 permissions:
   contents: read
@@ -32,7 +35,7 @@ jobs:
           persist-credentials: false
       # Tool versions come from mise.toml.
       - id: tools
-        run: python3 -c 'import tomllib; [print(f"{k}={v}") for k, v in tomllib.load(open("mise.toml", "rb"))["tools"].items()]' >> "$GITHUB_OUTPUT"
+        run: python3 tools/toolchain_versions.py >> "$GITHUB_OUTPUT"
       - name: Install system packages
         run: |
           sudo apt-get update
