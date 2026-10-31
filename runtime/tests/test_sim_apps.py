@@ -184,7 +184,7 @@ def test_shim_keeps_uvloop_out_and_resolves_names(tmp_path: Path) -> None:
     assert reached_with_uvloop(site_packages, robot) == "no-uvloop"
     hosts = ["127.1", "LOCALHOST"]
     # Some resolvers (gVisor sandboxes, minimal images) don't resolve the
-    # fully qualified form; the shim then refuses it, which is the safe side.
+    # fully qualified form; the connect then fails, which is the safe side.
     if resolves("localhost."):
         hosts.append("localhost.")
     for host in hosts:

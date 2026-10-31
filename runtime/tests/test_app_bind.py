@@ -24,9 +24,14 @@ def fake_venv(root: Path) -> Path:
 
 
 def ipv6_works() -> bool:
-    """Whether this host can open IPv6 sockets (``socket.has_ipv6`` only says Python was built with it)."""
+    """Whether this host can bind IPv6 loopback.
+
+    ``socket.has_ipv6`` only says Python was built with it, and a host with
+    IPv6 turned off by sysctl still opens IPv6 sockets but can't bind them.
+    """
     try:
-        socket.socket(socket.AF_INET6, socket.SOCK_STREAM).close()
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            s.bind(("::1", 0))
     except OSError:
         return False
     return True
