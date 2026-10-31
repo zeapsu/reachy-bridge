@@ -6,7 +6,7 @@ managed with Bun. The Rust controller (`../controller`) embeds `dist/` and serve
 
 ## Commands
 
-Run from `web/`. Bun isn't on PATH by default; prefix each command with `mise exec bun@1.4.3 --`.
+Run from `web/`, with the Bun version in the repo's `mise.toml` (`mise install`, or prefix each command with `mise exec --`).
 
 ```sh
 bun install          # dependencies (exact versions, bun.lock is committed)

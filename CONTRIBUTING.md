@@ -6,9 +6,11 @@ the [README](README.md).
 
 ## Setup
 
-You need [uv](https://docs.astral.sh/uv/) (Python 3.12), Rust 1.96 and
-[Bun](https://bun.sh/) 1.4. Development works on macOS and Linux; the robot itself only
-runs on Linux. No robot is needed: the simulator stands in for it.
+You need [uv](https://docs.astral.sh/uv/) (Python 3.12), Rust and [Bun](https://bun.sh/),
+at the versions in [`mise.toml`](mise.toml), which CI reads too; with
+[mise](https://mise.jdx.dev/), `mise install` gets them all. Development works on macOS and
+Linux; the robot itself only runs on Linux. No robot is needed: the simulator stands in
+for it.
 
 ```bash
 uv sync                                         # the runtime and Pollen's daemon, in .venv

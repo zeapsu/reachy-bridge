@@ -48,6 +48,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Tool versions come from mise.toml.
+      - id: tools
+        run: python3 -c 'import tomllib; [print(f"{k}={v}") for k, v in tomllib.load(open("mise.toml", "rb"))["tools"].items()]' >> "$GITHUB_OUTPUT"
       # As in ci.yml: PyGObject and pycairo ship only sdists, and a release
       # that changes their pins makes uv build them to read their metadata.
       - name: Install system packages
@@ -57,7 +60,7 @@ jobs:
             pkg-config libgirepository1.0-dev libcairo2-dev
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          version: "0.11.24"
+          version: ${{ steps.tools.outputs.uv }}
       # Compared with PyPI's newest release, not with whatever uv resolves, so
       # a release the floor or other pins can't take is reported rather than
       # silently held back.
