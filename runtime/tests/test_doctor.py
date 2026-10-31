@@ -174,5 +174,5 @@ def test_mic_mixer(monkeypatch):
     assert doctor.mic_mixer(lambda _args: None).status == "skip"
     monkeypatch.setattr(doctor.audio_tee, "is_installed", lambda: True)
     assert doctor.mic_mixer(lambda _args: "active\n").status == "pass"
-    down = doctor.mic_mixer(lambda _args: "failed\n")
+    down = doctor.mic_mixer(lambda _args: None)
     assert down.status == "warn" and "silence" in down.detail

@@ -210,7 +210,7 @@ def mic_mixer(run: Callable[[list[str]], str | None]) -> Result:
     state = (run(["systemctl", "--user", "is-active", "reachy-bridge-mic.service"]) or "").strip()
     if state == "active":
         return Result("Mic mixer", "pass", "running")
-    return Result("Mic mixer", "warn", f"reachy-bridge-mic.service is {state or 'unknown'}; apps hear silence without it (reachy-bridge logs mic)")
+    return Result("Mic mixer", "warn", "reachy-bridge-mic.service isn't running; apps hear silence without it (reachy-bridge logs mic)")
 
 
 def disk(home: Path) -> Result:
