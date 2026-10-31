@@ -49,7 +49,9 @@ CI runs these on every PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPac
 | sim | `uv run python tools/sim/run.py`: the controller against a sim daemon (see [`tools/sim/README.md`](tools/sim/README.md)) |
 | browser | `uv run python tools/sim/run.py -- bash -c 'cd web && bunx playwright test'`: the dashboard in Chromium against the sim stack, at desktop and phone sizes (not required yet) |
 
-Run the sim tests before asking for hardware QA.
+Run the sim tests before asking for hardware QA. The python and rust-web jobs report line
+coverage in their job summaries (pytest-cov, `bun test --coverage`, cargo-llvm-cov); it's
+recorded, not checked.
 
 The browser tests (`web/e2e/`) cover what a person does with the dashboard, plus
 accessibility (axe-core) and layout/copy checks: sideways scrolling fails, and small tap
