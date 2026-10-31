@@ -13,6 +13,11 @@ name: Dependabot auto-merge
 on: pull_request_target
 permissions:
   contents: read
+# One run per PR at a time, in event order, so a run for someone else's push
+# can't be overtaken by an earlier run that turns auto-merge back on.
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 jobs:
   auto-merge:
     if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'zeapsu/reachy-bridge'
@@ -24,13 +29,16 @@ jobs:
     steps:
       - id: metadata
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
-      # For a group, update-type is the largest change in it.
+      # update-type skips updates Dependabot couldn't classify, so check each
+      # one: all of them must be patch or minor.
       - id: decide
         env:
           ACTOR: ${{ github.actor }}
+          DEPS: ${{ steps.metadata.outputs.updated-dependencies-json }}
           TYPE: ${{ steps.metadata.outputs.update-type }}
         run: |
-          if [[ "$ACTOR" == 'dependabot[bot]' && ( "$TYPE" == version-update:semver-patch || "$TYPE" == version-update:semver-minor ) ]]; then
+          safe=$(jq 'length > 0 and all(.[]; .updateType == "version-update:semver-patch" or .updateType == "version-update:semver-minor")' <<< "${DEPS:-[]}")
+          if [[ "$ACTOR" == 'dependabot[bot]' && "$safe" == true ]]; then
             echo merge=true >> "$GITHUB_OUTPUT"
           else
             echo "Leaving it for review: update type '${TYPE:-unknown}', pushed by $ACTOR."
