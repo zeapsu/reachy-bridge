@@ -370,6 +370,21 @@ jobs:
         if: failure()
         run: sudo journalctl _UID="$(id -u)" --no-pager -n 300 || true
 
+  audio-probe:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - run: |
+          uname -r
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq alsa-utils "linux-modules-extra-$(uname -r)" || echo "no modules-extra"
+          sudo modprobe snd-aloop enable=1,1 index=10,11 id=Loopback,FakeBoard pcm_substreams=4 && echo LOADED || echo "modprobe failed"
+          cat /proc/asound/cards || true
+          ls -l /dev/snd || true
+          id; getent group audio
+          sudo ip link add dummy0 type dummy && sudo ip addr add 100.64.0.1/32 dev dummy0 && sudo ip link set dummy0 up && ip addr show dummy0
+
   shell:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
