@@ -204,7 +204,7 @@ say-so.
    anything exposed beyond `127.0.0.1`, secrets, update signing) also need a dedicated
    security review and a second independent reviewer, both clean. Merge with a merge
    commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
-   `main` directly. The owner QAs on the robot after merge. PRs still open merge `main`
+   `main` directly. Only Dependabot's PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
    again.
 
 ## Shared files
