@@ -1,8 +1,9 @@
 # Dependency updates. One grouped PR per ecosystem a week, so updates don't
 # flood the PR list; a major package bump gets its own PR, since it usually
 # needs code changes (actions are grouped whatever the bump). Every PR goes
-# through CI (including the sim job) and the usual review gates. The cooldown leaves new releases a week before they're
-# proposed, so a broken or compromised release is usually yanked first.
+# through CI (including the sim job) and the usual review gates. The cooldown
+# leaves new releases a week before they're proposed, so a broken or
+# compromised release is usually yanked first.
 #
 # Not covered here:
 # - reachy-mini (Pollen's daemon) is bumped by the upstream watch workflow,
