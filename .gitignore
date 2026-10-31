@@ -53,3 +53,7 @@ Thumbs.db
 /.superpowers/
 /.playwright-mcp/
 /.reachy-logs/
+
+# --- Browser test output ---
+/web/test-results/
+/web/playwright-report/

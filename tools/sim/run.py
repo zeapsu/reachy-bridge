@@ -1,6 +1,6 @@
 """Run the sim checks end to end: sim daemon, controller, test apps, smoke.py.
 
-    uv run python tools/sim/run.py [--work-dir DIR]
+    uv run python tools/sim/run.py [--work-dir DIR] [-- COMMAND...]
 
 Starts its own sim daemon (through ``sim_daemon.py``) and controller on free
 ports, installs the test apps from ``tools/sim/apps`` into a fresh apps venv,
@@ -12,7 +12,9 @@ The controller binary comes from ``SIM_CONTROLLER_BIN`` (default
 ``controller/target/release/reachy-controller``; build it first, see
 ``tools/sim/README.md``). Logs, state and the apps venv go in ``--work-dir``
 (default: a new temporary directory, kept and printed when a check fails).
-Exit code is smoke.py's: 0 = all checks passed.
+Exit code is smoke.py's: 0 = all checks passed. After ``--``, another
+command runs in smoke.py's place with the same environment (the browser
+tests in ``web/e2e`` do).
 """
 
 from __future__ import annotations
@@ -106,6 +108,11 @@ def stop(proc: subprocess.Popen | None, timeout: float = 30.0) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--work-dir", type=Path, help="logs, state and apps venv (default: a temp dir)")
+    parser.add_argument(
+        "command",
+        nargs=argparse.REMAINDER,
+        help="run this against the servers instead of smoke.py (after --), with SIM_DAEMON and SIM_CONTROLLER set",
+    )
     args = parser.parse_args()
 
     controller_bin = Path(
@@ -115,6 +122,8 @@ def main() -> int:
         print(f"controller binary not found: {controller_bin} (see tools/sim/README.md)", file=sys.stderr)
         return 2
 
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    command = command or [sys.executable, str(SIM / "smoke.py")]
     temporary = args.work_dir is None
     work = Path(tempfile.mkdtemp(prefix="rb-sim-")) if temporary else args.work_dir.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -161,7 +170,7 @@ def main() -> int:
             )
         wait_up(f"{controller_url}/api/daemon/status", controller, "controller")
         code = subprocess.run(
-            [sys.executable, str(SIM / "smoke.py")],
+            command,
             env={**os.environ, "SIM_DAEMON": daemon_url, "SIM_CONTROLLER": controller_url},
         ).returncode
     except (RuntimeError, subprocess.CalledProcessError) as e:
