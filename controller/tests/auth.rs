@@ -972,7 +972,10 @@ static ROUTED: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
 
 /// A stand-in audio gateway: one session "s1", always connected; records
 /// deletes. It signs its replies with `key` (None: a squatter that can't).
+/// A request for any other session gets 418, so a test sees one the
+/// controller should have stopped.
 async fn fake_gateway(deleted: Arc<AtomicU64>, key: Option<String>) -> String {
+    use axum::extract::Path as AxumPath;
     use axum::routing::{delete, post};
     let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let app = Router::new()
@@ -1001,21 +1004,32 @@ async fn fake_gateway(deleted: Arc<AtomicU64>, key: Option<String>) -> String {
             }),
         )
         .route(
-            "/session/s1/answer",
-            post(|| async { StatusCode::NO_CONTENT }),
+            "/session/{id}/answer",
+            post(|AxumPath(id): AxumPath<String>| async move {
+                if id != "s1" {
+                    return StatusCode::IM_A_TEAPOT;
+                }
+                StatusCode::NO_CONTENT
+            }),
         )
         .route(
-            "/session/s1/route",
-            post(|Json(body): Json<Value>| async move {
+            "/session/{id}/route",
+            post(|AxumPath(id): AxumPath<String>, Json(body): Json<Value>| async move {
+                if id != "s1" {
+                    return StatusCode::IM_A_TEAPOT;
+                }
                 *ROUTED.lock().unwrap() = Some(body);
                 StatusCode::NO_CONTENT
             }),
         )
         .route(
-            "/session/s1",
+            "/session/{id}",
             delete({
                 let open = open.clone();
-                move || async move {
+                move |AxumPath(id): AxumPath<String>| async move {
+                    if id != "s1" {
+                        return StatusCode::IM_A_TEAPOT;
+                    }
                     open.store(false, Ordering::SeqCst);
                     deleted.fetch_add(1, Ordering::SeqCst);
                     StatusCode::NO_CONTENT
@@ -1200,4 +1214,113 @@ async fn only_the_holder_listens_and_talks_and_loses_it_with_control() {
             .body["session"],
         Value::Null
     );
+}
+
+#[tokio::test]
+async fn another_browser_cant_drive_or_end_someones_audio() {
+    let (h, admin, sam) = control_harness().await;
+    let lee = h.paired_as(LAN, &[("cookie", &admin)], json!({"name": "tablet", "person": "Lee"})).await;
+    h.robot.store(ROBOT_ON, Ordering::SeqCst);
+    let deleted = Arc::new(AtomicU64::new(0));
+    let key = std::fs::read_to_string(h.state.state_dir.join(audio::KEY_FILE)).unwrap().trim().to_string();
+    h.state.audio.set_url(&fake_gateway(deleted.clone(), Some(key)).await);
+    h.control(LAN, &sam, "take", None).await;
+    let r = h.call("POST", "/api/audio/session", LAN, &[("cookie", &sam)], Some(json!({"listen": true, "talk": true}))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let route = json!({"listen": true, "talk": true, "hear": true, "apps": false});
+    for (method, uri, body) in [
+        ("POST", "/api/audio/session/s1/answer", Some(json!({"sdp": "v=0\r\n"}))),
+        ("POST", "/api/audio/session/s1/route", Some(route.clone())),
+        ("DELETE", "/api/audio/session/s1", None),
+    ] {
+        // Lee can't reach the session: only the control holder drives, and
+        // taking control ends Sam's audio first.
+        let r = h.call(method, uri, LAN, &[("cookie", &lee)], body.clone()).await;
+        assert_eq!(
+            (r.status, r.body["detail"].clone()),
+            (StatusCode::FORBIDDEN, json!("Sam is in control of the robot")),
+            "Lee: {method} {uri}"
+        );
+        let r = h.call(method, &uri.replace("s1", "s2"), LAN, &[("cookie", &sam)], body).await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "Sam, another id: {method} {uri}");
+    }
+    assert_eq!(deleted.load(Ordering::SeqCst), 0);
+    // An answer bigger than any browser sends never reaches the gateway.
+    let huge = json!({"sdp": "a".repeat(40_000)});
+    assert_eq!(h.call("POST", "/api/audio/session/s1/answer", LAN, &[("cookie", &sam)], Some(huge)).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(h.call("POST", "/api/audio/session", LAN, &[("cookie", &sam)], Some(json!({"listen": "yes"}))).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(h.call("GET", "/api/audio", LAN, &[("cookie", &sam)], None).await.body["session"]["id"], "s1");
+}
+
+#[tokio::test]
+async fn audio_ends_when_its_browser_is_revoked_or_closes_it() {
+    let (h, admin, sam) = control_harness().await;
+    h.robot.store(ROBOT_ON, Ordering::SeqCst);
+    let deleted = Arc::new(AtomicU64::new(0));
+    let key = std::fs::read_to_string(h.state.state_dir.join(audio::KEY_FILE)).unwrap().trim().to_string();
+    h.state.audio.set_url(&fake_gateway(deleted.clone(), Some(key)).await);
+    let gone = |n: u64| {
+        let deleted = deleted.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while deleted.load(Ordering::SeqCst) < n {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+    };
+    let open = json!({"listen": true, "talk": false});
+    // Closing it from its own browser ends it everywhere at once.
+    h.control(LAN, &sam, "take", None).await;
+    assert_eq!(h.call("POST", "/api/audio/session", LAN, &[("cookie", &sam)], Some(open.clone())).await.status, StatusCode::OK);
+    assert_eq!(h.call("DELETE", "/api/audio/session/s1", LAN, &[("cookie", &sam)], None).await.status, StatusCode::OK);
+    assert_eq!(h.call("GET", "/api/audio", LOOPBACK, &[("cookie", &admin)], None).await.body["session"], Value::Null);
+    assert!(gone(1).await, "the gateway's session outlived its close");
+    // Revoking the browser ends its audio too.
+    assert_eq!(h.call("POST", "/api/audio/session", LAN, &[("cookie", &sam)], Some(open)).await.status, StatusCode::OK);
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &[("cookie", &admin)], None).await.body;
+    let id = devices["devices"].as_array().unwrap().iter().find(|d| d["person"] == "Sam").unwrap()["id"].as_str().unwrap().to_string();
+    assert_eq!(h.call("DELETE", &format!("/api/auth/devices/{id}"), LOOPBACK, &[("cookie", &admin)], None).await.status, StatusCode::NO_CONTENT);
+    assert!(gone(2).await, "a revoked browser's audio session stayed open");
+    // The controller forgets it once the gateway's delete returns.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while h.call("GET", "/api/audio", LOOPBACK, &[("cookie", &admin)], None).await.body["session"] != Value::Null {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the controller still lists the revoked browser's session");
+}
+
+#[tokio::test]
+async fn the_control_holder_cant_drive_the_command_lines_audio() {
+    // A session the local key opened isn't tied to control, so it outlives
+    // a browser taking control; that browser still can't drive or end it.
+    let (h, _admin, sam) = control_harness().await;
+    h.robot.store(ROBOT_ON, Ordering::SeqCst);
+    let deleted = Arc::new(AtomicU64::new(0));
+    let key = std::fs::read_to_string(h.state.state_dir.join(audio::KEY_FILE)).unwrap().trim().to_string();
+    h.state.audio.set_url(&fake_gateway(deleted.clone(), Some(key)).await);
+    let cli = h.key();
+    let local = [("x-reachy-bridge-key", cli.as_str())];
+    let r = h.call("POST", "/api/audio/session", LOOPBACK, &local, Some(json!({"listen": true, "talk": false}))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+    let route = json!({"listen": true, "talk": true, "hear": false, "apps": false});
+    for (method, uri, body) in [
+        ("POST", "/api/audio/session/s1/answer", Some(json!({"sdp": "v=0\r\n"}))),
+        ("POST", "/api/audio/session/s1/route", Some(route)),
+        ("DELETE", "/api/audio/session/s1", None),
+    ] {
+        let r = h.call(method, uri, LAN, &[("cookie", &sam)], body).await;
+        assert_eq!(
+            (r.status, r.body["detail"].clone()),
+            (StatusCode::FORBIDDEN, json!("another browser's audio session")),
+            "Sam: {method} {uri}"
+        );
+    }
+    assert_eq!(deleted.load(Ordering::SeqCst), 0);
+    assert_eq!(h.call("DELETE", "/api/audio/session/s1", LOOPBACK, &local, None).await.status, StatusCode::OK);
 }

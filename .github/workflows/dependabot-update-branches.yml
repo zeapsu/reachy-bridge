@@ -1,0 +1,88 @@
+name: Dependabot branch updater
+# main requires a PR to be up to date before it merges, and auto-merge never
+# updates a branch itself. Whenever main may have moved, this merges main into
+# the oldest Dependabot PR that has auto-merge on and is behind, then starts CI
+# on it: a push made with the workflow token doesn't trigger workflows, but a
+# dispatch does, and its checks count for the PR. One PR at a time, so CI isn't
+# spent on branches the next merge would leave behind again; when that CI run
+# finishes, this runs again for the next one. A PR it can't update (main
+# changed a workflow file, which the workflow token can't push) gets a
+# "@dependabot recreate" comment and the owner as reviewer, and it moves on.
+#
+# Once this has pushed to a branch, Dependabot stops rebasing that PR on its
+# own; a PR that later conflicts needs "@dependabot recreate".
+#
+# Auto-merges made with the workflow token don't trigger the push event
+# either, hence the CI-completion trigger and the schedule as a fallback.
+on:
+  push:
+    branches: [main]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  schedule:
+    - cron: "37 */2 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: dependabot-update-branches
+  cancel-in-progress: false
+jobs:
+  update:
+    if: github.repository == 'zeapsu/reachy-bridge'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Update the oldest behind Dependabot PR and start its CI
+        run: |
+          # Give GitHub a moment to merge the PR whose checks just passed, so
+          # the others show as behind.
+          sleep 30
+          # Oldest first. Try each until one updates, so a PR that can't be
+          # updated doesn't hold up the rest.
+          gh pr list --author app/dependabot --state open --limit 50 \
+            --json number,headRefName,headRefOid,mergeStateStatus,autoMergeRequest,createdAt \
+            --jq '[.[] | select(.autoMergeRequest != null and .mergeStateStatus == "BEHIND")] | sort_by(.createdAt) | .[] | [.number, .headRefName, .headRefOid] | @tsv' > behind.tsv
+          if [[ ! -s behind.tsv ]]; then
+            echo "No Dependabot PR with auto-merge on is behind main."
+            exit 0
+          fi
+          while IFS=$'\t' read -r -u 3 number branch old_sha; do
+            echo "Merging main into #$number ($branch)."
+            # Refuses if the branch moved since the list above. Also refused
+            # when main's new commits change a workflow file, which the
+            # workflow token may not push. Dependabot can recreate the PR
+            # instead ("rebase" won't do once this has pushed to it), and the
+            # owner is asked to review, so a PR stuck here doesn't go unseen.
+            if ! gh api -X PUT "repos/$GH_REPO/pulls/$number/update-branch" -f expected_head_sha="$old_sha"; then
+              # Ask once per head commit, not on every run.
+              asked=$(gh pr view "$number" --json comments,commits --jq '(.commits | last | .committedDate) as $head | any(.comments[]; .body == "@dependabot recreate" and .createdAt > $head)') || asked=false
+              if [[ "$asked" != true ]]; then
+                echo "::warning::Couldn't update #$number; asking Dependabot to recreate it."
+                gh pr comment "$number" --body "@dependabot recreate" || true
+                gh pr edit "$number" --add-reviewer zeapsu || true
+              else
+                echo "::warning::Couldn't update #$number; Dependabot was already asked to recreate it."
+              fi
+              continue
+            fi
+            # update-branch is async: wait for the new head before starting CI.
+            for _ in $(seq 30); do
+              [[ "$(gh pr view "$number" --json headRefOid --jq .headRefOid)" != "$old_sha" ]] && break
+              sleep 2
+            done
+            if [[ "$(gh pr view "$number" --json headRefOid --jq .headRefOid)" == "$old_sha" ]]; then
+              echo "::warning::#$number didn't move after update-branch."
+              continue
+            fi
+            gh workflow run ci.yml --ref "$branch"
+            exit 0
+          done 3< behind.tsv

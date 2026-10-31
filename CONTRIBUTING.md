@@ -6,9 +6,11 @@ the [README](README.md).
 
 ## Setup
 
-You need [uv](https://docs.astral.sh/uv/) (Python 3.12), Rust 1.96 and
-[Bun](https://bun.sh/) 1.4. Development works on macOS and Linux; the robot itself only
-runs on Linux. No robot is needed: the simulator stands in for it.
+You need [uv](https://docs.astral.sh/uv/) (Python 3.12), Rust and [Bun](https://bun.sh/),
+at the versions in [`mise.toml`](mise.toml), which CI reads too; with
+[mise](https://mise.jdx.dev/), `mise install` gets them all. Development works on macOS and
+Linux; the robot itself only runs on Linux. No robot is needed: the simulator stands in
+for it.
 
 ```bash
 uv sync                                         # the runtime and Pollen's daemon, in .venv
@@ -45,11 +47,29 @@ CI runs these on every PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPac
 |---|---|
 | python | `uv run pytest`, `uv run ruff check runtime tools`, `uv run reachy-bridge-runtime --check` |
 | rust-web | `cargo test` and `cargo clippy --all-targets` in `controller/`; `bun run typecheck`, `bun test`, `bun run build` in `web/` |
-| shell | `shellcheck` on the scripts in `deploy/` and `tools/`, and `bash tools/test_uninstall.sh` |
+| shell | `shellcheck` on the scripts in `deploy/` and `tools/`; `bash tools/test_uninstall.sh` and `bash tools/test_cli.sh` (the `reachy-bridge` command's robot-off gate, sim mode, deploy and rollback) |
 | sim | `uv run python tools/sim/run.py`: the controller against a sim daemon (see [`tools/sim/README.md`](tools/sim/README.md)) |
+| browser | `uv run python tools/sim/run.py --audio -- bash -c 'cd web && bunx playwright test'`: the dashboard in Chromium against the sim stack, at desktop and phone sizes, and the voice pane's audio routing over WebRTC with a test tone per source (`--audio`; needs gstreamer1.0-plugins-bad and gstreamer1.0-nice, and an address on the tailnet or in `AUDIO_GATEWAY_NETS`) (not required yet) |
+| install | `deploy/install.sh` on a fresh runner with a systemd user manager, checked by `tools/check_install.sh`; run twice, then `reachy-bridge uninstall --yes` and `check_install.sh --gone` (not required yet) |
 
-Run the sim tests before asking for hardware QA. CI doesn't check the UI in a browser;
-check UI changes yourself in a headless browser against the sim stack.
+Run the sim tests before asking for hardware QA. The python and rust-web jobs report line
+coverage in their job summaries (pytest-cov, `bun test --coverage`, cargo-llvm-cov); it's
+recorded, not checked.
+
+The browser tests (`web/e2e/`) cover what a person does with the dashboard, plus
+accessibility (axe-core) and layout/copy checks: sideways scrolling fails, and small tap
+targets and long text are counted. Those counts and axe's are kept in
+`web/e2e/baselines/` and may only go down; after fixing some, rerun with
+`UPDATE_BASELINES=1` and commit the new baselines. The job summary shows each count and
+the load time, and the HTML report is in the `browser-report` artifact. Locally, run
+`bunx playwright install chromium` once in `web/` first.
+
+CI has no sound card, so it can't run the robot's ALSA side of the audio (the speaker
+and mic tee, the mic mixer, the speaker mute). A PR that changes audio code gets the
+`audio: needs device test` label. To clear it, deploy its latest commit to a robot and,
+with the robot off and nobody listening or talking, run `python3 tools/check_audio.py`
+there (it plays test tones through the tee, and two quiet beeps on the speaker); when it
+passes, label the PR `audio: device-tested`. A new push puts the first label back.
 
 ## How the bridge fits together
 
@@ -72,7 +92,9 @@ check UI changes yourself in a headless browser against the sim stack.
 holds the tested version. The upstream watch workflow opens a PR when Pollen releases a
 new one (#155); a new daemon version needs hardware QA before it merges.
 Dependabot (`.github/dependabot.yml`) proposes everything else once a week, grouped per
-ecosystem; Python updates run on the robot, so they get hardware QA after merge too.
+ecosystem. Patch and minor updates merge on their own once CI passes, and a workflow keeps
+them up to date with `main` until they do; a major bump waits for the owner. Python
+updates run on the robot, so they get hardware QA after merge too.
 
 ## Robot safety
 
