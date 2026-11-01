@@ -176,3 +176,9 @@ def test_mic_mixer(monkeypatch):
     assert doctor.mic_mixer(lambda _args: "active\n").status == "pass"
     down = doctor.mic_mixer(lambda _args: None)
     assert down.status == "warn" and "silence" in down.detail
+
+
+def test_portaudio_is_a_warning_for_apps_that_use_sounddevice():
+    assert doctor.portaudio(lambda name: "libportaudio.so.2").status == "pass"
+    missing = doctor.portaudio(lambda name: None)
+    assert missing.status == "warn" and "libportaudio2" in missing.detail

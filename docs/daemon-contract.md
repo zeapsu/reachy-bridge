@@ -38,6 +38,17 @@ every symbol it relies on; `reachy-bridge-runtime --check` verifies them.
   `unixfdsink` on `/tmp/reachymini_camera_socket`, and apps read them with
   `unixfdsrc` (`media/media_server.py`, `media/camera_gstreamer.py`). The
   socket exists only while the backend's media server runs.
+- Media release (`POST /api/media/release`, `.../acquire`): an app that
+  asks for `media_backend="no_media"` (dj_reactor and standby do) makes the
+  SDK release the media, and the daemon stops its media server: no camera,
+  socket, mic levels or WebRTC until it is acquired again. The dashboard
+  shows the camera and mic as unavailable meanwhile; that is the app
+  holding them, not a fault. Upstream re-acquires only from the app's own
+  `ReachyMini.__exit__`, so an app that crashes or is killed leaves it
+  released, and `Daemon.start` keeps the release across a power cycle.
+  **Bridge feature** (`features/media_return.py`): when an app's process
+  ends and no newer app runs, a running daemon re-acquires the media; a
+  stopped one forgets the release, so its next start brings media up.
 
 ## Daemon state and power
 

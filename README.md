@@ -152,7 +152,7 @@ between the browser and the device, on tailnet addresses only (no STUN or TURN),
 can't connect from a home-network address. Listening also works on the device's plain-http
 tailnet IP (LAN mode), and so does hearing what the robot says, but talking (to the robot or its
 apps) needs the HTTPS (Tailscale) name, since browsers only share a microphone with a secure page. Sim mode has no audio. The device needs GStreamer's libnice plugin
-(`sudo apt install gstreamer1.0-nice`); `reachy-bridge check` reports it.
+(`sudo apt install gstreamer1.0-nice`); `reachy-bridge check` reports it. Apps that use sounddevice need PortAudio (`sudo apt install libportaudio2`); the check warns when it is missing.
 
 Hearing what the robot says and talking to its apps need an ALSA loopback card with the id
 `Loopback`, which the runtime then routes the robot's speaker output and microphone through (it

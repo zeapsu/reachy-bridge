@@ -10,6 +10,7 @@ test checks that instead.
 
 from __future__ import annotations
 
+import ctypes.util
 import grp
 import json
 import os
@@ -213,6 +214,14 @@ def mic_mixer(run: Callable[[list[str]], str | None]) -> Result:
     return Result("Mic mixer", "warn", "reachy-bridge-mic.service isn't running; apps hear silence without it (reachy-bridge logs mic)")
 
 
+def portaudio(find_library: Callable[[str], str | None]) -> Result:
+    """Apps that play or record with sounddevice (PortAudio) crash at import
+    without it; the bridge itself doesn't use it."""
+    if find_library("portaudio"):
+        return Result("PortAudio", "pass", "libportaudio")
+    return Result("PortAudio", "warn", "not installed; apps that use sounddevice crash on start (sudo apt install libportaudio2)")
+
+
 def disk(home: Path) -> Result:
     try:
         free = shutil.disk_usage(home).free / 1e9
@@ -286,6 +295,7 @@ def run_checks(root: Path = Path("/"), run: Callable[[list[str]], str | None] = 
     results.append(udev_rule(root))
     results.append(loopback(root))
     results.append(mic_mixer(run))
+    results.append(portaudio(ctypes.util.find_library))
     results.append(disk(Path.home()))
     results.append(memory(root))
     results.append(Result("Power supply", "skip", "needs the motors on; the setup's on/off test checks it"))

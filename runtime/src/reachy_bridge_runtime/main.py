@@ -20,7 +20,7 @@ import logging
 import sys
 
 from reachy_bridge_runtime import platforms, upstream
-from reachy_bridge_runtime.features import app_bind, keep_awake, kinematics, media, platform_info, sim_apps, sim_sounds, wobble
+from reachy_bridge_runtime.features import app_bind, keep_awake, kinematics, media, media_return, platform_info, sim_apps, sim_sounds, wobble
 
 logger = logging.getLogger("reachy_bridge_runtime")
 
@@ -30,6 +30,7 @@ FEATURES = {
     app_bind.FEATURE: app_bind.apply,
     keep_awake.FEATURE: keep_awake.apply,
     kinematics.FEATURE: kinematics.apply,
+    media_return.FEATURE: media_return.apply,
     "audio_levels": media.apply_audio_spectrum,
     "camera": media.apply_camera_stream,
     sim_apps.FEATURE: lambda: sim_apps.apply(sys.argv[1:]),
@@ -37,7 +38,7 @@ FEATURES = {
     wobble.FEATURE: wobble.apply,
 }
 # On every platform; the rest only where the platform adapter enables them.
-CORE_FEATURES = frozenset({app_bind.FEATURE, keep_awake.FEATURE, kinematics.FEATURE})
+CORE_FEATURES = frozenset({app_bind.FEATURE, keep_awake.FEATURE, kinematics.FEATURE, media_return.FEATURE})
 # Features whose mismatch or failure stops startup, like a daemon mismatch:
 # without them the daemon would run apps open on the LAN (#186), or a sim
 # daemon's apps would drive the real robot (#218).
