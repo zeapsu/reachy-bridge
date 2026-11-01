@@ -34,8 +34,9 @@ class Daemon:
         self._status.media_released = False
 
 
-def run_app(daemon: Daemon, *, release: bool) -> types.SimpleNamespace:
-    """Start an app through the wrapper; it may release media, then exits."""
+def run_app(daemon: Daemon, *, release: bool, killed: bool = False) -> types.SimpleNamespace:
+    """Start an app through the wrapper; it may release media, then exits
+    (or its monitor is cancelled, as stop_current_app does)."""
     manager = types.SimpleNamespace(daemon=daemon, current_app=None)
 
     async def scenario() -> None:
@@ -52,8 +53,13 @@ def run_app(daemon: Daemon, *, release: bool) -> types.SimpleNamespace:
 
         assert await media_return._start_app(original, manager, "app") == "starting"
         await asyncio.sleep(0)
-        exit_app.set()
-        await manager.current_app.monitor_task
+        task = manager.current_app.monitor_task
+        if killed:
+            task.cancel()
+            manager.current_app = None
+        else:
+            exit_app.set()
+        await asyncio.gather(task, return_exceptions=True)
         for _ in range(3):
             await asyncio.sleep(0)
 
@@ -96,6 +102,50 @@ def test_a_newer_running_app_keeps_its_release() -> None:
 
     assert asyncio.run(scenario()) is False
     assert daemon.media_released
+
+
+def test_a_stopped_app_gives_the_media_back_too() -> None:
+    daemon = Daemon(released=False)
+    run_app(daemon, release=True, killed=True)
+    assert daemon.acquired == 1
+
+
+def test_a_release_from_before_the_app_is_left_alone() -> None:
+    daemon = Daemon(released=True)
+    run_app(daemon, release=False)
+    assert daemon.acquired == 0
+    assert daemon.media_released
+
+
+def test_a_starting_daemon_is_waited_for() -> None:
+    daemon = Daemon(released=True)
+    daemon._status.state = DaemonState.STARTING
+    manager = types.SimpleNamespace(daemon=daemon, current_app=None)
+
+    async def scenario() -> bool:
+        async def finish_start() -> None:
+            await asyncio.sleep(0.05)
+            daemon._status.state = DaemonState.RUNNING
+
+        starting = asyncio.create_task(finish_start())
+        media_return.SETTLE_POLL = 0.01
+        try:
+            return await media_return.take_back(manager, None, "app")
+        finally:
+            media_return.SETTLE_POLL = 0.5
+            await starting
+
+    assert asyncio.run(scenario()) is True
+    assert daemon.acquired == 1
+
+
+def test_a_daemon_in_error_keeps_the_release(caplog: Any) -> None:
+    daemon = Daemon(released=True)
+    daemon._status.state = DaemonState.ERROR
+    manager = types.SimpleNamespace(daemon=daemon, current_app=None)
+    assert asyncio.run(media_return.take_back(manager, None, "app")) is False
+    assert daemon.media_released and daemon.acquired == 0
+    assert "stay released" in caplog.text
 
 
 def test_a_failed_acquire_is_logged_not_raised(caplog: Any) -> None:

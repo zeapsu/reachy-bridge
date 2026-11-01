@@ -216,10 +216,11 @@ REQUIREMENTS: tuple[Requirement, ...] = (
     ),
     Requirement(
         "media_return",
-        "a stopped daemon's start() brings media up unless _media_released, which status() reports",
+        "a stopped daemon's start() brings media up unless _media_released; _status holds both",
         lambda: (
-            _function(_DAEMON, "Daemon.status")(),
             _attr(_DAEMON, "DaemonState.RUNNING"),
+            _attr(_DAEMON, "DaemonState.STOPPED"),
+            _source_mentions(_DAEMON, "Daemon", "self._status.state = DaemonState.STOPPED")(),
             _source_mentions(_DAEMON, "Daemon.start", "not self._media_released", "self._media_server.start()")(),
             _source_mentions(_DAEMON, "Daemon", "self._status.media_released")(),
         ),
@@ -656,13 +657,11 @@ def forget_media_release(daemon: Any) -> None:
     daemon._status.media_released = False
 
 
-def daemon_running(daemon: Any) -> bool:
-    from reachy_mini.daemon.daemon import DaemonState
-
-    try:
-        return daemon.status().state == DaemonState.RUNNING
-    except Exception:
-        return False
+def daemon_state(daemon: Any) -> str | None:
+    """The daemon's state (``running``, ``stopped``, ``starting``...), read
+    without asking the backend; None if it can't be read."""
+    state = getattr(getattr(daemon, "_status", None), "state", None)
+    return getattr(state, "value", None)
 
 
 def local_camera_available() -> bool:
