@@ -86,6 +86,19 @@ pub fn url_port(url: &str) -> Option<u16> {
     authority.rsplit_once(':')?.1.parse().ok()
 }
 
+/// The runtime's app shim exits an app with a `reachy-bridge: ` line when it
+/// tries to serve on one of the bridge's ports (#274). The daemon's error is
+/// the exit code plus the last stderr lines; the card shows only that line.
+fn bridge_error(error: Value) -> Value {
+    let refusal = error.as_str().and_then(|text| {
+        text.lines().rev().find_map(|line| line.trim().strip_prefix("reachy-bridge: ")).map(|reason| {
+            let mut chars = reason.chars();
+            chars.next().map_or_else(String::new, |first| first.to_uppercase().collect::<String>() + chars.as_str())
+        })
+    });
+    refusal.map_or(error, Value::from)
+}
+
 fn now_secs() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
@@ -179,7 +192,7 @@ impl DaemonApps {
                     && let Some(current) = current.as_ref()
                 {
                     status = card_state(current.get("state").and_then(Value::as_str).unwrap_or(""));
-                    error = current.get("error").cloned().unwrap_or(Value::Null);
+                    error = current.get("error").cloned().map_or(Value::Null, bridge_error);
                     if status == "running" {
                         start_time = since.map_or(Value::Null, Value::from);
                     }
@@ -238,6 +251,15 @@ mod tests {
         assert_eq!(display_name("reachy-mini-conversation-app"), "Conversation App");
         assert_eq!(display_name("hello_world"), "Hello World");
         assert_eq!(display_name("reachy_mini"), "Reachy Mini");
+    }
+
+    #[test]
+    fn a_bridge_refusal_replaces_the_exit_log() {
+        let raw = json!("Process exited with code 78\nINFO starting\nreachy-bridge: this app's UI wants port 7861, which the bridge uses");
+        assert_eq!(bridge_error(raw), json!("This app's UI wants port 7861, which the bridge uses"));
+        let other = json!("Process exited with code 1\nOSError: PortAudio library not found");
+        assert_eq!(bridge_error(other.clone()), other);
+        assert_eq!(bridge_error(Value::Null), Value::Null);
     }
 
     #[test]
