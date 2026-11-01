@@ -208,7 +208,14 @@ fn own_host(headers: &HeaderMap, names: &HashSet<String>) -> bool {
         _ => host,
     };
     let name = name.trim_end_matches('.').to_ascii_lowercase();
-    name.trim_matches(['[', ']']).parse::<IpAddr>().is_ok() || names.contains(&name)
+    name.trim_matches(['[', ']']).parse::<IpAddr>().is_ok() || names.contains(&name) || mdns_name(&name)
+}
+
+/// `<one label>.local`: the name avahi publishes isn't always this machine's
+/// host name (a conflict makes it ubuntu-2.local). Only the local network
+/// answers for `.local`, so a website can't rebind one of these to the robot.
+fn mdns_name(name: &str) -> bool {
+    name.strip_suffix(".local").is_some_and(|label| !label.is_empty() && !label.contains('.'))
 }
 
 /// The terminal's side, for the local key only: open and close the page,
