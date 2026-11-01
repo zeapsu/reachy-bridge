@@ -622,7 +622,8 @@ mdns_name() {
 }
 
 # This device's IPv4 addresses on real networks: not Docker, VM or USB-gadget
-# bridges, which nobody browses from. The tailnet is listed separately.
+# bridges, which nobody browses from, or the tailnet (`hostname -I`, without
+# `ip`, can't tell them apart).
 lan_addresses() {
     local out
     if ! out=$(ip -4 -o addr show scope global 2>/dev/null); then
@@ -698,6 +699,7 @@ setup_page() {
     addresses=$(lan_addresses)
     echo "Open the setup page from a computer or phone on the same network:"
     [[ -z $host ]] || echo "  http://$host:$port"
+    [[ -n $host$addresses ]] || echo "  (no network address found: use this device's IP address, port $port)"
     for i in $addresses; do
         [[ $i == *:* ]] && continue
         echo "  http://$i:$port"
