@@ -13,11 +13,16 @@ which asks for a login on the LAN.
 It covers Python's ``socket`` module only: a listener opened by native code
 (a C extension, GStreamer, a Node or ffmpeg child) is not moved.
 
-A TCP listener on one of the bridge's own ports (``REACHY_BRIDGE_PORTS``,
-set by the daemon's unit: the controller, the app proxy, the daemons and
-signalling) can never work, and an app that catches the bind error runs on
-with no UI. So the process exits instead, with one line saying why, which
-the app's card shows (#274).
+A TCP server on one of the bridge's own ports (``REACHY_BRIDGE_PORTS``,
+set by the daemon's unit: the controller, the app proxy, the daemons, the
+audio gateway and signalling) can never work, and an app that catches the
+bind error runs on with no UI. So the process exits, with one line saying
+why, which the app's card shows (#274):
+- at once, if the bind would succeed (the bridge service isn't up, and the
+  app would take its port);
+- if the bind fails, after ``GRACE`` seconds unless the process has started
+  listening on another port by then. Gradio and other port finders probe
+  with a bind on each port in turn and move on; they stay up.
 
 It must not import anything outside the standard library: it runs in the
 apps venv, not the bridge's.
@@ -26,9 +31,10 @@ apps venv, not the bridge's.
 import ipaddress
 import os
 import socket
-import sys
+import threading
 
 PORTS_ENV = "REACHY_BRIDGE_PORTS"
+GRACE = 10.0
 REFUSED_EXIT = 78  # EX_CONFIG
 REFUSED_PREFIX = "reachy-bridge: "
 
@@ -57,9 +63,11 @@ def refused_port(family, kind, address, ports):
 
 
 def refuse(port):
-    sys.stderr.write(f"{REFUSED_PREFIX}this app's UI wants port {port}, which the bridge uses\n")
-    sys.stderr.flush()
-    os._exit(REFUSED_EXIT)
+    try:
+        message = f"{REFUSED_PREFIX}this app's UI wants port {port}, which the bridge uses\n"
+        os.write(2, message.encode())
+    finally:
+        os._exit(REFUSED_EXIT)
 
 
 def _is_wildcard(host):
@@ -118,22 +126,49 @@ def install():
     if getattr(socket.socket.bind, "_reachy_bridge", False):
         return
     bind = socket.socket.bind
+    listen = socket.socket.listen
     ports = bridge_ports()
+    state = {"listening": False, "timer": None}
+
+    def refuse_unless_listening(port):
+        if not state["listening"]:
+            refuse(port)
 
     def loopback_bind(self, address):
         port = refused_port(self.family, self.type, address, ports)
         if port is not None:
-            refuse(port)
-        v6only = True
-        if self.family == socket.AF_INET6:
             try:
-                v6only = bool(self.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY))
+                bind(self, loopback_address(self.family, self.type, address, _v6only(self)))
             except OSError:
-                pass
-        return bind(self, loopback_address(self.family, self.type, address, v6only))
+                if state["timer"] is None and not state["listening"]:
+                    timer = threading.Timer(GRACE, refuse_unless_listening, (port,))
+                    timer.daemon = True
+                    state["timer"] = timer
+                    timer.start()
+                raise
+            refuse(port)
+        return bind(self, loopback_address(self.family, self.type, address, _v6only(self)))
+
+    def tracking_listen(self, *args):
+        result = listen(self, *args)
+        if self.family in (socket.AF_INET, socket.AF_INET6):
+            state["listening"] = True
+            if state["timer"] is not None:
+                state["timer"].cancel()
+        return result
 
     loopback_bind._reachy_bridge = True  # type: ignore[attr-defined]
     socket.socket.bind = loopback_bind
+    socket.socket.listen = tracking_listen
+
+
+def _v6only(sock):
+    if sock.family != socket.AF_INET6:
+        return True
+    try:
+        return bool(sock.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY))
+    except OSError:
+        return True
 
 
 install()

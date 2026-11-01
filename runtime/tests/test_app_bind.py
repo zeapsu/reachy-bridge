@@ -100,26 +100,75 @@ def test_shim_leaves_udp_and_loopback_alone() -> None:
     assert shim.loopback_address(socket.AF_INET, socket.SOCK_STREAM, ("", 0)) == ("127.0.0.1", 0)
 
 
-def test_shim_exits_an_app_that_binds_a_bridge_port(tmp_path: Path) -> None:
+def run_with_shim(site_packages: Path, body: str, ports: str) -> subprocess.CompletedProcess[str]:
+    code = (
+        "import site, socket, time\n"
+        f"site.addsitedir({str(site_packages)!r})\n"
+        "import reachy_bridge_app_bind as shim\n"
+        "shim.GRACE = 0.2\n"
+        + body
+    )
+    return subprocess.run(
+        [sys.executable, "-I", "-c", code], capture_output=True, text=True, env={"REACHY_BRIDGE_PORTS": ports}, timeout=30
+    )
+
+
+def refusal(port: int) -> str:
+    return f"reachy-bridge: this app's UI wants port {port}, which the bridge uses"
+
+
+def test_shim_exits_an_app_stuck_on_a_bridge_port(tmp_path: Path) -> None:
+    site_packages = app_bind.install_shim(fake_venv(tmp_path / "apps_venv"))
+    with socket.socket() as held:  # the bridge, already serving on it
+        held.bind(("127.0.0.1", 0))
+        held.listen()
+        port = held.getsockname()[1]
+        body = (
+            "s = socket.socket()\n"
+            "try:\n"
+            f"    s.bind(('0.0.0.0', {port}))\n"
+            "except OSError:\n"
+            "    pass\n"  # an app that swallows the error still stops
+            "time.sleep(2)\n"
+            "print('still running')\n"
+        )
+        result = run_with_shim(site_packages, body, f"9, {port}")
+    assert result.returncode == 78
+    assert "still running" not in result.stdout
+    assert result.stderr.strip().splitlines()[-1] == refusal(port)
+
+
+def test_a_port_finder_that_moves_on_stays_up(tmp_path: Path) -> None:
+    site_packages = app_bind.install_shim(fake_venv(tmp_path / "apps_venv"))
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen()
+        port = held.getsockname()[1]
+        body = (
+            "probe = socket.socket()\n"
+            "try:\n"
+            f"    probe.bind(('127.0.0.1', {port}))\n"
+            "except OSError:\n"
+            "    probe.close()\n"
+            "server = socket.socket()\n"
+            "server.bind(('127.0.0.1', 0))\n"
+            "server.listen()\n"
+            "time.sleep(1)\n"
+            "print('still running')\n"
+        )
+        result = run_with_shim(site_packages, body, str(port))
+    assert result.returncode == 0, result.stderr
+    assert "still running" in result.stdout
+
+
+def test_taking_a_free_bridge_port_exits_at_once(tmp_path: Path) -> None:
     site_packages = app_bind.install_shim(fake_venv(tmp_path / "apps_venv"))
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    code = (
-        "import site, socket\n"
-        f"site.addsitedir({str(site_packages)!r})\n"
-        "s = socket.socket()\n"
-        "try:\n"
-        f"    s.bind(('0.0.0.0', {port}))\n"
-        "except OSError:\n"
-        "    pass\n"  # an app that swallows the error still stops
-        "print('still running')\n"
-    )
-    env = {"REACHY_BRIDGE_PORTS": f"9, {port}"}
-    result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, env=env)
+    result = run_with_shim(site_packages, f"socket.socket().bind(('0.0.0.0', {port}))\nprint('still running')\n", str(port))
     assert result.returncode == 78
-    assert "still running" not in result.stdout
-    assert result.stderr.strip().splitlines()[-1] == f"reachy-bridge: this app's UI wants port {port}, which the bridge uses"
+    assert result.stderr.strip().splitlines()[-1] == refusal(port)
     # Without the variable nothing is refused.
     assert bound_host(site_packages, "0.0.0.0", port=port) == "127.0.0.1"
 
