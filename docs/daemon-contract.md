@@ -277,7 +277,11 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   on purpose; apps run as the bridge's user and are trusted at that level. The
   controller proxies the current app's UI from `:7863` (loopback, or every
   interface behind the login in LAN mode), published over HTTPS as :8043
-  (#158).
+  (#158). Some apps pick a port the bridge uses (dj_reactor serves on
+  `DJ_UI_PORT`, default 7861, and leaves `custom_app_url` unset). **Bridge
+  patch (#274):** the shim exits a process that binds a TCP listener on a
+  port in `REACHY_BRIDGE_PORTS` (set by the daemon units) with a
+  `reachy-bridge: ` line, which the controller shows as the app's error.
 - webrtcsink runs the signalling server (`run-signalling-server`) on
   `0.0.0.0:8443` upstream. **Bridge patch (#186):** `signalling-server-host`
   is set to `127.0.0.1` (a webrtcsink without the property fails the media
