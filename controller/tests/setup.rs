@@ -690,11 +690,11 @@ async fn the_page_answers_only_to_the_robots_own_names() {
     let h = harness().await;
     let (_, page) = h.start().await;
     let port = page.rsplit(':').next().unwrap();
-    for host in ["evil.example", "rebind.example:80"] {
+    for host in ["evil.example", "rebind.example:80", "a.evil.local", ".local"] {
         let r = client().get(format!("{page}/api/setup/status")).header("host", host).send().await.unwrap();
         assert_eq!(r.status(), StatusCode::MISDIRECTED_REQUEST, "{host}");
     }
-    for host in [format!("127.0.0.1:{port}"), format!("localhost:{port}"), format!("[::1]:{port}"), "192.168.1.9".to_string()] {
+    for host in [format!("127.0.0.1:{port}"), format!("localhost:{port}"), format!("[::1]:{port}"), "192.168.1.9".to_string(), format!("ubuntu-2.local:{port}")] {
         let r = client().get(format!("{page}/api/setup/status")).header("host", &host).send().await.unwrap();
         assert_eq!(r.status(), StatusCode::OK, "{host}");
     }

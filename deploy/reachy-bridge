@@ -611,6 +611,28 @@ setup_access() {
     dashboard_addresses "$lan"
 }
 
+# The name this device really answers to on the local network, from avahi:
+# it isn't always <hostname>.local (a name conflict makes it ubuntu-2.local).
+# Empty without avahi, where no .local name works.
+mdns_name() {
+    local reply
+    reply=$(busctl --system --timeout=2 call org.freedesktop.Avahi / org.freedesktop.Avahi.Server GetHostNameFqdn 2>/dev/null) || return 0
+    reply=${reply#s \"}
+    printf '%s' "${reply%\"}"
+}
+
+# This device's IPv4 addresses on real networks: not Docker, VM or USB-gadget
+# bridges, which nobody browses from, or the tailnet (`hostname -I`, without
+# `ip`, can't tell them apart).
+lan_addresses() {
+    local out
+    if ! out=$(ip -4 -o addr show scope global 2>/dev/null); then
+        hostname -I 2>/dev/null | tr ' ' '\n' | grep -v : || true
+        return 0
+    fi
+    awk '$2 !~ /^(docker|br-|veth|virbr|l4tbr|usb|rndis|tailscale|lo)/ { split($4, a, "/"); print a[1] }' <<<"$out"
+}
+
 # Where to open the dashboard now: the tailnet name if Tailscale serves it,
 # the local name with LAN mode on.
 dashboard_addresses() {
@@ -620,7 +642,11 @@ dashboard_addresses() {
         echo "  https://$name:$SERVE_CONTROLLER_PORT  (your tailnet)"
     fi
     if (( $1 )); then
-        echo "  http://$(hostname 2>/dev/null | cut -d. -f1).local:${CONTROLLER_PORT:-7861}  (this network)"
+        name=$(mdns_name)
+        [[ -z $name ]] || echo "  http://$name:${CONTROLLER_PORT:-7861}  (this network)"
+        for name in $(lan_addresses); do
+            echo "  http://$name:${CONTROLLER_PORT:-7861}  (this network)"
+        done
     fi
     echo "  http://127.0.0.1:${CONTROLLER_PORT:-7861}  (on this device)"
 }
@@ -669,10 +695,11 @@ setup_page() {
     trap 'echo; echo "setup page closed"; exit 0' HUP INT TERM
     port=${reply#*\"port\":}
     port=${port%%[,\}]*}
-    host=$(hostname 2>/dev/null || echo robot)
-    addresses=$(hostname -I 2>/dev/null || true)
+    host=$(mdns_name)
+    addresses=$(lan_addresses)
     echo "Open the setup page from a computer or phone on the same network:"
-    echo "  http://${host%%.*}.local:$port"
+    [[ -z $host ]] || echo "  http://$host:$port"
+    [[ -n $host$addresses ]] || echo "  (no network address found: use this device's IP address, port $port)"
     for i in $addresses; do
         [[ $i == *:* ]] && continue
         echo "  http://$i:$port"

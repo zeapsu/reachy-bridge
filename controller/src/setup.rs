@@ -15,8 +15,9 @@
 //!   tied to its address, good until the page closes. Only one browser gets it.
 //! - The setup listener serves the setup routes and the dashboard bundle
 //!   (which shows the setup screen there) and nothing else: no controller
-//!   API, no app proxy, no daemon. It answers only under the robot's own
-//!   names and addresses, so a DNS-rebinding page can't reach it.
+//!   API, no app proxy, no daemon. It answers only under IP addresses, this
+//!   machine's names and `.local` names, so a website's DNS-rebinding page
+//!   can't reach it.
 //! - The robot test (power on without the wake-up move, read the motors,
 //!   power off) also runs only after a yes on the terminal: the page asks,
 //!   the terminal answers. It runs only from off, under `power_lock`.
@@ -200,7 +201,8 @@ fn host_names() -> HashSet<String> {
     names
 }
 
-/// The Host header names this machine: an IP literal or one of its names.
+/// The Host header could name this machine: an IP literal, one of its names,
+/// or a `.local` name.
 fn own_host(headers: &HeaderMap, names: &HashSet<String>) -> bool {
     let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else { return false };
     let name = match host.rsplit_once(':') {
@@ -208,7 +210,14 @@ fn own_host(headers: &HeaderMap, names: &HashSet<String>) -> bool {
         _ => host,
     };
     let name = name.trim_end_matches('.').to_ascii_lowercase();
-    name.trim_matches(['[', ']']).parse::<IpAddr>().is_ok() || names.contains(&name)
+    name.trim_matches(['[', ']']).parse::<IpAddr>().is_ok() || names.contains(&name) || mdns_name(&name)
+}
+
+/// `<one label>.local`: the name avahi publishes isn't always this machine's
+/// host name (a conflict makes it ubuntu-2.local). Only the local network
+/// answers for `.local`, so a website can't rebind one of these to the robot.
+fn mdns_name(name: &str) -> bool {
+    name.strip_suffix(".local").is_some_and(|label| !label.is_empty() && !label.contains('.'))
 }
 
 /// The terminal's side, for the local key only: open and close the page,
