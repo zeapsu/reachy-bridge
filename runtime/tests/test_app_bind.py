@@ -100,6 +100,42 @@ def test_shim_leaves_udp_and_loopback_alone() -> None:
     assert shim.loopback_address(socket.AF_INET, socket.SOCK_STREAM, ("", 0)) == ("127.0.0.1", 0)
 
 
+def test_shim_exits_an_app_that_binds_a_bridge_port(tmp_path: Path) -> None:
+    site_packages = app_bind.install_shim(fake_venv(tmp_path / "apps_venv"))
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    code = (
+        "import site, socket\n"
+        f"site.addsitedir({str(site_packages)!r})\n"
+        "s = socket.socket()\n"
+        "try:\n"
+        f"    s.bind(('0.0.0.0', {port}))\n"
+        "except OSError:\n"
+        "    pass\n"  # an app that swallows the error still stops
+        "print('still running')\n"
+    )
+    env = {"REACHY_BRIDGE_PORTS": f"9, {port}"}
+    result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, env=env)
+    assert result.returncode == 78
+    assert "still running" not in result.stdout
+    assert result.stderr.strip().splitlines()[-1] == f"reachy-bridge: this app's UI wants port {port}, which the bridge uses"
+    # Without the variable nothing is refused.
+    assert bound_host(site_packages, "0.0.0.0", port=port) == "127.0.0.1"
+
+
+def test_shim_refuses_only_tcp_binds_of_bridge_ports() -> None:
+    shim = types.ModuleType("shim")
+    exec(app_bind.shim_source().replace("\ninstall()\n", "\n"), shim.__dict__)
+    ports = shim.bridge_ports("7861,7863 8000 junk")
+    assert ports == {7861, 7863, 8000}
+    assert shim.refused_port(socket.AF_INET, socket.SOCK_STREAM, ("127.0.0.1", 7861), ports) == 7861
+    assert shim.refused_port(socket.AF_INET6, socket.SOCK_STREAM, ("::", 8000, 0, 0), ports) == 8000
+    assert shim.refused_port(socket.AF_INET, socket.SOCK_STREAM, ("0.0.0.0", 8042), ports) is None
+    assert shim.refused_port(socket.AF_INET, socket.SOCK_DGRAM, ("0.0.0.0", 7861), ports) is None
+    assert shim.refused_port(socket.AF_UNIX, socket.SOCK_STREAM, "/tmp/7861", ports) is None
+
+
 def test_site_packages_follows_pyvenv_cfg(tmp_path: Path) -> None:
     python = fake_venv(tmp_path / "apps_venv")
     (tmp_path / "apps_venv/lib/python3.11/site-packages").mkdir(parents=True)  # stale leftover

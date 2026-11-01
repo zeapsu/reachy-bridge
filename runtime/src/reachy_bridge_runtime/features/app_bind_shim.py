@@ -13,12 +13,53 @@ which asks for a login on the LAN.
 It covers Python's ``socket`` module only: a listener opened by native code
 (a C extension, GStreamer, a Node or ffmpeg child) is not moved.
 
+A TCP listener on one of the bridge's own ports (``REACHY_BRIDGE_PORTS``,
+set by the daemon's unit: the controller, the app proxy, the daemons and
+signalling) can never work, and an app that catches the bind error runs on
+with no UI. So the process exits instead, with one line saying why, which
+the app's card shows (#274).
+
 It must not import anything outside the standard library: it runs in the
 apps venv, not the bridge's.
 """
 
 import ipaddress
+import os
 import socket
+import sys
+
+PORTS_ENV = "REACHY_BRIDGE_PORTS"
+REFUSED_EXIT = 78  # EX_CONFIG
+REFUSED_PREFIX = "reachy-bridge: "
+
+
+def bridge_ports(value=None):
+    """The ports in ``REACHY_BRIDGE_PORTS`` (spaces or commas between them)."""
+    if value is None:
+        value = os.environ.get(PORTS_ENV, "")
+    ports = set()
+    for item in value.replace(",", " ").split():
+        try:
+            ports.add(int(item))
+        except ValueError:
+            continue
+    return frozenset(ports)
+
+
+def refused_port(family, kind, address, ports):
+    """The bridge port a TCP bind of ``address`` would take, or None."""
+    if kind != socket.SOCK_STREAM or family not in (socket.AF_INET, socket.AF_INET6):
+        return None
+    if not isinstance(address, tuple) or len(address) < 2:
+        return None
+    port = address[1]
+    return port if isinstance(port, int) and port in ports else None
+
+
+def refuse(port):
+    sys.stderr.write(f"{REFUSED_PREFIX}this app's UI wants port {port}, which the bridge uses\n")
+    sys.stderr.flush()
+    os._exit(REFUSED_EXIT)
 
 
 def _is_wildcard(host):
@@ -77,8 +118,12 @@ def install():
     if getattr(socket.socket.bind, "_reachy_bridge", False):
         return
     bind = socket.socket.bind
+    ports = bridge_ports()
 
     def loopback_bind(self, address):
+        port = refused_port(self.family, self.type, address, ports)
+        if port is not None:
+            refuse(port)
         v6only = True
         if self.family == socket.AF_INET6:
             try:

@@ -15,6 +15,10 @@ Environment=PYTHONUNBUFFERED=1
 # reachy-mini 1.13.0 sends usage telemetry to PostHog by default
 # (docs/daemon-contract.md); the bridge opts out.
 Environment=REACHY_MINI_TELEMETRY=0
+# The bridge's own ports (controller, app proxy, robot and sim daemons,
+# signalling): an app that tries to serve on one is stopped with a message
+# saying so (features/app_bind_shim.py).
+Environment=REACHY_BRIDGE_PORTS=7861 7863 8000 8001 8443
 # Loopback only: the daemon has no authentication. Only the controller is
 # exposed, and only through tailscale serve.
 ExecStart=%h/.local/share/reachy-bridge/.venv/bin/reachy-bridge-runtime \
