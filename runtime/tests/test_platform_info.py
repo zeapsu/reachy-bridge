@@ -57,7 +57,7 @@ async def test_startup_reports_what_apply_skipped(
     board = platforms.Platform(name="test-board", tier="tested", features=frozenset({"audio_levels"}))
     runtime_main.report_platform(board, skipped=["keep_awake"], routes_ok=True)
     body = await _get(_fake_daemon_app.create_app())
-    assert body["features"] == ["app_bind", "audio_levels", "kinematics"]
+    assert body["features"] == ["app_bind", "audio_levels", "kinematics", "media_return"]
     assert body["skipped"] == ["keep_awake"]
 
 

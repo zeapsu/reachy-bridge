@@ -56,7 +56,7 @@ def test_startup_skips_only_the_mismatched_feature(monkeypatch: pytest.MonkeyPat
     )
     skipped = runtime_main.apply(platforms.Platform(name="test", tier="tested"))
     assert skipped == ["keep_awake"]
-    assert applied == ["app_bind", "kinematics"]
+    assert applied == ["app_bind", "kinematics", "media_return"]
 
 
 def test_an_app_bind_mismatch_stops_startup(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -130,7 +130,7 @@ def test_a_routes_mismatch_spares_features_without_routes(monkeypatch: pytest.Mo
         {name: (lambda name=name: applied.append(name)) for name in runtime_main.FEATURES},
     )
     assert runtime_main.apply(platforms.Platform(name="test", tier="tested")) == ["kinematics"]
-    assert applied == ["app_bind", "keep_awake"]
+    assert applied == ["app_bind", "keep_awake", "media_return"]
 
 
 def test_a_wrapped_app_factory_no_longer_matches_the_routes_seam(monkeypatch: pytest.MonkeyPatch) -> None:

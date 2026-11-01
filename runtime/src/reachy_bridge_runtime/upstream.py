@@ -199,6 +199,32 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         ),
     ),
     Requirement(
+        "media_return",
+        "start_app keeps the app's monitor task, which ends with the app process",
+        lambda: (
+            _coroutine(_MANAGER, "AppManager.start_app", "app_name")(),
+            _source_mentions(_MANAGER, "AppManager.start_app", "monitor_task=monitor_task", "self.current_app = RunningApp(")(),
+        ),
+    ),
+    Requirement(
+        "media_return",
+        "Daemon.acquire_media() takes the camera and microphone back after a release",
+        lambda: (
+            _coroutine(_DAEMON, "Daemon.acquire_media")(),
+            _source_mentions(_DAEMON, "Daemon.acquire_media", "_media_released", "_media_server.start()")(),
+        ),
+    ),
+    Requirement(
+        "media_return",
+        "a stopped daemon's start() brings media up unless _media_released, which status() reports",
+        lambda: (
+            _function(_DAEMON, "Daemon.status")(),
+            _attr(_DAEMON, "DaemonState.RUNNING"),
+            _source_mentions(_DAEMON, "Daemon.start", "not self._media_released", "self._media_server.start()")(),
+            _source_mentions(_DAEMON, "Daemon", "self._status.media_released")(),
+        ),
+    ),
+    Requirement(
         "sim_apps",
         "every apps_venv path comes from local_common_venv._get_venv_parent_dir()",
         lambda: (
@@ -430,6 +456,12 @@ def app_python(manager: Any, app_name: str) -> Path:
     return Path(get_app_python(app_name, manager.wireless_version, manager.desktop_app_daemon))
 
 
+def app_monitor_task(manager: Any) -> Any | None:
+    """The asyncio task that ends when the current app's process exits (clean
+    exit, crash, kill or stop); None when no app has run."""
+    return getattr(getattr(manager, "current_app", None), "monitor_task", None)
+
+
 def manager_daemon(manager: Any) -> Any | None:
     return getattr(manager, "daemon", None)
 
@@ -608,6 +640,29 @@ def media_server(daemon: Any) -> Any | None:
 def media_released(daemon: Any) -> bool:
     released = getattr(daemon, "media_released", False)
     return bool(released() if callable(released) else released)
+
+
+async def acquire_media(daemon: Any) -> None:
+    """Restart the daemon's media server after an app released it (a no-op
+    when it isn't released). Only for a running daemon: it starts the
+    pipeline without the backend hookup that ``Daemon.start`` does."""
+    await daemon.acquire_media()
+
+
+def forget_media_release(daemon: Any) -> None:
+    """Clear a stopped daemon's release, so its next ``start()`` brings the
+    media up (and hooks it to the backend) as on a fresh daemon."""
+    daemon._media_released = False
+    daemon._status.media_released = False
+
+
+def daemon_running(daemon: Any) -> bool:
+    from reachy_mini.daemon.daemon import DaemonState
+
+    try:
+        return daemon.status().state == DaemonState.RUNNING
+    except Exception:
+        return False
 
 
 def local_camera_available() -> bool:
