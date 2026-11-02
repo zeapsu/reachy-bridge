@@ -1,4 +1,4 @@
-"""The daemon units name every bridge port for the app shim (#274)."""
+"""What the daemon units hand to the runtime and to app installs."""
 
 from __future__ import annotations
 
@@ -36,3 +36,11 @@ def test_every_bridge_port_reaches_the_daemons() -> None:
     for unit in ("reachy-bridge.service", "reachy-bridge-sim.service"):
         ports = {int(p) for p in environment(unit)["REACHY_BRIDGE_PORTS"].split()}
         assert ports == expected, unit
+
+
+def test_app_installs_are_constrained() -> None:
+    constraints = (UNITS.parent / "app-constraints.txt").read_text()
+    assert "opencv-python<5" in constraints
+    assert "opencv-python-headless<5" in constraints
+    for unit in ("reachy-bridge.service", "reachy-bridge-sim.service"):
+        assert environment(unit)["UV_CONSTRAINT"] == "%h/.local/share/reachy-bridge/app-constraints.txt"

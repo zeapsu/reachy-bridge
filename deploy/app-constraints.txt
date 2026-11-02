@@ -1,0 +1,8 @@
+# Limits on what the daemon's `uv pip install` may put in the shared apps venv
+# (UV_CONSTRAINT in the daemon units). One app's loose requirement sets the
+# version for every app there.
+#
+# OpenCV 5 has no cv2.CascadeClassifier, which apps written for OpenCV 4 use
+# (reachy_baby_yoda). The 4.x line is still released.
+opencv-python<5
+opencv-python-headless<5

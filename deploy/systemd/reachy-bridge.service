@@ -20,6 +20,8 @@ Environment=REACHY_MINI_TELEMETRY=0
 # saying so (features/app_bind_shim.py). Keep in step with the controller
 # and audio units' ports.
 Environment="REACHY_BRIDGE_PORTS=7861 7863 8000 8001 8002 8443"
+# Apps install with these limits on the shared venv (deploy/app-constraints.txt).
+Environment=UV_CONSTRAINT=%h/.local/share/reachy-bridge/app-constraints.txt
 # Loopback only: the daemon has no authentication. Only the controller is
 # exposed, and only through tailscale serve.
 ExecStart=%h/.local/share/reachy-bridge/.venv/bin/reachy-bridge-runtime \

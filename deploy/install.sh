@@ -6,7 +6,9 @@
 #
 # Lays down, under ~/.local/share/reachy-bridge:
 #   .venv/           the runtime and Pollen's daemon (reachy-mini at the locked version)
-#   apps_venv/       community apps, managed by the daemon (left untouched here)
+#   apps_venv/       community apps, managed by the daemon (here, only OpenCV 5 is moved
+#                    back to 4.x: pin_app_opencv)
+#   app-constraints.txt  limits on what apps can install in apps_venv
 #   bin/reachy-controller
 #   sim/             the sim daemon's working directory (sim mode, #149)
 # and the reachy-bridge and reachy-bridge-controller user units, the
@@ -46,6 +48,22 @@ record() {
     local line
     line=$(printf '%s\t%s' "$1" "$2")
     grep -qxF "$line" "$MANIFEST" 2>/dev/null || printf '%s\n' "$line" >>"$MANIFEST"
+}
+
+# An apps venv from before app-constraints.txt may hold OpenCV 5, and both
+# OpenCV wheels at once: they share one cv2/ directory, so the later install
+# overwrote the earlier one. Leave one wheel, the one in use if both are there,
+# at the newest allowed version. Nothing else in the venv changes.
+pin_app_opencv() {
+    local python=$1/bin/python freeze wheel=opencv-python
+    [[ -x $python ]] || return 0
+    freeze=$(uv pip list --python "$python" --format=freeze 2>/dev/null) || return 0
+    grep -qE '^opencv-python(-headless)?==([5-9]|[1-9][0-9])\.' <<<"$freeze" || return 0
+    grep -q '^opencv-python-headless==' <<<"$freeze" && wheel=opencv-python-headless
+    echo "Moving $1 to $wheel 4.x"
+    uv pip uninstall --python "$python" opencv-python opencv-python-headless 2>/dev/null || true
+    uv pip install --python "$python" --constraint "$DEST/app-constraints.txt" "$wheel" \
+        || echo "install: warning: no OpenCV left in $1: apps that use it fail until you run: uv pip install --python $python --constraint $DEST/app-constraints.txt $wheel" >&2
 }
 
 step() { printf '\n== %s\n' "$*"; }
@@ -122,6 +140,9 @@ UV_PROJECT_ENVIRONMENT="$DEST/.venv" uv sync --project "$REPO" --frozen --no-dev
 install -m 755 "$REPO/controller/target/release/reachy-controller" "$DEST/bin/reachy-controller.new"
 mv -f "$DEST/bin/reachy-controller.new" "$DEST/bin/reachy-controller"
 install -D -m 755 "$CLI" "$BIN_DIR/reachy-bridge"
+install -m 644 "$REPO/deploy/app-constraints.txt" "$DEST/app-constraints.txt"
+pin_app_opencv "$DEST/apps_venv"
+pin_app_opencv "$DEST/sim/apps_venv"
 mkdir -p "$UNIT_DIR"
 # rm first: never write through a symlinked unit file to its target.
 rm -f "$UNIT_DIR/$DAEMON" "$UNIT_DIR/$CONTROLLER" "$UNIT_DIR/$SIM" "$UNIT_DIR/$AUDIO" "$UNIT_DIR/$MIC"

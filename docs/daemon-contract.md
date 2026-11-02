@@ -285,6 +285,12 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   as the app's error: at once if the port is free, else after 10 s unless
   the process listens on another port by then (port finders like Gradio's
   probe each port with a bind and move on).
+- Apps share one venv, so one app's loose requirement sets a package's version
+  for all of them, and an unpinned `opencv-python-headless` resolves to OpenCV 5,
+  which has no `cv2.CascadeClassifier`. **Bridge patch:** the daemon units set
+  `UV_CONSTRAINT` to `deploy/app-constraints.txt`, which keeps OpenCV on 4.x, and
+  `install.sh` moves an existing venv back. An app that requires OpenCV 5 fails
+  to install, with uv's resolver error.
 - webrtcsink runs the signalling server (`run-signalling-server`) on
   `0.0.0.0:8443` upstream. **Bridge patch (#186):** `signalling-server-host`
   is set to `127.0.0.1` (a webrtcsink without the property fails the media
