@@ -177,8 +177,12 @@ def test_the_dashboard_turning_it_off_during_a_sleep_keeps_it_off():
     assert not choice.sleep_ended()
 
 
-def test_a_forgotten_choice_doesnt_keep_an_apps_wobble():
+def test_a_daemon_restart_ends_the_choice():
     choice = Choice()
+    old, new = object(), object()
+    choice.on_backend(old)
     choice.enabled()
-    choice.forget()
+    choice.on_backend(old)
+    assert choice.from_app(choice.keep_on)
+    choice.on_backend(new)
     assert not choice.from_app(choice.keep_on)

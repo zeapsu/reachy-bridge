@@ -96,6 +96,7 @@ class Choice:
         self._wanted = False
         self._app = threading.local()
         self._sleeps = 0
+        self._backend: Any = None
         self._stopped_by_sleep = False
 
     def from_app(self, run: Callable[[], Any]) -> Any:
@@ -131,8 +132,12 @@ class Choice:
         finally:
             self._app.quiescing = False
 
-    def forget(self) -> None:
-        self._wanted = False
+    def on_backend(self, backend: Any) -> None:
+        """The choice ends with the backend it was made on: a daemon restart
+        makes a new one, in this same process, with no wobble running."""
+        if backend is not self._backend:
+            self._backend = backend
+            self._wanted = False
 
     def sleep_started(self) -> None:
         self._sleeps += 1
@@ -301,20 +306,19 @@ def apply() -> None:
     choice = Choice()
 
     def process_command(original: Any, backend: Any, cmd: Any, *args: Any, **kwargs: Any) -> Any:
+        choice.on_backend(backend)
         # Only this command: a sleep must still stop the wobble before it moves.
         if type(cmd).__name__ != "SetWobblingCmd":
             return original(backend, cmd, *args, **kwargs)
         return choice.from_app(lambda: original(backend, cmd, *args, **kwargs))
 
     async def sleep(original: Any, backend: Any, *args: Any, **kwargs: Any) -> Any:
+        choice.on_backend(backend)
         choice.sleep_started()
         try:
             return await original(backend, *args, **kwargs)
         finally:
-            back_on = choice.sleep_ended()
-            if upstream.backend_shutting_down(backend):
-                choice.forget()
-            elif back_on:
+            if choice.sleep_ended() and not upstream.backend_shutting_down(backend):
                 server = upstream.media_server(backend)
                 if server is not None:
                     server.enable_wobbling(backend.set_speech_offsets)
@@ -323,6 +327,7 @@ def apply() -> None:
         choice.quiescing(lambda: original(backend))
 
     def enable(original: Any, server: Any, callback: Any) -> None:
+        choice.on_backend(getattr(callback, "__self__", None))
         choice.enabled()
         original(server, gate.wrap(callback))
         if audio_tee.is_installed():
