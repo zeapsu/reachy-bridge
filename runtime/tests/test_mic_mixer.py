@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from typing import Any
 
 import pytest
@@ -34,6 +35,7 @@ class FakeProcess:
         self.polls = 0
         self.exits_after = exits_after
         self.returncode: int | None = None
+        self.stuck = False
 
     def poll(self) -> int | None:
         self.polls += 1
@@ -44,8 +46,13 @@ class FakeProcess:
     def terminate(self) -> None:
         self.returncode = -15
 
-    def wait(self) -> int | None:
+    def wait(self, timeout: float | None = None) -> int | None:
+        if self.stuck and timeout is not None:
+            raise subprocess.TimeoutExpired("alsaloop", timeout)
         return self.returncode
+
+    def kill(self) -> None:
+        self.returncode = -9
 
 
 def test_waits_for_the_tee_then_runs_the_bridge(monkeypatch: pytest.MonkeyPatch, calls: list[Any]) -> None:
@@ -74,3 +81,13 @@ def test_stops_the_bridge_when_the_sound_cards_change(monkeypatch: pytest.Monkey
     assert mic_mixer._bridge() == 1
     assert process.returncode == -15
     assert calls == [("sleep", mic_mixer._WATCH_S)] * 2
+
+
+def test_kills_a_bridge_that_ignores_the_stop(monkeypatch: pytest.MonkeyPatch, calls: list[Any]) -> None:
+    process = FakeProcess()
+    process.stuck = True
+    monkeypatch.setattr(mic_mixer.subprocess, "Popen", lambda _args: process)
+    cards = iter(["with mic", "without"])
+    monkeypatch.setattr(mic_mixer, "_cards", lambda: next(cards))
+    assert mic_mixer._bridge() == 1
+    assert process.returncode == -9

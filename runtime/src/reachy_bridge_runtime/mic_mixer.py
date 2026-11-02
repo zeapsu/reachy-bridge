@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 _WAIT_S = 5.0
 _WATCH_S = 2.0
+_STOP_S = 5.0
 
 
 def command() -> list[str]:
@@ -58,7 +59,11 @@ def _bridge() -> int:
         if _cards() != cards:
             logger.warning("The sound cards changed; restarting the mic bridge.")
             process.terminate()
-            process.wait()
+            try:
+                process.wait(timeout=_STOP_S)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
             return 1
     return process.returncode
 
