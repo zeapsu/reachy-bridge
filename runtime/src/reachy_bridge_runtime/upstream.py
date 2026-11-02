@@ -211,6 +211,13 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         ),
     ),
     Requirement(
+        "app_bind",
+        "an app's status keeps its exit error (the last stderr lines) after the monitor task ends",
+        _source_mentions(
+            _MANAGER, "AppManager.start_app", "status=status", "self.current_app.status.error = ", "stderr_lines[-10:]"
+        ),
+    ),
+    Requirement(
         "media_return",
         "Daemon.acquire_media() takes the camera and microphone back after a release",
         lambda: (
@@ -467,6 +474,17 @@ def app_monitor_task(manager: Any) -> Any | None:
     """The asyncio task that ends when the current app's process exits (clean
     exit, crash, kill or stop); None when no app has run."""
     return getattr(getattr(manager, "current_app", None), "monitor_task", None)
+
+
+def app_status(manager: Any) -> Any | None:
+    """The current app's status object; it outlives ``current_app``."""
+    return getattr(getattr(manager, "current_app", None), "status", None)
+
+
+def app_status_error(status: Any) -> str | None:
+    """Why the app exited: the exit code and its last stderr lines."""
+    error = getattr(status, "error", None)
+    return error if isinstance(error, str) else None
 
 
 def manager_daemon(manager: Any) -> Any | None:

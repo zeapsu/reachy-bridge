@@ -24,6 +24,10 @@ why, which the app's card shows (#274):
   listening on another port by then. Gradio and other port finders probe
   with a bind on each port in turn and move on; they stay up.
 
+An app listed in ``app_overlays.py`` also gets its overlay folders
+(``REACHY_BRIDGE_APP_PATHS``) first on ``sys.path``, so it can run with an
+older library than the shared venv has (#279).
+
 It must not import anything outside the standard library: it runs in the
 apps venv, not the bridge's.
 """
@@ -31,6 +35,7 @@ apps venv, not the bridge's.
 import ipaddress
 import os
 import socket
+import sys
 import threading
 
 PORTS_ENV = "REACHY_BRIDGE_PORTS"
@@ -122,7 +127,23 @@ def loopback_address(family, kind, address, v6only=True):
     return ("::1" if v6only else "::ffff:127.0.0.1", address[1], 0, 0)
 
 
+def add_overlays(value=None, path=None):
+    """Put the folders in ``REACHY_BRIDGE_APP_PATHS`` just before the first
+    site-packages on ``sys.path``: ahead of the venv's packages, after the
+    standard library."""
+    if value is None:
+        value = os.environ.get("REACHY_BRIDGE_APP_PATHS", "")
+    path = sys.path if path is None else path
+    folders = [f for f in value.split(os.pathsep) if f and os.path.isdir(f)]
+    for folder in folders:
+        if folder in path:
+            path.remove(folder)
+    at = next((i for i, entry in enumerate(path) if os.path.basename(str(entry)) == "site-packages"), 0)
+    path[at:at] = folders
+
+
 def install():
+    add_overlays()
     if getattr(socket.socket.bind, "_reachy_bridge", False):
         return
     bind = socket.socket.bind

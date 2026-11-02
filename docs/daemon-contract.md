@@ -285,6 +285,21 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   as the app's error: at once if the port is free, else after 10 s unless
   the process listens on another port by then (port finders like Gradio's
   probe each port with a bind and move on).
+- All apps share one `apps_venv`, so one app's loose requirement sets a
+  library's version for all of them: reachy_baby_yoda allows any OpenCV
+  from 4.5, uses `cv2.CascadeClassifier` and the Haar cascade files, and
+  OpenCV 5 (pulled in by another install) has neither. **Bridge feature
+  (#279, `features/app_overlays.py`):** `install.sh` builds an OpenCV 4
+  overlay folder (`uv pip install --target`, no dependencies) under
+  `app-overlays/`. Before each start the bridge checks the app's
+  `cv2.<name>` uses against the venv's OpenCV; an app missing any, or one
+  that exits with `module 'cv2' has no attribute`, is recorded in
+  `<state dir>/app-overlays.json`, and its processes get the overlay ahead
+  of the venv's packages (the shim reads `REACHY_BRIDGE_APP_PATHS`). Other
+  apps keep the venv's OpenCV. A scan result is dropped once the venv's
+  OpenCV has every name again; a crash result stays until its entry is
+  deleted. Not caught: indirect uses through another library that
+  don't fail with that error, and calls that still exist but changed.
 - webrtcsink runs the signalling server (`run-signalling-server`) on
   `0.0.0.0:8443` upstream. **Bridge patch (#186):** `signalling-server-host`
   is set to `127.0.0.1` (a webrtcsink without the property fails the media

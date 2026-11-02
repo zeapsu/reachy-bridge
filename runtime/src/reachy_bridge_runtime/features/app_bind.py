@@ -30,6 +30,7 @@ refused before it is installed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -38,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from reachy_bridge_runtime import upstream
+from reachy_bridge_runtime.features import app_overlays
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +123,43 @@ async def _start_app(original: Any, manager: Any, app_name: str, *args: Any, **k
     except Exception as exc:
         logger.exception("Not starting %s: could not keep its UI on loopback", app_name)
         raise RuntimeError(f"Not starting {app_name}: could not keep its UI on loopback ({exc})") from exc
-    return await original(manager, app_name, *args, **kwargs)
+    # The app's process gets a copy of the daemon's environment when it is
+    # spawned, inside original; only this app sees its overlays (#279).
+    try:
+        await asyncio.to_thread(app_overlays.check_app, app_name, site_packages(python) / app_name, str(python))
+    except Exception:
+        logger.exception("Could not check which OpenCV %s needs", app_name)
+    try:
+        overlays = os.pathsep.join(str(p) for p in app_overlays.paths_for(app_name))
+    except Exception:
+        logger.exception("Starting %s without overlays: couldn't read them", app_name)
+        overlays = ""
+    if overlays:
+        os.environ[app_overlays.PATHS_ENV] = overlays
+    else:
+        os.environ.pop(app_overlays.PATHS_ENV, None)
+    try:
+        status = await original(manager, app_name, *args, **kwargs)
+    finally:
+        os.environ.pop(app_overlays.PATHS_ENV, None)
+    _watch_exit(manager, app_name)
+    return status
+
+
+def _watch_exit(manager: Any, app_name: str) -> None:
+    """When the app exits, remember an overlay its error calls for (#279)."""
+    monitor = upstream.app_monitor_task(manager)
+    app_status = upstream.app_status(manager)
+    if monitor is None or app_status is None:
+        return
+
+    def exited(_task: Any) -> None:
+        try:
+            app_overlays.learn(app_name, upstream.app_status_error(app_status))
+        except Exception:
+            logger.exception("Could not record what %s needs", app_name)
+
+    monitor.add_done_callback(exited)
 
 
 def _configure_webrtc(original: Any, media_server: Any, *args: Any, **kwargs: Any) -> Any:
