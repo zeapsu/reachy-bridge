@@ -678,10 +678,6 @@ def wobble_limits() -> tuple[Callable[[Any, Any], Any], list[tuple[float, float]
     return solve, limits
 
 
-def media_server(backend: Any) -> Any | None:
-    return getattr(backend, "_media_server", None)
-
-
 def head_wobbler(server: Any) -> Any | None:
     return getattr(server, "_head_wobbler", None)
 
@@ -690,8 +686,9 @@ def wobbler_sample_rate(server: Any) -> int:
     return int(server.WOBBLER_SAMPLE_RATE)
 
 
-def media_server(daemon: Any) -> Any | None:
-    return getattr(daemon, "_media_server", None)
+def media_server(owner: Any) -> Any | None:
+    """The media server of a daemon or a backend; both keep it under this name."""
+    return getattr(owner, "_media_server", None)
 
 
 def media_released(daemon: Any) -> bool:
