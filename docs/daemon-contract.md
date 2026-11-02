@@ -17,7 +17,12 @@ every symbol it relies on; `reachy-bridge-runtime --check` verifies them.
   bound to `127.0.0.1:8000`. The daemon process stays up; "power" is the
   backend inside it, started and stopped over HTTP.
 - `--desktop-app-daemon` installs community apps into `apps_venv` next to the
-  daemon venv, outside anything `uv sync` manages.
+  daemon venv, outside anything `uv sync` manages. Upstream installs
+  `reachy-mini` there once, unpinned, and never moves it to match the daemon.
+  **Bridge step (`features/apps_venv_sync.py`):** `install.sh` sets the
+  `reachy-mini` and OpenCV packages an apps venv already has (the robot's and
+  the sim's) to the daemon's versions. An app install can still move them
+  until the next install.
 - WebRTC signalling runs inside webrtcsink on `:8443`
   (`run-signalling-server`). It needs gst-plugins-rs 0.14 on GStreamer 1.24;
   the 0.10 and 0.13 builds tried on the Jetson didn't have that property.
