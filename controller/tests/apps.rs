@@ -56,7 +56,8 @@ async fn favorites_default_validate_and_persist() {
     assert_eq!(body["favorites"], json!(["reachy_mini_radio", "hello_world"]));
     let (status, _) = h.call("PUT", "/api/apps/favorites", Some(json!({"favorites": ["nope"]}))).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    let (status, _) = h.call("PUT", "/api/apps/favorites", Some(json!({"favorites": ["hello_world", "hello_world"]}))).await;
+    let (status, _) =
+        h.call("PUT", "/api/apps/favorites", Some(json!({"favorites": ["hello_world", "hello_world"]}))).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let (status, _) = h.call("PUT", "/api/apps/favorites", Some(json!({"favorites": ["hello_world"]}))).await;
     assert_eq!(status, StatusCode::OK);

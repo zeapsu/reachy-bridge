@@ -14,7 +14,9 @@ from reachy_bridge_runtime.features import media_return
 class Daemon:
     def __init__(self, *, released: bool, running: bool = True, fail: bool = False) -> None:
         self._media_released = released
-        self._status = types.SimpleNamespace(media_released=released, state=DaemonState.RUNNING if running else DaemonState.STOPPED)
+        self._status = types.SimpleNamespace(
+            media_released=released, state=DaemonState.RUNNING if running else DaemonState.STOPPED
+        )
         self._media_server = object()
         self.fail = fail
         self.acquired = 0

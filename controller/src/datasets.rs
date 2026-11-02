@@ -16,7 +16,7 @@ use std::time::Duration;
 use reqwest::Method;
 use serde_json::Value;
 
-use crate::daemon::{backend_up, DaemonError};
+use crate::daemon::{DaemonError, backend_up};
 use crate::state::Shared;
 
 /// The datasets the dashboard shows.
@@ -89,9 +89,8 @@ impl DatasetCache {
 /// they are cached. Holds the power lock during each fetch, so a power-on
 /// waits for it instead of moving while the daemon's loop is blocked.
 pub async fn prefetch(state: Shared) {
-    let missing = || -> Vec<&str> {
-        DASHBOARD_DATASETS.into_iter().filter(|d| state.datasets.get(d).is_none()).collect()
-    };
+    let missing =
+        || -> Vec<&str> { DASHBOARD_DATASETS.into_iter().filter(|d| state.datasets.get(d).is_none()).collect() };
     while !missing().is_empty() {
         {
             let _power = state.power_lock.lock().await;

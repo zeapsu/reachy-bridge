@@ -207,13 +207,15 @@ SECOND_SUBDEVICE = Path(f"/proc/asound/{LOOPBACK}/pcm0p/sub1")
 # the other's.
 _WIREPLUMBER = Path.home() / ".config/wireplumber"
 WIREPLUMBER_RULES = {
-    _WIREPLUMBER / "main.lua.d/51-reachy-bridge-loopback.lua": """-- reachy-bridge (#219): the loopback carries the robot's speaker; leave it alone.
+    _WIREPLUMBER
+    / "main.lua.d/51-reachy-bridge-loopback.lua": """-- reachy-bridge (#219): the loopback carries the robot's speaker; leave it alone.
 table.insert(alsa_monitor.rules, {
   matches = { { { "device.name", "matches", "alsa_card.platform-snd_aloop*" } } },
   apply_properties = { ["device.disabled"] = true },
 })
 """,
-    _WIREPLUMBER / "wireplumber.conf.d/51-reachy-bridge-loopback.conf": """# reachy-bridge (#219): the loopback carries the robot's speaker; leave it alone.
+    _WIREPLUMBER
+    / "wireplumber.conf.d/51-reachy-bridge-loopback.conf": """# reachy-bridge (#219): the loopback carries the robot's speaker; leave it alone.
 monitor.alsa.rules = [
   {
     matches = [ { device.name = "~alsa_card.platform-snd_aloop*" } ]
@@ -309,7 +311,23 @@ def set_speaker(on: bool) -> bool:
         return True
     # The switch only exists once its device has been opened: play a moment
     # of silence through it, then try again.
-    silence = ["aplay", "-q", "-D", "reachy_bridge_speaker", "-t", "raw", "-f", "S16_LE", "-r", "16000", "-c", "2", "-d", "1", "/dev/zero"]
+    silence = [
+        "aplay",
+        "-q",
+        "-D",
+        "reachy_bridge_speaker",
+        "-t",
+        "raw",
+        "-f",
+        "S16_LE",
+        "-r",
+        "16000",
+        "-c",
+        "2",
+        "-d",
+        "1",
+        "/dev/zero",
+    ]
     return _run(silence) and _run(switch)
 
 

@@ -15,10 +15,10 @@ use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use reqwest::Method;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::apps::APP_CONTROL_TIMEOUT;
-use crate::daemon::{backend_up, motor_mode, robot_state, DaemonError};
+use crate::daemon::{DaemonError, backend_up, motor_mode, robot_state};
 use crate::error::{ApiError, ApiResult};
 use crate::state::Shared;
 
@@ -75,10 +75,9 @@ pub async fn ensure_awake(state: &Shared) -> ApiResult<()> {
         if robot != "starting" {
             daemon.post("daemon/start", &[("wake_up", "true")]).await?;
         }
-        let running = wait_until(WAKE_TIMEOUT, || async {
-            daemon.status().await.is_some_and(|s| robot_state(&s) == "running")
-        })
-        .await;
+        let running =
+            wait_until(WAKE_TIMEOUT, || async { daemon.status().await.is_some_and(|s| robot_state(&s) == "running") })
+                .await;
         if !running {
             return Err(ApiError::new(504, "Robot did not wake up in time"));
         }
@@ -139,7 +138,9 @@ pub async fn power_off_locked(state: &Shared) -> ApiResult<Value> {
 async fn status(State(state): State<Shared>) -> Json<Value> {
     let Some(status) = state.daemon.status().await else {
         let target = state.sim.target();
-        return Json(json!({"reachable": false, "running": false, "manageable": false, "status": "offline", "target": target}));
+        return Json(
+            json!({"reachable": false, "running": false, "manageable": false, "status": "offline", "target": target}),
+        );
     };
     let robot = robot_state(&status);
     Json(json!({
@@ -170,9 +171,7 @@ pub async fn kinematics(state: &Shared) -> ApiResult<Value> {
     match state.daemon.get("bridge/kinematics").await {
         Ok(value) => Ok(value),
         Err(DaemonError::Unavailable) => Err(ApiError::unavailable()),
-        Err(DaemonError::Refused { status: 404, .. }) => {
-            Err(ApiError::new(501, "This daemon can't switch kinematics"))
-        }
+        Err(DaemonError::Refused { status: 404, .. }) => Err(ApiError::new(501, "This daemon can't switch kinematics")),
         Err(DaemonError::Refused { .. }) => Err(ApiError::new(502, "Daemon couldn't report kinematics")),
     }
 }
@@ -226,9 +225,7 @@ async fn put_kinematics(State(state): State<Shared>, body: Bytes) -> ApiResult<J
             return Err(ApiError::new(504, "Robot did not power off in time"));
         }
     }
-    let switched = daemon
-        .call(Method::PUT, "bridge/kinematics", &[], Some(&json!({"engine": engine})), None)
-        .await;
+    let switched = daemon.call(Method::PUT, "bridge/kinematics", &[], Some(&json!({"engine": engine})), None).await;
     match switched {
         Ok(result) => {
             if was_on {

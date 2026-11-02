@@ -51,7 +51,13 @@ impl AppState {
         Self::with_auth(daemon, logs, state_dir, poll, AuthConfig::default())
     }
 
-    pub fn with_auth(daemon: Daemon, logs: Arc<LogBroker>, state_dir: PathBuf, poll: Duration, auth: AuthConfig) -> Shared {
+    pub fn with_auth(
+        daemon: Daemon,
+        logs: Arc<LogBroker>,
+        state_dir: PathBuf,
+        poll: Duration,
+        auth: AuthConfig,
+    ) -> Shared {
         let sim = SimMode::new(&daemon.base_url(), "http://127.0.0.1:8001", None, None);
         Self::with_sim(daemon, logs, state_dir, poll, auth, sim)
     }
@@ -93,8 +99,9 @@ pub fn state_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("REACHY_BRIDGE_STATE_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(dir);
     }
-    let base = std::env::var_os("XDG_STATE_HOME").filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(|| {
-        PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state")
-    });
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
     base.join("reachy-bridge")
 }

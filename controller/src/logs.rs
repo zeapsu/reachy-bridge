@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast;
 use tracing::field::{Field, Visit};
-use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
+use tracing_subscriber::layer::Context;
 
 pub const SOURCES: [&str; 2] = ["controller", "daemon"];
 pub const RING_SIZE: usize = 500;
@@ -98,7 +98,11 @@ impl LogBroker {
     pub fn subscribe(&self, source: &str) -> Snapshot {
         self.with_source(source, |s| {
             let skip = s.ring.len().saturating_sub(REPLAY_LINES);
-            Snapshot { lines: s.ring.iter().skip(skip).cloned().collect(), status: s.status.clone(), rx: s.tx.subscribe() }
+            Snapshot {
+                lines: s.ring.iter().skip(skip).cloned().collect(),
+                status: s.status.clone(),
+                rx: s.tx.subscribe(),
+            }
         })
     }
 }
@@ -161,10 +165,7 @@ pub async fn follow_journal(broker: Arc<LogBroker>, unit: String) {
     let stderr = BufReader::new(child.stderr.take().expect("piped stderr"));
     // journalctl reports problems such as missing journal permissions on
     // stderr while it keeps following, so those lines are shown too.
-    tokio::join!(
-        pump_lines(stdout, &broker, "daemon", ""),
-        pump_lines(stderr, &broker, "daemon", "journalctl: "),
-    );
+    tokio::join!(pump_lines(stdout, &broker, "daemon", ""), pump_lines(stderr, &broker, "daemon", "journalctl: "),);
     let failed = child.wait().await.map_or(true, |status| !status.success());
     broker.set_status("daemon", if failed { "unavailable" } else { "stopped" });
 }

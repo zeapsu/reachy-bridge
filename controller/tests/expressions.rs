@@ -77,8 +77,6 @@ async fn prefetch_runs_only_while_the_robot_is_off() {
     task.abort();
 
     let h = harness(|_| {}).await;
-    tokio::time::timeout(Duration::from_secs(5), reachy_controller::datasets::prefetch(h.state.clone()))
-        .await
-        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), reachy_controller::datasets::prefetch(h.state.clone())).await.unwrap();
     assert_eq!(h.calls().len(), 2, "{:?}", h.calls());
 }

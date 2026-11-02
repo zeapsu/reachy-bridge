@@ -35,16 +35,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Path as UrlPath, Request, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::error::{ApiError, ApiResult};
@@ -340,20 +340,19 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Whether a (possibly damaged) devices file says admin mode was on.
 fn mentions_admin(bytes: &[u8]) -> bool {
     let compact: Vec<u8> = bytes.iter().copied().filter(|b| !b.is_ascii_whitespace()).collect();
-    [&b"\"role\":\"admin\""[..], b"\"admin_mode\":true"].iter().any(|needle| compact.windows(needle.len()).any(|w| w == *needle))
+    [&b"\"role\":\"admin\""[..], b"\"admin_mode\":true"]
+        .iter()
+        .any(|needle| compact.windows(needle.len()).any(|w| w == *needle))
 }
 
 /// Every value of cookie `name` across the request's `Cookie` headers.
 pub(crate) fn cookies<'a>(headers: &'a HeaderMap, name: &'a str) -> impl Iterator<Item = &'a str> + 'a {
-    headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .filter_map(move |pair| {
+    headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).filter_map(
+        move |pair| {
             let (key, value) = pair.trim().split_once('=')?;
             (key == name).then_some(value.trim())
-        })
+        },
+    )
 }
 
 /// Drop any `Set-Cookie` for the controller's own cookies from an app's
@@ -429,7 +428,10 @@ impl Auth {
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => DevicesFile::default(),
             Err(error) => {
-                tracing::error!("auth: cannot read {} ({error}); starting with no paired devices", devices_path.display());
+                tracing::error!(
+                    "auth: cannot read {} ({error}); starting with no paired devices",
+                    devices_path.display()
+                );
                 DevicesFile { admin_mode: true, devices: Vec::new() }
             }
         };
@@ -449,7 +451,9 @@ impl Auth {
         let local_key = match write_private(&state_dir.join(LOCAL_KEY_FILE), format!("{key}\n").as_bytes()) {
             Ok(()) => Some(key),
             Err(error) => {
-                tracing::error!("auth: cannot write {LOCAL_KEY_FILE} ({error}); `reachy-bridge pair` needs a trusted loopback");
+                tracing::error!(
+                    "auth: cannot write {LOCAL_KEY_FILE} ({error}); `reachy-bridge pair` needs a trusted loopback"
+                );
                 None
             }
         };
@@ -475,7 +479,8 @@ impl Auth {
     }
 
     fn save(&self, devices: &[Device]) -> std::io::Result<()> {
-        let body = serde_json::to_vec_pretty(&json!({"admin_mode": self.admin_mode(), "devices": devices})).expect("devices serialize");
+        let body = serde_json::to_vec_pretty(&json!({"admin_mode": self.admin_mode(), "devices": devices}))
+            .expect("devices serialize");
         write_private(&self.devices_path, &body)
     }
 
@@ -563,7 +568,9 @@ impl Auth {
         if loopback && self.local_key_matches(headers) {
             return Some(Credential::Local);
         }
-        if let Some(device) = cookies(headers, DEVICE_COOKIE).take(MAX_COOKIE_VALUES).find_map(|t| self.device_for(t, peer)) {
+        if let Some(device) =
+            cookies(headers, DEVICE_COOKIE).take(MAX_COOKIE_VALUES).find_map(|t| self.device_for(t, peer))
+        {
             return Some(Credential::Device(device.id));
         }
         (loopback && self.trusts_loopback() && loopback_host(headers)).then_some(Credential::Trusted)
@@ -666,7 +673,10 @@ pub async fn guard(State(state): State<Shared>, mut request: Request, next: Next
     let loopback = peer.is_some_and(|p| p.is_loopback());
     let headers = request.headers();
     let https = loopback
-        && headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case("https"));
+        && headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("https"));
     let path = request.uri().path().to_string();
 
     let local = loopback && auth.local_key_matches(headers);
@@ -679,11 +689,24 @@ pub async fn guard(State(state): State<Shared>, mut request: Request, next: Next
         // A DNS-rebinding page reaches loopback same-origin under its own
         // name, so the API answers loopback only under a name such a page
         // can't produce (installing apps made this matter, #126).
-        if loopback && headers.contains_key(header::HOST) && !loopback_host(headers) && (is_api(&path) || headers.contains_key(header::UPGRADE)) {
+        if loopback
+            && headers.contains_key(header::HOST)
+            && !loopback_host(headers)
+            && (is_api(&path) || headers.contains_key(header::UPGRADE))
+        {
             return forbidden(&path, peer);
         }
         let credential = if local { Credential::Local } else { Credential::Trusted };
-        let ctx = AuthContext { peer, authenticated: true, device: None, person: None, role: None, local, credential: Some(credential.clone()), https };
+        let ctx = AuthContext {
+            peer,
+            authenticated: true,
+            device: None,
+            person: None,
+            role: None,
+            local,
+            credential: Some(credential.clone()),
+            https,
+        };
         request.extensions_mut().insert(ctx);
         let response = next.run(request).await;
         return end_with(state.clone(), credential, response);
@@ -704,7 +727,11 @@ pub async fn guard(State(state): State<Shared>, mut request: Request, next: Next
     if !authenticated && is_api(&path) && !is_open(&path) {
         return ApiError::new(401, "login required").into_response();
     }
-    if auth.admin_mode() && !local && device.as_ref().is_none_or(|d| d.role != Role::Admin) && admin_only(request.method(), &path) {
+    if auth.admin_mode()
+        && !local
+        && device.as_ref().is_none_or(|d| d.role != Role::Admin)
+        && admin_only(request.method(), &path)
+    {
         tracing::warn!("auth: refused {path} from {}: admin only", peer_text(peer));
         return ApiError::new(403, "only an admin can do this").into_response();
     }
@@ -834,7 +861,10 @@ async fn poll(
         r.id == id && cookies(&headers, PAIR_COOKIE).any(|s| ct_eq(&sha256(s.as_bytes()), &r.secret_sha256))
     });
     let Some(index) = index else {
-        tracing::warn!("auth: poll for unknown pair request (or without its browser secret) from {}", peer_text(ctx.peer));
+        tracing::warn!(
+            "auth: poll for unknown pair request (or without its browser secret) from {}",
+            peer_text(ctx.peer)
+        );
         return Err(ApiError::new(404, "unknown pair request"));
     };
     let status = pending.requests[index].status(now);
@@ -866,7 +896,8 @@ async fn poll(
     });
     // The first admin turns admin mode on, for good (see the module docs),
     // and logs out every device paired before it: anyone could approve those.
-    let was_admin_mode = auth.admin_mode.swap(auth.admin_mode() || approval.role == Role::Admin, std::sync::atomic::Ordering::SeqCst);
+    let was_admin_mode =
+        auth.admin_mode.swap(auth.admin_mode() || approval.role == Role::Admin, std::sync::atomic::Ordering::SeqCst);
     let before = devices.clone();
     if !was_admin_mode && approval.role == Role::Admin {
         devices.retain(|d| d.id == device_id);
@@ -935,7 +966,10 @@ async fn approve(
         tracing::warn!("auth: approval refused for {by}: not an admin");
         return Err(ApiError::new(403, "only an admin can approve devices"));
     }
-    state.auth.approve_code(&body.code, body.name.as_deref(), body.person.as_deref(), body.role, &by, ctx.local).map(Json)
+    state
+        .auth
+        .approve_code(&body.code, body.name.as_deref(), body.person.as_deref(), body.role, &by, ctx.local)
+        .map(Json)
 }
 
 impl Auth {
@@ -948,7 +982,9 @@ impl Auth {
         pending.prune(now);
         let mut found = None;
         for request in &pending.requests {
-            if ct_eq(request.code.as_bytes(), code.trim().as_bytes()) && matches!(request.status(now), "pending" | "locked") {
+            if ct_eq(request.code.as_bytes(), code.trim().as_bytes())
+                && matches!(request.status(now), "pending" | "locked")
+            {
                 found = Some(request.peer);
             }
         }
@@ -960,7 +996,15 @@ impl Auth {
     /// guessing: it may approve a
     /// request others locked with wrong codes, and its typos lock nothing.
     /// Who may approve, and an admin, is the caller's check.
-    pub fn approve_code(&self, code: &str, name: Option<&str>, person: Option<&str>, role: Role, by: &str, holds_key: bool) -> ApiResult<Value> {
+    pub fn approve_code(
+        &self,
+        code: &str,
+        name: Option<&str>,
+        person: Option<&str>,
+        role: Role,
+        by: &str,
+        holds_key: bool,
+    ) -> ApiResult<Value> {
         let code = code.trim();
         if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
             return Err(ApiError::new(400, "the code is 6 digits"));
@@ -1001,8 +1045,14 @@ impl Auth {
         request.approved = Some(Approval { name: name.clone(), person: person.clone(), role });
         request.attempts = 0;
         request.expires = request.expires.max(now + APPROVED_GRACE);
-        tracing::info!("auth: pair request {} from {} approved by {by} as {name:?} ({person:?}, {role:?})", request.id, request.peer);
-        Ok(json!({"status": "approved", "name": name, "person": person, "role": role, "peer": request.peer.to_string()}))
+        tracing::info!(
+            "auth: pair request {} from {} approved by {by} as {name:?} ({person:?}, {role:?})",
+            request.id,
+            request.peer
+        );
+        Ok(
+            json!({"status": "approved", "name": name, "person": person, "role": role, "peer": request.peer.to_string()}),
+        )
     }
 }
 
@@ -1047,7 +1097,10 @@ async fn revoke(
     // The dashboard can't lock everyone out; the CLI can (and re-pairs).
     let admins = devices.iter().filter(|d| d.role == Role::Admin).count();
     if devices[index].role == Role::Admin && admins == 1 && !ctx.local {
-        return Err(ApiError::new(409, "this is the last admin device; pair another admin first, or revoke it with `reachy-bridge devices revoke` on the robot"));
+        return Err(ApiError::new(
+            409,
+            "this is the last admin device; pair another admin first, or revoke it with `reachy-bridge devices revoke` on the robot",
+        ));
     }
     let removed = devices.remove(index);
     if let Err(error) = auth.save(&devices) {

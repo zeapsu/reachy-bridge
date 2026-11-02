@@ -20,7 +20,17 @@ import logging
 import sys
 
 from reachy_bridge_runtime import platforms, upstream
-from reachy_bridge_runtime.features import app_bind, keep_awake, kinematics, media, media_return, platform_info, sim_apps, sim_sounds, wobble
+from reachy_bridge_runtime.features import (
+    app_bind,
+    keep_awake,
+    kinematics,
+    media,
+    media_return,
+    platform_info,
+    sim_apps,
+    sim_sounds,
+    wobble,
+)
 
 logger = logging.getLogger("reachy_bridge_runtime")
 
@@ -56,7 +66,9 @@ def for_daemon_args(platform: platforms.Platform, args: list[str]) -> platforms.
     the robot (#218); a --no-media daemon has no media for the media features
     to read."""
     if "--sim" in args or "--mockup-sim" in args:
-        platform = dataclasses.replace(platform, host_setup=(), features=(platform.features - {wobble.FEATURE}) | {sim_sounds.FEATURE})
+        platform = dataclasses.replace(
+            platform, host_setup=(), features=(platform.features - {wobble.FEATURE}) | {sim_sounds.FEATURE}
+        )
         if "--desktop-app-daemon" in args or "--wireless-version" in args:
             platform = dataclasses.replace(platform, features=platform.features | {sim_apps.FEATURE})
     if "--no-media" in args:

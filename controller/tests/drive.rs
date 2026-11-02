@@ -12,7 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use reachy_controller::daemon::Daemon;
 use reachy_controller::logs::LogBroker;
 use reachy_controller::state::{AppState, Shared};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite;
 
 #[derive(Default)]
@@ -104,7 +104,8 @@ async fn harness(motors: Option<&str>) -> Harness {
     let fake = Arc::new(Mutex::new(Fake { motors: motors.map(str::to_string), ..Default::default() }));
     let url = fake_daemon(fake.clone()).await;
     let dir = std::env::temp_dir().join(format!("rc-drive-{}", std::process::id()));
-    let state = AppState::new(Daemon::new(&url, Duration::from_secs(2)), LogBroker::new(), dir, Duration::from_millis(10));
+    let state =
+        AppState::new(Daemon::new(&url, Duration::from_secs(2)), LogBroker::new(), dir, Duration::from_millis(10));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let controller = listener.local_addr().unwrap().to_string();
     let app = reachy_controller::app(state.clone());

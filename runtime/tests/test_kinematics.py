@@ -46,9 +46,7 @@ def _client(app: FastAPI) -> httpx.AsyncClient:
 
 
 @pytest.mark.asyncio
-async def test_switch_while_off_sets_next_engine_and_saves_it(
-    monkeypatch: pytest.MonkeyPatch, _state: Path
-) -> None:
+async def test_switch_while_off_sets_next_engine_and_saves_it(monkeypatch: pytest.MonkeyPatch, _state: Path) -> None:
     app = _app(monkeypatch)
     async with _client(app) as client:
         response = await client.put("/api/bridge/kinematics", json={"engine": "Placo"})
@@ -87,9 +85,7 @@ def test_saved_engine_is_passed_to_the_daemon(monkeypatch: pytest.MonkeyPatch, _
     assert argv == ["runtime", "--headless", "--kinematics-engine", "Placo"]
 
 
-def test_command_line_engine_wins_over_the_saved_one(
-    monkeypatch: pytest.MonkeyPatch, _state: Path
-) -> None:
+def test_command_line_engine_wins_over_the_saved_one(monkeypatch: pytest.MonkeyPatch, _state: Path) -> None:
     (_state / "kinematics.json").write_text(json.dumps({"engine": "Placo"}))
     argv = ["runtime", "--kinematics-engine", "AnalyticalKinematics"]
     kinematics.apply_saved_engine(argv)

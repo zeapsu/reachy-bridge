@@ -6,13 +6,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Extension, Router};
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite;
 
 use crate::auth::{AuthContext, Credential};

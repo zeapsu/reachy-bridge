@@ -195,7 +195,9 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         "GstMediaServer._configure_webrtc(pipeline) returns the webrtcsink running the signalling server",
         lambda: (
             _function(_MEDIA_SERVER, "GstMediaServer._configure_webrtc", "pipeline")(),
-            _source_mentions(_MEDIA_SERVER, "GstMediaServer._configure_webrtc", "run-signalling-server", "return webrtcsink")(),
+            _source_mentions(
+                _MEDIA_SERVER, "GstMediaServer._configure_webrtc", "run-signalling-server", "return webrtcsink"
+            )(),
         ),
     ),
     Requirement(
@@ -203,7 +205,9 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         "start_app keeps the app's monitor task, which ends with the app process",
         lambda: (
             _coroutine(_MANAGER, "AppManager.start_app", "app_name")(),
-            _source_mentions(_MANAGER, "AppManager.start_app", "monitor_task=monitor_task", "self.current_app = RunningApp(")(),
+            _source_mentions(
+                _MANAGER, "AppManager.start_app", "monitor_task=monitor_task", "self.current_app = RunningApp("
+            )(),
         ),
     ),
     Requirement(
@@ -296,7 +300,9 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         "the head kinematics, pose helpers and motor config for the limit check",
         lambda: (
             wobble_limits(),
-            _source_mentions(_BACKEND, "Backend.update_target_head_joints_from_ik", "_tracking_aim", "_tracking_weight")(),
+            _source_mentions(
+                _BACKEND, "Backend.update_target_head_joints_from_ik", "_tracking_aim", "_tracking_weight"
+            )(),
         ),
     ),
     Requirement(
@@ -575,7 +581,12 @@ def wrap_configure_webrtc(wrapper: Callable[..., Any]) -> None:
     _wrap(GstMediaServer, "_configure_webrtc", wrapper)
 
 
-def wrap_wobbling(enable: Callable[..., None], disable: Callable[..., None], on_sample: Callable[..., Any], set_offsets: Callable[..., None]) -> None:
+def wrap_wobbling(
+    enable: Callable[..., None],
+    disable: Callable[..., None],
+    on_sample: Callable[..., Any],
+    set_offsets: Callable[..., None],
+) -> None:
     """Wrap the media server's wobbling and the backend's offsets, each as
     ``wrapper(original, self, *args)``."""
     from reachy_mini.daemon.backend.abstract import Backend
@@ -603,7 +614,9 @@ def wobble_limits() -> tuple[Callable[[Any, Any], Any], list[tuple[float, float]
     from reachy_mini.utils import create_head_pose
     from reachy_mini.utils.interpolation import compose_world_offset, linear_pose_interpolation
 
-    config = yaml.safe_load((Path(inspect.getfile(AnalyticalKinematics)).parents[1] / "assets/config/hardware_config.yaml").read_text())
+    config = yaml.safe_load(
+        (Path(inspect.getfile(AnalyticalKinematics)).parents[1] / "assets/config/hardware_config.yaml").read_text()
+    )
     motors = {name: motor for entry in config["motors"] for name, motor in entry.items()}
     limits = [
         (float(motors[f"stewart_{i}"]["lower_limit"]), float(motors[f"stewart_{i}"]["upper_limit"]))
@@ -619,7 +632,9 @@ def wobble_limits() -> tuple[Callable[[Any, Any], Any], list[tuple[float, float]
             pose = linear_pose_interpolation(pose, aim, min(backend._tracking_weight, 1.0))
         if offsets is not None:
             x, y, z, roll, pitch, yaw = offsets
-            pose = compose_world_offset(pose, create_head_pose(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw, degrees=False))
+            pose = compose_world_offset(
+                pose, create_head_pose(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw, degrees=False)
+            )
         kinematics.set_automatic_body_yaw(backend.head_kinematics.automatic_body_yaw)
         return kinematics.ik(pose, body_yaw=body_yaw)
 
@@ -730,7 +745,10 @@ def sound_roots() -> tuple[Path, ...]:
     # disk), so they aren't held to this.
     shared = [
         folder
-        for folder, checked in ((Path(SOUNDS_TMP_DIR), [Path(SOUNDS_TMP_DIR)]), (uploads / "audio", [uploads, uploads / "audio"]))
+        for folder, checked in (
+            (Path(SOUNDS_TMP_DIR), [Path(SOUNDS_TMP_DIR)]),
+            (uploads / "audio", [uploads, uploads / "audio"]),
+        )
         if all(_own_folder(f) for f in checked)
     ]
     return tuple(Path(root).resolve() for root in (ASSETS_ROOT_PATH, HF_HUB_CACHE, *shared))

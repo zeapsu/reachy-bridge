@@ -24,20 +24,20 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use axum::Router;
 use axum::body::{Body, HttpBody};
 use axum::extract::ws::{self, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, FromRequestParts, Request, State};
-use axum::http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use axum::http::StatusCode;
+use axum::http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
-use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
+use crate::auth::{Credential, cross_site, end_with, strip_credential_cookies, strip_credentials};
 use crate::control;
-use crate::auth::{cross_site, end_with, strip_credential_cookies, strip_credentials, Credential};
 use crate::state::Shared;
 
 /// How long a resolved upstream port is reused before asking the daemon again.
@@ -82,7 +82,8 @@ const HOP_BY_HOP: [&str; 8] = [
 ];
 
 /// Headers the WebSocket client handshake to the app sets itself.
-const WS_HANDSHAKE: [&str; 4] = ["sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions", "sec-websocket-accept"];
+const WS_HANDSHAKE: [&str; 4] =
+    ["sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions", "sec-websocket-accept"];
 
 pub struct AppProxy {
     state: Shared,
@@ -157,8 +158,10 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
     let (mut parts, body) = request.into_parts();
     let peer = parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0);
     let loopback = peer.is_some_and(|p| p.ip().to_canonical().is_loopback());
-    let dashboard = forwarded_host(&parts.headers, loopback).map(|host| dashboard_url(&host, loopback, proxy.dashboard_port));
-    let Some(credential) = proxy.state.auth.app_proxy_credential(&parts.headers, peer.map(|p| p.ip().to_canonical())) else {
+    let dashboard =
+        forwarded_host(&parts.headers, loopback).map(|host| dashboard_url(&host, loopback, proxy.dashboard_port));
+    let Some(credential) = proxy.state.auth.app_proxy_credential(&parts.headers, peer.map(|p| p.ip().to_canonical()))
+    else {
         return login_required(dashboard.as_deref());
     };
     // Control (#221): watchers load the app's pages, only the holder acts.
@@ -167,7 +170,9 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
         Credential::Local => (None, true),
         Credential::Trusted => (None, false),
     };
-    if let Err(detail) = control::app_proxy_allows(&proxy.state, &parts.method, is_upgrade(&parts.headers), device.as_deref(), local) {
+    if let Err(detail) =
+        control::app_proxy_allows(&proxy.state, &parts.method, is_upgrade(&parts.headers), device.as_deref(), local)
+    {
         return (StatusCode::FORBIDDEN, detail).into_response();
     }
     // Another site can't make a tailnet browser act through the app (a plain
@@ -208,7 +213,9 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
                 strip_hop_by_hop(out_headers);
                 strip_credential_cookies(out_headers);
             }
-            let out = out.body(Body::from_stream(response.bytes_stream())).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response());
+            let out = out
+                .body(Body::from_stream(response.bytes_stream()))
+                .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response());
             // An app's SSE ends with the browser's login, like the dashboard's.
             end_with(proxy.state.clone(), credential, out)
         }
@@ -255,9 +262,7 @@ async fn websocket(
         Ok(connected) => connected,
         Err(tungstenite::Error::Http(response)) => {
             // The app refused the upgrade: pass its status on.
-            return StatusCode::from_u16(response.status().as_u16())
-                .unwrap_or(StatusCode::BAD_GATEWAY)
-                .into_response();
+            return StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY).into_response();
         }
         Err(error) => {
             if matches!(error, tungstenite::Error::Io(_)) {
@@ -267,11 +272,8 @@ async fn websocket(
             return unavailable(Unavailable::NotAnswering, dashboard);
         }
     };
-    let protocol = response
-        .headers()
-        .get(header::SEC_WEBSOCKET_PROTOCOL)
-        .and_then(|p| p.to_str().ok())
-        .map(str::to_string);
+    let protocol =
+        response.headers().get(header::SEC_WEBSOCKET_PROTOCOL).and_then(|p| p.to_str().ok()).map(str::to_string);
     let upgrade = match protocol {
         Some(protocol) => upgrade.protocols([protocol]),
         None => upgrade,
@@ -340,8 +342,7 @@ async fn pipe(browser: WebSocket, app: AppSocket, acted: impl Fn()) {
                 tungstenite::Message::Text(text) => ws::Message::Text(text.as_str().into()),
                 tungstenite::Message::Binary(data) => ws::Message::Binary(data),
                 tungstenite::Message::Close(frame) => {
-                    let frame =
-                        frame.map(|f| ws::CloseFrame { code: f.code.into(), reason: f.reason.as_str().into() });
+                    let frame = frame.map(|f| ws::CloseFrame { code: f.code.into(), reason: f.reason.as_str().into() });
                     let _ = browser_tx.send(ws::Message::Close(frame)).await;
                     break;
                 }
@@ -365,10 +366,7 @@ async fn pipe(browser: WebSocket, app: AppSocket, acted: impl Fn()) {
 }
 
 fn is_upgrade(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::UPGRADE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
+    headers.get(header::UPGRADE).and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
 }
 
 /// Drop hop-by-hop headers, including any the Connection header names.
@@ -434,19 +432,15 @@ fn forwarded_host(headers: &HeaderMap, loopback: bool) -> Option<String> {
     } else {
         host.rsplit_once(':').map_or(host, |(name, _)| name)
     };
-    let valid = !name.is_empty()
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '[' | ']' | ':'));
+    let valid =
+        !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '[' | ']' | ':'));
     valid.then(|| name.to_string())
 }
 
 /// The dashboard as the visitor can reach it: HTTPS :10000 through
 /// tailscale serve (a loopback peer), the dashboard's own port on the LAN.
 fn dashboard_url(host: &str, loopback: bool, dashboard_port: u16) -> String {
-    if loopback {
-        format!("//{host}:{DASHBOARD_SERVE_PORT}/")
-    } else {
-        format!("http://{host}:{dashboard_port}/")
-    }
+    if loopback { format!("//{host}:{DASHBOARD_SERVE_PORT}/") } else { format!("http://{host}:{dashboard_port}/") }
 }
 
 /// A small page instead of a bare error: the dashboard is the way back.
@@ -471,9 +465,8 @@ fn unavailable(why: Unavailable, dashboard: Option<&str>) -> Response {
         Unavailable::Daemon => "The robot daemon isn't answering.",
         Unavailable::NotAnswering => "The app's web UI isn't answering yet. Reload in a few seconds.",
     };
-    let link = dashboard.map_or_else(String::new, |dashboard| {
-        format!(r#"<p><a href="{dashboard}">Back to the dashboard</a></p>"#)
-    });
+    let link = dashboard
+        .map_or_else(String::new, |dashboard| format!(r#"<p><a href="{dashboard}">Back to the dashboard</a></p>"#));
     let page = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\">\
          <title>App unavailable</title></head><body style=\"font-family:sans-serif;margin:2rem\">\

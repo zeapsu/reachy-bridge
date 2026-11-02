@@ -28,3 +28,7 @@ reachy-bridge-runtime = { workspace = true }
 
 [tool.pytest.ini_options]
 testpaths = ["runtime/tests"]
+
+[tool.ruff]
+# The code was written to about 120 columns; `ruff format` keeps it there.
+line-length = 120

@@ -9,15 +9,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Query, State};
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::Stream;
 use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::Receiver;
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::error::ApiError;
 use crate::logs::{LogBroker, LogEvent, SOURCES};
@@ -31,8 +31,7 @@ pub fn router() -> Router<Shared> {
 }
 
 async fn sources(State(state): State<Shared>) -> Json<serde_json::Value> {
-    let sources: Vec<_> =
-        SOURCES.iter().map(|id| json!({"id": id, "status": state.logs.status(id)})).collect();
+    let sources: Vec<_> = SOURCES.iter().map(|id| json!({"id": id, "status": state.logs.status(id)})).collect();
     Json(json!({"sources": sources}))
 }
 

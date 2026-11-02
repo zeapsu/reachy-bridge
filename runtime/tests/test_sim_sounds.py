@@ -72,7 +72,9 @@ def test_an_absolute_path_is_kept(tmp_path: Path, assets: Path, _log: sim_sounds
     assert _log.file(event["token"]) == (move_sound.resolve(), "audio/wav")
 
 
-def test_a_cached_move_sound_keeps_the_type_of_its_name(tmp_path: Path, assets: Path, _log: sim_sounds.SoundLog) -> None:
+def test_a_cached_move_sound_keeps_the_type_of_its_name(
+    tmp_path: Path, assets: Path, _log: sim_sounds.SoundLog
+) -> None:
     # The Hugging Face cache links snapshots/<rev>/x.wav to blobs/<sha>.
     blob = tmp_path / "dataset" / "blobs" / "3f2a"
     blob.parent.mkdir(parents=True)
@@ -86,9 +88,7 @@ def test_a_cached_move_sound_keeps_the_type_of_its_name(tmp_path: Path, assets: 
     assert _log.file(event["token"]) == (blob.resolve(), "audio/wav")
 
 
-def test_missing_and_non_audio_files_are_not_recorded(
-    tmp_path: Path, assets: Path, _log: sim_sounds.SoundLog
-) -> None:
+def test_missing_and_non_audio_files_are_not_recorded(tmp_path: Path, assets: Path, _log: sim_sounds.SoundLog) -> None:
     secret = tmp_path / "notes.txt"
     secret.write_text("x")
     # The original still runs: the daemon decides what a bad name means.

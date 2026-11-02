@@ -123,9 +123,8 @@ async fn hf_token_is_write_only_and_needs_a_secure_origin() {
     assert_eq!(body, json!({"logged_in": false, "username": null}));
 
     // Plain HTTP from the LAN: refused before anything reaches the daemon.
-    let (status, _) = h
-        .send(from("192.168.1.20:5000", "PUT", "/api/hf/token", Some(json!({"token": "hf_goodtoken123"}))))
-        .await;
+    let (status, _) =
+        h.send(from("192.168.1.20:5000", "PUT", "/api/hf/token", Some(json!({"token": "hf_goodtoken123"})))).await;
     assert_eq!(status.as_u16(), 403);
     assert!(!h.calls().iter().any(|c| c.starts_with("save-token")));
 
@@ -136,15 +135,13 @@ async fn hf_token_is_write_only_and_needs_a_secure_origin() {
     assert!(!h.calls().iter().any(|c| c.starts_with("save-token")));
 
     // A rejected token: the daemon's detail (which echoes it here) isn't passed on.
-    let (status, body) = h
-        .send(from("127.0.0.1:5000", "PUT", "/api/hf/token", Some(json!({"token": "hf_wrongtoken99"}))))
-        .await;
+    let (status, body) =
+        h.send(from("127.0.0.1:5000", "PUT", "/api/hf/token", Some(json!({"token": "hf_wrongtoken99"})))).await;
     assert_eq!(status.as_u16(), 400);
     assert!(!body.to_string().contains("hf_wrongtoken99"));
 
-    let (status, body) = h
-        .send(from("127.0.0.1:5000", "PUT", "/api/hf/token", Some(json!({"token": "hf_goodtoken123"}))))
-        .await;
+    let (status, body) =
+        h.send(from("127.0.0.1:5000", "PUT", "/api/hf/token", Some(json!({"token": "hf_goodtoken123"})))).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, json!({"logged_in": true, "username": "andry"}));
     let (_, body) = h.call("GET", "/api/hf/status", None).await;

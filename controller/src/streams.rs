@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::watch;
 
 use crate::daemon::Daemon;
@@ -78,10 +78,7 @@ pub async fn run_state(daemon: Daemon, tx: watch::Sender<Sample>) {
         switched.mark_unchanged();
         // Head joints pose the dashboard's 3D view (#149).
         let url = daemon.ws_url("state/ws/full?with_doa=true&with_head_joints=true");
-        let running = daemon
-            .status()
-            .await
-            .is_some_and(|s| s.get("state").and_then(Value::as_str) == Some("running"));
+        let running = daemon.status().await.is_some_and(|s| s.get("state").and_then(Value::as_str) == Some("running"));
         if running && let Ok((mut ws, _)) = tokio_tungstenite::connect_async(url.as_str()).await {
             loop {
                 tokio::select! {

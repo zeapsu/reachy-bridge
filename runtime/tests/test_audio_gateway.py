@@ -79,7 +79,9 @@ def server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[in
         httpd.server_close()
 
 
-def auth(method: str, path: str, body: bytes, key: str = KEY, nonce: str | None = None, seconds: int | None = None) -> tuple[str, str]:
+def auth(
+    method: str, path: str, body: bytes, key: str = KEY, nonce: str | None = None, seconds: int | None = None
+) -> tuple[str, str]:
     """The controller's X-Audio-Auth header (audio.rs), and its nonce."""
     nonce = nonce or secrets.token_hex(16)
     seconds = int(time.time()) if seconds is None else seconds
@@ -200,7 +202,11 @@ def test_routes(server: tuple[int, FakeGateway]) -> None:
     assert call(port, "POST", "/session", {})[2] == {"id": "s1", "offer": "v=0"}
     assert call(port, "POST", "/session/s1/route", {"talk": True})[0] == 204
     assert call(port, "DELETE", "/session/s1")[0] == 204
-    assert fake.calls == [("open", True, False, False, False), ("route", "s1", False, True, False, False), ("close", "s1")]
+    assert fake.calls == [
+        ("open", True, False, False, False),
+        ("route", "s1", False, True, False, False),
+        ("close", "s1"),
+    ]
 
 
 def test_errors_map_to_statuses(server: tuple[int, FakeGateway]) -> None:
@@ -262,7 +268,9 @@ def test_a_new_session_replaces_the_old_without_unmuting_between(gw: tuple[Any, 
     assert speaker == [True, True]  # each open sets it once; the replace doesn't unmute first
 
 
-def test_a_failed_open_unmutes_and_frees_the_pipeline(gw: tuple[Any, list[bool]], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_failed_open_unmutes_and_frees_the_pipeline(
+    gw: tuple[Any, list[bool]], monkeypatch: pytest.MonkeyPatch
+) -> None:
     g, speaker = gw
     made: list[FakeSession] = []
 

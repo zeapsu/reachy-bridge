@@ -25,9 +25,9 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::daemon::{backend_up, robot_state, Daemon};
+use crate::daemon::{Daemon, backend_up, robot_state};
 use crate::error::{ApiError, ApiResult};
 use crate::routes::power::wait_until;
 use crate::state::Shared;
@@ -126,7 +126,6 @@ impl SimMode {
     pub fn sim_url(&self) -> &str {
         &self.sim_url
     }
-
 }
 
 /// Undo a sim mode an earlier controller left behind (a crash or restart
@@ -166,10 +165,7 @@ pub(crate) async fn systemctl(program: &str, action: &str, unit: &str) -> Result
 }
 
 pub fn router() -> Router<Shared> {
-    Router::new()
-        .route("/api/sim", get(status))
-        .route("/api/sim/enter", post(enter))
-        .route("/api/sim/exit", post(exit))
+    Router::new().route("/api/sim", get(status)).route("/api/sim/enter", post(enter)).route("/api/sim/exit", post(exit))
 }
 
 async fn switch_lock(state: &Shared) -> ApiResult<tokio::sync::RwLockWriteGuard<'_, ()>> {
@@ -214,7 +210,9 @@ async fn enter(State(state): State<Shared>) -> ApiResult<Json<Value>> {
         return Err(ApiError::new(502, format!("Couldn't stop the robot's daemon: {error}")));
     }
     let started = match &sim.unit {
-        Some(unit) => sim.systemctl("start", unit).await.map_err(|error| format!("Couldn't start the simulation: {error}")),
+        Some(unit) => {
+            sim.systemctl("start", unit).await.map_err(|error| format!("Couldn't start the simulation: {error}"))
+        }
         None => Ok(()),
     };
     let probe = Daemon::new(&sim.sim_url, Duration::from_secs(2));

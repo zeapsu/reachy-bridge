@@ -12,12 +12,8 @@ from pathlib import Path
 NEEDED = ("rust", "bun", "uv", "shellcheck")
 
 tools = tomllib.loads((Path(__file__).parent.parent / "mise.toml").read_text())["tools"]
-bad = [
-    name for name in NEEDED if not isinstance(tools.get(name), str) or not tools[name]
-]
+bad = [name for name in NEEDED if not isinstance(tools.get(name), str) or not tools[name]]
 if bad:
-    sys.exit(
-        f'mise.toml: give {", ".join(bad)} as a plain version string, like rust = "1.96.0"'
-    )
+    sys.exit(f'mise.toml: give {", ".join(bad)} as a plain version string, like rust = "1.96.0"')
 for name in NEEDED:
     print(f"{name}={tools[name]}")

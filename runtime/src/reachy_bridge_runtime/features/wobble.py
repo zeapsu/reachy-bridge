@@ -86,7 +86,9 @@ class Gate:
 class SpeakerSwitch:
     """Whether the speaker is on, read at most a few times a second."""
 
-    def __init__(self, read: Callable[[], bool] = audio_tee.speaker_on, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self, read: Callable[[], bool] = audio_tee.speaker_on, clock: Callable[[], float] = time.monotonic
+    ) -> None:
         self._read = read
         self._clock = clock
         self._at: float | None = None
@@ -181,7 +183,9 @@ class Tap:
             bus.connect("message::error", self._on_error, server)
             if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
                 self._close(pipeline)
-                logger.warning("Couldn't read %s; the wobble only follows the daemon's own sounds.", audio_tee.WOBBLE_SOURCE)
+                logger.warning(
+                    "Couldn't read %s; the wobble only follows the daemon's own sounds.", audio_tee.WOBBLE_SOURCE
+                )
                 return
             self._pipeline = pipeline
         logger.info("Head wobble follows the speaker.")

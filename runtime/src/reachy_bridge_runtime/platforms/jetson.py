@@ -81,13 +81,9 @@ def set_speaker_volume() -> None:
             timeout=5,
         )
         if result.returncode == 0:
-            logger.info(
-                "Set Reachy Mini Audio ALSA card %d PCM,1 (speaker) to 100%% volume", card
-            )
+            logger.info("Set Reachy Mini Audio ALSA card %d PCM,1 (speaker) to 100%% volume", card)
         else:
-            logger.warning(
-                "amixer failed to set Reachy Audio volume: %s", result.stderr or result.stdout
-            )
+            logger.warning("amixer failed to set Reachy Audio volume: %s", result.stderr or result.stdout)
     except FileNotFoundError:
         logger.warning("amixer not found; Reachy Audio speaker volume may be low")
     except subprocess.TimeoutExpired:

@@ -22,11 +22,11 @@ use axum::extract::{Path as UrlPath, Query, State};
 use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use reqwest::Method;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::auth::AuthContext;
-use crate::daemon::{safe_segment, DaemonError};
+use crate::daemon::{DaemonError, safe_segment};
 use crate::error::{ApiError, ApiResult};
 use crate::state::Shared;
 
@@ -90,10 +90,7 @@ impl Catalog {
         }
         // Not under the lock: listing every Space can take most of the timeout.
         let generation = self.generation.load(Ordering::Acquire);
-        let payload = state
-            .daemon
-            .call(Method::GET, source.daemon_path(), &[], None, Some(CATALOG_TIMEOUT))
-            .await?;
+        let payload = state.daemon.call(Method::GET, source.daemon_path(), &[], None, Some(CATALOG_TIMEOUT)).await?;
         let apps = payload.as_array().cloned().unwrap_or_default();
         // The daemon answers an empty list when Hugging Face is unreachable.
         if apps.is_empty() {
@@ -197,7 +194,8 @@ fn body_id(body: &Bytes) -> ApiResult<String> {
 }
 
 fn job_started(payload: Value) -> ApiResult<Json<Value>> {
-    let job = payload.get("job_id").and_then(Value::as_str).filter(|j| safe_segment(j)).ok_or_else(ApiError::unavailable)?;
+    let job =
+        payload.get("job_id").and_then(Value::as_str).filter(|j| safe_segment(j)).ok_or_else(ApiError::unavailable)?;
     Ok(Json(json!({"job": job})))
 }
 
@@ -283,12 +281,8 @@ async fn job(State(state): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiRe
         state.apps.forget_installed().await;
     }
     let logs = info.get("logs").and_then(Value::as_array).cloned().unwrap_or_default();
-    let tail: Vec<String> = logs
-        .iter()
-        .skip(logs.len().saturating_sub(JOB_LOG_LINES))
-        .filter_map(Value::as_str)
-        .map(scrub)
-        .collect();
+    let tail: Vec<String> =
+        logs.iter().skip(logs.len().saturating_sub(JOB_LOG_LINES)).filter_map(Value::as_str).map(scrub).collect();
     Ok(Json(json!({"status": status, "logs": tail})))
 }
 
@@ -325,10 +319,7 @@ async fn update(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> 
 /// Installed apps with a newer version on Hugging Face (the daemon caches
 /// this for 5 minutes).
 async fn updates(State(state): State<Shared>) -> ApiResult<Json<Value>> {
-    let payload = state
-        .daemon
-        .call(Method::GET, "apps/check-updates", &[], None, Some(CATALOG_TIMEOUT))
-        .await?;
+    let payload = state.daemon.call(Method::GET, "apps/check-updates", &[], None, Some(CATALOG_TIMEOUT)).await?;
     let names: Vec<&str> = payload
         .get("apps_with_updates")
         .and_then(Value::as_array)
@@ -375,7 +366,10 @@ async fn hf_save(
     }
     let payload: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad_body())?;
     let token = payload.get("token").and_then(Value::as_str).map(str::trim).unwrap_or_default();
-    if token.is_empty() || token.len() > MAX_TOKEN_LEN || !token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+    if token.is_empty()
+        || token.len() > MAX_TOKEN_LEN
+        || !token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
         return Err(ApiError::new(422, "That doesn't look like a Hugging Face access token"));
     }
     let saved = state

@@ -25,7 +25,9 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
 
 
 @pytest.mark.parametrize(("flag", "action"), [("--tee", "ensure"), ("--untee", "remove")])
-def test_tee_flags_only_change_the_asoundrc(monkeypatch: pytest.MonkeyPatch, calls: list[Any], flag: str, action: str) -> None:
+def test_tee_flags_only_change_the_asoundrc(
+    monkeypatch: pytest.MonkeyPatch, calls: list[Any], flag: str, action: str
+) -> None:
     monkeypatch.setattr(mic_mixer.sys, "argv", ["reachy-bridge-mic-mixer", flag])
     monkeypatch.setattr(audio_tee, "is_installed", lambda: pytest.fail("shouldn't wait for the tee"))
     mic_mixer.main()

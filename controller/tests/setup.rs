@@ -98,10 +98,8 @@ async fn gone(page: &str) -> bool {
 }
 
 async fn harness() -> Harness {
-    let app = Router::new().route(
-        "/api/daemon/status",
-        get(|| async { Json(json!({"state": "stopped", "backend_status": null})) }),
-    );
+    let app = Router::new()
+        .route("/api/daemon/status", get(|| async { Json(json!({"state": "stopped", "backend_status": null})) }));
     harness_with(app).await
 }
 
@@ -119,7 +117,12 @@ struct FakeRobot {
 
 impl Default for FakeRobot {
     fn default() -> Self {
-        Self { on: Default::default(), mode: Arc::new(Mutex::new("disabled")), refuse_start: Default::default(), calls: Default::default() }
+        Self {
+            on: Default::default(),
+            mode: Arc::new(Mutex::new("disabled")),
+            refuse_start: Default::default(),
+            calls: Default::default(),
+        }
     }
 }
 
@@ -152,7 +155,9 @@ impl FakeRobot {
                     }
                     async move {
                         match refused {
-                            Some(code) => (StatusCode::from_u16(code).unwrap(), Json(json!({"detail": "Daemon is busy."}))),
+                            Some(code) => {
+                                (StatusCode::from_u16(code).unwrap(), Json(json!({"detail": "Daemon is busy."})))
+                            }
                             None => (StatusCode::OK, Json(json!({"job_id": "1"}))),
                         }
                     }
@@ -191,11 +196,8 @@ async fn harness_with(app: Router) -> Harness {
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "rc-setup-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("rc-setup-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
     let state = AppState::with_auth(
         Daemon::new(&url, Duration::from_secs(2)),
         LogBroker::new(),
@@ -208,10 +210,7 @@ async fn harness_with(app: Router) -> Harness {
 
 impl Harness {
     fn key(&self) -> String {
-        std::fs::read_to_string(self.dir.join("controller.key"))
-            .unwrap()
-            .trim()
-            .to_string()
+        std::fs::read_to_string(self.dir.join("controller.key")).unwrap().trim().to_string()
     }
 
     /// A call to the controller's own API from `peer`.
@@ -223,71 +222,38 @@ impl Harness {
         headers: &[(&str, &str)],
         body: Option<Value>,
     ) -> (StatusCode, Value) {
-        let mut builder = Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("host", "127.0.0.1:7861");
+        let mut builder = Request::builder().method(method).uri(uri).header("host", "127.0.0.1:7861");
         for (k, v) in headers {
             builder = builder.header(*k, *v);
         }
         if body.is_some() {
             builder = builder.header("content-type", "application/json");
         }
-        let mut request = builder
-            .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
-            .unwrap();
-        request
-            .extensions_mut()
-            .insert(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
-        let response = reachy_controller::app(self.state.clone())
-            .oneshot(request)
-            .await
-            .unwrap();
+        let mut request = builder.body(body.map_or_else(Body::empty, |b| Body::from(b.to_string()))).unwrap();
+        request.extensions_mut().insert(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
+        let response = reachy_controller::app(self.state.clone()).oneshot(request).await.unwrap();
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        (
-            status,
-            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-        )
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
 
     /// `reachy-bridge setup`: (code, setup page base URL).
     async fn start(&self) -> (String, String) {
         let key = self.key();
-        let (status, body) = self
-            .api(
-                "POST",
-                "/api/setup/start",
-                LOOPBACK,
-                &[("x-reachy-bridge-key", &key)],
-                None,
-            )
-            .await;
+        let (status, body) =
+            self.api("POST", "/api/setup/start", LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await;
         assert_eq!(status, StatusCode::OK, "{body:?}");
         assert_eq!(body["expires_in"], 900);
-        (
-            body["code"].as_str().unwrap().to_string(),
-            format!("http://127.0.0.1:{}", body["port"]),
-        )
+        (body["code"].as_str().unwrap().to_string(), format!("http://127.0.0.1:{}", body["port"]))
     }
 }
 
 fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap()
+    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap()
 }
 
 async fn login(page: &str, code: &str) -> reqwest::Response {
-    client()
-        .post(format!("{page}/api/setup/login"))
-        .json(&json!({"code": code}))
-        .send()
-        .await
-        .unwrap()
+    client().post(format!("{page}/api/setup/login")).json(&json!({"code": code})).send().await.unwrap()
 }
 
 /// The `rb_setup=...` pair from a login response.
@@ -299,10 +265,7 @@ fn session(response: &reqwest::Response) -> String {
         .map(|v| v.to_str().unwrap())
         .find(|c| c.starts_with("rb_setup="))
         .expect("setup cookie");
-    assert!(
-        line.contains("HttpOnly") && line.contains("SameSite=Strict"),
-        "{line}"
-    );
+    assert!(line.contains("HttpOnly") && line.contains("SameSite=Strict"), "{line}");
     line.split(';').next().unwrap().to_string()
 }
 
@@ -313,14 +276,8 @@ fn wrong(code: &str) -> String {
 #[tokio::test]
 async fn only_the_local_key_opens_the_page() {
     let h = harness().await;
-    for (peer, headers) in [
-        (LOOPBACK, vec![]),
-        (LAN, vec![]),
-        (LOOPBACK, vec![("x-reachy-bridge-key", "nope")]),
-    ] {
-        let (status, _) = h
-            .api("POST", "/api/setup/start", peer, &headers, None)
-            .await;
+    for (peer, headers) in [(LOOPBACK, vec![]), (LAN, vec![]), (LOOPBACK, vec![("x-reachy-bridge-key", "nope")])] {
+        let (status, _) = h.api("POST", "/api/setup/start", peer, &headers, None).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{peer} {headers:?}");
     }
     assert!(!h.state.setup.is_open());
@@ -333,17 +290,11 @@ async fn only_the_local_key_opens_the_page() {
 async fn the_code_is_never_logged() {
     let h = harness().await;
     let (code, page) = h.start().await;
-    assert_eq!(
-        login(&page, &wrong(&code)).await.status(),
-        StatusCode::BAD_REQUEST
-    );
+    assert_eq!(login(&page, &wrong(&code)).await.status(), StatusCode::BAD_REQUEST);
     assert_eq!(login(&page, &code).await.status(), StatusCode::OK);
     let (code2, _) = h.start().await;
     let logged = String::from_utf8_lossy(&log().lock().unwrap()).to_string();
-    assert!(
-        logged.contains("setup: page open"),
-        "the setup log lines are captured"
-    );
+    assert!(logged.contains("setup: page open"), "the setup log lines are captured");
     for c in [&code, &code2] {
         assert!(!logged.contains(c.as_str()), "code {c} in the log");
     }
@@ -356,36 +307,18 @@ async fn five_wrong_codes_lock_the_page_until_the_terminal_issues_a_new_one() {
     for left in (1..5).rev() {
         let r = login(&page, &wrong(&code)).await;
         assert_eq!(r.status(), StatusCode::BAD_REQUEST);
-        assert!(
-            r.text()
-                .await
-                .unwrap()
-                .contains(&format!("{left} tries left"))
-        );
+        assert!(r.text().await.unwrap().contains(&format!("{left} tries left")));
     }
-    assert_eq!(
-        login(&page, &wrong(&code)).await.status(),
-        StatusCode::LOCKED
-    );
+    assert_eq!(login(&page, &wrong(&code)).await.status(), StatusCode::LOCKED);
     // Locked: even the right code is refused.
     assert_eq!(login(&page, &code).await.status(), StatusCode::LOCKED);
-    let status: Value = client()
-        .get(format!("{page}/api/setup/status"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let status: Value = client().get(format!("{page}/api/setup/status")).send().await.unwrap().json().await.unwrap();
     assert_eq!(status["locked"], true);
 
     // A new code from the terminal unlocks it; the old one is dead.
     let (code2, page2) = h.start().await;
     assert_eq!(page2, page, "same page, new code");
-    assert_eq!(
-        login(&page, &code).await.status() == StatusCode::OK,
-        code == code2
-    );
+    assert_eq!(login(&page, &code).await.status() == StatusCode::OK, code == code2);
     let r = login(&page, &code2).await;
     assert_eq!(r.status(), StatusCode::OK);
 }
@@ -395,68 +328,27 @@ async fn the_code_works_once_and_the_session_gates_the_setup_routes() {
     let h = harness().await;
     let (code, page) = h.start().await;
     let c = client();
-    assert_eq!(
-        c.get(format!("{page}/api/setup/check"))
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        c.post(format!("{page}/api/setup/finish"))
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::UNAUTHORIZED
-    );
+    assert_eq!(c.get(format!("{page}/api/setup/check")).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(c.post(format!("{page}/api/setup/finish")).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
 
     let r = login(&page, &code).await;
     assert_eq!(r.status(), StatusCode::OK);
     let cookie = session(&r);
     // Single use: a second browser can't log in with it.
     assert_eq!(login(&page, &code).await.status(), StatusCode::CONFLICT);
-    let status: Value = c
-        .get(format!("{page}/api/setup/status"))
-        .header("cookie", &cookie)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let status: Value =
+        c.get(format!("{page}/api/setup/status")).header("cookie", &cookie).send().await.unwrap().json().await.unwrap();
     assert_eq!(status["authenticated"], true);
-    assert!(
-        status["expires_in"].as_u64().unwrap() > 1700,
-        "half an hour once used"
-    );
-    let status: Value = c
-        .get(format!("{page}/api/setup/status"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    assert!(status["expires_in"].as_u64().unwrap() > 1700, "half an hour once used");
+    let status: Value = c.get(format!("{page}/api/setup/status")).send().await.unwrap().json().await.unwrap();
     assert_eq!(status["authenticated"], false);
     // A forged cookie is not a session.
-    let r = c
-        .post(format!("{page}/api/setup/finish"))
-        .header("cookie", "rb_setup=AAAA")
-        .send()
-        .await
-        .unwrap();
+    let r = c.post(format!("{page}/api/setup/finish")).header("cookie", "rb_setup=AAAA").send().await.unwrap();
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
 
     // A new code from the terminal ends the old session.
     h.start().await;
-    let r = c
-        .post(format!("{page}/api/setup/finish"))
-        .header("cookie", &cookie)
-        .send()
-        .await
-        .unwrap();
+    let r = c.post(format!("{page}/api/setup/finish")).header("cookie", &cookie).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -475,19 +367,9 @@ async fn the_page_serves_only_setup() {
         "/api/setup/start",
         "/telemetry/stream",
     ] {
-        let r = c
-            .get(format!("{page}{path}"))
-            .header("cookie", &cookie)
-            .send()
-            .await
-            .unwrap();
+        let r = c.get(format!("{page}{path}")).header("cookie", &cookie).send().await.unwrap();
         assert_eq!(r.status(), StatusCode::NOT_FOUND, "{path}");
-        let r = c
-            .post(format!("{page}{path}"))
-            .header("cookie", &cookie)
-            .send()
-            .await
-            .unwrap();
+        let r = c.post(format!("{page}{path}")).header("cookie", &cookie).send().await.unwrap();
         assert_eq!(r.status(), StatusCode::NOT_FOUND, "POST {path}");
     }
     // Without the session too: the page doesn't even say they need one.
@@ -533,7 +415,8 @@ impl Harness {
     /// What `reachy-bridge setup` sees.
     async fn terminal(&self) -> Value {
         let key = self.key();
-        let (status, body) = self.api("GET", "/api/setup/state", LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await;
+        let (status, body) =
+            self.api("GET", "/api/setup/state", LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await;
         assert_eq!(status, StatusCode::OK, "{body:?}");
         body
     }
@@ -541,7 +424,8 @@ impl Harness {
     /// The terminal's answer to the waiting admin request: the code typed there.
     async fn confirm(&self, code: &str) -> (StatusCode, Value) {
         let key = self.key();
-        self.api("POST", "/api/setup/confirm", LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(json!({"code": code}))).await
+        self.api("POST", "/api/setup/confirm", LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(json!({"code": code})))
+            .await
     }
 }
 
@@ -563,7 +447,13 @@ async fn the_terminal_confirms_the_dashboard_the_setup_browser_names_as_admin() 
     assert_eq!(status, StatusCode::OK);
     let key = h.key();
     let (status, _) = h
-        .api("POST", "/api/auth/approve", LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(json!({"code": earlier["code"]})))
+        .api(
+            "POST",
+            "/api/auth/approve",
+            LOOPBACK,
+            &[("x-reachy-bridge-key", &key)],
+            Some(json!({"code": earlier["code"]})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
 
@@ -577,11 +467,13 @@ async fn the_terminal_confirms_the_dashboard_the_setup_browser_names_as_admin() 
     let cookie = session(&login(&page, &code).await);
     let r = client().post(format!("{page}/api/setup/admin")).json(&json!({"code": pair["code"]})).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "needs the setup session");
-    let (status, _) = propose(&page, &cookie, json!({"code": wrong(pair["code"].as_str().unwrap()), "person": "Andry"})).await;
+    let (status, _) =
+        propose(&page, &cookie, json!({"code": wrong(pair["code"].as_str().unwrap()), "person": "Andry"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "no dashboard shows that code");
     assert_eq!(h.terminal().await.get("proposal"), None);
 
-    let (status, body) = propose(&page, &cookie, json!({"code": pair["code"], "person": "Andry", "name": "laptop"})).await;
+    let (status, body) =
+        propose(&page, &cookie, json!({"code": pair["code"], "person": "Andry", "name": "laptop"})).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     assert_eq!(body["status"], "waiting");
     assert_eq!(admin_status(&page, &cookie).await["status"], "waiting");
@@ -633,7 +525,9 @@ async fn the_terminal_refuses_a_code_its_dashboard_does_not_show() {
     let (code, page) = h.start().await;
     let cookie = session(&login(&page, &code).await);
     // Someone proposes their own dashboard, with a name meant to mislead.
-    let (status, _) = propose(&page, &cookie, json!({"code": theirs["code"], "person": "Andry\u{202e}\u{200b} (yes, this one)\n"})).await;
+    let (status, _) =
+        propose(&page, &cookie, json!({"code": theirs["code"], "person": "Andry\u{202e}\u{200b} (yes, this one)\n"}))
+            .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(h.terminal().await["proposal"]["person"], "Andry yes this one", "only plain text reaches the terminal");
     // The person at the robot types the code their own dashboard shows.
@@ -694,12 +588,19 @@ async fn the_page_answers_only_to_the_robots_own_names() {
         let r = client().get(format!("{page}/api/setup/status")).header("host", host).send().await.unwrap();
         assert_eq!(r.status(), StatusCode::MISDIRECTED_REQUEST, "{host}");
     }
-    for host in [format!("127.0.0.1:{port}"), format!("localhost:{port}"), format!("[::1]:{port}"), "192.168.1.9".to_string(), format!("ubuntu-2.local:{port}")] {
+    for host in [
+        format!("127.0.0.1:{port}"),
+        format!("localhost:{port}"),
+        format!("[::1]:{port}"),
+        "192.168.1.9".to_string(),
+        format!("ubuntu-2.local:{port}"),
+    ] {
         let r = client().get(format!("{page}/api/setup/status")).header("host", &host).send().await.unwrap();
         assert_eq!(r.status(), StatusCode::OK, "{host}");
     }
     // Cross-site reads of the setup API are refused too.
-    let r = client().get(format!("{page}/api/setup/status")).header("sec-fetch-site", "cross-site").send().await.unwrap();
+    let r =
+        client().get(format!("{page}/api/setup/status")).header("sec-fetch-site", "cross-site").send().await.unwrap();
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
 }
 
@@ -708,26 +609,13 @@ async fn finishing_closes_the_page() {
     let h = harness().await;
     let (code, page) = h.start().await;
     let cookie = session(&login(&page, &code).await);
-    let r = client()
-        .post(format!("{page}/api/setup/finish"))
-        .header("cookie", &cookie)
-        .send()
-        .await
-        .unwrap();
+    let r = client().post(format!("{page}/api/setup/finish")).header("cookie", &cookie).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::OK);
     assert!(!h.state.setup.is_open());
     assert!(gone(&page).await, "the listener is gone");
     // The terminal can open it again.
     let (_, page2) = h.start().await;
-    assert!(
-        client()
-            .get(format!("{page2}/api/setup/status"))
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .is_success()
-    );
+    assert!(client().get(format!("{page2}/api/setup/status")).send().await.unwrap().status().is_success());
 }
 
 #[tokio::test]
@@ -737,15 +625,7 @@ async fn stopping_from_the_terminal_closes_the_page() {
     let (status, _) = h.api("POST", "/api/setup/stop", LAN, &[], None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let key = h.key();
-    let (status, _) = h
-        .api(
-            "POST",
-            "/api/setup/stop",
-            LOOPBACK,
-            &[("x-reachy-bridge-key", &key)],
-            None,
-        )
-        .await;
+    let (status, _) = h.api("POST", "/api/setup/stop", LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(gone(&page).await);
 }
@@ -754,7 +634,14 @@ impl Harness {
     /// The terminal's answer to the robot test.
     async fn run_robot_test(&self, approve: bool) -> (StatusCode, Value) {
         let key = self.key();
-        self.api("POST", "/api/setup/robot-test/run", LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(json!({"approve": approve}))).await
+        self.api(
+            "POST",
+            "/api/setup/robot-test/run",
+            LOOPBACK,
+            &[("x-reachy-bridge-key", &key)],
+            Some(json!({"approve": approve})),
+        )
+        .await
     }
 }
 
@@ -784,7 +671,15 @@ async fn the_robot_test_runs_only_after_a_yes_on_the_terminal_and_ends_off() {
     // No wake-up move on, no sleep move off: the motors stay limp throughout.
     assert_eq!(robot.calls(), ["start?wake_up=false", "stop?goto_sleep=false"]);
     assert!(!*robot.on.lock().unwrap());
-    let r: Value = client().get(format!("{page}/api/setup/robot-test")).header("cookie", &cookie).send().await.unwrap().json().await.unwrap();
+    let r: Value = client()
+        .get(format!("{page}/api/setup/robot-test"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(r["status"], "passed");
     assert_eq!(h.terminal().await["robot_test"], false);
 }
@@ -847,12 +742,7 @@ async fn the_device_check_reports_the_runtimes_json() {
     let h = harness().await;
     let (code, page) = h.start().await;
     let cookie = session(&login(&page, &code).await);
-    let r = client()
-        .get(format!("{page}/api/setup/check"))
-        .header("cookie", &cookie)
-        .send()
-        .await
-        .unwrap();
+    let r = client().get(format!("{page}/api/setup/check")).header("cookie", &cookie).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::OK);
     let body: Value = r.json().await.unwrap();
     assert_eq!(body["results"][0]["status"], "pass");

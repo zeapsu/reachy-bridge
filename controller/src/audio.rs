@@ -24,7 +24,7 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Notify;
 
 use crate::auth::{AuthContext, Credential};
@@ -147,7 +147,8 @@ impl Audio {
             use sha2::{Digest, Sha256};
             Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect()
         };
-        let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let seconds =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let mac = sign(key, "request", &format!("{seconds}:{nonce}:{method}:{path}:{digest}"));
         let mut request = self.http.request(method, url).header(AUTH_HEADER, format!("{seconds}.{nonce}.{mac}"));
         if !bytes.is_empty() {
@@ -157,7 +158,10 @@ impl Audio {
         let proof = response.headers().get(PROOF_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("");
         if !crate::auth::ct_eq(proof.as_bytes(), sign(key, "reply", &nonce).as_bytes()) {
             if response.status() == reqwest::StatusCode::FORBIDDEN {
-                return Err(ApiError::new(503, format!("The audio gateway refused the controller's {KEY_FILE}; do both use the same state dir?")));
+                return Err(ApiError::new(
+                    503,
+                    format!("The audio gateway refused the controller's {KEY_FILE}; do both use the same state dir?"),
+                ));
             }
             tracing::warn!("audio: something unsigned answered on the gateway's port; not using it");
             return Err(ApiError::new(503, "Something other than the audio gateway is on its port"));
@@ -197,12 +201,18 @@ impl Audio {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        Err(ApiError::new(503, "The audio gateway didn't start; see `reachy-bridge logs audio` (and `reachy-bridge check`)"))
+        Err(ApiError::new(
+            503,
+            "The audio gateway didn't start; see `reachy-bridge logs audio` (and `reachy-bridge check`)",
+        ))
     }
 
     async fn listening(&self) -> bool {
         let url = self.url.lock().unwrap().clone();
-        let Some(address) = reqwest::Url::parse(&url).ok().and_then(|u| Some(format!("{}:{}", u.host_str()?, u.port_or_known_default()?))) else {
+        let Some(address) = reqwest::Url::parse(&url)
+            .ok()
+            .and_then(|u| Some(format!("{}:{}", u.host_str()?, u.port_or_known_default()?)))
+        else {
             return false;
         };
         matches!(tokio::time::timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(address)).await, Ok(Ok(_)))
@@ -296,7 +306,10 @@ fn robot_off(status: &Value) -> bool {
 
 fn not_sim(state: &Shared) -> ApiResult<()> {
     if state.sim.active() {
-        return Err(ApiError::new(409, "The simulation has no microphone or speaker; leave sim mode to listen or talk"));
+        return Err(ApiError::new(
+            409,
+            "The simulation has no microphone or speaker; leave sim mode to listen or talk",
+        ));
     }
     Ok(())
 }
@@ -306,7 +319,9 @@ async fn robot_ready(state: &Shared) -> ApiResult<()> {
     not_sim(state)?;
     match state.daemon.status().await {
         None => Err(ApiError::new(503, "The robot's daemon isn't answering")),
-        Some(s) if robot_state(&s) == "starting" => Err(ApiError::new(409, "The robot is still starting; try again in a moment")),
+        Some(s) if robot_state(&s) == "starting" => {
+            Err(ApiError::new(409, "The robot is still starting; try again in a moment"))
+        }
         Some(s) if !robot_on(&s) => Err(ApiError::new(409, "Turn the robot on to listen or talk")),
         Some(_) => Ok(()),
     }
@@ -324,10 +339,7 @@ async fn open(
     audio.ensure_running().await?;
     // Waiting for the lock or the gateway can take a while: check again.
     robot_ready(&state).await?;
-    let opened = audio
-        .call(reqwest::Method::POST, "/session", Some(body.json()))
-        .await?
-        .unwrap_or(Value::Null);
+    let opened = audio.call(reqwest::Method::POST, "/session", Some(body.json())).await?.unwrap_or(Value::Null);
     let (Some(id), Some(offer)) = (opened["id"].as_str(), opened["offer"].as_str()) else {
         return Err(ApiError::new(502, "The audio gateway sent no offer"));
     };
@@ -474,7 +486,11 @@ async fn route(
 
 /// End a session: its own browser. (An admin ends someone else's by taking
 /// control.)
-async fn close(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+async fn close(
+    State(state): State<Shared>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
     owned(&state, &ctx, &id)?.end.notify_one();
     // Gone for every dashboard now; the watcher still ends it on the gateway.
     state.audio.forget(&id);

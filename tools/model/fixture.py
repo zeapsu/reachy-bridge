@@ -54,7 +54,10 @@ def main(daemon: str, rig_path: str, out: str) -> None:
         rods = [body("stewart_link_rod" + ("" if i == 1 else f"_{i}")) for i in range(1, 7)]
         tips = [
             (data.xpos[b] + data.xmat[b].reshape(3, 3) @ ANTENNA_POINT).tolist()
-            for b in (model.jnt_bodyid[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"{side}_antenna")] for side in ("right", "left"))
+            for b in (
+                model.jnt_bodyid[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"{side}_antenna")]
+                for side in ("right", "left")
+            )
         ]
         return {
             "head": data.xpos[body("xl_330")].tolist(),

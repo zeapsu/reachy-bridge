@@ -93,8 +93,11 @@ def main(out: str) -> None:
 
     def hinge(name: str) -> dict:
         j = joint(name)
-        return {"anchor": d.xanchor[j].round(6).tolist(), "axis": d.xaxis[j].round(6).tolist(),
-                "neutral": round(float(d.qpos[m.jnt_qposadr[j]]), 6)}
+        return {
+            "anchor": d.xanchor[j].round(6).tolist(),
+            "axis": d.xaxis[j].round(6).tolist(),
+            "neutral": round(float(d.qpos[m.jnt_qposadr[j]]), 6),
+        }
 
     def antenna(name: str) -> dict:
         h = hinge(name)
@@ -105,9 +108,13 @@ def main(out: str) -> None:
         "head_pivot": site("head"),
         "horns": [hinge(f"stewart_{i}") for i in range(1, 7)],
         # A rod starts at its horn's tip and ends where it meets the head.
-        "rods": [{"start": d.xpos[r].round(6).tolist(),
-                  "end": site(f"closing_{i}_1") if i < 6 else d.xanchor[joint("passive_7")].round(6).tolist()}
-                 for i, r in enumerate(rods, 1)],
+        "rods": [
+            {
+                "start": d.xpos[r].round(6).tolist(),
+                "end": site(f"closing_{i}_1") if i < 6 else d.xanchor[joint("passive_7")].round(6).tolist(),
+            }
+            for i, r in enumerate(rods, 1)
+        ],
         # In the daemon's convention: neutral as it reports it, axis flipped to match.
         "antennas": {side: antenna(f"{side}_antenna") for side in ("right", "left")},
     }

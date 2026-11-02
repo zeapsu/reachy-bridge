@@ -5,8 +5,8 @@
 //! puts the real socket address in production.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -21,7 +21,7 @@ use reachy_controller::control::AWAY_AFTER;
 use reachy_controller::daemon::Daemon;
 use reachy_controller::logs::LogBroker;
 use reachy_controller::state::{AppState, Shared};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const LOOPBACK: &str = "127.0.0.1:50000";
@@ -118,7 +118,10 @@ fn request(method: &str, uri: &str, peer: &str, headers: &[(&str, &str)], body: 
     let mut builder = Request::builder().method(method).uri(uri);
     if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
         // Local tools use 127.0.0.1; LAN browsers the robot's LAN address.
-        builder = builder.header("host", if peer_addr.ip().to_canonical().is_loopback() { "127.0.0.1:7861" } else { "10.0.0.2:7861" });
+        builder = builder.header(
+            "host",
+            if peer_addr.ip().to_canonical().is_loopback() { "127.0.0.1:7861" } else { "10.0.0.2:7861" },
+        );
     }
     for (k, v) in headers {
         builder = builder.header(*k, *v);
@@ -137,7 +140,8 @@ impl Harness {
         let status = response.status();
         let headers = response.headers().clone();
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body = serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into()));
+        let body =
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into()));
         Reply { status, headers, body }
     }
 
@@ -188,7 +192,12 @@ impl Harness {
     /// Pair the admin's browser the way `reachy-bridge pair --admin` does.
     async fn admin(&self, peer: &str) -> String {
         let key = self.key();
-        self.paired_as(peer, &[("x-reachy-bridge-key", &key)], json!({"name": "laptop", "person": "Andry", "role": "admin"})).await
+        self.paired_as(
+            peer,
+            &[("x-reachy-bridge-key", &key)],
+            json!({"name": "laptop", "person": "Andry", "role": "admin"}),
+        )
+        .await
     }
 
     fn devices_file(&self) -> String {
@@ -252,7 +261,10 @@ async fn lan_on_trusts_loopback_and_locks_out_lan_peers() {
     let spoof = [("x-forwarded-for", "127.0.0.1"), ("x-real-ip", "127.0.0.1"), ("forwarded", "for=127.0.0.1")];
     assert_eq!(h.call("GET", "/api/logs/sources", LAN, &spoof, None).await.status, StatusCode::UNAUTHORIZED);
     // A mapped LAN address is not loopback.
-    assert_eq!(h.call("GET", "/api/logs/sources", "[::ffff:192.168.1.50]:1", &[], None).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        h.call("GET", "/api/logs/sources", "[::ffff:192.168.1.50]:1", &[], None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
     // No ConnectInfo at all fails closed.
     let r = h.send(Request::get("/api/logs/sources").body(Body::empty()).unwrap()).await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
@@ -311,9 +323,19 @@ async fn pairing_flow_issues_a_working_cookie() {
 async fn devices_survive_a_restart() {
     let h = harness(lan()).await;
     let device = h.paired(LAN).await;
-    let state = AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), lan());
-    let restarted = Harness { state, dir: TempDir(std::env::temp_dir().join("rc-auth-unused")), robot: Default::default() };
-    assert_eq!(restarted.call("GET", "/api/logs/sources", LAN, &[("cookie", &device)], None).await.status, StatusCode::OK);
+    let state = AppState::with_auth(
+        Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)),
+        LogBroker::new(),
+        h.dir.0.clone(),
+        Duration::from_millis(10),
+        lan(),
+    );
+    let restarted =
+        Harness { state, dir: TempDir(std::env::temp_dir().join("rc-auth-unused")), robot: Default::default() };
+    assert_eq!(
+        restarted.call("GET", "/api/logs/sources", LAN, &[("cookie", &device)], None).await.status,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]
@@ -367,7 +389,9 @@ async fn polling_needs_the_browser_secret() {
     // The pair cookie is scoped to its own poll URL.
     let r = h.call("POST", "/api/auth/pair", LAN, &[], None).await;
     let line = r.set_cookies().into_iter().find(|c| c.starts_with("rb_pair=")).unwrap();
-    assert!(line.contains(&format!("Path=/api/auth/pair/{}", r.body["id"].as_str().unwrap())) && line.contains("HttpOnly"));
+    assert!(
+        line.contains(&format!("Path=/api/auth/pair/{}", r.body["id"].as_str().unwrap())) && line.contains("HttpOnly")
+    );
     // The creating browser still collects its token.
     assert_eq!(h.poll(&id, LAN, &pair_cookie).await.body["status"], "approved");
 }
@@ -376,7 +400,10 @@ async fn polling_needs_the_browser_secret() {
 async fn revoking_takes_effect_immediately() {
     let h = harness(lan()).await;
     let device = h.paired(LAN).await;
-    let id = h.call("GET", "/api/auth/devices", LOOPBACK, &[], None).await.body["devices"][0]["id"].as_str().unwrap().to_string();
+    let id = h.call("GET", "/api/auth/devices", LOOPBACK, &[], None).await.body["devices"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // An open log stream from that device ends on revocation.
     let response = reachy_controller::app(h.state.clone())
@@ -389,14 +416,17 @@ async fn revoking_takes_effect_immediately() {
 
     let r = h.call("DELETE", &format!("/api/auth/devices/{id}"), LOOPBACK, &[], None).await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
-    assert_eq!(h.call("GET", "/api/logs/sources", LAN, &[("cookie", &device)], None).await.status, StatusCode::UNAUTHORIZED);
-    let ended = tokio::time::timeout(Duration::from_secs(2), async {
-        while stream.next().await.is_some() {}
-    })
-    .await;
+    assert_eq!(
+        h.call("GET", "/api/logs/sources", LAN, &[("cookie", &device)], None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let ended = tokio::time::timeout(Duration::from_secs(2), async { while stream.next().await.is_some() {} }).await;
     assert!(ended.is_ok(), "stream still open after revoke");
     assert!(!h.devices_file().contains(&id));
-    assert_eq!(h.call("DELETE", &format!("/api/auth/devices/{id}"), LOOPBACK, &[], None).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        h.call("DELETE", &format!("/api/auth/devices/{id}"), LOOPBACK, &[], None).await.status,
+        StatusCode::NOT_FOUND
+    );
 }
 
 #[tokio::test]
@@ -443,7 +473,8 @@ async fn secure_flag_only_over_https() {
     // From loopback (tailscale serve) X-Forwarded-Proto counts.
     let r = h.call("POST", "/api/auth/pair", LOOPBACK, &https, None).await;
     assert!(r.set_cookies()[0].contains("; Secure"));
-    let (id, code, pair_cookie) = (r.body["id"].as_str().unwrap().to_string(), r.body["code"].as_str().unwrap().to_string(), r.cookie("rb_pair"));
+    let (id, code, pair_cookie) =
+        (r.body["id"].as_str().unwrap().to_string(), r.body["code"].as_str().unwrap().to_string(), r.cookie("rb_pair"));
     h.approve(&code, LOOPBACK, &[]).await;
     let r = h.call("GET", &format!("/api/auth/pair/{id}"), LOOPBACK, &[("cookie", &pair_cookie), https[0]], None).await;
     assert!(r.set_cookies().iter().any(|c| c.starts_with("rb_device=") && c.contains("; Secure")));
@@ -473,7 +504,10 @@ async fn cross_site_state_changes_are_refused() {
     let off = harness(AuthConfig::default()).await;
     assert_eq!(off.call("DELETE", "/api/auth/devices/x", LOOPBACK, &evil, None).await.status, StatusCode::FORBIDDEN);
     assert_eq!(off.call("POST", "/api/expressions/stop", LOOPBACK, &evil, None).await.status, StatusCode::FORBIDDEN);
-    assert_eq!(off.call("POST", "/api/daemon/start", LOOPBACK, &[("sec-fetch-site", "cross-site")], None).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        off.call("POST", "/api/daemon/start", LOOPBACK, &[("sec-fetch-site", "cross-site")], None).await.status,
+        StatusCode::FORBIDDEN
+    );
     assert_eq!(off.call("GET", "/api/daemon/status", LOOPBACK, &evil, None).await.status, StatusCode::OK);
     assert_ne!(off.call("POST", "/api/expressions/stop", LOOPBACK, &[], None).await.status, StatusCode::FORBIDDEN);
 }
@@ -481,7 +515,9 @@ async fn cross_site_state_changes_are_refused() {
 #[tokio::test]
 async fn loopback_trust_needs_a_local_or_tailnet_host() {
     let h = harness(lan()).await;
-    for host in ["127.0.0.1:7861", "localhost:7861", "[::1]:7861", "robot.tail1234.ts.net", "robot.tail1234.ts.net:10000"] {
+    for host in
+        ["127.0.0.1:7861", "localhost:7861", "[::1]:7861", "robot.tail1234.ts.net", "robot.tail1234.ts.net:10000"]
+    {
         let r = h.call("GET", "/api/logs/sources", LOOPBACK, &[("host", host)], None).await;
         assert_eq!(r.status, StatusCode::OK, "{host}");
     }
@@ -506,7 +542,10 @@ async fn ipv6_peers_are_limited_per_64_and_loopback_is_not_starved() {
     for n in 0..15 {
         h.pair(&format!("192.168.2.{}:1", n / 5 + 1)).await;
     }
-    assert_eq!(h.call("POST", "/api/auth/pair", "192.168.9.9:1", &[], None).await.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        h.call("POST", "/api/auth/pair", "192.168.9.9:1", &[], None).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
     h.pair(LOOPBACK).await;
 }
 
@@ -518,9 +557,24 @@ async fn idle_devices_expire_and_a_bad_file_is_kept_aside() {
     let mut parsed: Value = serde_json::from_str(&file).unwrap();
     parsed["devices"][0]["last_seen"] = json!(1);
     std::fs::write(h.dir.0.join("devices.json"), parsed.to_string()).unwrap();
-    let restart = || AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), lan());
-    let restarted = Harness { state: restart(), dir: TempDir(std::env::temp_dir().join("rc-auth-unused")), robot: Default::default() };
-    assert_eq!(restarted.call("GET", "/api/logs/sources", LAN, &[("cookie", &device)], None).await.status, StatusCode::UNAUTHORIZED);
+    let restart = || {
+        AppState::with_auth(
+            Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)),
+            LogBroker::new(),
+            h.dir.0.clone(),
+            Duration::from_millis(10),
+            lan(),
+        )
+    };
+    let restarted = Harness {
+        state: restart(),
+        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")),
+        robot: Default::default(),
+    };
+    assert_eq!(
+        restarted.call("GET", "/api/logs/sources", LAN, &[("cookie", &device)], None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
     assert!(h.devices_file().contains("[]"), "expired device removed: {}", h.devices_file());
 
     std::fs::write(h.dir.0.join("devices.json"), "{not json").unwrap();
@@ -555,7 +609,15 @@ async fn only_the_local_key_approves_an_admin() {
     assert_eq!(r.body["person"], "Andry");
     // An admin browser can't mint another admin either.
     let (_, code, _) = h.pair(LAN).await;
-    let r = h.call("POST", "/api/auth/approve", LOOPBACK, &[("cookie", &device)], Some(json!({"code": code, "role": "admin"}))).await;
+    let r = h
+        .call(
+            "POST",
+            "/api/auth/approve",
+            LOOPBACK,
+            &[("cookie", &device)],
+            Some(json!({"code": code, "role": "admin"})),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
 }
 
@@ -568,14 +630,26 @@ async fn admin_mode_makes_every_browser_log_in() {
     assert_eq!(h.call("GET", "/api/logs/sources", LOOPBACK, &tailnet, None).await.status, StatusCode::UNAUTHORIZED);
     assert_eq!(h.call("GET", "/api/logs/sources", LOOPBACK, &[], None).await.status, StatusCode::UNAUTHORIZED);
     let r = h.call("GET", "/api/auth/status", LOOPBACK, &tailnet, None).await;
-    assert_eq!((r.status, r.body["login_required"].clone(), r.body["authenticated"].clone()), (StatusCode::OK, json!(true), json!(false)));
+    assert_eq!(
+        (r.status, r.body["login_required"].clone(), r.body["authenticated"].clone()),
+        (StatusCode::OK, json!(true), json!(false))
+    );
     // A paired browser, the CLI's key, and the pairing routes still work.
-    assert_eq!(h.call("GET", "/api/logs/sources", LOOPBACK, &[("cookie", &admin), tailnet[0]], None).await.status, StatusCode::OK);
+    assert_eq!(
+        h.call("GET", "/api/logs/sources", LOOPBACK, &[("cookie", &admin), tailnet[0]], None).await.status,
+        StatusCode::OK
+    );
     let key = h.key();
-    assert_eq!(h.call("GET", "/api/logs/sources", LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await.status, StatusCode::OK);
+    assert_eq!(
+        h.call("GET", "/api/logs/sources", LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await.status,
+        StatusCode::OK
+    );
     h.pair(LOOPBACK).await;
     // The app UI proxy follows the same rule.
-    let headers: HeaderMap = [("host", "robot.tail1234.ts.net:8043")].iter().map(|(k, v)| (k.parse().unwrap(), v.parse().unwrap())).collect();
+    let headers: HeaderMap = [("host", "robot.tail1234.ts.net:8043")]
+        .iter()
+        .map(|(k, v)| (k.parse().unwrap(), v.parse().unwrap()))
+        .collect();
     assert!(!h.state.auth.app_proxy_allowed(&headers, Some("127.0.0.1".parse().unwrap())));
     let mut with_cookie = headers.clone();
     with_cookie.insert("cookie", admin.parse().unwrap());
@@ -597,39 +671,65 @@ async fn members_cannot_manage_devices() {
     assert_eq!((mine[0]["person"].clone(), mine[0]["current"].clone()), (json!("Sam"), json!(true)));
     let all = h.call("GET", "/api/auth/devices", LOOPBACK, &[("cookie", &admin)], None).await.body["devices"].clone();
     assert_eq!(all.as_array().unwrap().len(), 2);
-    let admin_id = all.as_array().unwrap().iter().find(|d| d["role"] == "admin").unwrap()["id"].as_str().unwrap().to_string();
+    let admin_id =
+        all.as_array().unwrap().iter().find(|d| d["role"] == "admin").unwrap()["id"].as_str().unwrap().to_string();
     // It can't revoke the admin, but it can log itself out.
     let r = h.call("DELETE", &format!("/api/auth/devices/{admin_id}"), LAN, &[("cookie", &member)], None).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
     let member_id = mine[0]["id"].as_str().unwrap();
     let r = h.call("DELETE", &format!("/api/auth/devices/{member_id}"), LAN, &[("cookie", &member)], None).await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
-    assert_eq!(h.call("GET", "/api/logs/sources", LAN, &[("cookie", &member)], None).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        h.call("GET", "/api/logs/sources", LAN, &[("cookie", &member)], None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[tokio::test]
 async fn the_last_admin_is_revoked_only_from_the_robot_and_admin_mode_stays() {
     let h = harness(AuthConfig::default()).await;
     let admin = h.admin(LOOPBACK).await;
-    let id = h.call("GET", "/api/auth/devices", LOOPBACK, &[("cookie", &admin)], None).await.body["devices"][0]["id"].as_str().unwrap().to_string();
+    let id = h.call("GET", "/api/auth/devices", LOOPBACK, &[("cookie", &admin)], None).await.body["devices"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let uri = format!("/api/auth/devices/{id}");
     assert_eq!(h.call("DELETE", &uri, LOOPBACK, &[("cookie", &admin)], None).await.status, StatusCode::CONFLICT);
     let key = h.key();
-    assert_eq!(h.call("DELETE", &uri, LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        h.call("DELETE", &uri, LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await.status,
+        StatusCode::NO_CONTENT
+    );
     // No admin device left, but the robot doesn't open up again, even after a restart.
     assert_eq!(h.call("GET", "/api/logs/sources", LOOPBACK, &[], None).await.status, StatusCode::UNAUTHORIZED);
     let restarted = Harness {
-        state: AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), AuthConfig::default()),
-        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")), robot: Default::default(),
+        state: AppState::with_auth(
+            Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)),
+            LogBroker::new(),
+            h.dir.0.clone(),
+            Duration::from_millis(10),
+            AuthConfig::default(),
+        ),
+        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")),
+        robot: Default::default(),
     };
     assert_eq!(restarted.call("GET", "/api/logs/sources", LOOPBACK, &[], None).await.status, StatusCode::UNAUTHORIZED);
     // The CLI pairs a new admin.
     let key = std::fs::read_to_string(h.dir.0.join("controller.key")).unwrap();
     let (id, code, pair_cookie) = restarted.pair(LOOPBACK).await;
     let body = json!({"code": code, "role": "admin"});
-    assert_eq!(restarted.call("POST", "/api/auth/approve", LOOPBACK, &[("x-reachy-bridge-key", key.trim())], Some(body)).await.status, StatusCode::OK);
+    assert_eq!(
+        restarted
+            .call("POST", "/api/auth/approve", LOOPBACK, &[("x-reachy-bridge-key", key.trim())], Some(body))
+            .await
+            .status,
+        StatusCode::OK
+    );
     let device = restarted.poll(&id, LOOPBACK, &pair_cookie).await.cookie("rb_device");
-    assert_eq!(restarted.call("GET", "/api/logs/sources", LOOPBACK, &[("cookie", &device)], None).await.status, StatusCode::OK);
+    assert_eq!(
+        restarted.call("GET", "/api/logs/sources", LOOPBACK, &[("cookie", &device)], None).await.status,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]
@@ -639,8 +739,15 @@ async fn devices_paired_before_roles_are_members() {
     std::fs::create_dir_all(&h.dir.0).unwrap();
     std::fs::write(h.dir.0.join("devices.json"), old.to_string()).unwrap();
     let restarted = Harness {
-        state: AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), lan()),
-        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")), robot: Default::default(),
+        state: AppState::with_auth(
+            Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)),
+            LogBroker::new(),
+            h.dir.0.clone(),
+            Duration::from_millis(10),
+            lan(),
+        ),
+        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")),
+        robot: Default::default(),
     };
     assert!(!restarted.state.auth.admin_mode());
     let devices = restarted.call("GET", "/api/auth/devices", LOOPBACK, &[], None).await.body["devices"].clone();
@@ -668,14 +775,19 @@ async fn the_first_admin_logs_out_earlier_devices() {
     let earlier = h.paired(LAN).await;
     assert_eq!(h.call("GET", "/api/logs/sources", LAN, &[("cookie", &earlier)], None).await.status, StatusCode::OK);
     let admin = h.admin(LAN2).await;
-    assert_eq!(h.call("GET", "/api/logs/sources", LAN, &[("cookie", &earlier)], None).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        h.call("GET", "/api/logs/sources", LAN, &[("cookie", &earlier)], None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
     let devices = h.call("GET", "/api/auth/devices", LAN2, &[("cookie", &admin)], None).await.body["devices"].clone();
     assert_eq!(devices.as_array().unwrap().len(), 1);
     // Later members stay.
     let member = h.paired_as(LAN, &[("cookie", &admin)], json!({"name": "phone"})).await;
     // A member can't ask for admin either.
     let (_, code, _) = h.pair(LAN).await;
-    let r = h.call("POST", "/api/auth/approve", LAN, &[("cookie", &member)], Some(json!({"code": code, "role": "admin"}))).await;
+    let r = h
+        .call("POST", "/api/auth/approve", LAN, &[("cookie", &member)], Some(json!({"code": code, "role": "admin"})))
+        .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
 }
 
@@ -691,7 +803,10 @@ async fn the_cli_approves_a_request_others_locked() {
     let key = h.key();
     assert_eq!(h.approve("000000", LOOPBACK, &[("x-reachy-bridge-key", &key)]).await.status, StatusCode::BAD_REQUEST);
     let body = json!({"code": code, "role": "admin"});
-    assert_eq!(h.call("POST", "/api/auth/approve", LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(body)).await.status, StatusCode::OK);
+    assert_eq!(
+        h.call("POST", "/api/auth/approve", LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(body)).await.status,
+        StatusCode::OK
+    );
     assert_eq!(h.poll(&id, LOOPBACK, &pair_cookie).await.body["status"], "approved");
 }
 
@@ -808,7 +923,10 @@ async fn a_paired_person_takes_control_and_the_admin_overrides() {
     assert_eq!(h.view(LAN, &sam).await["holder"]["you"], false);
     // The CLI's key isn't held back by control.
     let key = h.key();
-    assert_eq!(h.call("POST", "/api/expressions/stop", LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await.status, StatusCode::OK);
+    assert_eq!(
+        h.call("POST", "/api/expressions/stop", LOOPBACK, &[("x-reachy-bridge-key", &key)], None).await.status,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]
@@ -908,7 +1026,13 @@ async fn control_details() {
     let r = h.call("PUT", "/api/apps/favorites", LAN, &[("cookie", &sam)], Some(json!({"favorites": []}))).await;
     assert_ne!(r.status, StatusCode::FORBIDDEN);
     // A drive WebSocket upgrade needs control like any action.
-    let upgrade = [("cookie", sam.as_str()), ("connection", "upgrade"), ("upgrade", "websocket"), ("sec-websocket-version", "13"), ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")];
+    let upgrade = [
+        ("cookie", sam.as_str()),
+        ("connection", "upgrade"),
+        ("upgrade", "websocket"),
+        ("sec-websocket-version", "13"),
+        ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+    ];
     assert_eq!(h.call("GET", "/api/drive/ws", LAN, &upgrade, None).await.status, StatusCode::FORBIDDEN);
     // An admin away too long doesn't silently get control back.
     h.control(LOOPBACK, &admin, "take", None).await;
@@ -935,8 +1059,15 @@ async fn devices_paired_before_people_use_their_name() {
     file["devices"][0]["person"] = json!("");
     std::fs::write(h.dir.0.join("devices.json"), file.to_string()).unwrap();
     let restarted = Harness {
-        state: AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), lan()),
-        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")), robot: Default::default(),
+        state: AppState::with_auth(
+            Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)),
+            LogBroker::new(),
+            h.dir.0.clone(),
+            Duration::from_millis(10),
+            lan(),
+        ),
+        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")),
+        robot: Default::default(),
     };
     let r = restarted.call("GET", "/api/auth/status", LAN, &[("cookie", &old)], None).await;
     assert_eq!(r.body["person"], "phone");
@@ -955,8 +1086,15 @@ async fn unnamed_devices_from_before_get_a_person_each() {
     }
     std::fs::write(h.dir.0.join("devices.json"), file.to_string()).unwrap();
     let restarted = Harness {
-        state: AppState::with_auth(Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)), LogBroker::new(), h.dir.0.clone(), Duration::from_millis(10), lan()),
-        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")), robot: Default::default(),
+        state: AppState::with_auth(
+            Daemon::new("http://127.0.0.1:9", Duration::from_millis(200)),
+            LogBroker::new(),
+            h.dir.0.clone(),
+            Duration::from_millis(10),
+            lan(),
+        ),
+        dir: TempDir(std::env::temp_dir().join("rc-auth-unused")),
+        robot: Default::default(),
     };
     let person = |r: Reply| r.body["person"].as_str().unwrap().to_string();
     let a = person(restarted.call("GET", "/api/auth/status", LAN, &[("cookie", &one)], None).await);
@@ -984,11 +1122,8 @@ async fn fake_gateway(deleted: Arc<AtomicU64>, key: Option<String>) -> String {
             get({
                 let open = open.clone();
                 move || async move {
-                    let session = if open.load(Ordering::SeqCst) {
-                        json!({"id": "s1", "connected": true})
-                    } else {
-                        Value::Null
-                    };
+                    let session =
+                        if open.load(Ordering::SeqCst) { json!({"id": "s1", "connected": true}) } else { Value::Null };
                     Json(json!({"session": session}))
                 }
             }),
@@ -1039,10 +1174,13 @@ async fn fake_gateway(deleted: Arc<AtomicU64>, key: Option<String>) -> String {
         .layer(axum::middleware::from_fn(move |request: Request<Body>, next: axum::middleware::Next| {
             let key = key.clone();
             async move {
-                let auth = request.headers().get(audio::AUTH_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                let auth =
+                    request.headers().get(audio::AUTH_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
                 let mut response = next.run(request).await;
                 if let (Some(key), Some(nonce)) = (key, auth.split('.').nth(1)) {
-                    response.headers_mut().insert(audio::PROOF_HEADER, audio::sign(&key, "reply", nonce).parse().unwrap());
+                    response
+                        .headers_mut()
+                        .insert(audio::PROOF_HEADER, audio::sign(&key, "reply", nonce).parse().unwrap());
                 }
                 response
             }
@@ -1057,7 +1195,10 @@ async fn fake_gateway(deleted: Arc<AtomicU64>, key: Option<String>) -> String {
 fn signs_like_the_gateway() {
     // Vectors from runtime/.../audio_gateway.py's sign().
     assert_eq!(audio::sign("key", "request", "00"), "3d015b8f1153a6c9583a8918449da7ef14f83a80453c525fc6ab27a28e5ebdde");
-    assert_eq!(audio::sign(&"k".repeat(70), "reply", "ab"), "36dfa5b9b523a5c76a47b81281bdf031eb86d84df0e2183c621c4f91e8043147");
+    assert_eq!(
+        audio::sign(&"k".repeat(70), "reply", "ab"),
+        "36dfa5b9b523a5c76a47b81281bdf031eb86d84df0e2183c621c4f91e8043147"
+    );
 }
 
 #[tokio::test]
@@ -1096,7 +1237,10 @@ async fn voice_goes_with_the_robot() {
     for (power, within) in [(ROBOT_OFF, 6), (ROBOT_CRASHED, 6), (ROBOT_SILENT, 12)] {
         let before = deleted.load(Ordering::SeqCst);
         h.robot.store(ROBOT_ON, Ordering::SeqCst);
-        assert_eq!(h.call("POST", "/api/audio/session", LOOPBACK, &[], Some(open.clone())).await.status, StatusCode::OK);
+        assert_eq!(
+            h.call("POST", "/api/audio/session", LOOPBACK, &[], Some(open.clone())).await.status,
+            StatusCode::OK
+        );
         h.robot.store(power, Ordering::SeqCst);
         tokio::time::timeout(Duration::from_secs(within), async {
             while deleted.load(Ordering::SeqCst) == before {
@@ -1139,65 +1283,20 @@ async fn only_the_holder_listens_and_talks_and_loses_it_with_control() {
     let key = std::fs::read_to_string(h.state.state_dir.join(audio::KEY_FILE)).unwrap().trim().to_string();
     h.state.audio.set_url(&fake_gateway(deleted.clone(), Some(key)).await);
     let open = json!({"listen": true, "talk": true});
-    let r = h
-        .call(
-            "POST",
-            "/api/audio/session",
-            LAN,
-            &[("cookie", &sam)],
-            Some(open.clone()),
-        )
-        .await;
+    let r = h.call("POST", "/api/audio/session", LAN, &[("cookie", &sam)], Some(open.clone())).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "no control, no audio");
     h.control(LAN, &sam, "take", None).await;
-    let r = h
-        .call(
-            "POST",
-            "/api/audio/session",
-            LAN,
-            &[("cookie", &sam)],
-            Some(open),
-        )
-        .await;
-    assert_eq!(
-        (r.status, r.body["id"].clone()),
-        (StatusCode::OK, json!("s1"))
-    );
+    let r = h.call("POST", "/api/audio/session", LAN, &[("cookie", &sam)], Some(open)).await;
+    assert_eq!((r.status, r.body["id"].clone()), (StatusCode::OK, json!("s1")));
     // Everyone sees the mic is live; only Sam's browser gets the session id.
-    let mine = h
-        .call("GET", "/api/audio", LAN, &[("cookie", &sam)], None)
-        .await
-        .body;
-    assert_eq!(
-        (
-            mine["session"]["you"].clone(),
-            mine["session"]["id"].clone()
-        ),
-        (json!(true), json!("s1"))
-    );
-    let theirs = h
-        .call("GET", "/api/audio", LOOPBACK, &[("cookie", &admin)], None)
-        .await
-        .body;
-    assert_eq!(
-        (
-            theirs["session"]["person"].clone(),
-            theirs["session"]["id"].clone()
-        ),
-        (json!("Sam"), Value::Null)
-    );
+    let mine = h.call("GET", "/api/audio", LAN, &[("cookie", &sam)], None).await.body;
+    assert_eq!((mine["session"]["you"].clone(), mine["session"]["id"].clone()), (json!(true), json!("s1")));
+    let theirs = h.call("GET", "/api/audio", LOOPBACK, &[("cookie", &admin)], None).await.body;
+    assert_eq!((theirs["session"]["person"].clone(), theirs["session"]["id"].clone()), (json!("Sam"), Value::Null));
     assert_eq!(theirs["session"]["ref"], r.body["ref"], "the public ref, for telling sessions apart");
     // Only Sam answers it.
     let answer = json!({"sdp": "v=0\r\n"});
-    let r = h
-        .call(
-            "POST",
-            "/api/audio/session/s1/answer",
-            LAN,
-            &[("cookie", &sam)],
-            Some(answer),
-        )
-        .await;
+    let r = h.call("POST", "/api/audio/session/s1/answer", LAN, &[("cookie", &sam)], Some(answer)).await;
     assert_eq!(r.status, StatusCode::OK);
     // The admin takes over: Sam's audio ends at once.
     h.control(LOOPBACK, &admin, "take", None).await;
@@ -1208,12 +1307,7 @@ async fn only_the_holder_listens_and_talks_and_loses_it_with_control() {
     })
     .await
     .expect("Sam's session wasn't closed");
-    assert_eq!(
-        h.call("GET", "/api/audio", LAN, &[("cookie", &sam)], None)
-            .await
-            .body["session"],
-        Value::Null
-    );
+    assert_eq!(h.call("GET", "/api/audio", LAN, &[("cookie", &sam)], None).await.body["session"], Value::Null);
 }
 
 #[tokio::test]
@@ -1225,7 +1319,9 @@ async fn another_browser_cant_drive_or_end_someones_audio() {
     let key = std::fs::read_to_string(h.state.state_dir.join(audio::KEY_FILE)).unwrap().trim().to_string();
     h.state.audio.set_url(&fake_gateway(deleted.clone(), Some(key)).await);
     h.control(LAN, &sam, "take", None).await;
-    let r = h.call("POST", "/api/audio/session", LAN, &[("cookie", &sam)], Some(json!({"listen": true, "talk": true}))).await;
+    let r = h
+        .call("POST", "/api/audio/session", LAN, &[("cookie", &sam)], Some(json!({"listen": true, "talk": true})))
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     let route = json!({"listen": true, "talk": true, "hear": true, "apps": false});
     for (method, uri, body) in [
@@ -1247,8 +1343,14 @@ async fn another_browser_cant_drive_or_end_someones_audio() {
     assert_eq!(deleted.load(Ordering::SeqCst), 0);
     // An answer bigger than any browser sends never reaches the gateway.
     let huge = json!({"sdp": "a".repeat(40_000)});
-    assert_eq!(h.call("POST", "/api/audio/session/s1/answer", LAN, &[("cookie", &sam)], Some(huge)).await.status, StatusCode::BAD_REQUEST);
-    assert_eq!(h.call("POST", "/api/audio/session", LAN, &[("cookie", &sam)], Some(json!({"listen": "yes"}))).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        h.call("POST", "/api/audio/session/s1/answer", LAN, &[("cookie", &sam)], Some(huge)).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        h.call("POST", "/api/audio/session", LAN, &[("cookie", &sam)], Some(json!({"listen": "yes"}))).await.status,
+        StatusCode::BAD_REQUEST
+    );
     assert_eq!(h.call("GET", "/api/audio", LAN, &[("cookie", &sam)], None).await.body["session"]["id"], "s1");
 }
 
@@ -1274,15 +1376,24 @@ async fn audio_ends_when_its_browser_is_revoked_or_closes_it() {
     let open = json!({"listen": true, "talk": false});
     // Closing it from its own browser ends it everywhere at once.
     h.control(LAN, &sam, "take", None).await;
-    assert_eq!(h.call("POST", "/api/audio/session", LAN, &[("cookie", &sam)], Some(open.clone())).await.status, StatusCode::OK);
+    assert_eq!(
+        h.call("POST", "/api/audio/session", LAN, &[("cookie", &sam)], Some(open.clone())).await.status,
+        StatusCode::OK
+    );
     assert_eq!(h.call("DELETE", "/api/audio/session/s1", LAN, &[("cookie", &sam)], None).await.status, StatusCode::OK);
     assert_eq!(h.call("GET", "/api/audio", LOOPBACK, &[("cookie", &admin)], None).await.body["session"], Value::Null);
     assert!(gone(1).await, "the gateway's session outlived its close");
     // Revoking the browser ends its audio too.
     assert_eq!(h.call("POST", "/api/audio/session", LAN, &[("cookie", &sam)], Some(open)).await.status, StatusCode::OK);
     let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &[("cookie", &admin)], None).await.body;
-    let id = devices["devices"].as_array().unwrap().iter().find(|d| d["person"] == "Sam").unwrap()["id"].as_str().unwrap().to_string();
-    assert_eq!(h.call("DELETE", &format!("/api/auth/devices/{id}"), LOOPBACK, &[("cookie", &admin)], None).await.status, StatusCode::NO_CONTENT);
+    let id = devices["devices"].as_array().unwrap().iter().find(|d| d["person"] == "Sam").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        h.call("DELETE", &format!("/api/auth/devices/{id}"), LOOPBACK, &[("cookie", &admin)], None).await.status,
+        StatusCode::NO_CONTENT
+    );
     assert!(gone(2).await, "a revoked browser's audio session stayed open");
     // The controller forgets it once the gateway's delete returns.
     tokio::time::timeout(Duration::from_secs(3), async {

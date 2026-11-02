@@ -2,7 +2,6 @@
 //! integration tests (one file per area, #164).
 #![allow(dead_code)]
 
-
 pub use std::sync::atomic::{AtomicU64, Ordering};
 pub use std::sync::{Arc, Mutex};
 pub use std::time::Duration;
@@ -16,7 +15,7 @@ pub use axum::{Json, Router};
 pub use reachy_controller::daemon::Daemon;
 pub use reachy_controller::logs::LogBroker;
 pub use reachy_controller::state::{AppState, Shared};
-pub use serde_json::{json, Value};
+pub use serde_json::{Value, json};
 pub use tower::ServiceExt;
 
 #[derive(Default)]
@@ -111,7 +110,10 @@ pub async fn fake_daemon(fake: FakeState) -> String {
             return (StatusCode::from_u16(f.kinematics_put_status).unwrap(), Json(json!({"detail": "bad engine"})));
         }
         f.engine = body["engine"].as_str().unwrap().to_string();
-        (StatusCode::OK, Json(json!({"engine": f.engine, "active": null, "available": ["AnalyticalKinematics", "Placo"]})))
+        (
+            StatusCode::OK,
+            Json(json!({"engine": f.engine, "active": null, "available": ["AnalyticalKinematics", "Placo"]})),
+        )
     }
 
     let app = Router::new()
@@ -371,16 +373,17 @@ impl Drop for TempDir {
 }
 
 pub async fn harness(init: impl FnOnce(&mut Fake)) -> Harness {
-    let mut fake = Fake {
-        state: "stopped".into(),
-        engine: "AnalyticalKinematics".into(),
-        ..Default::default()
-    };
+    let mut fake = Fake { state: "stopped".into(), engine: "AnalyticalKinematics".into(), ..Default::default() };
     init(&mut fake);
     let fake = Arc::new(Mutex::new(fake));
     let url = fake_daemon(fake.clone()).await;
     let dir = std::env::temp_dir().join(format!("rc-test-{}-{}", std::process::id(), rand_suffix()));
-    let state = AppState::new(Daemon::new(&url, Duration::from_secs(2)), LogBroker::new(), dir.clone(), Duration::from_millis(10));
+    let state = AppState::new(
+        Daemon::new(&url, Duration::from_secs(2)),
+        LogBroker::new(),
+        dir.clone(),
+        Duration::from_millis(10),
+    );
     Harness { fake, state, _dir: TempDir(dir) }
 }
 

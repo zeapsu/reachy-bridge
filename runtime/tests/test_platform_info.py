@@ -64,4 +64,3 @@ async def test_startup_reports_what_apply_skipped(
 def test_startup_leaves_the_report_out_when_routes_dont_match(_fake_daemon_app: types.ModuleType) -> None:
     runtime_main.report_platform(platforms.Platform(name="x", tier="tested"), skipped=[], routes_ok=False)
     assert upstream._app_installers == []
-
