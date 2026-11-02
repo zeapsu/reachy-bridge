@@ -16,7 +16,9 @@ While the speaker is muted for hearing, only Talk still comes out of it, so
 only Talk moves the head, and an app's own offsets are ignored.
 
 An app using the SDK's wobble also turns the daemon's off when it stops, even
-if the dashboard turned it on. ``Choice`` keeps it on then.
+if the dashboard turned it on. ``Choice`` makes the dashboard win: while it wants
+the wobble on, an app can't turn it off, at any point. A sleep still stops it, and
+the dashboard has to turn it back on.
 
 The daemon doesn't check offsets against the robot's limits, and a driven head
 can already be near them. ``Limits`` scales down any offsets, from any source,
