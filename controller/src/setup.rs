@@ -39,20 +39,22 @@
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{header, HeaderMap, HeaderValue, Method};
+use axum::http::{HeaderMap, HeaderValue, Method, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::auth::{cookie_header, cookies, cross_site, ct_eq, is_api, random_code, random_token, sha256, AuthContext, Role};
+use crate::auth::{
+    AuthContext, Role, cookie_header, cookies, cross_site, ct_eq, is_api, random_code, random_token, sha256,
+};
 use crate::error::{ApiError, ApiResult};
 use crate::state::Shared;
 
@@ -109,7 +111,9 @@ impl RobotTest {
             RobotTest::None => json!({"status": "none"}),
             RobotTest::Asked => json!({"status": "asked"}),
             RobotTest::Running => json!({"status": "running"}),
-            RobotTest::Done { passed, detail } => json!({"status": if *passed { "passed" } else { "failed" }, "detail": detail}),
+            RobotTest::Done { passed, detail } => {
+                json!({"status": if *passed { "passed" } else { "failed" }, "detail": detail})
+            }
         }
     }
 }
@@ -180,7 +184,9 @@ impl Setup {
         let live = self.live.lock().unwrap();
         let Some(live) = live.as_ref() else { return false };
         let Some(hash) = live.session_sha256 else { return false };
-        peer.is_some() && peer == live.session_peer && cookies(headers, SETUP_COOKIE).take(2).any(|token| ct_eq(&sha256(token.as_bytes()), &hash))
+        peer.is_some()
+            && peer == live.session_peer
+            && cookies(headers, SETUP_COOKIE).take(2).any(|token| ct_eq(&sha256(token.as_bytes()), &hash))
     }
 }
 
@@ -191,9 +197,9 @@ fn port() -> u16 {
 /// This machine's host name, and `<name>.local`, lowercase.
 fn host_names() -> HashSet<String> {
     let mut names = HashSet::from(["localhost".to_string()]);
-    let name = std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .ok()
-        .or_else(|| std::process::Command::new("hostname").output().ok().and_then(|o| String::from_utf8(o.stdout).ok()));
+    let name = std::fs::read_to_string("/proc/sys/kernel/hostname").ok().or_else(|| {
+        std::process::Command::new("hostname").output().ok().and_then(|o| String::from_utf8(o.stdout).ok())
+    });
     if let Some(name) = name.map(|n| n.trim().trim_end_matches('.').to_ascii_lowercase()).filter(|n| !n.is_empty()) {
         let short = name.split('.').next().unwrap_or(&name).to_string();
         names.extend([format!("{short}.local"), short, name]);
@@ -232,11 +238,7 @@ pub fn router() -> Router<Shared> {
 }
 
 fn local_only(ctx: &AuthContext) -> ApiResult<()> {
-    if ctx.local {
-        Ok(())
-    } else {
-        Err(ApiError::new(403, "only `reachy-bridge setup` on the robot can do this"))
-    }
+    if ctx.local { Ok(()) } else { Err(ApiError::new(403, "only `reachy-bridge setup` on the robot can do this")) }
 }
 
 async fn start(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>) -> ApiResult<Json<Value>> {
@@ -326,7 +328,11 @@ async fn confirm(
     let Json(body) = body.map_err(|_| ApiError::bad_body())?;
     let mut slot = state.setup.live.lock().unwrap();
     let live = slot.as_mut().ok_or_else(|| ApiError::new(410, "setup is closed"))?;
-    let proposal = live.proposal.as_mut().filter(|p| p.outcome == Outcome::Waiting).ok_or_else(|| ApiError::new(409, "no admin request is waiting"))?;
+    let proposal = live
+        .proposal
+        .as_mut()
+        .filter(|p| p.outcome == Outcome::Waiting)
+        .ok_or_else(|| ApiError::new(409, "no admin request is waiting"))?;
     let typed: String = body.code.unwrap_or_default().chars().filter(|c| !c.is_whitespace()).collect();
     let refusal = if typed.is_empty() {
         Some("refused on the robot's terminal")
@@ -348,7 +354,14 @@ async fn confirm(
         }
         return Ok(Json(json!({"status": "refused", "detail": refusal})));
     }
-    let result = state.auth.approve_code(&proposal.code, Some(&proposal.name), Some(&proposal.person), Role::Admin, "the setup page (confirmed on the terminal)", true);
+    let result = state.auth.approve_code(
+        &proposal.code,
+        Some(&proposal.name),
+        Some(&proposal.person),
+        Role::Admin,
+        "the setup page (confirmed on the terminal)",
+        true,
+    );
     match result {
         Ok(reply) => {
             proposal.outcome = Outcome::Approved;
@@ -374,7 +387,11 @@ async fn close_when_due(state: Shared) {
             let used = current.session_sha256.is_some();
             let current = live.take().expect("checked");
             let _ = current.stop.send(true);
-            tracing::info!("setup: page on :{} closed ({})", current.port, if used { "time is up" } else { "the code expired" });
+            tracing::info!(
+                "setup: page on :{} closed ({})",
+                current.port,
+                if used { "time is up" } else { "the code expired" }
+            );
             return;
         }
     }
@@ -445,7 +462,11 @@ async fn page_guard(State(state): State<Shared>, request: Request, next: Next) -
     response
 }
 
-async fn status(State(state): State<Shared>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Json<Value> {
+async fn status(
+    State(state): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Json<Value> {
     let authenticated = state.setup.session(&headers, Some(peer.ip().to_canonical()));
     let live = state.setup.live.lock().unwrap();
     let mut body = live.as_ref().map_or_else(|| json!({"open": false}), Live::state);
@@ -513,17 +534,20 @@ async fn check(State(state): State<Shared>) -> ApiResult<Json<Value>> {
         }
     }
     let _done = Done(&state.setup.checking);
-    let runtime = std::env::var_os("REACHY_BRIDGE_RUNTIME").filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(|| {
-        PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share/reachy-bridge/.venv/bin/reachy-bridge-runtime")
-    });
+    let runtime =
+        std::env::var_os("REACHY_BRIDGE_RUNTIME").filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                .join(".local/share/reachy-bridge/.venv/bin/reachy-bridge-runtime")
+        });
     let run = tokio::process::Command::new(&runtime).args(["--doctor", "--json"]).kill_on_drop(true).output();
     let output = tokio::time::timeout(CHECK_TIMEOUT, run)
         .await
         .map_err(|_| ApiError::new(504, "the device check took too long"))?
         .map_err(|error| ApiError::new(500, format!("can't run the device check ({}): {error}", runtime.display())))?;
     // It exits 1 when something failed; the report is on stdout either way.
-    let results: Value = serde_json::from_slice(&output.stdout)
-        .map_err(|_| ApiError::new(500, "the device check didn't produce a report; run `reachy-bridge check` on the robot"))?;
+    let results: Value = serde_json::from_slice(&output.stdout).map_err(|_| {
+        ApiError::new(500, "the device check didn't produce a report; run `reachy-bridge check` on the robot")
+    })?;
     Ok(Json(json!({"results": results})))
 }
 
@@ -535,7 +559,10 @@ struct AdminBody {
 }
 
 /// Ask the terminal to make the dashboard showing `code` the admin.
-async fn propose_admin(State(state): State<Shared>, body: Result<Json<AdminBody>, axum::extract::rejection::JsonRejection>) -> ApiResult<Json<Value>> {
+async fn propose_admin(
+    State(state): State<Shared>,
+    body: Result<Json<AdminBody>, axum::extract::rejection::JsonRejection>,
+) -> ApiResult<Json<Value>> {
     let Json(body) = body.map_err(|_| ApiError::bad_body())?;
     let code: String = body.code.chars().filter(|c| !c.is_whitespace()).collect();
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
@@ -544,7 +571,13 @@ async fn propose_admin(State(state): State<Shared>, body: Result<Json<AdminBody>
     // Printed on the robot's terminal: letters, digits, spaces and a little
     // punctuation only (no bidi overrides or zero-width tricks).
     let clean = |text: Option<&str>| -> String {
-        let text: String = text.unwrap_or("").chars().map(|c| if c.is_whitespace() { ' ' } else { c }).filter(|c| c.is_alphanumeric() || " .-_'@".contains(*c)).take(64).collect();
+        let text: String = text
+            .unwrap_or("")
+            .chars()
+            .map(|c| if c.is_whitespace() { ' ' } else { c })
+            .filter(|c| c.is_alphanumeric() || " .-_'@".contains(*c))
+            .take(64)
+            .collect();
         text.split_whitespace().collect::<Vec<_>>().join(" ")
     };
     let (person, name) = (clean(body.person.as_deref()), clean(body.name.as_deref()));
@@ -559,12 +592,18 @@ async fn propose_admin(State(state): State<Shared>, body: Result<Json<AdminBody>
     }
     let Some(peer) = peer else {
         live.missed_proposals += 1;
-        tracing::warn!("setup: admin request with a code that matches no pairing request ({} of {MAX_PROPOSALS})", live.missed_proposals);
+        tracing::warn!(
+            "setup: admin request with a code that matches no pairing request ({} of {MAX_PROPOSALS})",
+            live.missed_proposals
+        );
         if live.missed_proposals >= MAX_PROPOSALS {
             live.end_session();
             return Err(ApiError::new(423, "too many codes that match no dashboard: enter a new setup code"));
         }
-        return Err(ApiError::new(400, "no dashboard is showing that code; check it, or get a new one on the dashboard"));
+        return Err(ApiError::new(
+            400,
+            "no dashboard is showing that code; check it, or get a new one on the dashboard",
+        ));
     };
     live.proposal = Some(Proposal { code, person: person.clone(), name, peer, outcome: Outcome::Waiting });
     tracing::info!("setup: admin request for the browser at {peer} waits for the terminal");
@@ -621,7 +660,8 @@ async fn run_robot_test(
             return Err(ApiError::new(409, "the page hasn't asked for the robot test"));
         }
         if !body.approve {
-            live.robot_test = RobotTest::Done { passed: false, detail: "Not run: refused on the robot's terminal.".to_string() };
+            live.robot_test =
+                RobotTest::Done { passed: false, detail: "Not run: refused on the robot's terminal.".to_string() };
             let reply = live.robot_test.json();
             // Like refused admin requests: a hijacked page can't keep asking.
             live.missed_proposals += 1;
@@ -646,7 +686,9 @@ async fn run_robot_test(
         }
         result
     });
-    let result = task.await.map_err(|_| ApiError::new(500, "the robot test stopped unexpectedly; check the dashboard that the robot is off"))?;
+    let result = task.await.map_err(|_| {
+        ApiError::new(500, "the robot test stopped unexpectedly; check the dashboard that the robot is off")
+    })?;
     Ok(Json(result.json()))
 }
 
@@ -657,15 +699,18 @@ const TEST_START_TIMEOUT: Duration = Duration::from_secs(15);
 /// the motors, power off where it is (no sleep move). Only from off, so it never
 /// switches off a robot someone else switched on; it ends off.
 async fn robot_test(state: &Shared) -> Result<String, String> {
-    use crate::daemon::{backend_up, motor_mode, DaemonError};
+    use crate::daemon::{DaemonError, backend_up, motor_mode};
     use crate::routes::power::POWER_OFF_TIMEOUT;
     let daemon = &state.daemon;
     let _power = state.power_lock.lock().await;
-    let status = daemon.status().await.ok_or("The daemon isn't answering; check `reachy-bridge status` on the robot.")?;
+    let status =
+        daemon.status().await.ok_or("The daemon isn't answering; check `reachy-bridge status` on the robot.")?;
     let robot = crate::daemon::robot_state(&status);
     // A daemon that never powered the robot on reports not_initialized: off too.
     if !matches!(robot.as_str(), "stopped" | "not_initialized") || backend_up(&status) {
-        return Err(format!("Not run: the robot is {robot}. The test only runs from off; switch it off from the dashboard and ask again."));
+        return Err(format!(
+            "Not run: the robot is {robot}. The test only runs from off; switch it off from the dashboard and ask again."
+        ));
     }
     // Off where it is: daemon/stop without the sleep move, which would move
     // the robot. Torque is left as it is, since releasing it could let a held
@@ -696,11 +741,19 @@ async fn robot_test(state: &Shared) -> Result<String, String> {
     match daemon.post("daemon/start", &[("wake_up", "false")]).await {
         Ok(_) => {}
         // Busy: someone else is starting or stopping it. Not ours to switch off.
-        Err(DaemonError::Refused { status: 409, .. }) => return Err("Not run: the daemon is busy starting or stopping the robot. Ask again in a moment.".to_string()),
+        Err(DaemonError::Refused { status: 409, .. }) => {
+            return Err(
+                "Not run: the daemon is busy starting or stopping the robot. Ask again in a moment.".to_string()
+            );
+        }
         Err(error) => {
             let up = daemon.status().await.is_some_and(|s| backend_up(&s));
             let ended_off = !up || off().await;
-            return Err(format!("The robot didn't power on: {}.{}", ApiError::from(error).detail, if ended_off { "" } else { still_on }));
+            return Err(format!(
+                "The robot didn't power on: {}.{}",
+                ApiError::from(error).detail,
+                if ended_off { "" } else { still_on }
+            ));
         }
     }
     let deadline = tokio::time::Instant::now() + TEST_START_TIMEOUT;
@@ -723,19 +776,26 @@ async fn robot_test(state: &Shared) -> Result<String, String> {
         ));
     }
     let mode = motor_mode(&last).unwrap_or("unknown").to_string();
-    let pose = daemon.get_query("state/full", &[]).await.ok().and_then(|s| s.get("head_pose").cloned()).filter(|p| !p.is_null());
+    let pose = daemon
+        .get_query("state/full", &[])
+        .await
+        .ok()
+        .and_then(|s| s.get("head_pose").cloned())
+        .filter(|p| !p.is_null());
     if !off().await {
         return Err(format!("The robot powered on but didn't report off in time.{still_on}"));
     }
     if pose.is_none() {
-        return Err("The robot powered on and off, but its motors didn't report a position. Check the power supply.".to_string());
+        return Err("The robot powered on and off, but its motors didn't report a position. Check the power supply."
+            .to_string());
     }
     if mode != "disabled" {
         return Err(format!(
             "The robot powered on and off without moving, but its motors came up in mode {mode}, not with torque off, so torque may still be on. Switch it on and off from the dashboard to put it to sleep properly."
         ));
     }
-    Ok("The robot powered on without moving, its motors answered with torque off, as expected, and it powered off.".to_string())
+    Ok("The robot powered on without moving, its motors answered with torque off, as expected, and it powered off."
+        .to_string())
 }
 
 async fn finish(State(state): State<Shared>) -> Json<Value> {

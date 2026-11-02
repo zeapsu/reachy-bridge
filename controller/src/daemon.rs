@@ -66,12 +66,7 @@ impl Daemon {
 
     /// Open a request with no read timeout, for long-lived streams.
     pub async fn open_stream(&self, path: &str, accept: &str) -> Result<reqwest::Response, DaemonError> {
-        self.http
-            .get(self.url(path))
-            .header("accept", accept)
-            .send()
-            .await
-            .map_err(|_| DaemonError::Unavailable)
+        self.http.get(self.url(path)).header("accept", accept).send().await.map_err(|_| DaemonError::Unavailable)
     }
 
     /// One request. An empty success body reads as `Value::Null`.
@@ -83,11 +78,8 @@ impl Daemon {
         body: Option<&Value>,
         timeout: Option<Duration>,
     ) -> Result<Value, DaemonError> {
-        let mut request = self
-            .http
-            .request(method, self.url(path))
-            .query(query)
-            .timeout(timeout.unwrap_or(self.timeout));
+        let mut request =
+            self.http.request(method, self.url(path)).query(query).timeout(timeout.unwrap_or(self.timeout));
         if let Some(body) = body {
             request = request.json(body);
         }
@@ -135,19 +127,11 @@ impl Daemon {
     pub async fn running_moves(&self) -> Option<Vec<String>> {
         let moves = self.get("move/running").await.ok()?;
         let moves = moves.as_array()?;
-        Some(
-            moves
-                .iter()
-                .filter_map(|m| m.get("uuid").and_then(Value::as_str).map(str::to_string))
-                .collect(),
-        )
+        Some(moves.iter().filter_map(|m| m.get("uuid").and_then(Value::as_str).map(str::to_string)).collect())
     }
 
     pub fn ws_url(&self, path: &str) -> String {
-        let base = self
-            .base_url()
-            .replacen("http://", "ws://", 1)
-            .replacen("https://", "wss://", 1);
+        let base = self.base_url().replacen("http://", "ws://", 1).replacen("https://", "wss://", 1);
         format!("{base}/api/{}", path.trim_start_matches('/'))
     }
 }
@@ -186,10 +170,7 @@ pub fn robot_state(status: &Value) -> String {
 }
 
 pub fn motor_mode(status: &Value) -> Option<&str> {
-    status
-        .get("backend_status")
-        .and_then(|b| b.get("motor_control_mode"))
-        .and_then(Value::as_str)
+    status.get("backend_status").and_then(|b| b.get("motor_control_mode")).and_then(Value::as_str)
 }
 
 pub fn backend_up(status: &Value) -> bool {
@@ -209,8 +190,7 @@ mod tests {
 
     #[test]
     fn running_with_gravity_compensation_is_on() {
-        let status =
-            json!({"state": "running", "backend_status": {"motor_control_mode": "gravity_compensation"}});
+        let status = json!({"state": "running", "backend_status": {"motor_control_mode": "gravity_compensation"}});
         assert_eq!(robot_state(&status), "running");
     }
 

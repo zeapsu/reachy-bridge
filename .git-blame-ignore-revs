@@ -1,0 +1,4 @@
+# Formatting-only commits, skipped by `git blame` (GitHub does this on its own;
+# locally: git config blame.ignoreRevsFile .git-blame-ignore-revs).
+# ruff format and cargo fmt, first run
+c6915349a32d00f726474d39e217889e0937a8de

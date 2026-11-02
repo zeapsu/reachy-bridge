@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::daemon::{Daemon, DaemonError};
@@ -41,11 +41,7 @@ fn state_of(current: Option<&Value>) -> Option<&str> {
 }
 
 fn name_of(current: Option<&Value>) -> Option<String> {
-    current
-        .and_then(|c| c.get("info"))
-        .and_then(|i| i.get("name"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
+    current.and_then(|c| c.get("info")).and_then(|i| i.get("name")).and_then(Value::as_str).map(str::to_string)
 }
 
 /// Daemon app state → the card state the dashboard renders.
@@ -255,7 +251,9 @@ mod tests {
 
     #[test]
     fn a_bridge_refusal_replaces_the_exit_log() {
-        let raw = json!("Process exited with code 78\nINFO starting\nreachy-bridge: this app's UI wants port 7861, which the bridge uses");
+        let raw = json!(
+            "Process exited with code 78\nINFO starting\nreachy-bridge: this app's UI wants port 7861, which the bridge uses"
+        );
         assert_eq!(bridge_error(raw), json!("This app's UI wants port 7861, which the bridge uses"));
         let other = json!("Process exited with code 1\nOSError: PortAudio library not found");
         assert_eq!(bridge_error(other.clone()), other);

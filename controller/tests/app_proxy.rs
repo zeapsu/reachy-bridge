@@ -17,7 +17,7 @@ use reachy_controller::auth::AuthConfig;
 use reachy_controller::daemon::Daemon;
 use reachy_controller::logs::LogBroker;
 use reachy_controller::state::AppState;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -125,7 +125,13 @@ impl Harness {
         let current = Arc::new(Mutex::new(app));
         let daemon = fake_daemon(ports, current.clone()).await;
         let dir = std::env::temp_dir().join(format!("rc-proxy-test-{}-{}", std::process::id(), ports[0]));
-        let state = AppState::with_auth(Daemon::new(&daemon, Duration::from_secs(2)), LogBroker::new(), dir.clone(), Duration::from_millis(10), auth);
+        let state = AppState::with_auth(
+            Daemon::new(&daemon, Duration::from_secs(2)),
+            LogBroker::new(),
+            dir.clone(),
+            Duration::from_millis(10),
+            auth,
+        );
         let proxy_port = serve(reachy_controller::app_proxy::router(state, own, &[own])).await;
         Self { current, proxy: format!("http://127.0.0.1:{proxy_port}"), proxy_port, dir }
     }
@@ -271,7 +277,8 @@ async fn untrusted_tailnet_needs_a_login_and_the_key_never_reaches_the_app() {
 
     let key = std::fs::read_to_string(h.dir.join("controller.key")).unwrap();
     let client = reqwest::Client::new();
-    let response = client.get(format!("{}/echo", h.proxy)).header("x-reachy-bridge-key", key.trim()).send().await.unwrap();
+    let response =
+        client.get(format!("{}/echo", h.proxy)).header("x-reachy-bridge-key", key.trim()).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let echoed: Value = response.json().await.unwrap();
     assert_eq!(echoed["key"], Value::Null);
@@ -288,7 +295,8 @@ async fn trusted_tailnet_needs_no_login() {
 async fn an_app_cannot_set_the_dashboard_login_cookie() {
     let h = Harness::new(running("app_a")).await;
     let response = reqwest::get(format!("{}/cookie", h.proxy)).await.unwrap();
-    let cookies: Vec<_> = response.headers().get_all("set-cookie").iter().map(|v| v.to_str().unwrap().to_string()).collect();
+    let cookies: Vec<_> =
+        response.headers().get_all("set-cookie").iter().map(|v| v.to_str().unwrap().to_string()).collect();
     assert_eq!(cookies, ["app=1; Path=/"]);
 }
 
@@ -296,9 +304,14 @@ async fn an_app_cannot_set_the_dashboard_login_cookie() {
 async fn cross_site_writes_through_the_proxy_are_refused() {
     let h = Harness::new(running("app_a")).await;
     let client = reqwest::Client::new();
-    let post = |site: &'static str| client.post(format!("{}/echo", h.proxy)).header("sec-fetch-site", site).body("x").send();
+    let post =
+        |site: &'static str| client.post(format!("{}/echo", h.proxy)).header("sec-fetch-site", site).body("x").send();
     assert_eq!(post("cross-site").await.unwrap().status(), StatusCode::FORBIDDEN);
-    assert_eq!(post("same-site").await.unwrap().status(), StatusCode::FORBIDDEN, "the dashboard's port is another origin");
+    assert_eq!(
+        post("same-site").await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "the dashboard's port is another origin"
+    );
     assert_eq!(post("same-origin").await.unwrap().status(), StatusCode::OK);
     // Reads and requests without browser headers (curl) go through.
     let read = client.get(format!("{}/echo", h.proxy)).header("sec-fetch-site", "cross-site").send().await.unwrap();

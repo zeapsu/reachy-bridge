@@ -5,9 +5,9 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::daemon::{safe_dataset, DaemonError};
+use crate::daemon::{DaemonError, safe_dataset};
 use crate::error::{ApiError, ApiResult};
 use crate::routes::power::kinematics;
 use crate::state::Shared;
@@ -73,10 +73,7 @@ async fn set_motor_mode(State(state): State<Shared>, Path(mode): Path<String>) -
         // The motors ignore move targets in this mode, so an app's moves would
         // silently do nothing while its speech carries on (#150).
         if state.apps.refresh_active().await {
-            return Err(ApiError::new(
-                409,
-                "Stop the app first: the robot ignores moves under gravity compensation",
-            ));
+            return Err(ApiError::new(409, "Stop the app first: the robot ignores moves under gravity compensation"));
         }
         // The daemon refuses it under any other engine (409 since 1.13.0, a
         // bare 500 before); check first for a clearer message.

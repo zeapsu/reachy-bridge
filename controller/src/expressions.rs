@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::daemon::{Daemon, DaemonError};
 
@@ -260,7 +260,8 @@ impl ExpressionPlayer {
             for uuid in moves.unwrap_or_default() {
                 // Once per move; a stop that didn't get through (a timeout,
                 // the daemon busy) is retried on the next poll.
-                if !stopped.contains(&uuid) && self.daemon.post_json("move/stop", &json!({"uuid": uuid})).await.is_ok() {
+                if !stopped.contains(&uuid) && self.daemon.post_json("move/stop", &json!({"uuid": uuid})).await.is_ok()
+                {
                     stopped.push(uuid);
                 }
             }

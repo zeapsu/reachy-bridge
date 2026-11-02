@@ -17,7 +17,11 @@ struct Sim {
 /// started by nobody (no systemd unit).
 async fn sim_harness(init: impl FnOnce(&mut Fake)) -> Sim {
     let h = harness(init).await;
-    let sim = Arc::new(Mutex::new(Fake { state: "stopped".into(), engine: "AnalyticalKinematics".into(), ..Default::default() }));
+    let sim = Arc::new(Mutex::new(Fake {
+        state: "stopped".into(),
+        engine: "AnalyticalKinematics".into(),
+        ..Default::default()
+    }));
     let sim_url = fake_daemon(sim.clone()).await;
     let robot_url = h.state.daemon.base_url();
     let state = AppState::with_sim(
@@ -192,7 +196,12 @@ async fn the_robots_daemon_is_stopped_for_the_whole_of_sim_mode() {
     let calls = std::fs::read_to_string(log).unwrap();
     assert_eq!(
         calls.lines().collect::<Vec<_>>(),
-        vec!["--user stop robot.service", "--user start sim.service", "--user stop sim.service", "--user start robot.service"]
+        vec![
+            "--user stop robot.service",
+            "--user start sim.service",
+            "--user stop sim.service",
+            "--user start robot.service"
+        ]
     );
 }
 

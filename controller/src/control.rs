@@ -36,7 +36,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::watch;
 
 use crate::auth::{self, AuthContext, Role};
@@ -269,7 +269,13 @@ pub async fn guard(State(state): State<Shared>, request: Request, next: Next) ->
 
 /// The app UI proxy's rule: in admin mode, watchers can load an app's pages
 /// but only the holder (or the local key) acts through it.
-pub fn app_proxy_allows(state: &Shared, method: &axum::http::Method, upgrade: bool, device: Option<&str>, local: bool) -> Result<(), String> {
+pub fn app_proxy_allows(
+    state: &Shared,
+    method: &axum::http::Method,
+    upgrade: bool,
+    device: Option<&str>,
+    local: bool,
+) -> Result<(), String> {
     if !state.auth.admin_mode() || local {
         return Ok(());
     }
@@ -322,7 +328,8 @@ async fn view(State(state): State<Shared>, Extension(ctx): Extension<AuthContext
         });
         let person = ctx.person.clone().unwrap_or_default();
         // As in take: another person, or an admin when this browser isn't one.
-        let held_by_other = inner.holder.as_ref().is_some_and(|h| h.person != person || (h.admin && ctx.role != Some(Role::Admin)));
+        let held_by_other =
+            inner.holder.as_ref().is_some_and(|h| h.person != person || (h.admin && ctx.role != Some(Role::Admin)));
         json!({
             "admin_mode": true,
             "now": now,
@@ -379,7 +386,13 @@ async fn take(
                 return Err(ApiError::new(409, format!("{} is in control of the robot", holder.person)));
             }
         }
-        let previous = inner.holder.replace(Holder { device: device.clone(), person: person.clone(), admin, since: now, active: now });
+        let previous = inner.holder.replace(Holder {
+            device: device.clone(),
+            person: person.clone(),
+            admin,
+            since: now,
+            active: now,
+        });
         inner.away = None;
         inner.seen.insert(device.clone(), now);
         match previous {
@@ -438,7 +451,13 @@ mod tests {
 
     #[test]
     fn an_action_keeps_the_holder_in_control() {
-        let holder = Holder { device: "d1".into(), person: "sam".into(), admin: false, since: 100, active: 100 + IDLE_AFTER - 1 };
+        let holder = Holder {
+            device: "d1".into(),
+            person: "sam".into(),
+            admin: false,
+            since: 100,
+            active: 100 + IDLE_AFTER - 1,
+        };
         let mut inner = Inner { holder: Some(holder), ..Inner::default() };
         inner.seen.insert("d1".into(), 100 + IDLE_AFTER);
         assert!(!inner.refresh(100 + IDLE_AFTER));
@@ -451,7 +470,8 @@ mod tests {
         let control = Control::new(ExpressionPlayer::new(daemon, Duration::from_secs(1)));
         let start = control.now();
         control.with(|inner, now| {
-            inner.holder = Some(Holder { device: "d1".into(), person: "sam".into(), admin: false, since: now, active: now });
+            inner.holder =
+                Some(Holder { device: "d1".into(), person: "sam".into(), admin: false, since: now, active: now });
         });
         control.touch("d1");
         // Hidden for a while: the device goes silent and steps away, then comes back.

@@ -45,9 +45,7 @@ def test_check_reports_a_changed_signature(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_startup_skips_only_the_mismatched_feature(monkeypatch: pytest.MonkeyPatch) -> None:
     applied: list[str] = []
-    monkeypatch.setattr(
-        upstream, "check", lambda features=None: {"keep_awake": ["AppManager.stop_current_app: gone"]}
-    )
+    monkeypatch.setattr(upstream, "check", lambda features=None: {"keep_awake": ["AppManager.stop_current_app: gone"]})
     monkeypatch.setattr(upstream, "installed_version", lambda: "9.9.9")
     monkeypatch.setattr(
         runtime_main,
@@ -143,4 +141,3 @@ def test_a_wrapped_app_factory_no_longer_matches_the_routes_seam(monkeypatch: py
     assert upstream.check({"routes"}) == {}
     upstream.on_create_app(lambda app: None)
     assert upstream.check({"routes"}) != {}
-

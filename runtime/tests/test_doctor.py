@@ -7,7 +7,9 @@ from pathlib import Path
 
 from reachy_bridge_runtime import doctor, platforms
 
-WEBRTCSINK = "Factory Details:\n  ...\n  run-signalling-server: Whether the element should run its own signalling server\n"
+WEBRTCSINK = (
+    "Factory Details:\n  ...\n  run-signalling-server: Whether the element should run its own signalling server\n"
+)
 
 
 def fake_root(tmp_path: Path, ids: list[str], l4t: str | None = None, rule: str | None = None) -> Path:
@@ -28,7 +30,11 @@ def fake_root(tmp_path: Path, ids: list[str], l4t: str | None = None, rule: str 
     return tmp_path
 
 
-def gst(version: str | None = "gst-inspect-1.0 version 1.24.2\nGStreamer 1.24.2\n", sink: str | None = WEBRTCSINK, nice: bool = True):
+def gst(
+    version: str | None = "gst-inspect-1.0 version 1.24.2\nGStreamer 1.24.2\n",
+    sink: str | None = WEBRTCSINK,
+    nice: bool = True,
+):
     def run(args: list[str]) -> str | None:
         if args[-1] == "nicesrc":
             return "Factory Details:\n  nicesrc\n" if nice and version is not None else None
@@ -127,7 +133,9 @@ def test_memory(tmp_path: Path):
 
 
 def test_main_exits_1_on_a_failure(monkeypatch, capsys):
-    monkeypatch.setattr(doctor, "run_checks", lambda: [doctor.Result("OS", "pass", "Linux"), doctor.Result("Camera", "fail", "x")])
+    monkeypatch.setattr(
+        doctor, "run_checks", lambda: [doctor.Result("OS", "pass", "Linux"), doctor.Result("Camera", "fail", "x")]
+    )
     assert doctor.main([]) == 1
     assert "fail  Camera" in capsys.readouterr().out
     monkeypatch.setattr(doctor, "run_checks", lambda: [doctor.Result("Disk", "warn", "low")])
@@ -162,7 +170,9 @@ def test_loopback_card(tmp_path: Path):
     cards.write_text(" 0 [Audio          ]: USB-Audio - Reachy Mini Audio\n")
     missing = doctor.loopback(tmp_path)
     assert missing.status == "warn" and "snd-aloop" in missing.detail
-    cards.write_text(cards.read_text() + "10 [Loopback       ]: Loopback - Loopback\n                      Loopback 1\n")
+    cards.write_text(
+        cards.read_text() + "10 [Loopback       ]: Loopback - Loopback\n                      Loopback 1\n"
+    )
     assert doctor.loopback(tmp_path).status == "warn"
     (tmp_path / "proc/asound/Loopback/pcm0p/sub1").mkdir(parents=True)
     assert doctor.loopback(tmp_path).status == "pass"

@@ -11,13 +11,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::{Stream, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_stream::wrappers::WatchStream;
 
 use crate::error::{ApiError, ApiResult};
 use crate::host;
-use crate::streams::{self, Sample};
 use crate::state::Shared;
+use crate::streams::{self, Sample};
 
 pub fn router() -> Router<Shared> {
     Router::new()
@@ -80,10 +80,7 @@ async fn system_stats() -> Json<Value> {
 type EventStream = Response;
 
 /// Map each sample to an event (or skip it), with a 15 s keepalive comment.
-pub(crate) fn sse(
-    rx: tokio::sync::watch::Receiver<Sample>,
-    to_event: fn(&Value) -> Option<Event>,
-) -> EventStream {
+pub(crate) fn sse(rx: tokio::sync::watch::Receiver<Sample>, to_event: fn(&Value) -> Option<Event>) -> EventStream {
     let events = WatchStream::from_changes(rx)
         .filter_map(move |sample| async move { sample.as_deref().and_then(to_event).map(Ok) });
     let events: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> = Box::pin(events);

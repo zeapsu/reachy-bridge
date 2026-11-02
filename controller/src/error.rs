@@ -1,8 +1,8 @@
 //! API errors, answered as `{"detail": "..."}` like the FastAPI controller.
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::json;
 
 use crate::daemon::DaemonError;
@@ -17,10 +17,7 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 impl ApiError {
     pub fn new(status: u16, detail: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
-            detail: detail.into(),
-        }
+        Self { status: StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), detail: detail.into() }
     }
 
     pub fn unavailable() -> Self {

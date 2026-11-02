@@ -108,13 +108,19 @@ def gstreamer(run: Callable[[list[str]], str | None]) -> list[Result]:
     if sink is None:
         webrtc = Result("webrtcsink", "fail", f"not installed; camera and audio streaming need it ({build})")
     elif "run-signalling-server" not in sink:
-        webrtc = Result("webrtcsink", "fail", f"too old (no run-signalling-server); gst-plugins-rs 0.14 is needed ({build})")
+        webrtc = Result(
+            "webrtcsink", "fail", f"too old (no run-signalling-server); gst-plugins-rs 0.14 is needed ({build})"
+        )
     else:
         webrtc = Result("webrtcsink", "pass", "gst-plugins-rs with run-signalling-server")
     # WebRTC (webrtcbin, inside webrtcsink and the audio gateway) refuses every
     # stream without libnice's GStreamer elements.
     if run(["gst-inspect-1.0", "nicesrc"]) is None:
-        nice = Result("libnice", "fail", "GStreamer's libnice plugin is missing; WebRTC needs it (sudo apt install gstreamer1.0-nice)")
+        nice = Result(
+            "libnice",
+            "fail",
+            "GStreamer's libnice plugin is missing; WebRTC needs it (sudo apt install gstreamer1.0-nice)",
+        )
     else:
         nice = Result("libnice", "pass", "nicesrc")
     return [found, webrtc, nice]
@@ -194,7 +200,11 @@ def loopback(root: Path) -> Result:
         return Result("Audio loopback", "warn", "couldn't read /proc/asound/cards")
     if audio_tee.loopback_present(cards):
         if not (root / f"proc/asound/{audio_tee.LOOPBACK}/pcm0p/sub1").exists():
-            return Result("Audio loopback", "warn", "the loopback card has one substream; hearing Reachy and talking to its apps need two (pcm_substreams=2)")
+            return Result(
+                "Audio loopback",
+                "warn",
+                "the loopback card has one substream; hearing Reachy and talking to its apps need two (pcm_substreams=2)",
+            )
         return Result("Audio loopback", "pass", f"ALSA card {audio_tee.LOOPBACK}")
     return Result(
         "Audio loopback",
@@ -211,7 +221,11 @@ def mic_mixer(run: Callable[[list[str]], str | None]) -> Result:
     state = (run(["systemctl", "--user", "is-active", "reachy-bridge-mic.service"]) or "").strip()
     if state == "active":
         return Result("Mic mixer", "pass", "running")
-    return Result("Mic mixer", "warn", "reachy-bridge-mic.service isn't running; apps hear silence without it (reachy-bridge logs mic)")
+    return Result(
+        "Mic mixer",
+        "warn",
+        "reachy-bridge-mic.service isn't running; apps hear silence without it (reachy-bridge logs mic)",
+    )
 
 
 def portaudio(find_library: Callable[[str], str | None]) -> Result:
@@ -219,7 +233,9 @@ def portaudio(find_library: Callable[[str], str | None]) -> Result:
     without it; the bridge itself doesn't use it."""
     if find_library("portaudio"):
         return Result("PortAudio", "pass", "libportaudio")
-    return Result("PortAudio", "warn", "not installed; apps that use sounddevice crash on start (sudo apt install libportaudio2)")
+    return Result(
+        "PortAudio", "warn", "not installed; apps that use sounddevice crash on start (sudo apt install libportaudio2)"
+    )
 
 
 def disk(home: Path) -> Result:

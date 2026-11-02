@@ -15,19 +15,20 @@ use std::time::Duration;
 
 use reachy_controller::auth::AuthConfig;
 use reachy_controller::daemon::Daemon;
-use reachy_controller::logs::{follow_journal, ControllerLogLayer, LogBroker};
+use reachy_controller::logs::{ControllerLogLayer, LogBroker, follow_journal};
 use reachy_controller::sim::SimMode;
-use reachy_controller::state::{state_dir, AppState};
+use reachy_controller::state::{AppState, state_dir};
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| default.to_string())
 }
 
 fn is_loopback_host(host: &str) -> bool {
-    host == "localhost" || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.to_canonical().is_loopback())
+    host == "localhost"
+        || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.to_canonical().is_loopback())
 }
 
 /// The dashboard's bind address: `CONTROLLER_HOST` (default loopback). In
@@ -130,7 +131,9 @@ async fn main() -> std::io::Result<()> {
     // whoever reaches it.
     let audio_url = std::env::var("AUDIO_GATEWAY_URL").ok().filter(|u| !u.is_empty());
     own_ports.extend(
-        reqwest::Url::parse(audio_url.as_deref().unwrap_or(reachy_controller::audio::DEFAULT_URL)).ok().and_then(|url| url.port_or_known_default()),
+        reqwest::Url::parse(audio_url.as_deref().unwrap_or(reachy_controller::audio::DEFAULT_URL))
+            .ok()
+            .and_then(|url| url.port_or_known_default()),
     );
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {

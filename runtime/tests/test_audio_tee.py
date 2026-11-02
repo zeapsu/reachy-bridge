@@ -4,6 +4,7 @@ import pytest
 
 from reachy_bridge_runtime import audio_tee, mic_mixer
 
+
 @pytest.fixture(autouse=True)
 def gst_launch(monkeypatch):
     """CI has no GStreamer tools."""
@@ -65,7 +66,7 @@ def test_tee_keeps_upstreams_names_and_round_trips():
     assert "pcm.reachymini_audio_sink {" in teed and "pcm.reachymini_audio_src {" in teed and "card 0" in teed
     # The speaker's dmix keeps its ipc_key and hardware under its new name.
     speaker = teed[teed.index(f"pcm.{audio_tee.SPEAKER}") :]
-    assert speaker.index('ipc_key 4241') < speaker.index('pcm "hw:0,0"') < speaker.index("pcm.reachymini_audio_src")
+    assert speaker.index("ipc_key 4241") < speaker.index('pcm "hw:0,0"') < speaker.index("pcm.reachymini_audio_src")
     assert teed.count("pcm.reachymini_audio_sink {") == 1
     assert audio_tee.tee(teed) == teed
     assert audio_tee.untee(teed).strip() == UPSTREAM.strip()
@@ -89,9 +90,12 @@ def test_apps_read_the_mic_through_the_mixer():
 
 
 def test_an_older_tee_is_replaced():
-    v1 = audio_tee.untee(audio_tee.tee(UPSTREAM)).rstrip("\n").replace(
-        "pcm.reachymini_audio_sink {", "pcm.reachy_bridge_speaker_hw {", 1
-    ) + "\n\n# reachy-bridge: speaker tee (#219)\npcm.reachymini_audio_sink { type plug slave.pcm \"x\" }\n"
+    v1 = (
+        audio_tee.untee(audio_tee.tee(UPSTREAM))
+        .rstrip("\n")
+        .replace("pcm.reachymini_audio_sink {", "pcm.reachy_bridge_speaker_hw {", 1)
+        + '\n\n# reachy-bridge: speaker tee (#219)\npcm.reachymini_audio_sink { type plug slave.pcm "x" }\n'
+    )
     assert not audio_tee.installed(v1)
     assert audio_tee.untee(v1).strip() == UPSTREAM.strip()
     assert audio_tee.tee(v1) == audio_tee.tee(UPSTREAM)
@@ -126,7 +130,10 @@ def test_loopback_present():
 
 def test_ensure_adds_and_removes_the_tee(tmp_path: Path, monkeypatch):
     rc, cards = tmp_path / ".asoundrc", tmp_path / "cards"
-    rules = {tmp_path / "wp/main.lua.d/rule.lua": "lua rule\n", tmp_path / "wp/wireplumber.conf.d/rule.conf": "conf rule\n"}
+    rules = {
+        tmp_path / "wp/main.lua.d/rule.lua": "lua rule\n",
+        tmp_path / "wp/wireplumber.conf.d/rule.conf": "conf rule\n",
+    }
     monkeypatch.setattr(audio_tee, "ASOUNDRC", rc)
     monkeypatch.setattr(audio_tee, "CARDS", cards)
     monkeypatch.setattr(audio_tee, "SECOND_SUBDEVICE", tmp_path)

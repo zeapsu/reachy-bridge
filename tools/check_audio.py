@@ -78,9 +78,7 @@ def channels_of(raw: bytes, channels: int) -> list[list[float]]:
     return [[v / 32768 for v in values[c::channels]] for c in range(channels)]
 
 
-def play_and_record(
-    play_device: str, sound: bytes, record_device: str, channels: int
-) -> list[list[float]]:
+def play_and_record(play_device: str, sound: bytes, record_device: str, channels: int) -> list[list[float]]:
     """Record ``record_device`` while ``sound`` plays on ``play_device``; the
     middle of the recording, per channel."""
     # The robot or a browser may have come on since: either could turn the
@@ -161,12 +159,7 @@ class Checks:
 
 
 def gateway_active() -> bool:
-    return (
-        subprocess.run(
-            ["systemctl", "--user", "is-active", "--quiet", GATEWAY_UNIT]
-        ).returncode
-        == 0
-    )
+    return subprocess.run(["systemctl", "--user", "is-active", "--quiet", GATEWAY_UNIT]).returncode == 0
 
 
 def preflight() -> str | None:
@@ -181,12 +174,7 @@ def preflight() -> str | None:
         return f"the robot isn't confirmed off ({power.stdout.strip() or power.stderr.strip()}); turn it off first"
     if gateway_active():
         return f"{GATEWAY_UNIT} is running: someone may be listening or talking; stop it from the dashboard"
-    if (
-        subprocess.run(
-            ["systemctl", "--user", "is-active", "--quiet", "reachy-bridge-mic.service"]
-        ).returncode
-        != 0
-    ):
+    if subprocess.run(["systemctl", "--user", "is-active", "--quiet", "reachy-bridge-mic.service"]).returncode != 0:
         return "the mic mixer (reachy-bridge-mic.service) isn't running"
     return None
 
@@ -240,18 +228,14 @@ def main() -> int:
         # Talk: on the speaker (quietly), never back to 'hear'.
         talk = tone(TONES["talk"], VOLUME["talk"], SECONDS)
         hear = play_and_record(audio_tee.TALK_SINK, talk, audio_tee.HEAR_SOURCE, 2)
-        checks.expect(
-            "Talk doesn't reach 'hear'", amplitude(hear[0], TONES["talk"]), False
-        )
+        checks.expect("Talk doesn't reach 'hear'", amplitude(hear[0], TONES["talk"]), False)
         wobble = play_and_record(audio_tee.TALK_SINK, talk, audio_tee.WOBBLE_SOURCE, 2)
         checks.expect(
             "Talk reaches the wobble's right channel",
             amplitude(wobble[1], TONES["talk"]),
             True,
         )
-        checks.expect(
-            "...and not its left channel", amplitude(wobble[0], TONES["talk"]), False
-        )
+        checks.expect("...and not its left channel", amplitude(wobble[0], TONES["talk"]), False)
 
         # A browser's voice for apps: into what apps hear, not the real mic.
         voice = tone(TONES["voice"], VOLUME["voice"], SECONDS)
@@ -267,9 +251,7 @@ def main() -> int:
             amplitude(mic[0], TONES["voice"]),
             False,
         )
-        hear = play_and_record(
-            audio_tee.APP_VOICE_SINK, voice, audio_tee.HEAR_SOURCE, 2
-        )
+        hear = play_and_record(audio_tee.APP_VOICE_SINK, voice, audio_tee.HEAR_SOURCE, 2)
         checks.expect("...nor 'hear'", amplitude(hear[0], TONES["voice"]), False)
     except Refused as why:
         checks.check(f"stopped early: {why}", False)

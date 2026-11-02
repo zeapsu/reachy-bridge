@@ -91,7 +91,12 @@ def test_shim_leaves_udp_and_loopback_alone() -> None:
     assert shim.loopback_address(socket.AF_INET, socket.SOCK_STREAM, ("192.168.1.5", 80)) == ("127.0.0.1", 80)
     assert shim.loopback_address(socket.AF_INET, socket.SOCK_STREAM, ("127.0.0.5", 80)) == ("127.0.0.5", 80)
     assert shim.loopback_address(socket.AF_INET6, socket.SOCK_STREAM, ("::", 80, 0, 0)) == ("::1", 80, 0, 0)
-    assert shim.loopback_address(socket.AF_INET6, socket.SOCK_STREAM, ("::", 80), v6only=False) == ("::ffff:127.0.0.1", 80, 0, 0)
+    assert shim.loopback_address(socket.AF_INET6, socket.SOCK_STREAM, ("::", 80), v6only=False) == (
+        "::ffff:127.0.0.1",
+        80,
+        0,
+        0,
+    )
     assert shim.loopback_address(socket.AF_UNIX, socket.SOCK_STREAM, "/tmp/sock") == "/tmp/sock"
     assert shim.loopback_address(socket.AF_INET, socket.SOCK_STREAM, (b"0.0.0.0", 80)) == ("127.0.0.1", 80)
     # A client picking its source address before connect keeps it; a wildcard server on port 0 doesn't.
@@ -105,11 +110,14 @@ def run_with_shim(site_packages: Path, body: str, ports: str) -> subprocess.Comp
         "import site, socket, time\n"
         f"site.addsitedir({str(site_packages)!r})\n"
         "import reachy_bridge_app_bind as shim\n"
-        "shim.GRACE = 0.2\n"
-        + body
+        "shim.GRACE = 0.2\n" + body
     )
     return subprocess.run(
-        [sys.executable, "-I", "-c", code], capture_output=True, text=True, env={"REACHY_BRIDGE_PORTS": ports}, timeout=30
+        [sys.executable, "-I", "-c", code],
+        capture_output=True,
+        text=True,
+        env={"REACHY_BRIDGE_PORTS": ports},
+        timeout=30,
     )
 
 
@@ -166,7 +174,9 @@ def test_taking_a_free_bridge_port_exits_at_once(tmp_path: Path) -> None:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    result = run_with_shim(site_packages, f"socket.socket().bind(('0.0.0.0', {port}))\nprint('still running')\n", str(port))
+    result = run_with_shim(
+        site_packages, f"socket.socket().bind(('0.0.0.0', {port}))\nprint('still running')\n", str(port)
+    )
     assert result.returncode == 78
     assert result.stderr.strip().splitlines()[-1] == refusal(port)
     # Without the variable nothing is refused.

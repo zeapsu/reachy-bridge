@@ -202,29 +202,48 @@ def main() -> int:
         with open(work / "daemon.log", "wb") as log:
             daemon = subprocess.Popen(
                 [
-                    sys.executable, str(SIM / "sim_daemon.py"),
-                    "--sim", "--headless", "--no-media", "--desktop-app-daemon",
-                    "--no-autostart", "--no-wake-up-on-start",
-                    "--fastapi-port", str(daemon_port),
+                    sys.executable,
+                    str(SIM / "sim_daemon.py"),
+                    "--sim",
+                    "--headless",
+                    "--no-media",
+                    "--desktop-app-daemon",
+                    "--no-autostart",
+                    "--no-wake-up-on-start",
+                    "--fastapi-port",
+                    str(daemon_port),
                 ],
                 cwd=ROOT,
                 # REACHY_MINI_TELEMETRY=0: no usage events from test runs.
-                env={**os.environ, "REACHY_BRIDGE_STATE_DIR": str(work / "daemon-state"),
-                     "REACHY_BRIDGE_APPS_ROOT": str(work / "apps"), "REACHY_MINI_TELEMETRY": "0"},
-                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                env={
+                    **os.environ,
+                    "REACHY_BRIDGE_STATE_DIR": str(work / "daemon-state"),
+                    "REACHY_BRIDGE_APPS_ROOT": str(work / "apps"),
+                    "REACHY_MINI_TELEMETRY": "0",
+                },
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
         wait_up(f"{daemon_url}/api/daemon/status", daemon, "daemon")
         with open(work / "controller.log", "wb") as log:
             controller = subprocess.Popen(
                 [str(controller_bin)],
-                env={**os.environ, "DAEMON_URL": daemon_url, "CONTROLLER_PORT": str(controller_port),
-                     "CONTROLLER_APP_PORT": str(app_port),
-                     "REACHY_BRIDGE_STATE_DIR": str(work / "controller-state"),
-                     "REACHY_DAEMON_UNIT": "none.service",
-                     # No gateway unit: --audio starts it, or nothing answers.
-                     "AUDIO_GATEWAY_URL": audio_url, "AUDIO_GATEWAY_UNIT": ""},
-                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                env={
+                    **os.environ,
+                    "DAEMON_URL": daemon_url,
+                    "CONTROLLER_PORT": str(controller_port),
+                    "CONTROLLER_APP_PORT": str(app_port),
+                    "REACHY_BRIDGE_STATE_DIR": str(work / "controller-state"),
+                    "REACHY_DAEMON_UNIT": "none.service",
+                    # No gateway unit: --audio starts it, or nothing answers.
+                    "AUDIO_GATEWAY_URL": audio_url,
+                    "AUDIO_GATEWAY_UNIT": "",
+                },
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
         wait_up(f"{controller_url}/api/daemon/status", controller, "controller")
@@ -235,13 +254,19 @@ def main() -> int:
                 gateway = subprocess.Popen(
                     [sys.executable, "-m", "reachy_bridge_runtime.audio_gateway"],
                     env={**os.environ, **audio_env(audio, audio_port, work / "controller-state" / "audio.key")},
-                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
                     start_new_session=True,
                 )
             wait_port(audio_port, gateway, "audio gateway")
-            extra = {"SIM_AUDIO": str(audio), "SIM_AUDIO_RATE": str(AUDIO_RATE),
-                     "SIM_AUDIO_GATEWAY": audio_url, "SIM_AUDIO_KEY": str(work / "controller-state" / "audio.key"),
-                     **{f"SIM_TONE_{name.upper()}": str(freq) for name, freq in TONES.items()}}
+            extra = {
+                "SIM_AUDIO": str(audio),
+                "SIM_AUDIO_RATE": str(AUDIO_RATE),
+                "SIM_AUDIO_GATEWAY": audio_url,
+                "SIM_AUDIO_KEY": str(work / "controller-state" / "audio.key"),
+                **{f"SIM_TONE_{name.upper()}": str(freq) for name, freq in TONES.items()},
+            }
         code = subprocess.run(
             command,
             env={**os.environ, "SIM_DAEMON": daemon_url, "SIM_CONTROLLER": controller_url, **extra},
@@ -255,7 +280,11 @@ def main() -> int:
     if code == 0 and temporary:
         shutil.rmtree(work, ignore_errors=True)
     else:
-        print(f"logs: {work / 'daemon.log'} {work / 'controller.log'}" + (f" {work / 'audio-gateway.log'}" if args.audio else ""), flush=True)
+        print(
+            f"logs: {work / 'daemon.log'} {work / 'controller.log'}"
+            + (f" {work / 'audio-gateway.log'}" if args.audio else ""),
+            flush=True,
+        )
     return code
 
 

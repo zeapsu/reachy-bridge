@@ -9,14 +9,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::watch;
 
 use crate::error::ApiError;
@@ -31,9 +31,7 @@ const IDLE: Duration = Duration::from_secs(1);
 const FILE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn router() -> Router<Shared> {
-    Router::new()
-        .route("/api/sim/sounds-stream", get(stream))
-        .route("/api/sim/sounds/{token}", get(file))
+    Router::new().route("/api/sim/sounds-stream", get(stream)).route("/api/sim/sounds/{token}", get(file))
 }
 
 fn token_ok(token: &str) -> bool {
@@ -43,7 +41,10 @@ fn token_ok(token: &str) -> bool {
 /// Keep a well-formed `bridge/sounds` answer, reduced to the fields the
 /// dashboard reads.
 pub fn valid_sounds(value: &Value) -> Option<Value> {
-    let boot = value.get("boot")?.as_str().filter(|b| !b.is_empty() && b.len() <= 32 && b.bytes().all(|c| c.is_ascii_hexdigit()))?;
+    let boot = value
+        .get("boot")?
+        .as_str()
+        .filter(|b| !b.is_empty() && b.len() <= 32 && b.bytes().all(|c| c.is_ascii_hexdigit()))?;
     let seq = value.get("seq")?.as_u64()?;
     let events = value.get("events")?.as_array()?;
     let events: Vec<Value> = events
@@ -107,8 +108,7 @@ async fn file(State(state): State<Shared>, Path(token): Path<String>) -> Respons
         return ApiError::new(404, "No such sound").into_response();
     }
     let path = format!("bridge/sounds/{token}");
-    let Ok(Ok(upstream)) = tokio::time::timeout(FILE_TIMEOUT, state.daemon.open_stream(&path, "audio/*")).await
-    else {
+    let Ok(Ok(upstream)) = tokio::time::timeout(FILE_TIMEOUT, state.daemon.open_stream(&path, "audio/*")).await else {
         return ApiError::unavailable().into_response();
     };
     if upstream.status() == StatusCode::NOT_FOUND {

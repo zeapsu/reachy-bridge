@@ -1,12 +1,12 @@
 //! Host metrics for the system panel: CPU, GPU, memory, temperatures, and the
 //! Reachy audio routing (ALSA card, PipeWire sink volume).
 
-use std::path::Path;
 use std::io::Read;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn read_trimmed(path: impl AsRef<Path>) -> Option<String> {
     std::fs::read_to_string(path).ok().map(|s| s.trim().to_string())

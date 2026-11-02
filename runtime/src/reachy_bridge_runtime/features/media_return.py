@@ -84,12 +84,16 @@ async def take_back(manager: Any, monitor: Any, app_name: str, settle_timeout: f
             return True
         if state in ("stopped", "not_initialized"):
             upstream.forget_media_release(daemon)
-            logger.info("%s left the camera and microphone released; the daemon gets them back when it starts", app_name)
+            logger.info(
+                "%s left the camera and microphone released; the daemon gets them back when it starts", app_name
+            )
             return True
     except Exception:
         logger.exception("%s left the camera and microphone released; could not take them back", app_name)
         return False
-    logger.warning("%s left the camera and microphone released; the daemon is %s, so they stay released", app_name, state)
+    logger.warning(
+        "%s left the camera and microphone released; the daemon is %s, so they stay released", app_name, state
+    )
     return False
 
 

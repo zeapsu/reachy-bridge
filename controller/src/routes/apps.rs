@@ -9,7 +9,7 @@ use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::apps::APP_CONTROL_TIMEOUT;
 use crate::error::{ApiError, ApiResult};
@@ -153,13 +153,9 @@ async fn stop(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> Ap
 async fn ui(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> ApiResult<Json<Value>> {
     let port = state.apps.ui_port(&name).await.map_err(|_| ApiError::unavailable())?;
     let ready = match port {
-        Some(port) => state
-            .probe
-            .get(format!("http://127.0.0.1:{port}/"))
-            .timeout(Duration::from_secs(1))
-            .send()
-            .await
-            .is_ok(),
+        Some(port) => {
+            state.probe.get(format!("http://127.0.0.1:{port}/")).timeout(Duration::from_secs(1)).send().await.is_ok()
+        }
         None => false,
     };
     Ok(Json(json!({"name": name, "port": port, "ready": ready, "proxy_port": crate::app_proxy::listening_port()})))

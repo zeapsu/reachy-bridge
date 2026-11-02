@@ -15,10 +15,10 @@ pub mod sim;
 pub mod state;
 pub mod streams;
 
+use axum::Router;
 use axum::extract::Request;
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::Router;
 
 use crate::state::Shared;
 

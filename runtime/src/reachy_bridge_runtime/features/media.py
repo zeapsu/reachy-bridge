@@ -39,9 +39,7 @@ _SPECTRUM_BINS_PER_BAND = 6
 _SPECTRUM_BAND_RANGES_HZ = ((80.0, 300.0), (300.0, 2_000.0), (2_000.0, 7_500.0))
 _SPECTRUM_BIN_RANGES_HZ = tuple(
     (
-        low
-        if index == 0
-        else low + ((high - low) / (_SPECTRUM_BINS_PER_BAND - 1)) * (index - 0.5),
+        low if index == 0 else low + ((high - low) / (_SPECTRUM_BINS_PER_BAND - 1)) * (index - 0.5),
         high
         if index == _SPECTRUM_BINS_PER_BAND - 1
         else low + ((high - low) / (_SPECTRUM_BINS_PER_BAND - 1)) * (index + 0.5),
@@ -264,14 +262,8 @@ class AudioSpectrumTap:
         mid_power = 0.0
         high_power = 0.0
         for index, (start, end) in enumerate(self._spectrum_bin_slices):
-            power = (
-                float(np.sum(self._power[start:end], dtype=np.float64))
-                if end > start
-                else 0.0
-            )
-            spectrum_levels[index] = self._db_to_level(
-                self._clamped_dbfs(math.sqrt(power * 0.5))
-            )
+            power = float(np.sum(self._power[start:end], dtype=np.float64)) if end > start else 0.0
+            spectrum_levels[index] = self._db_to_level(self._clamped_dbfs(math.sqrt(power * 0.5)))
             if index < self.BINS_PER_BAND:
                 low_power += power
             elif index < self.BINS_PER_BAND * 2:
@@ -377,9 +369,7 @@ def install_audio_spectrum_tap() -> None:
                     raise RuntimeError(f"Could not add audio spectrum element {element!r}")
             for source, target in links:
                 if not source.link(target):
-                    raise RuntimeError(
-                        f"Could not link audio spectrum elements {source!r} -> {target!r}"
-                    )
+                    raise RuntimeError(f"Could not link audio spectrum elements {source!r} -> {target!r}")
             capsfilter.set_property(
                 "caps",
                 Gst.Caps.from_string("audio/x-raw,format=F32LE,channels=1,rate=16000"),
@@ -421,7 +411,6 @@ def install_audio_spectrum_tap() -> None:
         self._reachy_audio_spectrum_tap = tap
 
     upstream.wrap_configure_audio(_configure_audio)
-
 
 
 class CameraStreamUnavailable(RuntimeError):
@@ -535,6 +524,7 @@ class CameraMJPEGStreamer:
             self._frame_sequence += 1
             subscribers = list(self._subscribers.values())
         for subscriber in subscribers:
+
             def deliver(subscriber: _Subscriber = subscriber, chunk: bytes = chunk) -> None:
                 token = getattr(subscriber.queue, "_camera_subscriber_token", None)
                 with self._lock:
@@ -578,10 +568,7 @@ class CameraMJPEGStreamer:
     def _multipart_chunk(jpeg: bytes) -> bytes:
         return (
             b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n"
-            + f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii")
-            + jpeg
-            + b"\r\n"
+            b"Content-Type: image/jpeg\r\n" + f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii") + jpeg + b"\r\n"
         )
 
     def _reader_loop(self, daemon: Any, startup_event: threading.Event) -> None:
@@ -733,9 +720,7 @@ class CameraMJPEGStreamer:
                 if not ready:
                     raise CameraStreamUnavailable("camera reader did not become ready")
                 if startup_error is not None:
-                    raise CameraStreamUnavailable(
-                        f"camera reader unavailable: {startup_error}"
-                    ) from startup_error
+                    raise CameraStreamUnavailable(f"camera reader unavailable: {startup_error}") from startup_error
             keep_subscriber = True
             return subscriber
         finally:
@@ -797,9 +782,7 @@ class CameraMJPEGStreamer:
             # Wait for one frame before sending headers so missing optional
             # dependencies, a dead IPC reader, and encoder errors map honestly
             # to 503 rather than an apparently-live blank response.
-            first_chunk = await asyncio.wait_for(
-                stream.__anext__(), timeout=self._startup_timeout * 2
-            )
+            first_chunk = await asyncio.wait_for(stream.__anext__(), timeout=self._startup_timeout * 2)
         except asyncio.CancelledError:
             await stream.aclose()
             raise

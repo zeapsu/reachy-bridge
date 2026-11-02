@@ -55,6 +55,7 @@ def fresh(nonce: str, seconds: int) -> bool:
         SEEN[nonce] = now
         return True
 
+
 def sign(key: str, what: str, data: str) -> str:
     """HMAC-SHA256 of ``"<what>:<data>"``, in hex (the controller's ``audio::sign``)."""
     return hmac.new(key.encode(), f"{what}:{data}".encode(), hashlib.sha256).hexdigest()
@@ -62,7 +63,9 @@ def sign(key: str, what: str, data: str) -> str:
 
 # foundation component transport priority address port "typ" type [extensions],
 # single spaces as libnice splits them.
-CANDIDATE = re.compile(r"candidate:[!-~]{1,32} \d{1,3} (?i:udp) \d{1,10} ([0-9A-Fa-f.:]{2,45}) \d{1,5} typ host( [!-~]+ [!-~]+)*")
+CANDIDATE = re.compile(
+    r"candidate:[!-~]{1,32} \d{1,3} (?i:udp) \d{1,10} ([0-9A-Fa-f.:]{2,45}) \d{1,5} typ host( [!-~]+ [!-~]+)*"
+)
 
 
 def candidate_allowed(line: str) -> bool:

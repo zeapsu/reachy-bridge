@@ -343,7 +343,9 @@ class Gateway:
                 raise
             self.session = session
             speaker(not hear)
-            logger.info("Audio session %s opened (listen=%s, talk=%s, hear=%s, apps=%s)", session.id, listen, talk, hear, apps)
+            logger.info(
+                "Audio session %s opened (listen=%s, talk=%s, hear=%s, apps=%s)", session.id, listen, talk, hear, apps
+            )
             return {"id": session.id, "offer": offer}
 
     def route(self, sid: str, listen: bool, talk: bool, hear: bool, apps: bool) -> None:
@@ -473,7 +475,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._reply(HTTPStatus.OK, GATEWAY.status())
             if method == "POST" and parts == ["session"]:
                 body = self._body()
-                route = (bool(body.get("listen", True)), bool(body.get("talk")), bool(body.get("hear")), bool(body.get("apps")))
+                route = (
+                    bool(body.get("listen", True)),
+                    bool(body.get("talk")),
+                    bool(body.get("hear")),
+                    bool(body.get("apps")),
+                )
                 opened = GATEWAY.open(*route)
                 return self._reply(HTTPStatus.OK, opened)
             if len(parts) == 2 and parts[0] == "session" and method == "DELETE":
@@ -493,7 +500,12 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError(f"the answer was refused: {reply.get_value('error').message}")
                     return self._reply(HTTPStatus.NO_CONTENT)
                 if parts[2] == "route":
-                    route = (bool(body.get("listen")), bool(body.get("talk")), bool(body.get("hear")), bool(body.get("apps")))
+                    route = (
+                        bool(body.get("listen")),
+                        bool(body.get("talk")),
+                        bool(body.get("hear")),
+                        bool(body.get("apps")),
+                    )
                     GATEWAY.route(parts[1], *route)
                     return self._reply(HTTPStatus.NO_CONTENT)
             return self._reply(HTTPStatus.NOT_FOUND, {"detail": "not found"})
