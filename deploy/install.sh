@@ -52,12 +52,12 @@ record() {
 
 # An apps venv from before app-constraints.txt may hold OpenCV 5, and more than
 # one OpenCV wheel: they share one cv2/ directory, so the later install overwrote
-# the earlier. Leave one, preferring headless (these devices have no display), at
-# the newest allowed version. The replacement is fetched into uv's cache through
+# the earlier. Leave one at the newest allowed version: contrib if present, since
+# it is a superset, and otherwise headless, since these devices have no display. The replacement is fetched into uv's cache through
 # a throwaway venv first, so a failed download leaves the venv as it was.
 pin_app_opencv() {
     local python=$1/bin/python constraints=$DEST/app-constraints.txt freeze wheel probe
-    local -a wheels=(opencv-contrib-python-headless opencv-python-headless opencv-contrib-python opencv-python)
+    local -a wheels=(opencv-contrib-python-headless opencv-contrib-python opencv-python-headless opencv-python)
     [[ -x $python ]] || return 0
     freeze=$(uv pip list --python "$python" --format=freeze 2>/dev/null) || return 0
     grep -qE '^opencv(-contrib)?-python(-headless)?==([5-9]|[1-9][0-9])\.' <<<"$freeze" || return 0
@@ -73,7 +73,10 @@ pin_app_opencv() {
         return 0
     fi
     rm -rf "$probe"
-    uv pip uninstall --python "$python" "${wheels[@]}" 2>/dev/null || true
+    if ! uv pip uninstall --python "$python" "${wheels[@]}"; then
+        echo "install: warning: couldn't remove OpenCV 5 from $1; apps that need 4.x fail until it's fixed" >&2
+        return 0
+    fi
     uv pip install --python "$python" --constraint "$constraints" "$wheel" \
         || echo "install: warning: no OpenCV left in $1: run uv pip install --python $python --constraint $constraints $wheel" >&2
 }
