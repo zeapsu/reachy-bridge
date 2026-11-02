@@ -21,13 +21,12 @@ actually comes out of the speaker (features/wobble.py).
 The mic gets the same treatment the other way round, on the loopback's second
 subdevice, so a browser can talk to any app directly. (Talking through the
 speaker doesn't reach apps: the audio board's echo cancellation removes the
-robot's own speaker output from its mic.) That subdevice has four channels: a
-browser's voice on the first two, and on the last two what apps read as the
-mic, which ``mic_mixer`` makes from the real mic and the voice. The gateway
-listens to the real mic only:
+robot's own speaker output from its mic.) A browser's voice and the real mic,
+which ``mic_mixer`` brings over from the USB card's clock, mix in the same
+dmix. The gateway listens to the real mic only:
 
     browser -> audio gateway -> reachy_bridge_app_voice -> loopback
-    loopback + reachy_bridge_mic_hw (real mic) -> mic_mixer -> loopback
+    reachy_bridge_mic_hw (real mic) -> mic_mixer -> loopback
     loopback -> reachymini_audio_src -> apps
     reachy_bridge_mic_hw -> audio gateway -> browser
 
@@ -57,7 +56,7 @@ logger = logging.getLogger(__name__)
 # but not those of v2 to v4: rolled back to one of them, a runtime replaces this
 # tee with its own, since its install has no mic mixer.
 PREFIX = "# reachy-bridge: "
-MARKER = PREFIX + "speaker tee (#219) with mic mixer (v5)"
+MARKER = PREFIX + "speaker tee (#219) with mic mixer (v6)"
 LOOPBACK = "Loopback"
 SPEAKER_SWITCH = "Reachy Bridge Speaker"
 HEAR_SOURCE = "reachy_bridge_hear"
@@ -66,7 +65,6 @@ WOBBLE_SOURCE = "reachy_bridge_wobble"
 SINK = "reachymini_audio_sink"
 SOURCE = "reachymini_audio_src"
 APP_VOICE_SINK = "reachy_bridge_app_voice"
-APP_VOICE_SOURCE = "reachy_bridge_app_voice_in"
 MIC_OUT = "reachy_bridge_mic_out"
 # Upstream's speaker dmix and mic dsnoop, renamed: same ipc_key and
 # hardware, so they share the devices with whatever already uses them.
@@ -159,7 +157,7 @@ pcm.{APP_VOICE_SINK} {{
         type dmix
         ipc_key 4253
         slave {{ pcm "hw:{LOOPBACK},0,1" channels 4 period_size 256 buffer_size 1024 rate 16000 format S16_LE }}
-        bindings {{ 0 0 1 1 }}
+        bindings {{ 0 2 1 3 }}
     }}
 }}
 
@@ -177,15 +175,6 @@ pcm.reachy_bridge_mic_loop_in {{
     type dsnoop
     ipc_key 4254
     slave {{ pcm "hw:{LOOPBACK},1,1" channels 4 period_size 256 buffer_size 1024 rate 16000 format S16_LE }}
-}}
-
-pcm.{APP_VOICE_SOURCE} {{
-    type plug
-    slave.pcm {{
-        type route
-        slave {{ pcm "reachy_bridge_mic_loop_in" channels 4 }}
-        ttable {{ 0.0 1 1.1 1 }}
-    }}
 }}
 
 # Capture: ttable.<client channel>.<slave channel>.
@@ -276,8 +265,8 @@ def untee(text: str) -> str:
 
 def _card_usable() -> bool:
     """The tee can work here: with it, apps' mic depends on the mixer, which
-    runs on gst-launch."""
-    if shutil.which("gst-launch-1.0") is None:
+    runs on alsaloop."""
+    if shutil.which("alsaloop") is None:
         return False
     try:
         return loopback_present(CARDS.read_text()) and SECOND_SUBDEVICE.exists()

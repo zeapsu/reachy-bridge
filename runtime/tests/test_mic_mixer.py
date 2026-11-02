@@ -1,4 +1,4 @@
-"""The mic mixer service (#219): waits for the tee, then becomes gst-launch."""
+"""The mic mixer service (#219): waits for the tee, then becomes alsaloop."""
 
 from __future__ import annotations
 
