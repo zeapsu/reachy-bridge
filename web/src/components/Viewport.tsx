@@ -14,6 +14,8 @@ interface Props {
   daemonOnline: boolean;
   /** Why there is no live robot, shown over the stage; null while there is one. */
   note: StageNote | null;
+  onPower: () => void;
+  powerDisabled: boolean;
   visible: boolean;
   /** The viewport installs its 10 Hz pose writer here. */
   poseSink: RefObject<PoseSink | null>;
@@ -44,7 +46,7 @@ const MODES: { value: ViewMode; title: string; label: ReactNode }[] = [
 
 type Cache = Partial<Record<keyof PoseFrame, unknown>>;
 
-export function Viewport({ daemonOnline, note, visible, poseSink }: Props) {
+export function Viewport({ daemonOnline, note, onPower, powerDisabled, visible, poseSink }: Props) {
   const [mode, setMode] = useState<ViewMode>("3d");
   const [meta, setMeta] = useState(MODE_META["3d"]);
 
@@ -113,12 +115,11 @@ export function Viewport({ daemonOnline, note, visible, poseSink }: Props) {
     };
   }, [poseSink]);
 
-  // Offline: blank the readouts, park the robot, and invalidate the change
+  // Offline: hide the readouts, put the robot to sleep, and invalidate the change
   // cache so a reconnect with an unchanged pose still repaints.
   useEffect(() => {
     canvas.current?.classList.toggle("offline", !daemonOnline);
-    // Hidden while offline, so screen readers skip it too.
-    canvas.current?.setAttribute("aria-hidden", String(!daemonOnline));
+    hud.current?.classList.toggle("offline", !daemonOnline);
     if (daemonOnline) return;
     robot.current?.reset();
     if (rRpy.current) rRpy.current.textContent = "—/—/—";
@@ -161,14 +162,18 @@ export function Viewport({ daemonOnline, note, visible, poseSink }: Props) {
       <div className={`stage-layer${mode === "3d" ? " active" : ""}`}>
         <canvas id="robot-3d" ref={canvas} aria-label="Live 3D view of the robot's pose"></canvas>
       </div>
-      {note ? (
+      {note?.title ? (
         <div className="glass stage-note" role="status">
           <span className="stage-note-title">
             <span className={`dot ${note.dot}`}></span>
             {note.title}
           </span>
-          <span className="stage-note-detail">{note.detail}</span>
         </div>
+      ) : null}
+      {note?.action ? (
+        <button className="btn primary press stage-power" type="button" disabled={powerDisabled} onClick={onPower}>
+          {note.action}
+        </button>
       ) : null}
 
       <div className="stage-top">

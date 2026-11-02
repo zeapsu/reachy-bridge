@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { apiJson, errorText, paths, takeControlIfFree, type Kinematics, type MotorStatus, type Volume } from "../api.ts";
-import { CONTROL_HINT_OFFLINE, clampVolume, kinematicsSwitch, kinematicsView } from "../logic/controls.ts";
+import { clampVolume, kinematicsSwitch, kinematicsView } from "../logic/controls.ts";
 import { Segmented } from "./Segmented.tsx";
 import "./ControlsPanel.css";
 
@@ -13,8 +13,6 @@ interface Props {
   daemonOnline: boolean;
   controlBusy: boolean;
   setControlBusy: (busy: boolean) => void;
-  status: string;
-  setStatus: (text: string) => void;
   hint: ControlHint;
   setHint: (hint: ControlHint | ((prev: ControlHint) => ControlHint)) => void;
   robotControlMode: string | null;
@@ -32,9 +30,9 @@ interface Props {
 
 type SliderId = "vol-spk" | "vol-mic";
 
-const SLIDERS: { id: SliderId; label: string; status: string; current: string; set: string; initial: number }[] = [
-  { id: "vol-spk", label: "Speaker", status: "speaker", current: paths.volumeCurrent, set: paths.volumeSet, initial: 80 },
-  { id: "vol-mic", label: "Microphone", status: "microphone", current: paths.micCurrent, set: paths.micSet, initial: 60 },
+const SLIDERS: { id: SliderId; label: string; current: string; set: string; initial: number }[] = [
+  { id: "vol-spk", label: "Speaker", current: paths.volumeCurrent, set: paths.volumeSet, initial: 80 },
+  { id: "vol-mic", label: "Microphone", current: paths.micCurrent, set: paths.micSet, initial: 60 },
 ];
 const SAVE_DEBOUNCE_MS = 240;
 const MOTOR_MODES = [
@@ -43,7 +41,7 @@ const MOTOR_MODES = [
 ] as const;
 
 export function ControlsPanel(props: Props) {
-  const { daemonOnline, controlBusy, setControlBusy, setStatus, setHint, robotControlMode, setRobotControlMode } = props;
+  const { daemonOnline, controlBusy, setControlBusy, setHint, robotControlMode, setRobotControlMode } = props;
   const controlsDisabled = !(daemonOnline && !controlBusy);
   const onlineRef = useRef(daemonOnline);
   onlineRef.current = daemonOnline;
@@ -83,13 +81,10 @@ export function ControlsPanel(props: Props) {
         return;
       }
       slot.inflight = true;
-      setStatus(spec.status);
       try {
         await apiJson(spec.set, { method: "POST", body: JSON.stringify({ volume: valuesRef.current[id] }) });
-        setStatus("ok");
         setHint({ text: "", error: false });
       } catch (err) {
-        setStatus("error");
         setHint({ text: errorText(err, "Volume request failed"), error: true });
       } finally {
         slot.inflight = false;
@@ -99,7 +94,7 @@ export function ControlsPanel(props: Props) {
         }
       }
     },
-    [setStatus, setHint],
+    [setHint],
   );
 
   const scheduleSave = useCallback(
@@ -152,24 +147,16 @@ export function ControlsPanel(props: Props) {
   const [kinSwitching, setKinSwitching] = useState<string | null>(null);
   const [gravityPending, setGravityPending] = useState<boolean | null>(null);
   const [wobble, setWobble] = useState(false);
-  const [wobbleHint, setWobbleHint] = useState(false);
   const [testLabel, setTestLabel] = useState("Play test sound");
 
-  const performControl = async <T,>(label: string, operation: () => Promise<T>): Promise<T | null> => {
-    if (!onlineRef.current) {
-      setStatus("offline");
-      setHint((prev) => ({ ...prev, text: CONTROL_HINT_OFFLINE }));
-      return null;
-    }
+  const performControl = async <T,>(operation: () => Promise<T>): Promise<T | null> => {
+    if (!onlineRef.current) return null;
     setControlBusy(true);
-    setStatus(label);
     try {
       const result = await operation();
-      setStatus("ok");
       setHint({ text: "", error: false });
       return result;
     } catch (err) {
-      setStatus("error");
       setHint({ text: errorText(err, "Control request failed"), error: true });
       return null;
     } finally {
@@ -177,16 +164,14 @@ export function ControlsPanel(props: Props) {
     }
   };
 
-  // Online flip: load the daemon's current values once. Offline: say why.
+  // Online flip: load the daemon's current values once.
   const { reloadKinematics } = props;
   useEffect(() => {
     if (!daemonOnline) {
-      setStatus("offline");
-      setHint({ text: CONTROL_HINT_OFFLINE, error: false });
+      setHint({ text: "", error: false });
       return;
     }
-    setStatus("online");
-    setHint({ text: "", error: false });
+        setHint({ text: "", error: false });
     let cancelled = false;
     void (async () => {
       const [speaker, microphone, motors] = await Promise.allSettled([
@@ -207,14 +192,14 @@ export function ControlsPanel(props: Props) {
       cancelled = true;
     };
     // syncSlider only touches refs and stable setters.
-  }, [daemonOnline, reloadKinematics, setHint, setRobotControlMode, setStatus]);
+  }, [daemonOnline, reloadKinematics, setHint, setRobotControlMode]);
 
   const gravityChecked = gravityPending ?? robotControlMode === "gravity_compensation";
   const kin = kinematicsView(props.kinematics, controlsDisabled, props.appActive, gravityChecked);
 
   const onMotor = (mode: "enabled" | "disabled") => {
-    if (mode === "disabled" && !window.confirm("Disable motors? The robot will go limp. Use Wake to recover.")) return;
-    void performControl("motor", async () => {
+    if (mode === "disabled" && !window.confirm("Disable motors? The robot will go limp. Set Motors to Enabled to recover.")) return;
+    void performControl(async () => {
       // After the confirm dialog the tap's activation may have run out.
       if (mode === "disabled") await takeControlIfFree(true);
       const result = await apiJson(paths.motorSetMode(mode), { method: "POST" });
@@ -234,8 +219,8 @@ export function ControlsPanel(props: Props) {
     if (robotOn && !window.confirm(`Switch to ${label} kinematics? Reachy will power off and back on with the new engine.`)) {
       return;
     }
-    void performControl("kinematics", async () => {
-      setKinSwitching(robotOn ? "Restarting Reachy on the new engine…" : "Switching…");
+    void performControl(async () => {
+      setKinSwitching(robotOn ? "Restarting…" : "Switching…");
       if (robotOn) props.setStopping(true);
       try {
         props.setKinematics(
@@ -253,7 +238,7 @@ export function ControlsPanel(props: Props) {
   const onGravity = (checked: boolean) => {
     const mode = checked ? "gravity_compensation" : "enabled";
     setGravityPending(checked);
-    void performControl("motor", async () => {
+    void performControl(async () => {
       const result = await apiJson(paths.motorSetMode(mode), { method: "POST" });
       setRobotControlMode(mode);
       return result;
@@ -262,15 +247,14 @@ export function ControlsPanel(props: Props) {
 
   const onWobble = (checked: boolean) => {
     setWobble(checked);
-    void performControl("wobble", () => apiJson(paths.wobble(checked), { method: "POST" })).then((result) => {
+    void performControl(() => apiJson(paths.wobble(checked), { method: "POST" })).then((result) => {
       if (result == null) setWobble(!checked);
-      setWobbleHint(checked && result != null);
     });
   };
 
   const onTestSound = () => {
     setTestLabel("Playing…");
-    void performControl("test sound", () => apiJson(paths.testSound, { method: "POST" })).finally(() =>
+    void performControl(() => apiJson(paths.testSound, { method: "POST" })).finally(() =>
       setTestLabel("Play test sound"),
     );
   };
@@ -279,10 +263,6 @@ export function ControlsPanel(props: Props) {
 
   return (
     <div className="pane controls">
-      <span className="chip controls-status" id="control-status">
-        <span className={`dot ${props.status === "error" ? "error" : props.status === "offline" ? "" : "ok"}`}></span>
-        {props.status}
-      </span>
       <p className={`note${props.hint.error ? " error" : ""}`} id="control-hint">
         {props.hint.text}
       </p>
@@ -367,9 +347,6 @@ export function ControlsPanel(props: Props) {
             onClick={() => onWobble(!wobble)}
           ></button>
         </div>
-        <p className="note" id="wobble-hint" hidden={!wobbleHint}>
-          The head moves with whatever plays through the speaker: the test sound, an app, or Talk.
-        </p>
         <button className="btn press" id="testsound" type="button" disabled={controlsDisabled} onClick={onTestSound}>
           {testLabel}
         </button>

@@ -78,18 +78,16 @@ describe("appAction", () => {
     expect(appAction(app("a", "stopping"), idle)).toEqual({ kind: "pending", label: "Stopping" });
   });
   test("start is blocked by another active app, a busy request, offline daemon, or an expression", () => {
-    expect(appAction(app("a", "stopped"), idle)).toEqual({ kind: "start", disabled: false, title: "" });
+    expect(appAction(app("a", "stopped"), idle)).toEqual({ kind: "start", disabled: false });
     expect(appAction(app("a", "stopped"), { ...idle, anyActive: true })).toMatchObject({ disabled: true });
     expect(appAction(app("a", "stopped"), { ...idle, appBusy: true })).toMatchObject({ disabled: true });
     expect(appAction(app("a", "error"), { ...idle, daemonOnline: false })).toEqual({
       kind: "start",
       disabled: true,
-      title: "Apps start when the daemon is online.",
     });
     expect(appAction(app("a", "stopped"), { ...idle, exprBusy: true })).toEqual({
       kind: "start",
       disabled: true,
-      title: "Apps start when the robot finishes its expression.",
     });
   });
 });
@@ -100,7 +98,7 @@ describe("favorites toggle", () => {
     expect(toggleFavoriteList(["a", "b"], "a")).toEqual({ ok: true, next: ["b"] });
   });
   test("refuses a fourth", () => {
-    expect(toggleFavoriteList(["a", "b", "c"], "d")).toEqual({ ok: false, error: "Choose up to 3 favorite apps." });
+    expect(toggleFavoriteList(["a", "b", "c"], "d")).toEqual({ ok: false, error: "Pin up to 3 apps" });
   });
 });
 

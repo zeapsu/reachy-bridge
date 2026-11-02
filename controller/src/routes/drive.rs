@@ -123,13 +123,13 @@ impl Refusal {
 
 async fn refusal(state: &Shared) -> Option<Refusal> {
     let Some(status) = state.daemon.status().await.filter(backend_up) else {
-        return Some(Refusal::Other(ApiError::new(503, "Robot is off")));
+        return Some(Refusal::Other(ApiError::new(503, "Robot off")));
     };
     if motor_mode(&status) != Some("enabled") {
-        return Some(Refusal::Other(ApiError::new(409, "Set Motors to Enabled to drive")));
+        return Some(Refusal::Other(ApiError::new(409, "Enable motors first")));
     }
     if state.apps.refresh_active().await {
-        return Some(Refusal::App(ApiError::new(409, "Stop the app first: it is driving the robot")));
+        return Some(Refusal::App(ApiError::new(409, "Stop the app first")));
     }
     None
 }
@@ -190,7 +190,7 @@ async fn sent<E>(send: impl std::future::Future<Output = Result<(), E>>) -> bool
     matches!(tokio::time::timeout(SEND_TIMEOUT, send).await, Ok(Ok(())))
 }
 
-const MODE_CHANGED: &str = "Motor mode changed: drive again once the robot is home";
+const MODE_CHANGED: &str = "Motors changed: drive again";
 
 async fn drive(
     state: Shared,
@@ -222,11 +222,11 @@ async fn drive(
     tokio::pin!(silent);
     let detail = loop {
         tokio::select! {
-            () = &mut ended => break "Logged out: log in again to drive".to_string(),
-            () = &mut lost => break "Control ended: take control again to drive".to_string(),
+            () = &mut ended => break "Logged out".to_string(),
+            () = &mut lost => break "Control ended".to_string(),
             () = &mut silent => {
                 tracing::info!("drive: browser silent, ending the session");
-                break "Connection lost: drive again".to_string();
+                break "Connection lost".to_string();
             }
             message = socket.recv() => match message {
                 Some(Ok(Message::Text(text))) => {
@@ -239,7 +239,7 @@ async fn drive(
                         break "Invalid drive target".to_string();
                     };
                     if !sent(upstream.send(tungstenite::Message::text(target.to_string()))).await {
-                        break "Daemon unavailable".to_string();
+                        break "Robot service down".to_string();
                     }
                 }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
@@ -249,7 +249,7 @@ async fn drive(
                 // The daemon only answers to report a target it couldn't parse.
                 Some(Ok(tungstenite::Message::Text(text))) => tracing::warn!("daemon refused a drive target: {text}"),
                 Some(Ok(_)) => {}
-                None | Some(Err(_)) => break "Daemon unavailable".to_string(),
+                None | Some(Err(_)) => break "Robot service down".to_string(),
             },
             _ = recheck.tick() => {
                 // An open session counts as the holder being here, and busy.

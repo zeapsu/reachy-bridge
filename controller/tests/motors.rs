@@ -14,7 +14,7 @@ async fn gravity_compensation_guards() {
     .await;
     let (status, body) = h.call("POST", "/api/motors/set_mode/gravity_compensation", None).await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["detail"], "Gravity compensation needs Placo kinematics");
+    assert_eq!(body["detail"], "Gravity needs Placo");
 
     let h = harness(|f| {
         f.state = "running".into();
@@ -81,7 +81,7 @@ async fn gravity_compensation_waits_for_an_expression() {
     assert_eq!(status, StatusCode::OK);
     let (status, body) = h.call("POST", "/api/motors/set_mode/gravity_compensation", None).await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert!(body["detail"].as_str().unwrap().contains("expression"));
+    assert!(body["detail"].as_str().unwrap().contains("Expression"));
 }
 
 #[tokio::test]

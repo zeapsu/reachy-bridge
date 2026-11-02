@@ -98,9 +98,8 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps, catalog, manage
               className="btn danger press"
               type="button"
               disabled={jobBusy || !idle}
-              title={idle ? undefined : "Stop the app first"}
-              onClick={() => {
-                if (window.confirm(`Remove ${display}? You can install it again from Get apps.`)) catalog.remove(name);
+                            onClick={() => {
+                if (window.confirm(`Remove ${display}?`)) catalog.remove(name);
               }}
             >
               Remove
@@ -109,7 +108,7 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps, catalog, manage
         ) : action.kind === "running" ? (
           <>
             {action.showOpen ? (
-              <button className="btn primary press" type="button" title="Open the app's own interface" onClick={() => apps.openUi(name)}>
+              <button className="btn primary press" type="button" title="Open interface" onClick={() => apps.openUi(name)}>
                 Open
               </button>
             ) : null}
@@ -126,8 +125,7 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps, catalog, manage
             className="btn press"
             type="button"
             disabled={action.disabled || jobBusy}
-            title={(jobBusy ? `${job?.kind === "remove" ? "Removing" : "Updating"}…` : action.title) || undefined}
-            onClick={() => apps.perform(name, "start")}
+                        onClick={() => apps.perform(name, "start")}
           >
             Start
           </button>
@@ -222,7 +220,7 @@ export function AppsPanel({ apps, catalog, daemonOnline, reachable, exprBusy }: 
         </>
       ) : null}
       {apps.names.length === 0 ? (
-        <p className="note">{reachable ? "No apps installed yet." : "Apps show up when the daemon is online."}</p>
+        <p className="note">{reachable ? "No apps installed" : "Robot service down"}</p>
       ) : null}
     </section>
   );

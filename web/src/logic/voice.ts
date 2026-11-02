@@ -27,19 +27,19 @@ export function voiceBlocked(view: VoiceView | null, control: ControlState, tail
   // Audio only connects between tailnet addresses; a LAN page would open the
   // robot's mic and never connect. Listening needs no secure page, so a plain-http
   // page on the device's tailnet IP works too.
-  if (!tailnet) return "Listening and talking work from the dashboard's Tailscale address (its https name or 100.x IP).";
-  if (!view) return "Checking the robot's audio…";
-  if (!view.available) return "Listening and talking work with the real robot, not the simulation.";
+  if (!tailnet) return "Needs Tailscale address";
+  if (!view) return "Checking audio…";
+  if (!view.available) return "Not in simulation";
   if (control.kind === "other") return `${control.person} is in control of the robot.`;
   // Free with control to take: starting takes it (api/client.ts).
-  if (control.kind === "free" && !control.canTake) return "Log in from a paired browser to listen or talk.";
+  if (control.kind === "free" && !control.canTake) return "Log in first";
   return null;
 }
 
 /** Why this browser can't talk at all, or null. */
 export function talkBlocked(secure: boolean, hasMic: boolean): string | null {
-  if (!secure) return "Talking needs the dashboard's https address: browsers only share a mic over https.";
-  if (!hasMic) return "This browser can't share a microphone.";
+  if (!secure) return "Needs https";
+  if (!hasMic) return "No microphone here";
   return null;
 }
 
@@ -57,7 +57,17 @@ function doing(s: VoiceSession): string {
 /** The open session is this browser's: its login's, or the one it opened (`mine`, its ref). */
 export const isMine = (s: VoiceSession, mine: string | null) => s.you || (mine !== null && s.ref === mine);
 
-/** The mic-live badge every dashboard shows, or null with no session. */
+export type VoiceRoute = "listen" | "hear" | "talk" | "apps";
+
+/** Who the badge names and which routes are live, or null with no session. */
+export function voiceLive(view: VoiceView | null, mine: string | null): { who: string; routes: VoiceRoute[] } | null {
+  const s = view?.session;
+  if (!s) return null;
+  const routes = (["listen", "hear", "talk", "apps"] as const).filter((route) => s[route]);
+  return { who: isMine(s, mine) ? "You" : s.person || "Someone", routes };
+}
+
+/** The mic-live badge's full sentence (tooltip, screen readers), or null with no session. */
 export function voiceBadge(view: VoiceView | null, mine: string | null): string | null {
   const s = view?.session;
   if (!s) return null;

@@ -30,7 +30,7 @@ pub fn router() -> Router<Shared> {
 
 /// These controls answer 503 for any daemon failure, as the stopgap did.
 fn or_unavailable(result: Result<Value, DaemonError>) -> ApiResult<Json<Value>> {
-    result.map(Json).map_err(|_| ApiError::new(503, "Daemon unavailable"))
+    result.map(Json).map_err(|_| ApiError::new(503, "Robot service down"))
 }
 
 async fn passthrough_get(State(state): State<Shared>, path: &'static str) -> ApiResult<Json<Value>> {
@@ -66,26 +66,26 @@ async fn set_motor_mode(State(state): State<Shared>, Path(mode): Path<String>) -
     if mode == "enabled" {
         let daemon_state = state.daemon.status().await;
         if daemon_state.as_ref().and_then(|s| s.get("state")).and_then(Value::as_str) != Some("running") {
-            return Err(ApiError::new(409, "The robot is off or powering off"));
+            return Err(ApiError::new(409, "Robot off"));
         }
     }
     if mode == "gravity_compensation" {
         // The motors ignore move targets in this mode, so an app's moves would
         // silently do nothing while its speech carries on (#150).
         if state.apps.refresh_active().await {
-            return Err(ApiError::new(409, "Stop the app first: the robot ignores moves under gravity compensation"));
+            return Err(ApiError::new(409, "Stop the app first"));
         }
         // The daemon refuses it under any other engine (409 since 1.13.0, a
         // bare 500 before); check first for a clearer message.
         let engines = kinematics(&state).await?;
         if engines.get("active").and_then(Value::as_str) != Some("Placo") {
-            return Err(ApiError::new(409, "Gravity compensation needs Placo kinematics"));
+            return Err(ApiError::new(409, "Gravity needs Placo"));
         }
         // Same for an expression: it would stop mid-move and skip its return home.
         if state.player.active() {
             return Err(ApiError::new(
                 409,
-                "Wait for the expression to finish: the robot ignores moves under gravity compensation",
+                "Expression playing",
             ));
         }
     }
@@ -101,11 +101,11 @@ async fn set_motor_mode(State(state): State<Shared>, Path(mode): Path<String>) -
     }
     let result = match outcome {
         Ok(result) => result,
-        Err(DaemonError::Unavailable) => return Err(ApiError::new(503, "Daemon unavailable")),
+        Err(DaemonError::Unavailable) => return Err(ApiError::new(503, "Robot service down")),
         Err(DaemonError::Refused { status, detail }) => {
             return Err(ApiError::new(
                 if status >= 500 { 502 } else { status },
-                detail.unwrap_or_else(|| format!("Daemon refused the motor mode (HTTP {status})")),
+                detail.unwrap_or_else(|| format!("Motor mode refused (HTTP {status})")),
             ));
         }
     };

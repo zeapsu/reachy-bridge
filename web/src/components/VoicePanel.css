@@ -19,3 +19,21 @@
 }
 .voice .note { margin: 0; }
 .voice > .btn { justify-self: start; }
+.voice-group { display: grid; gap: 4px; }
+.voice-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.voice-chip {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--hair);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.voice-chip[aria-checked="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.voice-chip:disabled { opacity: 0.45; cursor: default; }

@@ -19,7 +19,7 @@ export type LogStatus =
 
 /** Text shown in the empty log pane for a source status. */
 export function emptyLogMessage(status: LogStatus | undefined): string {
-  if (status === "offline") return "daemon offline — no output";
+  if (status === "offline") return "robot service down";
   if (status === "unavailable") return "output isn't captured yet";
   return "waiting for output";
 }

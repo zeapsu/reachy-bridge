@@ -186,6 +186,7 @@
   font-weight: 600;
 }
 .voice-badge svg { width: 16px; height: 16px; flex: none; }
-@media (max-width: 720px) {
-  .voice-badge-text { display: none; }
-}
+.voice-badge span { display: inline-flex; }
+.voice-badge-text { max-width: 9ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.control-who svg { width: 13px; height: 13px; flex: none; }
+.control-who.person { display: inline-flex; align-items: center; gap: 4px; }

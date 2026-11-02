@@ -28,16 +28,16 @@ test("loads without errors and keeps the tab across a reload", async ({ page }) 
 });
 
 test("the robot's controls follow its power", async ({ page }) => {
-  await expect(page.getByRole("status").filter({ hasText: "Reachy is off" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Power on" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Play" })).toBeDisabled();
   await tab(page, "Apps");
   await expect(page.getByRole("button", { name: "Start" }).first()).toBeDisabled();
   await setPower(page, true);
   await expect(page.getByRole("button", { name: "Start" }).first()).toBeEnabled();
   await tab(page, "Robot");
-  await expect(page.getByRole("status").filter({ hasText: "Reachy is off" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Power on" })).toHaveCount(0);
   await setPower(page, false);
-  await expect(page.getByRole("status").filter({ hasText: "Reachy is off" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Power on" })).toBeVisible();
 });
 
 test("an expression plays on the robot", async ({ page, request }) => {

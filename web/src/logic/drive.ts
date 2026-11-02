@@ -152,12 +152,13 @@ export interface DriveGate {
   controlBusy: boolean;
 }
 
+export type DriveBlock = "off" | "app" | "motors" | "busy";
+
 /** Why the pads are off right now, or null when the robot can be driven. */
-export function driveBlocked(gate: DriveGate): string | null {
-  if (!gate.daemonOnline) return "Drive works when the robot is on.";
-  if (gate.appActive) return "An app is driving the robot.";
-  if (gate.motorMode !== "enabled") return "Set Motors to Enabled to drive.";
-  if (gate.exprBusy) return "Wait for the move to finish.";
-  if (gate.controlBusy) return "Wait for the robot to settle.";
+export function driveBlocked(gate: DriveGate): DriveBlock | null {
+  if (!gate.daemonOnline) return "off";
+  if (gate.appActive) return "app";
+  if (gate.motorMode !== "enabled") return "motors";
+  if (gate.exprBusy || gate.controlBusy) return "busy";
   return null;
 }

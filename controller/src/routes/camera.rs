@@ -44,7 +44,7 @@ async fn availability(State(state): State<Shared>) -> Json<Value> {
 }
 
 async fn specs(State(state): State<Shared>) -> ApiResult<Json<Value>> {
-    state.daemon.get("camera/specs").await.map(Json).map_err(|_| ApiError::new(503, "Daemon unavailable"))
+    state.daemon.get("camera/specs").await.map(Json).map_err(|_| ApiError::new(503, "Robot service down"))
 }
 
 fn upstream_failed() -> Response {

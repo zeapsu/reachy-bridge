@@ -1228,9 +1228,9 @@ async fn voice_goes_with_the_robot() {
             r.body["detail"].as_str().unwrap_or_default().to_string()
         }
     };
-    assert!(refused(ROBOT_OFF, StatusCode::CONFLICT).await.contains("Turn the robot on"));
+    assert!(refused(ROBOT_OFF, StatusCode::CONFLICT).await.contains("Robot off"));
     assert!(refused(ROBOT_STARTING, StatusCode::CONFLICT).await.contains("still starting"));
-    assert!(refused(ROBOT_CRASHED, StatusCode::CONFLICT).await.contains("Turn the robot on"));
+    assert!(refused(ROBOT_CRASHED, StatusCode::CONFLICT).await.contains("Robot off"));
     refused(ROBOT_SILENT, StatusCode::SERVICE_UNAVAILABLE).await;
     // Turning the robot off (or its backend crashing) ends a session within
     // a check; a daemon that stops answering within a few.

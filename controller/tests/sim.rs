@@ -158,7 +158,7 @@ async fn the_sim_never_sets_the_hosts_sound() {
     s.h.call("POST", "/api/sim/enter", None).await;
     let (status, body) = s.h.call("POST", "/api/volume/set", Some(json!({"volume": 10}))).await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["detail"], "Sound is off in sim mode");
+    assert_eq!(body["detail"], "Not in simulation");
 }
 
 /// A fake `systemctl` that logs its arguments.

@@ -264,10 +264,10 @@ export function useApps(): AppsState {
       }
       // :8043 (tailscale serve) forwards to the same listener.
       if (ready && proxyPort === null) {
-        updateView(seq, { error: "The controller's app proxy isn't running, so the app's interface can't open. See the controller log." });
+        updateView(seq, { error: "App interface unavailable" });
       } else if (!ready) {
         const display = viewRef.current?.display || name;
-        updateView(seq, { error: `${display} did not open its interface within 30 s.` });
+        updateView(seq, { error: `${display} didn't open within 30 s` });
       } else {
         updateView(seq, { step: "opening", url: appUiUrl(window.location.hostname, proxyPort ?? undefined) });
       }

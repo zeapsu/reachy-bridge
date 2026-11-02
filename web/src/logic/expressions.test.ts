@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  HINT_APP_ACTIVE,
-  HINT_OFFLINE,
-  HINT_RETURNING_HOME,
   chipsDisabled,
-  expressionHint,
+  expressionError,
   parseMoveList,
 } from "./expressions.ts";
 
@@ -20,33 +17,14 @@ describe("chipsDisabled", () => {
   });
 });
 
-describe("expressionHint", () => {
-  const base = { daemonOnline: true, loaded: true, appActive: false, busy: null, error: null } as const;
-  test("hidden when idle", () => {
-    expect(expressionHint(base)).toEqual({ text: "", hidden: true, error: false });
-  });
-  test("offline (or lists not loaded yet) explains why chips are dim", () => {
-    expect(expressionHint({ ...base, daemonOnline: false, error: "x" }).text).toBe(HINT_OFFLINE);
-    expect(expressionHint({ ...base, loaded: false }).text).toBe(HINT_OFFLINE);
-  });
-  test("app ownership pauses expressions (#66)", () => {
-    expect(expressionHint({ ...base, appActive: true })).toEqual({ text: HINT_APP_ACTIVE, hidden: false, error: false });
-  });
-  test("a playing move hides the hint even if an app starts mid-move", () => {
-    expect(expressionHint({ ...base, appActive: true, busy: "play" }).hidden).toBe(true);
-  });
-  test("return-home after motor enable says so (#67)", () => {
-    expect(expressionHint({ ...base, busy: "returning" }).text).toBe(HINT_RETURNING_HOME);
-  });
-  test("play failure shows the backend's reason as an error", () => {
-    expect(expressionHint({ ...base, error: "Robot is busy with another move." })).toEqual({
-      text: "Robot is busy with another move.",
-      hidden: false,
-      error: true,
-    });
+describe("expressionError", () => {
+  test("only a play failure on a live robot shows", () => {
+    expect(expressionError(true, true, null)).toBeNull();
+    expect(expressionError(true, true, "Robot busy")).toBe("Robot busy");
+    expect(expressionError(false, true, "x")).toBeNull();
+    expect(expressionError(true, false, "x")).toBeNull();
   });
 });
-
 describe("parseMoveList", () => {
   test("accepts an array or a wrapped list", () => {
     expect(parseMoveList(["a", "b"])).toEqual(["a", "b"]);

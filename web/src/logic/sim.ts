@@ -26,20 +26,20 @@ export interface SimView {
   /** The button's label. */
   action: string;
   disabled: boolean;
-  /** Why it is disabled, or what it does. */
+  /** Why it is disabled. */
   hint: string;
 }
 
 /** The System tab's sim card. Entering needs the robot off. */
 export function simView(target: Target | null, switching: boolean, robotOff: boolean): SimView {
   if (switching) {
-    return { action: target === "sim" ? "Stopping…" : "Starting…", disabled: true, hint: "The simulated robot takes up to a minute to start." };
+    return { action: target === "sim" ? "Stopping…" : "Starting…", disabled: true, hint: "" };
   }
   if (target === "sim") {
-    return { action: "Back to the robot", disabled: false, hint: "The dashboard is driving a simulated Reachy, apps included. The real robot stays off. Its sounds can play on this device." };
+    return { action: "Back to the robot", disabled: false, hint: "" };
   }
   if (!robotOff) {
-    return { action: "Try the simulation", disabled: true, hint: "Switch the robot off to try the simulation." };
+    return { action: "Try the simulation", disabled: true, hint: "Robot must be off" };
   }
-  return { action: "Try the simulation", disabled: target === null, hint: "Drive a simulated Reachy instead of the real one. Its apps are its own; it has no camera, and its sounds play on this device." };
+  return { action: "Try the simulation", disabled: target === null, hint: "" };
 }

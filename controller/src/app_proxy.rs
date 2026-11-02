@@ -462,7 +462,7 @@ fn login_required(dashboard: Option<&str>) -> Response {
 fn unavailable(why: Unavailable, dashboard: Option<&str>) -> Response {
     let message = match why {
         Unavailable::NoApp => "No app with a web UI is running.",
-        Unavailable::Daemon => "The robot daemon isn't answering.",
+        Unavailable::Daemon => "Robot service down.",
         Unavailable::NotAnswering => "The app's web UI isn't answering yet. Reload in a few seconds.",
     };
     let link = dashboard

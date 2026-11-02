@@ -14,9 +14,8 @@ use serde_json::{Value, json};
 
 use crate::daemon::{Daemon, DaemonError};
 
-const BUSY: &str = "Robot is busy with another move.";
-const NOT_HOMED: &str =
-    "Robot pose is not homed — set Motors to Enabled, or turn off gravity compensation, to return home.";
+const BUSY: &str = "Robot busy";
+const NOT_HOMED: &str = "Robot not homed: enable motors";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Phase {

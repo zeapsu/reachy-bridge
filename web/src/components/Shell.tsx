@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useLens } from "../glass.ts";
 import type { PowerView } from "../logic/power.ts";
 import { robotStatus, type Tab } from "../logic/shell.ts";
+import type { VoiceRoute } from "../logic/voice.ts";
 import { Segmented } from "./Segmented.tsx";
 import "./Shell.css";
 
@@ -29,6 +30,45 @@ const ICONS: Record<Tab, ReactNode> = {
   ),
 };
 
+const stroke = { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true } as const;
+
+const ROUTE_ICONS: Record<VoiceRoute, ReactNode> = {
+  // An ear.
+  listen: (
+    <svg {...stroke}>
+      <path d="M6 9a6 6 0 1 1 12 0c0 3-2 4-3 5.5S14 18 12 19.5 8 20 8 18" />
+      <path d="M10 10a2 2 0 1 1 4 0" />
+    </svg>
+  ),
+  // A speaker.
+  hear: (
+    <svg {...stroke}>
+      <path d="M4 10v4h3l5 4V6L7 10H4Z" />
+      <path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11" />
+    </svg>
+  ),
+  // A microphone.
+  talk: (
+    <svg {...stroke}>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+    </svg>
+  ),
+  // A speech bubble: talking to its apps.
+  apps: (
+    <svg {...stroke}>
+      <path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H10l-5 4v-4a2 2 0 0 1-1-2V6Z" />
+    </svg>
+  ),
+};
+
+const PERSON_ICON = (
+  <svg {...stroke}>
+    <circle cx="12" cy="8" r="4" />
+    <path d="M4 21a8 8 0 0 1 16 0" />
+  </svg>
+);
+
 const LABELS: Record<Tab, string> = { robot: "Robot", apps: "Apps", system: "System" };
 const ORDER: Tab[] = ["robot", "apps", "system"];
 
@@ -43,6 +83,8 @@ interface Props {
   sim: boolean;
   /** Whose mic is live, when a listen or talk session is open (#219). */
   voice: string | null;
+  /** Who that is and which routes are live. */
+  voiceLive: { who: string; routes: VoiceRoute[] } | null;
   /** Who is in control (#221): "you" or a person; null outside admin mode or when nobody is. */
   holder: string | null;
   /** Let go of control: shown while this browser has it. */
@@ -52,9 +94,12 @@ interface Props {
 }
 
 /** Brand, the section tabs (a bottom bar on phones), robot status and power. */
-export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, sim, voice, holder, onRelease, controlBusy }: Props) {
+export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, sim, voice, voiceLive, holder, onRelease, controlBusy }: Props) {
   const tabs = useLens<HTMLDivElement>();
   const status = robotStatus(power, daemonOnline, activeApp);
+  const person = holder && holder !== "you" ? holder : null;
+  // On the running robot the person replaces On or the app; the power button already says on.
+  const personOnly = person !== null && power.powerClass === "running" && !power.label;
   return (
     <header className="top">
       <div className="brand">reachy</div>
@@ -72,24 +117,30 @@ export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, si
       <div className="top-right">
         {voice ? (
           <span className="glass voice-badge" role="status" title={voice} aria-label={voice}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-              <rect x="9" y="3" width="6" height="11" rx="3" />
-              <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
-            </svg>
-            <span className="voice-badge-text">{voice}</span>
+            {voiceLive?.routes.map((route) => <span key={route}>{ROUTE_ICONS[route]}</span>)}
+            <span className="voice-badge-text">{voiceLive?.who}</span>
           </span>
         ) : null}
         <span className="glass status" role="status">
           <span className={`dot ${status.dot}`}></span>
           {sim ? <span className="sim-badge">Sim</span> : null}
           <span className="status-text">
-            {status.text}
             {/* Release beside the pill says it's you. */}
-            {holder && holder !== "you" ? <span className="control-who"> · {holder}</span> : null}
+            {personOnly ? (
+              <span className="control-who person" aria-label={`${person} is in control`}>
+                {PERSON_ICON}
+                {person}
+              </span>
+            ) : (
+              <>
+                {status.text}
+                {person ? <span className="control-who"> · {person}</span> : null}
+              </>
+            )}
           </span>
         </span>
         {holder === "you" ? (
-          <button className="glass release press" type="button" title="Let go of control, so others can drive" disabled={controlBusy} onClick={onRelease}>
+          <button className="glass release press" type="button" disabled={controlBusy} onClick={onRelease}>
             Release
           </button>
         ) : null}

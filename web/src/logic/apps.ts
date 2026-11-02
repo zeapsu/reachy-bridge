@@ -4,7 +4,7 @@ export const MAX_FAVORITES = 3;
 export const LOADING_FRAGMENTS = [
   "Booting…",
   "Resolving env…",
-  "Connecting to daemon…",
+  "Connecting…",
   "Activating motors…",
   "Waking up…",
 ];
@@ -76,7 +76,7 @@ export function cardStatus(app: AppStatus): CardStatus {
 export type AppAction =
   | { kind: "running"; showOpen: boolean; stopDisabled: boolean }
   | { kind: "pending"; label: "Loading" | "Stopping" }
-  | { kind: "start"; disabled: boolean; title: string };
+  | { kind: "start"; disabled: boolean };
 
 export interface ActionGates {
   /** Some app (maybe this one) owns the robot. */
@@ -94,13 +94,7 @@ export function appAction(app: AppStatus, gates: ActionGates): AppAction {
   if (kind === "running") return { kind: "running", showOpen: Boolean(app.has_ui), stopDisabled: gates.appBusy };
   if (kind === "loading") return { kind: "pending", label: "Loading" };
   if (kind === "stopping") return { kind: "pending", label: "Stopping" };
-  const offline = !gates.daemonOnline;
-  const title = offline
-    ? "Apps start when the daemon is online."
-    : gates.exprBusy
-      ? "Apps start when the robot finishes its expression."
-      : "";
-  return { kind: "start", disabled: gates.anyActive || gates.appBusy || offline || gates.exprBusy, title };
+  return { kind: "start", disabled: gates.anyActive || gates.appBusy || !gates.daemonOnline || gates.exprBusy };
 }
 
 /** Next favorites after toggling `name`, or an error when over the limit. */
@@ -109,7 +103,7 @@ export function toggleFavoriteList(
   name: string,
 ): { ok: true; next: string[] } | { ok: false; error: string } {
   const next = current.includes(name) ? current.filter((item) => item !== name) : [...current, name];
-  if (next.length > MAX_FAVORITES) return { ok: false, error: "Choose up to 3 favorite apps." };
+  if (next.length > MAX_FAVORITES) return { ok: false, error: "Pin up to 3 apps" };
   return { ok: true, next };
 }
 
