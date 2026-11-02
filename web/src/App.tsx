@@ -202,7 +202,7 @@ function Dashboard() {
                 drive={drive}
                 blocked={blocked}
                 actionBusy={controlBusy || apps.appBusy}
-                fixError={blocked === "motors" ? driveFixError : blocked === "app" ? apps.actionError : null}
+                fixError={blocked === "motors" ? driveFixError : blocked === "app" && apps.actionError?.name === active?.name ? (apps.actionError?.text ?? null) : null}
                 onEnableMotors={() => void enableMotors()}
                 onStopApp={() => active && apps.perform(active.name, "stop")}
               />

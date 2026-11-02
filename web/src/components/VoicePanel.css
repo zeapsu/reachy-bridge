@@ -34,6 +34,6 @@
 .voice-chip[aria-checked="true"] {
   border-color: var(--accent);
   background: var(--accent);
-  color: #1c1206;
+  color: var(--accent-ink);
 }
 .voice-chip:disabled { opacity: 0.45; cursor: default; }

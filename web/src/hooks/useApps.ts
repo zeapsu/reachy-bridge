@@ -46,7 +46,7 @@ export interface AppsState {
   toggleFavorite: (name: string) => Promise<void>;
   /** Starts or stops an app; starting one with a UI opens the app view. */
   perform: (name: string, action: "start" | "stop") => void;
-  actionError: string | null;
+  actionError: { name: string; text: string } | null;
   openUi: (name: string) => void;
   /** The app UI open inside the dashboard, if any. */
   appView: AppView | null;
@@ -64,8 +64,8 @@ export function useApps(): AppsState {
   const [appBusy, setAppBusy] = useState(false);
   const [tick, setTick] = useState(0);
   const [message, setMessage] = useState<PanelMessage>({ text: "", kind: "" });
-  // The last start or stop failure: the status poll clears `message`, so this outlives it.
-  const [actionError, setActionError] = useState<string | null>(null);
+  // The last failed stop: the status poll clears `message`, so this outlives it.
+  const [actionError, setActionError] = useState<{ name: string; text: string } | null>(null);
   const [libraryHint, setLibraryHint] = useState<PanelMessage>({ text: "", kind: "" });
 
   // Refs mirror state that async flows read after awaits.
@@ -311,7 +311,7 @@ export function useApps(): AppsState {
           const text = errorText(err, "App request failed");
           if (withUi) updateView(seq, { error: text });
           setMessage({ text, kind: "error" });
-          setActionError(text);
+          if (action === "stop") setActionError({ name, text });
           await poll();
         } finally {
           appBusyRef.current = false;
