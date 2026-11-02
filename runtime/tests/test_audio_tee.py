@@ -234,7 +234,7 @@ def test_talk_reaches_the_wobble_but_not_hearing():
 
 
 def test_marker_lets_a_rolled_back_runtime_replace_this_tee():
-    for older in ("and mic tee (v2)", "(v3)", "(v4)"):
+    for older in ("and mic tee (v2)", "(v3)", "(v4)", "(v5)"):
         assert older not in audio_tee.MARKER
 
 
@@ -253,6 +253,15 @@ def test_remove_puts_asoundrc_back_as_upstream_wrote_it(tmp_path, monkeypatch):
     assert path.read_text().strip() == UPSTREAM.strip()
     audio_tee.remove()
     assert path.read_text().strip() == UPSTREAM.strip()
+
+
+def test_a_missing_alsaloop_is_reported(tmp_path, monkeypatch):
+    cards = tmp_path / "cards"
+    cards.write_text(CARDS)
+    monkeypatch.setattr(audio_tee, "CARDS", cards)
+    assert not audio_tee.alsaloop_missing()
+    monkeypatch.setattr(audio_tee.shutil, "which", lambda _name: None)
+    assert audio_tee.alsaloop_missing()
 
 
 def test_without_alsaloop_the_tee_stays_out(tmp_path, monkeypatch):

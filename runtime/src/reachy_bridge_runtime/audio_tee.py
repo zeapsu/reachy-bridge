@@ -274,6 +274,14 @@ def _card_usable() -> bool:
         return False
 
 
+def alsaloop_missing() -> bool:
+    """There's a loopback card, but no tee because alsaloop isn't installed."""
+    try:
+        return shutil.which("alsaloop") is None and loopback_present(CARDS.read_text())
+    except OSError:
+        return False
+
+
 def is_installed() -> bool:
     """The tee is in ``~/.asoundrc`` and its loopback card is there."""
     try:
@@ -393,7 +401,7 @@ def _ensure() -> None:
         logger.info("Added the speaker and mic tee to ~/.asoundrc (hearing Reachy and talking to its apps).")
     elif not present and PREFIX in text:
         _write(ASOUNDRC, untee(text))
-        logger.info("No ALSA loopback card; took the speaker and mic tee out of ~/.asoundrc.")
+        logger.info("No ALSA loopback card or no alsaloop; took the speaker and mic tee out of ~/.asoundrc.")
         # And let WirePlumber have loopback cards again.
         for path in WIREPLUMBER_RULES:
             path.unlink(missing_ok=True)

@@ -13,8 +13,7 @@ where ``audio_tee`` routes it and nowhere else:
   wobble's left channel;
 - Talk reaches the wobble's right channel, but not "hear" (a browser
   mustn't hear itself);
-- a browser's voice for apps reaches what apps hear as the mic (through the mic
-  mixer), but not the real mic the gateway listens to;
+- a browser's voice for apps reaches what apps hear as the mic, but not the real mic the gateway listens to;
 - the speaker mute switch turns off and back on.
 
 What the robot plays is checked with the speaker muted, so it stays quiet.
@@ -241,7 +240,7 @@ def main() -> int:
         voice = tone(TONES["voice"], VOLUME["voice"], SECONDS)
         apps = play_and_record(audio_tee.APP_VOICE_SINK, voice, audio_tee.SOURCE, 2)
         checks.expect(
-            "a browser's voice reaches apps' mic (mic mixer)",
+            "a browser's voice reaches apps' mic",
             amplitude(apps[0], TONES["voice"]),
             True,
         )

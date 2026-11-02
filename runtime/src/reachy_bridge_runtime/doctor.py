@@ -215,7 +215,13 @@ def loopback(root: Path) -> Result:
 
 
 def mic_mixer(run: Callable[[list[str]], str | None]) -> Result:
-    """With the tee in place, apps hear silence unless the mixer is running."""
+    """With the tee in place, apps don't hear the room unless the bridge is running."""
+    if audio_tee.alsaloop_missing():
+        return Result(
+            "Mic mixer",
+            "warn",
+            "alsaloop isn't installed, so hearing Reachy and talking to its apps are off (sudo apt install alsa-utils)",
+        )
     if not audio_tee.is_installed():
         return Result("Mic mixer", "skip", "no audio tee; apps read the mic directly")
     state = (run(["systemctl", "--user", "is-active", "reachy-bridge-mic.service"]) or "").strip()
@@ -224,7 +230,7 @@ def mic_mixer(run: Callable[[list[str]], str | None]) -> Result:
     return Result(
         "Mic mixer",
         "warn",
-        "reachy-bridge-mic.service isn't running; apps hear silence without it (reachy-bridge logs mic)",
+        "reachy-bridge-mic.service isn't running; apps don't hear the room without it (reachy-bridge logs mic)",
     )
 
 

@@ -185,7 +185,7 @@ def test_mic_mixer(monkeypatch):
     monkeypatch.setattr(doctor.audio_tee, "is_installed", lambda: True)
     assert doctor.mic_mixer(lambda _args: "active\n").status == "pass"
     down = doctor.mic_mixer(lambda _args: None)
-    assert down.status == "warn" and "silence" in down.detail
+    assert down.status == "warn" and "the room" in down.detail
 
 
 def test_portaudio_is_a_warning_for_apps_that_use_sounddevice():
