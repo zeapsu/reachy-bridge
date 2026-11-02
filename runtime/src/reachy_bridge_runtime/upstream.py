@@ -309,6 +309,15 @@ REQUIREMENTS: tuple[Requirement, ...] = (
     ),
     Requirement(
         "speaker_wobble",
+        "a sleep stops the wobble, and the backend keeps its media server",
+        lambda: (
+            _source_mentions(_BACKEND, "Backend.goto_sleep", "_quiesce_aim_sources")(),
+            _source_mentions(_BACKEND, "Backend.reset_to_sleep", "_quiesce_aim_sources")(),
+            _source_mentions(_BACKEND, "Backend._quiesce_aim_sources", "_media_server", "disable_wobbling")(),
+        ),
+    ),
+    Requirement(
+        "speaker_wobble",
         "the head kinematics, pose helpers and motor config for the limit check",
         lambda: (
             wobble_limits(),
@@ -610,6 +619,7 @@ def wrap_wobbling(
     on_sample: Callable[..., Any],
     set_offsets: Callable[..., None],
     process_command: Callable[..., Any],
+    sleep: Callable[..., Any],
 ) -> None:
     """Wrap the media server's wobbling and the backend's offsets, each as
     ``wrapper(original, self, *args)``."""
@@ -621,6 +631,8 @@ def wrap_wobbling(
     _wrap(GstMediaServer, "_on_wobbler_sample", on_sample)
     _wrap(Backend, "set_speech_offsets", set_offsets)
     _wrap(Backend, "process_command", process_command)
+    _wrap(Backend, "goto_sleep", sleep)
+    _wrap(Backend, "reset_to_sleep", sleep)
 
 
 def motor_ticks(angle: float) -> float:
@@ -664,6 +676,10 @@ def wobble_limits() -> tuple[Callable[[Any, Any], Any], list[tuple[float, float]
         return kinematics.ik(pose, body_yaw=body_yaw)
 
     return solve, limits
+
+
+def media_server(backend: Any) -> Any | None:
+    return getattr(backend, "_media_server", None)
 
 
 def head_wobbler(server: Any) -> Any | None:

@@ -141,3 +141,28 @@ def test_the_dashboard_turning_it_off_ends_the_choice():
     choice.enabled()
     assert not choice.keep_on()
     assert not choice.from_app(choice.keep_on)
+
+
+def test_the_wobble_comes_back_after_a_sleep_stops_it():
+    choice = Choice()
+    choice.enabled()
+    choice.sleep_started()
+    choice.sleep_started()  # reset_to_sleep calls goto_sleep
+    assert not choice.keep_on()  # stopped for the moves
+    assert not choice.sleep_ended()
+    assert choice.sleep_ended()
+    assert choice.from_app(choice.keep_on)  # still the dashboard's choice
+
+
+def test_a_sleep_doesnt_turn_on_a_wobble_nobody_asked_for():
+    choice = Choice()
+    choice.sleep_started()
+    assert not choice.keep_on()
+    assert not choice.sleep_ended()
+
+
+def test_a_sleep_that_stopped_nothing_starts_nothing():
+    choice = Choice()
+    choice.enabled()
+    choice.sleep_started()
+    assert not choice.sleep_ended()

@@ -17,8 +17,9 @@ only Talk moves the head, and an app's own offsets are ignored.
 
 An app using the SDK's wobble also turns the daemon's off when it stops, even
 if the dashboard turned it on. ``Choice`` makes the dashboard win: while it wants
-the wobble on, an app can't turn it off, at any point. A sleep still stops it, and
-the dashboard has to turn it back on.
+the wobble on, an app can't turn it off, at any point. The robot goes to sleep
+after an app exits too: the sleep still stops the wobble for its moves, and it
+comes back afterwards.
 
 The daemon doesn't check offsets against the robot's limits, and a driven head
 can already be near them. ``Limits`` scales down any offsets, from any source,
@@ -94,6 +95,8 @@ class Choice:
     def __init__(self) -> None:
         self._wanted = False
         self._app = threading.local()
+        self._sleeps = 0
+        self._stopped_by_sleep = False
 
     def from_app(self, run: Callable[[], Any]) -> Any:
         """Run ``run``; wobble changes during it are the app's."""
@@ -114,8 +117,22 @@ class Choice:
         """A wobble-off request: True if it should be ignored."""
         if self._is_app():
             return self._wanted
+        if self._sleeps:
+            self._stopped_by_sleep = self._wanted
+            return False
         self._wanted = False
         return False
+
+    def sleep_started(self) -> None:
+        self._sleeps += 1
+
+    def sleep_ended(self) -> bool:
+        """A sleep (they nest) finished: True if the wobble should come back."""
+        self._sleeps -= 1
+        if self._sleeps:
+            return False
+        stopped, self._stopped_by_sleep = self._stopped_by_sleep, False
+        return stopped and self._wanted
 
 
 class SpeakerSwitch:
@@ -196,6 +213,7 @@ class Tap:
         self._pipeline: Any = None
         self._lock = threading.Lock()
         self._speaker = SpeakerSwitch()
+        self._server: Any = None
 
     @property
     def running(self) -> bool:
@@ -206,7 +224,12 @@ class Tap:
 
         with self._lock:
             if self._pipeline is not None:
-                return
+                if self._server is server:
+                    return
+                # The daemon restarted with a new media server.
+                self._close(self._pipeline)
+                self._pipeline = None
+            self._server = server
             pipeline = Gst.parse_launch(
                 f"alsasrc device={audio_tee.WOBBLE_SOURCE} ! audio/x-raw,channels=2 ! audioconvert ! audioresample ! "
                 f"audio/x-raw,format=F32LE,channels=2,rate={upstream.wobbler_sample_rate(server)},layout=interleaved ! "
@@ -272,6 +295,16 @@ def apply() -> None:
             return original(backend, cmd, *args, **kwargs)
         return choice.from_app(lambda: original(backend, cmd, *args, **kwargs))
 
+    async def sleep(original: Any, backend: Any, *args: Any, **kwargs: Any) -> Any:
+        choice.sleep_started()
+        try:
+            return await original(backend, *args, **kwargs)
+        finally:
+            if choice.sleep_ended() and not upstream.backend_shutting_down(backend):
+                server = upstream.media_server(backend)
+                if server is not None:
+                    server.enable_wobbling(backend.set_speech_offsets)
+
     def enable(original: Any, server: Any, callback: Any) -> None:
         choice.enabled()
         original(server, gate.wrap(callback))
@@ -301,5 +334,5 @@ def apply() -> None:
         gate.saw_offsets()
         original(backend, limits.scale(backend, offsets))
 
-    upstream.wrap_wobbling(enable, disable, on_sample, set_offsets, process_command)
+    upstream.wrap_wobbling(enable, disable, on_sample, set_offsets, process_command, sleep)
     logger.info("Speaker wobble: on")
