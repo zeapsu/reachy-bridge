@@ -19,7 +19,7 @@ Environment=REACHY_MINI_TELEMETRY=0
 # signalling): an app that tries to serve on one is stopped with a message
 # saying so (features/app_bind_shim.py). Keep in step with the controller
 # and audio units' ports.
-Environment=REACHY_BRIDGE_PORTS=7861 7863 8000 8001 8002 8443
+Environment="REACHY_BRIDGE_PORTS=7861 7863 8000 8001 8002 8443"
 # Loopback only: the daemon has no authentication. Only the controller is
 # exposed, and only through tailscale serve.
 ExecStart=%h/.local/share/reachy-bridge/.venv/bin/reachy-bridge-runtime \

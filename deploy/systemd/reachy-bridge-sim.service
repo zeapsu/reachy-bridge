@@ -34,7 +34,7 @@ Environment=REACHY_MINI_TELEMETRY=0
 # signalling): an app that tries to serve on one is stopped with a message
 # saying so (features/app_bind_shim.py). Keep in step with the controller
 # and audio units' ports.
-Environment=REACHY_BRIDGE_PORTS=7861 7863 8000 8001 8002 8443
+Environment="REACHY_BRIDGE_PORTS=7861 7863 8000 8001 8002 8443"
 # Loopback only, like the robot's daemon. No media (WebRTC signalling would
 # clash with the robot daemon's :8443), so apps get no camera or audio.
 # Its own robot name, so its mDNS entry isn't mistaken for the robot (a name
