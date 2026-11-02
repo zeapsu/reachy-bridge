@@ -306,10 +306,7 @@ fn robot_off(status: &Value) -> bool {
 
 fn not_sim(state: &Shared) -> ApiResult<()> {
     if state.sim.active() {
-        return Err(ApiError::new(
-            409,
-            "Not in simulation",
-        ));
+        return Err(ApiError::new(409, "Not in simulation"));
     }
     Ok(())
 }
@@ -319,9 +316,7 @@ async fn robot_ready(state: &Shared) -> ApiResult<()> {
     not_sim(state)?;
     match state.daemon.status().await {
         None => Err(ApiError::new(503, "Robot service down")),
-        Some(s) if robot_state(&s) == "starting" => {
-            Err(ApiError::new(409, "Robot still starting"))
-        }
+        Some(s) if robot_state(&s) == "starting" => Err(ApiError::new(409, "Robot still starting")),
         Some(s) if !robot_on(&s) => Err(ApiError::new(409, "Robot off")),
         Some(_) => Ok(()),
     }

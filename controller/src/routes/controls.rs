@@ -83,10 +83,7 @@ async fn set_motor_mode(State(state): State<Shared>, Path(mode): Path<String>) -
         }
         // Same for an expression: it would stop mid-move and skip its return home.
         if state.player.active() {
-            return Err(ApiError::new(
-                409,
-                "Expression playing",
-            ));
+            return Err(ApiError::new(409, "Expression playing"));
         }
     }
     let outcome = state.daemon.post(&format!("motors/set_mode/{mode}"), &[]).await;
