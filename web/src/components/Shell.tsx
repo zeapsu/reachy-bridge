@@ -62,6 +62,14 @@ const ROUTE_ICONS: Record<VoiceRoute, ReactNode> = {
   ),
 };
 
+// A crossed-out microphone: connected, nothing live.
+const MUTED_ICON = (
+  <svg {...stroke}>
+    <rect x="9" y="3" width="6" height="11" rx="3" />
+    <path d="M5 11a7 7 0 0 0 14 0M12 18v3M4 4l16 16" />
+  </svg>
+);
+
 const PERSON_ICON = (
   <svg {...stroke}>
     <circle cx="12" cy="8" r="4" />
@@ -117,7 +125,7 @@ export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, si
       <div className="top-right">
         {voice ? (
           <span className="glass voice-badge" role="status" title={voice} aria-label={voice}>
-            {voiceLive?.routes.length ? voiceLive.routes.map((route) => <span key={route}>{ROUTE_ICONS[route]}</span>) : <span>{ROUTE_ICONS.talk}</span>}
+            {voiceLive?.routes.length ? voiceLive.routes.map((route) => <span key={route}>{ROUTE_ICONS[route]}</span>) : <span>{MUTED_ICON}</span>}
             <span className="voice-badge-text">{voiceLive?.who}</span>
           </span>
         ) : null}
