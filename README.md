@@ -146,7 +146,7 @@ browser at a time, with the robot on; in admin mode, only the browser in control
 ends when control or the login does, or when the robot is turned off. Every dashboard shows a mic
 badge while a session is open.
 
-The controller starts `reachy-bridge-audio.service` on demand. `reachy-bridge-mic.service` runs with the daemon and mixes the real microphone with a browser's voice; with a loopback card, apps read the microphone through it. Audio is WebRTC over UDP straight
+The controller starts `reachy-bridge-audio.service` on demand. `reachy-bridge-mic.service` runs with the daemon and brings the real microphone onto the loopback card, where a browser's voice mixes with it; with a loopback card, apps read the microphone there. Audio is WebRTC over UDP straight
 between the browser and the device, on tailnet addresses only (no STUN or TURN), using UDP ports
 47100-47199; a Tailscale ACL that limits ports must allow them. Use a tailnet address: audio
 can't connect from a home-network address. Listening also works on the device's plain-http
@@ -157,7 +157,7 @@ apps) needs the HTTPS (Tailscale) name, since browsers only share a microphone w
 Hearing what the robot says and talking to its apps need an ALSA loopback card with the id
 `Loopback`, which the runtime then routes the robot's speaker output and microphone through (it
 rewrites upstream's `~/.asoundrc`, keeping its device names, and takes the change out again when
-the card is gone). Load it now and at boot:
+the card is gone). It also needs `alsaloop` (`sudo apt install alsa-utils`); `reachy-bridge check` warns when it is missing. Load the card now and at boot:
 
 ```bash
 sudo modprobe snd-aloop index=10 id=Loopback pcm_substreams=2

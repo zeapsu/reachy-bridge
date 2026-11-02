@@ -6,9 +6,9 @@ from reachy_bridge_runtime import audio_tee, mic_mixer
 
 
 @pytest.fixture(autouse=True)
-def gst_launch(monkeypatch):
-    """CI has no GStreamer tools."""
-    monkeypatch.setattr(audio_tee.shutil, "which", lambda _name: "/usr/bin/gst-launch-1.0")
+def alsaloop(monkeypatch):
+    """CI has no alsa-utils."""
+    monkeypatch.setattr(audio_tee.shutil, "which", lambda _name: "/usr/bin/alsaloop")
 
 
 # What upstream's write_asoundrc_to_home() writes (reachy_mini 1.12.0).
@@ -82,10 +82,9 @@ def test_apps_read_the_mic_through_the_mixer():
     assert mic.index("ipc_key 4242") < mic.index("pcm.reachy_bridge_mic_loop_in")
     assert teed.count("pcm.reachymini_audio_src {") == 1
     assert teed.index(audio_tee.MARKER) < teed.index("pcm.reachymini_audio_src {")
-    # Apps read the mixer's channels, and the voice and the mixer write different ones.
+    # Apps read the channels that the voice and the mic bridge both write.
     assert "ttable { 0.2 1 1.3 1 }" in _ttable(teed, audio_tee.SOURCE)
-    assert "ttable { 0.0 1 1.1 1 }" in _ttable(teed, audio_tee.APP_VOICE_SOURCE)
-    assert "bindings { 0 0 1 1 }" in _ttable(teed, audio_tee.APP_VOICE_SINK)
+    assert "bindings { 0 2 1 3 }" in _ttable(teed, audio_tee.APP_VOICE_SINK)
     assert "bindings { 0 2 1 3 }" in _ttable(teed, audio_tee.MIC_OUT)
 
 
@@ -235,15 +234,14 @@ def test_talk_reaches_the_wobble_but_not_hearing():
 
 
 def test_marker_lets_a_rolled_back_runtime_replace_this_tee():
-    for older in ("and mic tee (v2)", "(v3)", "(v4)"):
+    for older in ("and mic tee (v2)", "(v3)", "(v4)", "(v5)"):
         assert older not in audio_tee.MARKER
 
 
-def test_mixer_takes_the_real_mic_and_the_voice_and_writes_the_mixer_channels():
+def test_bridge_takes_the_real_mic_and_follows_the_clock_difference():
     command = " ".join(mic_mixer.command())
-    assert f"device={audio_tee.MIC}" in command
-    assert f"device={audio_tee.APP_VOICE_SOURCE}" in command
-    assert f"alsasink device={audio_tee.MIC_OUT}" in command
+    assert f"-C {audio_tee.MIC} -P {audio_tee.MIC_OUT}" in command
+    assert "-S 4" in command
     assert audio_tee.SOURCE not in command
 
 
@@ -257,7 +255,16 @@ def test_remove_puts_asoundrc_back_as_upstream_wrote_it(tmp_path, monkeypatch):
     assert path.read_text().strip() == UPSTREAM.strip()
 
 
-def test_without_gst_launch_the_tee_stays_out(tmp_path, monkeypatch):
+def test_a_missing_alsaloop_is_reported(tmp_path, monkeypatch):
+    cards = tmp_path / "cards"
+    cards.write_text(CARDS)
+    monkeypatch.setattr(audio_tee, "CARDS", cards)
+    assert not audio_tee.alsaloop_missing()
+    monkeypatch.setattr(audio_tee.shutil, "which", lambda _name: None)
+    assert audio_tee.alsaloop_missing()
+
+
+def test_without_alsaloop_the_tee_stays_out(tmp_path, monkeypatch):
     cards = tmp_path / "cards"
     cards.write_text(CARDS)
     monkeypatch.setattr(audio_tee, "CARDS", cards)

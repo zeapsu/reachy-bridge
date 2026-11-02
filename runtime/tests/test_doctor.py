@@ -180,12 +180,16 @@ def test_loopback_card(tmp_path: Path):
 
 
 def test_mic_mixer(monkeypatch):
+    monkeypatch.setattr(doctor.audio_tee, "alsaloop_missing", lambda: True)
+    missing = doctor.mic_mixer(lambda _args: None)
+    assert missing.status == "warn" and "alsa-utils" in missing.detail
+    monkeypatch.setattr(doctor.audio_tee, "alsaloop_missing", lambda: False)
     monkeypatch.setattr(doctor.audio_tee, "is_installed", lambda: False)
     assert doctor.mic_mixer(lambda _args: None).status == "skip"
     monkeypatch.setattr(doctor.audio_tee, "is_installed", lambda: True)
     assert doctor.mic_mixer(lambda _args: "active\n").status == "pass"
     down = doctor.mic_mixer(lambda _args: None)
-    assert down.status == "warn" and "silence" in down.detail
+    assert down.status == "warn" and "the room" in down.detail
 
 
 def test_portaudio_is_a_warning_for_apps_that_use_sounddevice():
