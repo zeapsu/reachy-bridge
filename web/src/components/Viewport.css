@@ -37,9 +37,12 @@
 .telemetry.offline { display: none; }
 .stage-power {
   position: absolute;
-  left: 50%;
+  /* Not centred with a transform: .press scales on press and would replace it. */
+  left: 0;
+  right: 0;
   bottom: 24px;
-  transform: translateX(-50%);
+  width: fit-content;
+  margin-inline: auto;
 }
 
 /* The camera gets a dark frame of its own. */

@@ -183,10 +183,12 @@ interface Props {
   catalog: CatalogState;
   /** The daemon's app API answers (the robot may be off). */
   reachable: boolean;
+  /** The first status poll answered, so an unreachable daemon is really down. */
+  known: boolean;
 }
 
 /** Apps to install from Hugging Face Spaces, as compact rows with a search (#126). */
-export function CatalogPanel({ catalog, reachable }: Props) {
+export function CatalogPanel({ catalog, reachable, known }: Props) {
   const sheet = useLens<HTMLElement>();
   const [query, setQuery] = useState("");
   const shown = filterCatalog(catalog.apps, query);
@@ -214,7 +216,7 @@ export function CatalogPanel({ catalog, reachable }: Props) {
         onChange={(e) => setQuery(e.target.value)}
       />
       {!reachable ? (
-        <p className="note">Robot service down</p>
+        <p className="note">{known ? "Robot service down" : "Connecting…"}</p>
       ) : catalog.error ? (
         <p className="note error">{catalog.error}</p>
       ) : catalog.loading && !catalog.apps.length ? (

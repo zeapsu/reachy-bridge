@@ -160,7 +160,7 @@ export function Viewport({ daemonOnline, note, onPower, powerDisabled, visible, 
         </p>
       </div>
       <div className={`stage-layer${mode === "3d" ? " active" : ""}`}>
-        <canvas id="robot-3d" ref={canvas} aria-label="Live 3D view of the robot's pose"></canvas>
+        <canvas id="robot-3d" ref={canvas} aria-label="3D view of the robot"></canvas>
       </div>
       {note?.title ? (
         <div className="glass stage-note" role="status">

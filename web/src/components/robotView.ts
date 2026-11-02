@@ -53,7 +53,7 @@ const SLEEP: Shown = {
   head_pose: { x: -0.021, y: 0.001, z: -0.044, roll: 0, pitch: 0.426, yaw: 0 },
   head_joints: [0, -0.985, 1.262, -0.244, 0.206, -1.236, 1.003],
   body_yaw: 0,
-  antennas_position: [3.05, -3.05],
+  antennas_position: [-3.05, 3.05],
 };
 
 const isMetres = (key: string) => key === "x" || key === "y" || key === "z";

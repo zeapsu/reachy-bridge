@@ -36,7 +36,8 @@ export function VoicePanel({ voice, control, robotOff }: { voice: VoiceApi; cont
       type="button"
       role="switch"
       id={id}
-      aria-label={name}
+      aria-label={`${label}: ${name}`}
+      aria-describedby={off ? "voice-talk-note" : undefined}
       title={name}
       aria-checked={route[key] && !off}
       disabled={voice.busy || off || (!open && (blocked !== null || robotOff))}
@@ -58,17 +59,17 @@ export function VoicePanel({ voice, control, robotOff }: { voice: VoiceApi; cont
       <div className="voice-group" role="group" aria-labelledby="voice-listen-label">
         <span className="label" id="voice-listen-label">Listen</span>
         <div className="voice-chips">
-          {chip("voice-listen", "listen", "Surroundings", "Hear Reachy's surroundings")}
-          {chip("voice-hear-robot", "hear", "Reachy's voice", "Hear what Reachy says")}
+          {chip("voice-listen", "listen", "Surroundings", "hear Reachy's surroundings")}
+          {chip("voice-hear-robot", "hear", "Reachy's voice", "hear what Reachy says")}
         </div>
       </div>
       <div className="voice-group" role="group" aria-labelledby="voice-talk-label">
         <span className="label" id="voice-talk-label">Talk</span>
         <div className="voice-chips">
-          {chip("voice-talk", "talk", "Out loud", "Talk through the robot", noTalk !== null)}
-          {chip("voice-apps", "apps", "To apps", "Talk to Reachy's apps", noTalk !== null)}
+          {chip("voice-talk", "talk", "Out loud", "talk through the robot", noTalk !== null)}
+          {chip("voice-apps", "apps", "To apps", "talk to Reachy's apps", noTalk !== null)}
         </div>
-        {noTalk ? <p className="note">{noTalk}</p> : null}
+        {noTalk ? <p className="note" id="voice-talk-note">{noTalk}</p> : null}
       </div>
       {open && voice.needsTap ? (
         <button className="btn primary press" type="button" id="voice-hear" onClick={voice.hear}>

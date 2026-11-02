@@ -75,8 +75,8 @@ export function useExpressions(daemonOnline: boolean, appActive: boolean): Expre
   // A state change (offline, an app taking over) clears a stale play error.
   useEffect(() => setError(null), [daemonOnline, appActive]);
 
-  // Populate the strips, robot off included (the list is cached in the
-  // controller, and the tiles show greyed); retry until it answers.
+  // Populate the strips, robot off included (the controller answers
+  // from its cache, and the tiles show greyed); retry until it has the list.
   useEffect(() => {
     if (loaded) return;
     let cancelled = false;

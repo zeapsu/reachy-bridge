@@ -115,6 +115,7 @@ function Dashboard() {
     controlBusy,
   });
   const [driveFixError, setDriveFixError] = useState<string | null>(null);
+  useEffect(() => setDriveFixError(null), [robotControlMode]);
   const enableMotors = async () => {
     setControlBusy(true);
     setDriveFixError(null);
@@ -201,7 +202,7 @@ function Dashboard() {
                 drive={drive}
                 blocked={blocked}
                 actionBusy={controlBusy || apps.appBusy}
-                fixError={driveFixError}
+                fixError={blocked === "motors" ? driveFixError : blocked === "app" && apps.message.kind === "error" ? apps.message.text : null}
                 onEnableMotors={() => void enableMotors()}
                 onStopApp={() => active && apps.perform(active.name, "stop")}
               />
@@ -234,8 +235,8 @@ function Dashboard() {
           {/* Nothing until the target is known: the robot's and the sim's apps differ (#218). */}
           {sim.target === null ? null : (
             <>
-              <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} reachable={appsReachable} exprBusy={expr.busy !== null} />
-              <CatalogPanel catalog={catalog} reachable={appsReachable} />
+              <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} reachable={appsReachable} known={power.view.known} exprBusy={expr.busy !== null} />
+              <CatalogPanel catalog={catalog} reachable={appsReachable} known={power.view.known} />
             </>
           )}
         </main>

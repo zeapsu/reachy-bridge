@@ -236,7 +236,8 @@ button:disabled {
   gap: 8px;
 }
 
-.group > .label {
+.group > .label,
+.voice-group > .label {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.09em;

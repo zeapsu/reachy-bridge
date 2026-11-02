@@ -7,7 +7,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use crate::daemon::{DaemonError, safe_dataset};
+use crate::daemon::{DaemonError, backend_up, safe_dataset};
 use crate::error::{ApiError, ApiResult};
 use crate::routes::power::kinematics;
 use crate::state::Shared;
@@ -137,6 +137,11 @@ async fn list_dataset(State(state): State<Shared>, Path(dataset): Path<String>) 
     let dataset = dataset.trim_end_matches('/');
     if !safe_dataset(dataset) {
         return Err(ApiError::new(404, "Unknown dataset"));
+    }
+    // A cold list blocks the daemon's loop. With the robot off only the prefetch
+    // fetches it, under the power lock, so a power-on can't start during one.
+    if state.datasets.get(dataset).is_none() && state.daemon.status().await.is_some_and(|s| !backend_up(&s)) {
+        return Err(ApiError::unavailable());
     }
     Ok(Json(state.datasets.list(&state, dataset).await?))
 }

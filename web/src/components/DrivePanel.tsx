@@ -291,7 +291,7 @@ export function DrivePanel({ drive, blocked, onEnableMotors, onStopApp, actionBu
           Stop app
         </button>
       ) : null}
-      {blocked === "motors" && fixError ? <p className="note error">{fixError}</p> : null}
+      {fixError ? <p className="note error">{fixError}</p> : null}
       {!disabled && drive.error ? <p className="note error">{drive.error}</p> : null}
       <div className="pads">
         <Pad

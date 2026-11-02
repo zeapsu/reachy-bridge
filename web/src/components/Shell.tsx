@@ -117,7 +117,7 @@ export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, si
       <div className="top-right">
         {voice ? (
           <span className="glass voice-badge" role="status" title={voice} aria-label={voice}>
-            {voiceLive?.routes.map((route) => <span key={route}>{ROUTE_ICONS[route]}</span>)}
+            {voiceLive?.routes.length ? voiceLive.routes.map((route) => <span key={route}>{ROUTE_ICONS[route]}</span>) : <span>{ROUTE_ICONS.talk}</span>}
             <span className="voice-badge-text">{voiceLive?.who}</span>
           </span>
         ) : null}

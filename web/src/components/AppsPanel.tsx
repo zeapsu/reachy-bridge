@@ -156,6 +156,8 @@ interface Props {
   daemonOnline: boolean;
   /** The daemon's app API answers (the robot may be off). */
   reachable: boolean;
+  /** The first status poll answered, so an unreachable daemon is really down. */
+  known: boolean;
   exprBusy: boolean;
 }
 
@@ -163,7 +165,7 @@ interface Props {
  * Installed apps as compact rows. Pinned apps (favorites, plus whichever app
  * owns the robot or failed) stay on top; everything installed is below.
  */
-export function AppsPanel({ apps, catalog, daemonOnline, reachable, exprBusy }: Props) {
+export function AppsPanel({ apps, catalog, daemonOnline, reachable, known, exprBusy }: Props) {
   const sheet = useLens<HTMLElement>();
   const [manage, setManage] = useState(false);
   const active = activeApp(apps.statuses);
@@ -220,7 +222,7 @@ export function AppsPanel({ apps, catalog, daemonOnline, reachable, exprBusy }: 
         </>
       ) : null}
       {apps.names.length === 0 ? (
-        <p className="note">{reachable ? "No apps installed" : "Robot service down"}</p>
+        <p className="note">{reachable ? "No apps installed" : known ? "Robot service down" : "Connecting…"}</p>
       ) : null}
     </section>
   );
