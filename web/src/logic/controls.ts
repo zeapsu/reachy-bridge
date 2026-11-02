@@ -5,8 +5,6 @@ export const KINEMATICS_ENGINES = [
   { engine: "Placo", label: "Placo" },
 ] as const;
 
-export const CONTROL_HINT_OFFLINE = "Controls enable when the daemon is online.";
-
 export interface KinematicsView {
   buttons: { engine: string; label: string; active: boolean; disabled: boolean; title: string }[];
   gravityDisabled: boolean;
@@ -27,17 +25,16 @@ export function kinematicsView(
   const available = new Set(kin?.available ?? []);
   const placoActive = Boolean(kin && kin.active === "Placo");
   let hint = "";
-  if (!kin) hint = "Kinematics unavailable.";
-  else if (kin.active && kin.active !== kin.engine) hint = "Takes effect at the next power-on.";
-  else if (!placoActive) hint = "Gravity compensation needs Placo kinematics.";
-  else if (appActive) hint = "Gravity compensation is off while an app runs.";
+  if (!kin) hint = controlsDisabled ? "" : "Kinematics unavailable";
+  else if (kin.active && kin.active !== kin.engine) hint = "At next power-on";
+  else if (!placoActive) hint = "Gravity needs Placo";
   return {
     buttons: KINEMATICS_ENGINES.map(({ engine, label }) => ({
       engine,
       label,
       active: kin?.engine === engine,
       disabled: controlsDisabled || !kin || !available.has(engine),
-      title: available.has(engine) ? "" : "Not installed on the robot",
+      title: available.has(engine) ? "" : "Not installed",
     })),
     gravityDisabled: controlsDisabled || !placoActive || (appActive && !gravityChecked),
     hint,

@@ -18,9 +18,9 @@ export function robotStatus(power: PowerView, daemonOnline: boolean, activeApp: 
   if (power.label) return { text: power.label, dot: "loading" };
   switch (power.powerClass) {
     case "disabled":
-      return { text: "Daemon offline", dot: "error" };
+      return { text: "Robot service down", dot: "error" };
     case "running":
-      return activeApp ? { text: `On · ${activeApp}`, dot: "live" } : { text: "On", dot: "ok" };
+      return activeApp ? { text: activeApp, dot: "live" } : { text: "On", dot: "ok" };
     case "stopping":
       return { text: "Asleep", dot: "loading" };
     case "starting":
@@ -33,28 +33,30 @@ export function robotStatus(power: PowerView, daemonOnline: boolean, activeApp: 
 }
 
 export interface StageNote {
+  /** Empty when the button says it all. */
   title: string;
-  detail: string;
   dot: RobotStatus["dot"];
+  /** The power button's next action, shown on the stage. */
+  action?: "Power on" | "Wake";
 }
 
 /** What the robot stage says while there is no live robot to show; null when there is. */
 export function stageNote(power: PowerView, daemonOnline: boolean): StageNote | null {
   if (daemonOnline) return null;
-  if (!power.known) return { title: "Connecting…", detail: "Looking for the robot.", dot: "loading" };
+  if (!power.known) return { title: "Connecting…", dot: "loading" };
   switch (power.powerClass) {
     case "disabled":
-      return { title: "Daemon offline", detail: "The robot service isn't answering.", dot: "error" };
+      return { title: "Robot service down", dot: "error" };
     case "starting":
-      return { title: "Waking up…", detail: "Reachy will appear in a moment.", dot: "loading" };
+      return { title: "Waking up…", dot: "loading" };
     case "running":
-      return { title: "Connecting…", detail: "Waiting for the robot's live state.", dot: "loading" };
+      return { title: "Connecting…", dot: "loading" };
     case "stopping":
       // A power-off in flight disables the button; only asleep can be woken.
       return power.label
-        ? { title: power.label, detail: "Reachy is going to sleep.", dot: "loading" }
-        : { title: "Asleep", detail: "Press the power button to wake Reachy.", dot: "loading" };
+        ? { title: power.label, dot: "loading" }
+        : { title: "", dot: "", action: "Wake" };
     default:
-      return { title: "Reachy is off", detail: "Press the power button to switch it on.", dot: "" };
+      return { title: "", dot: "", action: "Power on" };
   }
 }

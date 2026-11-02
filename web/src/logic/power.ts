@@ -14,7 +14,7 @@ export interface PowerView {
 
 export const INITIAL_POWER: PowerView = {
   powerClass: "",
-  title: "Start daemon",
+  title: "Power",
   disabled: false,
   label: "",
   known: false,
@@ -53,7 +53,7 @@ export function derivePower(
 
   if (!status.reachable) {
     return {
-      view: { known: true, powerClass: "disabled", title: "Daemon service offline", disabled: true, label: "" },
+      view: { known: true, powerClass: "disabled", title: "Robot service down", disabled: true, label: "" },
       stopping: stillStopping,
     };
   }
@@ -66,7 +66,7 @@ export function derivePower(
   if (status.status === "asleep") {
     // Backend up, motors released (e.g. the daemon slept after an app exited).
     return {
-      view: { known: true, powerClass: "stopping", title: "Robot asleep — wake up", disabled: false, label: "" },
+      view: { known: true, powerClass: "stopping", title: "Wake", disabled: false, label: "" },
       stopping: stillStopping,
     };
   }

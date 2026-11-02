@@ -21,7 +21,7 @@ impl ApiError {
     }
 
     pub fn unavailable() -> Self {
-        Self::new(503, "Reachy daemon unavailable")
+        Self::new(503, "Robot service down")
     }
 
     pub fn bad_body() -> Self {
@@ -35,7 +35,7 @@ impl From<DaemonError> for ApiError {
         match error {
             DaemonError::Unavailable => Self::unavailable(),
             DaemonError::Refused { status, detail } => {
-                Self::new(status, detail.unwrap_or_else(|| "Daemon refused".to_string()))
+                Self::new(status, detail.unwrap_or_else(|| "Robot service refused".to_string()))
             }
         }
     }

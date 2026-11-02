@@ -89,7 +89,7 @@ export function useVoice(visible: boolean): VoiceApi {
       const next = await apiJson<VoiceView>(paths.voice);
       setView(next);
       if (id.current && sent > openedAt.current && next.session?.ref !== mineRef.current) {
-        teardown("Your audio session ended (the robot was turned off, control or login changed, the robot's audio stopped, or another browser started one).");
+        teardown("Audio ended");
       }
     } catch {
       // An older controller has no audio routes; a blip retries next tick.

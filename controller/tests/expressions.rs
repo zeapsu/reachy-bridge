@@ -53,7 +53,11 @@ async fn expressions_refuse_until_homed_after_a_motor_change() {
 
 #[tokio::test]
 async fn dataset_lists_are_fetched_once_and_kept_on_disk() {
-    let h = harness(|_| {}).await;
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+    })
+    .await;
     let uri = "/api/move/recorded-move-datasets/list/pollen-robotics/reachy-mini-emotions-library";
     let (a, b) = tokio::join!(h.call("GET", uri, None), h.call("GET", uri, None));
     assert_eq!(a.1, json!(["cheerful1", "sad1"]));
@@ -62,6 +66,15 @@ async fn dataset_lists_are_fetched_once_and_kept_on_disk() {
     // A restarted controller reads the cache file instead of the daemon.
     let reloaded = reachy_controller::datasets::DatasetCache::new(h.state.state_dir.join("datasets.json"));
     assert_eq!(reloaded.get("pollen-robotics/reachy-mini-emotions-library"), Some(json!(["cheerful1", "sad1"])));
+}
+
+#[tokio::test]
+async fn a_cold_list_is_left_to_the_prefetch_while_the_robot_is_off() {
+    let h = harness(|_| {}).await;
+    let uri = "/api/move/recorded-move-datasets/list/pollen-robotics/reachy-mini-emotions-library";
+    let (status, _) = h.call("GET", uri, None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(!h.calls().iter().any(|c| c.starts_with("list ")));
 }
 
 #[tokio::test]

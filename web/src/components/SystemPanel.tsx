@@ -322,6 +322,9 @@ export function LogsPanel({ live }: { live: boolean }) {
         </span>
       </header>
       <LogsView log={log} onSource={selectSource} />
+      <a className="btn quiet press" href="https://github.com/zeapsu/reachy-bridge/blob/main/docs/manual.md" target="_blank" rel="noopener noreferrer">
+        User manual ↗
+      </a>
     </section>
   );
 }

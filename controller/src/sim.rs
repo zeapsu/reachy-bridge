@@ -51,9 +51,9 @@ const SWITCH_WAIT: Duration = Duration::from_secs(3);
 /// speaker and microphone (except [`SIM_SOUNDS`]).
 /// The Hugging Face login is the host's, shared with the robot's daemon.
 const SIM_REFUSED: [(&str, &str); 3] = [
-    ("/api/volume/", "Sound is off in sim mode"),
-    ("/api/media/", "Sound is off in sim mode"),
-    ("/api/hf/token", "Sign in to Hugging Face from the robot, not the simulation"),
+    ("/api/volume/", "Not in simulation"),
+    ("/api/media/", "Not in simulation"),
+    ("/api/hf/token", "Not in simulation"),
 ];
 
 /// Sound routes that only play or stop a built-in sound: with no media the
@@ -171,7 +171,7 @@ pub fn router() -> Router<Shared> {
 async fn switch_lock(state: &Shared) -> ApiResult<tokio::sync::RwLockWriteGuard<'_, ()>> {
     tokio::time::timeout(SWITCH_WAIT, state.sim.switch.write())
         .await
-        .map_err(|_| ApiError::new(409, "The robot is busy with an action; try again when it finishes"))
+        .map_err(|_| ApiError::new(409, "Robot busy, try again"))
 }
 
 async fn status(State(state): State<Shared>) -> Json<Value> {
@@ -193,10 +193,10 @@ async fn enter(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     };
     let robot = robot_state(&status);
     if backend_up(&status) || matches!(robot.as_str(), "running" | "asleep" | "starting" | "stopping") {
-        return Err(ApiError::new(409, "Switch the robot off before starting the simulation"));
+        return Err(ApiError::new(409, "Robot must be off"));
     }
     if state.player.active() || state.apps.refresh_active().await {
-        return Err(ApiError::new(409, "Stop the app or expression before starting the simulation"));
+        return Err(ApiError::new(409, "Stop the app or expression first"));
     }
     // Nothing listens on the robot daemon's port while the sim runs, so a
     // sim app's connection the port shim misses finds no robot. The robot is

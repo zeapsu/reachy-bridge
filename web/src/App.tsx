@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiJson, paths, type Kinematics, type RobotState } from "./api.ts";
+import { apiJson, errorText, paths, type Kinematics, type RobotState } from "./api.ts";
 import { AppsPanel } from "./components/AppsPanel.tsx";
 import { CatalogPanel } from "./components/CatalogPanel.tsx";
 import { AudioPanel } from "./components/AudioPanel.tsx";
@@ -34,10 +34,9 @@ import { useVoice } from "./hooks/useVoice.ts";
 import { activeApp } from "./logic/apps.ts";
 import { read, write } from "./logic/appearance.ts";
 import { controlState, holderLabel } from "./logic/control.ts";
-import { CONTROL_HINT_OFFLINE } from "./logic/controls.ts";
 import { driveBlocked } from "./logic/drive.ts";
 import { TAB_KEY, parseTab, stageNote, type Tab } from "./logic/shell.ts";
-import { voiceBadge } from "./logic/voice.ts";
+import { voiceBadge, voiceLive } from "./logic/voice.ts";
 
 const POLL_MS = 1000;
 
@@ -60,8 +59,7 @@ function Dashboard() {
   const visible = usePageVisible();
   const [daemonOnline, setDaemonOnline] = useState(false);
   const [controlBusy, setControlBusy] = useState(false);
-  const [controlStatus, setControlStatus] = useState("offline");
-  const [controlHint, setControlHint] = useState<ControlHint>({ text: CONTROL_HINT_OFFLINE, error: false });
+  const [controlHint, setControlHint] = useState<ControlHint>({ text: "", error: false });
   const [robotControlMode, setRobotControlMode] = useState<string | null>(null);
   const [kinematics, setKinematics] = useState<Kinematics | null>(null);
   const poseSink = useRef<PoseSink | null>(null);
@@ -87,7 +85,6 @@ function Dashboard() {
   const power = usePower(
     {
       setControlBusy,
-      setControlStatus,
       setControlHint: (text, error = false) => setControlHint({ text, error }),
     },
     // The running engine changes with power, so refresh the kinematics panel.
@@ -117,6 +114,22 @@ function Dashboard() {
     exprBusy: expr.busy !== null,
     controlBusy,
   });
+  const [driveFixError, setDriveFixError] = useState<string | null>(null);
+  useEffect(() => setDriveFixError(null), [robotControlMode]);
+  const enableMotors = async () => {
+    setControlBusy(true);
+    setDriveFixError(null);
+    try {
+      await apiJson(paths.motorSetMode("enabled"), { method: "POST" });
+      setRobotControlMode("enabled");
+      // The backend kicks a return-home session (#67).
+      expr.enterReturningHome();
+    } catch (err) {
+      setDriveFixError(errorText(err, "Couldn't enable motors"));
+    } finally {
+      setControlBusy(false);
+    }
+  };
   // Leaving the pane, the tab or the page ends a drive session.
   const drive = useDrive(blocked === null && visible && tab === "robot" && pane === "drive");
 
@@ -160,13 +173,14 @@ function Dashboard() {
           activeApp={active ? active.display || active.name : null}
           sim={sim.target === "sim"}
           voice={voiceBadge(voice.view, voice.mine)}
+          voiceLive={voiceLive(voice.view, voice.mine)}
           holder={holderLabel(controlState(control.view))}
           onRelease={() => void control.act(paths.controlRelease)}
           controlBusy={control.busy}
         />
 
         <main className={`view robot${pane === "drive" ? " driving" : ""}`} id="view-robot" role="tabpanel" hidden={tab !== "robot"} aria-label="Robot">
-          <Viewport daemonOnline={daemonOnline} note={stageNote(power.view, daemonOnline)} visible={visible && tab === "robot"} poseSink={poseSink} />
+          <Viewport daemonOnline={daemonOnline} note={stageNote(power.view, daemonOnline)} onPower={power.toggle} powerDisabled={power.view.disabled} visible={visible && tab === "robot"} poseSink={poseSink} />
           <section className="glass sheet side" data-lens ref={side} aria-label="Robot controls">
             <ControlStrip control={control} />
             <Segmented
@@ -184,15 +198,20 @@ function Dashboard() {
               <ExpressionsPanel expr={expr} daemonOnline={daemonOnline} controlBusy={controlBusy} appActive={appActive} />
             </div>
             <div hidden={pane !== "drive"}>
-              <DrivePanel drive={drive} blocked={blocked} />
+              <DrivePanel
+                drive={drive}
+                blocked={blocked}
+                actionBusy={controlBusy || apps.appBusy}
+                fixError={blocked === "motors" ? driveFixError : blocked === "app" && apps.actionError?.name === active?.name ? (apps.actionError?.text ?? null) : null}
+                onEnableMotors={() => void enableMotors()}
+                onStopApp={() => active && apps.perform(active.name, "stop")}
+              />
             </div>
             <div hidden={pane !== "controls"}>
               <ControlsPanel
                 daemonOnline={daemonOnline}
                 controlBusy={controlBusy}
                 setControlBusy={setControlBusy}
-                status={controlStatus}
-                setStatus={setControlStatus}
                 hint={controlHint}
                 setHint={setControlHint}
                 robotControlMode={robotControlMode}
@@ -207,7 +226,7 @@ function Dashboard() {
               />
             </div>
             <div hidden={pane !== "voice"}>
-              <VoicePanel voice={voice} control={controlState(control.view)} />
+              <VoicePanel voice={voice} control={controlState(control.view)} robotOff={power.view.known && (power.view.powerClass === "" || power.view.powerClass === "disabled")} />
             </div>
           </section>
         </main>
@@ -216,8 +235,8 @@ function Dashboard() {
           {/* Nothing until the target is known: the robot's and the sim's apps differ (#218). */}
           {sim.target === null ? null : (
             <>
-              <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} reachable={appsReachable} exprBusy={expr.busy !== null} />
-              <CatalogPanel catalog={catalog} reachable={appsReachable} />
+              <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} reachable={appsReachable} known={power.view.known} exprBusy={expr.busy !== null} />
+              <CatalogPanel catalog={catalog} reachable={appsReachable} known={power.view.known} />
             </>
           )}
         </main>

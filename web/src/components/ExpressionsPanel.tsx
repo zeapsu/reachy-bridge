@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { reduceMotion } from "../hooks/reduceMotion.ts";
 import type { ExpressionsState } from "../hooks/useExpressions.ts";
-import { MOVE_DATASETS, chipsDisabled, expressionHint } from "../logic/expressions.ts";
+import { MOVE_DATASETS, chipsDisabled, expressionError } from "../logic/expressions.ts";
 import { carouselMoves, moveLabel, type MoveKind } from "../logic/moves.ts";
 import { Segmented } from "./Segmented.tsx";
 import "./ExpressionsPanel.css";
@@ -38,7 +38,7 @@ export function ExpressionsPanel({ expr, daemonOnline, controlBusy, appActive }:
   const dataset = DATASET[kind];
   const moves = useMemo(() => carouselMoves(expr.moves[dataset.id] ?? [], kind), [expr.moves, dataset.id, kind]);
   const disabled = chipsDisabled({ daemonOnline, controlBusy, appActive, exprBusy: expr.busy !== null });
-  const hint = expressionHint({ daemonOnline, loaded: expr.loaded, appActive, busy: expr.busy, error: expr.error });
+  const error = expressionError(daemonOnline, expr.loaded, expr.error);
   const picked = moves[Math.min(centred, moves.length - 1)];
 
   // Items grow and brighten as they near the centre slot.
@@ -112,7 +112,7 @@ export function ExpressionsPanel({ expr, daemonOnline, controlBusy, appActive }:
 
   const playing = expr.playing;
   const showCancel = !expr.cancelHidden;
-  const title = playing ? moveLabel(playing.move) : (picked?.label ?? "—");
+  const title = playing ? moveLabel(playing.move) : (picked?.label ?? "");
   const meta = playing
     ? "Playing…"
     : expr.busy === "returning"
@@ -124,7 +124,7 @@ export function ExpressionsPanel({ expr, daemonOnline, controlBusy, appActive }:
   return (
     <div className="pane expressions">
       <Segmented label="Expression set" options={KINDS} value={kind} onChange={setKind} />
-      <div className="carousel">
+      <div className={`carousel${disabled && expr.busy === null ? " off" : ""}`}>
         <div
           className="track"
           ref={track}
@@ -157,7 +157,7 @@ export function ExpressionsPanel({ expr, daemonOnline, controlBusy, appActive }:
         {moves.length ? (
           <span className="lensring" aria-hidden="true"></span>
         ) : (
-          <p className="carousel-empty">{!daemonOnline ? "Expressions appear when Reachy is on." : expr.loaded ? "No moves in this set." : "Loading expressions…"}</p>
+          <p className="carousel-empty">{expr.loaded ? "No moves in this set" : <span className="spin" aria-label="Loading"></span>}</p>
         )}
       </div>
       <div className="picked">
@@ -182,9 +182,11 @@ export function ExpressionsPanel({ expr, daemonOnline, controlBusy, appActive }:
           </button>
         )}
       </div>
-      <p className={`note${hint.error ? " error" : ""}`} id="expr-hint" hidden={hint.hidden}>
-        {hint.text}
-      </p>
+      {error ? (
+        <p className="note error" id="expr-hint">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

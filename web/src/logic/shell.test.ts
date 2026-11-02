@@ -12,7 +12,7 @@ describe("shell", () => {
   });
   test("robot status names the state, and the app that owns the robot", () => {
     expect(robotStatus(view({ powerClass: "running" }), true, null)).toEqual({ text: "On", dot: "ok" });
-    expect(robotStatus(view({ powerClass: "running" }), true, "Radio")).toEqual({ text: "On · Radio", dot: "live" });
+    expect(robotStatus(view({ powerClass: "running" }), true, "Radio")).toEqual({ text: "Radio", dot: "live" });
     expect(robotStatus(view({ powerClass: "disabled" }), false, null).dot).toBe("error");
     expect(robotStatus(view({ powerClass: "stopping", label: "Powering off…" }), true, null).text).toBe("Powering off…");
     expect(robotStatus(view({}), true, null).text).toBe("Off");
@@ -23,11 +23,11 @@ describe("shell", () => {
   test("the stage says why there is no robot", () => {
     expect(stageNote(view({ known: true, powerClass: "running" }), true)).toBeNull();
     expect(stageNote(view({}), false)?.title).toBe("Connecting…");
-    expect(stageNote(view({ known: true }), false)?.title).toBe("Reachy is off");
-    expect(stageNote(view({ known: true, powerClass: "disabled" }), false)?.title).toBe("Daemon offline");
+    expect(stageNote(view({ known: true }), false)?.action).toBe("Power on");
+    expect(stageNote(view({ known: true, powerClass: "disabled" }), false)?.title).toBe("Robot service down");
     expect(stageNote(view({ known: true, powerClass: "starting" }), false)?.title).toBe("Waking up…");
     // Powering off can't be woken from the button; asleep can.
-    expect(stageNote(view({ known: true, powerClass: "stopping", label: "Powering off…" }), false)?.detail).not.toContain("power button");
-    expect(stageNote(view({ known: true, powerClass: "stopping" }), false)?.detail).toContain("power button");
+    expect(stageNote(view({ known: true, powerClass: "stopping", label: "Powering off…" }), false)?.action).toBeUndefined();
+    expect(stageNote(view({ known: true, powerClass: "stopping" }), false)?.action).toBe("Wake");
   });
 });

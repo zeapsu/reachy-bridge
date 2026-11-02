@@ -4,7 +4,6 @@ import { INITIAL_POWER, derivePower, type PowerView } from "../logic/power.ts";
 
 export interface ControlFeedback {
   setControlBusy: (busy: boolean) => void;
-  setControlStatus: (text: string) => void;
   setControlHint: (text: string, error?: boolean) => void;
 }
 
@@ -84,15 +83,13 @@ export function usePower(feedback: ControlFeedback, onStatusChange: () => void):
       stopping.current = true;
       stoppingSince.current = Date.now();
       show({ known: true, powerClass: "stopping", title: "Shutting down…", disabled: true, label: "Shutting down…" });
-      fb.setControlStatus("stopping");
       void (async () => {
         try {
           await apiJson(paths.daemonStop, { method: "POST" });
         } catch (err) {
           stopping.current = false;
           show({ ...viewRef.current, powerClass: "", label: "" });
-          fb.setControlStatus("error");
-          fb.setControlHint(errorText(err, "Failed to stop daemon"), true);
+          fb.setControlHint(errorText(err, "Couldn't power off"), true);
         } finally {
           fb.setControlBusy(false);
           void poll();
@@ -100,14 +97,12 @@ export function usePower(feedback: ControlFeedback, onStatusChange: () => void):
       })();
     } else {
       fb.setControlBusy(true);
-      fb.setControlStatus("starting");
       show({ ...current, powerClass: "starting", label: "Starting…", disabled: true });
       void (async () => {
         try {
           await apiJson(paths.daemonStart, { method: "POST" });
         } catch (err) {
-          fb.setControlStatus("error");
-          fb.setControlHint(errorText(err, "Failed to start daemon"), true);
+          fb.setControlHint(errorText(err, "Couldn't power on"), true);
           show({ ...current, label: "", disabled: false });
         } finally {
           fb.setControlBusy(false);

@@ -64,7 +64,7 @@ export function DevicesPanel() {
       setCode("");
       setName("");
       setPerson("");
-      setHint({ text: "Approved. The browser logs in within a few seconds.", error: false });
+      setHint({ text: "Approved", error: false });
       // The device appears once its browser collects the token.
       setTimeout(() => void reload(), 3000);
     } catch (error) {
@@ -101,8 +101,7 @@ export function DevicesPanel() {
       {noAdmin && (
         <div className="devices-setup">
           <p className="note">
-            No admin yet: anyone who reaches this dashboard can drive the robot. Make this browser the admin, and
-            every other browser, tailnet included, will need a code you approve.
+            No admin: anyone here can drive.
           </p>
           {settingUp ? (
             <PairCode admin />
@@ -140,7 +139,7 @@ export function DevicesPanel() {
       {hint && <p className={`note ${hint.error ? "error" : "ok"}`}>{hint.text}</p>}
       {view !== "setup" &&
         (devices.length === 0 ? (
-          <p className="note">No paired browsers.</p>
+          <p className="note">No paired browsers</p>
         ) : (
           <ul className="devices-list">
             {devices.map((device) => (

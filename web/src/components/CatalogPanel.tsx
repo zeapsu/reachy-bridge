@@ -65,9 +65,7 @@ export function AppDetails({ description, meta, space }: { description?: string;
         <a className="btn quiet press" href={url} target="_blank" rel="noopener noreferrer">
           More on Hugging Face ↗
         </a>
-      ) : (
-        <small>Not installed from a Hugging Face Space, so there's no page for it.</small>
-      )}
+      ) : null}
     </>
   );
 }
@@ -126,7 +124,7 @@ function HfLoginRow({ catalog }: { catalog: CatalogState }) {
         <>
           <div className="row">
             <span>
-              Signed in{hf.username ? ` as ${hf.username}` : ""}. Private Spaces you can see are listed under All Spaces.
+              Signed in{hf.username ? ` as ${hf.username}` : ""}
             </span>
             <button className="btn quiet press" type="button" disabled={catalog.hfBusy} onClick={catalog.signOut}>
               Sign out
@@ -175,7 +173,7 @@ function HfLoginRow({ catalog }: { catalog: CatalogState }) {
         {catalog.hfError ??
           (hf?.logged_in
             ? ""
-            : "Only needed for private Spaces. Create a read token at huggingface.co/settings/tokens; Reachy keeps it, this page never shows it again.")}
+            : "For private Spaces")}
       </p>
     </div>
   );
@@ -185,10 +183,12 @@ interface Props {
   catalog: CatalogState;
   /** The daemon's app API answers (the robot may be off). */
   reachable: boolean;
+  /** The first status poll answered, so an unreachable daemon is really down. */
+  known: boolean;
 }
 
 /** Apps to install from Hugging Face Spaces, as compact rows with a search (#126). */
-export function CatalogPanel({ catalog, reachable }: Props) {
+export function CatalogPanel({ catalog, reachable, known }: Props) {
   const sheet = useLens<HTMLElement>();
   const [query, setQuery] = useState("");
   const shown = filterCatalog(catalog.apps, query);
@@ -216,12 +216,12 @@ export function CatalogPanel({ catalog, reachable }: Props) {
         onChange={(e) => setQuery(e.target.value)}
       />
       {!reachable ? (
-        <p className="note">The catalog shows up when the daemon is online.</p>
+        <p className="note">{known ? "Robot service down" : "Connecting…"}</p>
       ) : catalog.error ? (
         <p className="note error">{catalog.error}</p>
       ) : catalog.loading && !catalog.apps.length ? (
         <p className="note">
-          <span className="spin" aria-hidden="true"></span> Loading apps from Hugging Face…
+          <span className="spin" aria-hidden="true"></span> Loading apps…
         </p>
       ) : shown.length ? (
         <ul className="app-list" aria-label="Apps to install">
@@ -230,7 +230,7 @@ export function CatalogPanel({ catalog, reachable }: Props) {
           ))}
         </ul>
       ) : (
-        <p className="note">{query ? "No apps match that search." : "No apps found."}</p>
+        <p className="note">{query ? "No matches" : "No apps found"}</p>
       )}
       <HfLoginRow catalog={catalog} />
     </section>

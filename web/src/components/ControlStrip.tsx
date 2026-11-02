@@ -40,10 +40,10 @@ export function ControlStrip({ control }: { control: ControlApi }) {
   let action: ReactNode = null;
   if (state.kind === "other" && showStrip(state)) {
     const who = state.elsewhere !== undefined ? `You're in control on ${state.elsewhere || "another device"}` : `${state.person} is in control`;
-    text = state.canTakeOver ? `${who}.` : `${who}. You can drive once they let go.`;
+    text = `${who}.`;
     if (state.canTakeOver) action = takeButton("Take over");
   } else if (state.kind === "free" && showStrip(state)) {
-    text = "Log in from a paired browser to drive.";
+    text = "Log in to drive.";
   } else if (state.kind === "free" && refused) {
     text = "Nobody is in control.";
     action = takeButton("Take control", true, paths.controlTakeIfFree);

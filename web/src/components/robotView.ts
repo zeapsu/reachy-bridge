@@ -48,6 +48,14 @@ const NEUTRAL: Shown = {
   antennas_position: [RIG.antennas.right.neutral, RIG.antennas.left.neutral],
 };
 
+/** The robot's sleep pose (upstream's SLEEP_* constants), shown while it is off. */
+const SLEEP: Shown = {
+  head_pose: { x: -0.021, y: 0.001, z: -0.044, roll: 0, pitch: 0.426, yaw: 0 },
+  head_joints: [0, -0.985, 1.262, -0.244, 0.206, -1.236, 1.003],
+  body_yaw: 0,
+  antennas_position: [-3.05, 3.05],
+};
+
 const isMetres = (key: string) => key === "x" || key === "y" || key === "z";
 
 /** Whether `shown` is within the settled thresholds of `target` everywhere. */
@@ -179,9 +187,9 @@ export class RobotView {
     if (!settled(this.shown, t)) this.wake();
   }
 
-  /** Back to the neutral pose (robot off). */
+  /** To the sleep pose (robot off). */
   reset(): void {
-    this.target = structuredClone(NEUTRAL);
+    this.target = structuredClone(SLEEP);
     this.wake();
   }
 

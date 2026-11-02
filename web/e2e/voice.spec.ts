@@ -18,10 +18,10 @@ test.skip(!process.env.SIM_AUDIO, "needs the audio gateway (tools/sim/run.py --a
 
 type Route = { listen: boolean; hear: boolean; talk: boolean; apps: boolean };
 const SWITCHES: Record<keyof Route, string> = {
-  listen: "Hear Reachy's surroundings (its mic)",
-  hear: "Hear what Reachy says (its speaker)",
+  listen: "Hear Reachy's surroundings",
+  hear: "Hear what Reachy says",
   talk: "Talk through the robot",
-  apps: "Talk to Reachy's apps (into its mic)",
+  apps: "Talk to Reachy's apps",
 };
 // Time for the gateway's pipeline to settle after it applied a switch.
 const SETTLE_MS = 1000;

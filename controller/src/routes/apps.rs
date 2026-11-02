@@ -98,7 +98,7 @@ fn refused(name: &str, error: impl Into<String>, status: &str) -> Json<Value> {
 async fn start(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> ApiResult<Json<Value>> {
     // Check-then-act across app and expression state isn't atomic; single-user UI.
     if state.player.active() {
-        return Ok(refused(&name, "Robot is playing an expression — wait for it to finish.", "refused"));
+        return Ok(refused(&name, "Expression playing", "refused"));
     }
     if !installed_names(&state).await?.contains(&name) {
         return Err(ApiError::new(404, "Unknown app"));
@@ -109,7 +109,7 @@ async fn start(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> A
         // A drive session claims the robot under this lock, so this check
         // can't race one (#152).
         if state.player.active() {
-            return Ok(refused(&name, "Robot is busy with another move.", "refused"));
+            return Ok(refused(&name, "Robot busy", "refused"));
         }
         // The daemon keeps a crashed app in its slot (state "error") and
         // refuses every start until it is cleared.
@@ -124,7 +124,7 @@ async fn start(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> A
         Ok(_) => {}
         Err(crate::daemon::DaemonError::Unavailable) => return Err(ApiError::unavailable()),
         Err(crate::daemon::DaemonError::Refused { detail, .. }) => {
-            return Ok(refused(&name, detail.unwrap_or_else(|| "Daemon refused the app".into()), "refused"));
+            return Ok(refused(&name, detail.unwrap_or_else(|| "App refused".into()), "refused"));
         }
     }
     state.apps.refresh_active().await;

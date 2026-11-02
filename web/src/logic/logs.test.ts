@@ -33,7 +33,7 @@ describe("appendCapped", () => {
 });
 
 test("empty-pane message per status", () => {
-  expect(emptyLogMessage("offline")).toBe("daemon offline — no output");
+  expect(emptyLogMessage("offline")).toBe("robot service down");
   expect(emptyLogMessage("unavailable")).toBe("output isn't captured yet");
   expect(emptyLogMessage("live")).toBe("waiting for output");
 });

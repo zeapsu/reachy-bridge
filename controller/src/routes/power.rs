@@ -171,8 +171,8 @@ pub async fn kinematics(state: &Shared) -> ApiResult<Value> {
     match state.daemon.get("bridge/kinematics").await {
         Ok(value) => Ok(value),
         Err(DaemonError::Unavailable) => Err(ApiError::unavailable()),
-        Err(DaemonError::Refused { status: 404, .. }) => Err(ApiError::new(501, "This daemon can't switch kinematics")),
-        Err(DaemonError::Refused { .. }) => Err(ApiError::new(502, "Daemon couldn't report kinematics")),
+        Err(DaemonError::Refused { status: 404, .. }) => Err(ApiError::new(501, "Kinematics switching unavailable")),
+        Err(DaemonError::Refused { .. }) => Err(ApiError::new(502, "Kinematics unavailable")),
     }
 }
 

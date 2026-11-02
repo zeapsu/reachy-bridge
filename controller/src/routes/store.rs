@@ -380,7 +380,7 @@ async fn hf_save(
         // anything through on this route.
         .map_err(|e| match e {
             DaemonError::Refused { status: 400, .. } => ApiError::new(400, "Hugging Face didn't accept that token"),
-            DaemonError::Refused { .. } => ApiError::new(502, "The daemon couldn't save the token"),
+            DaemonError::Refused { .. } => ApiError::new(502, "Couldn't save the token"),
             DaemonError::Unavailable => ApiError::unavailable(),
         })?;
     state.catalog.forget().await;

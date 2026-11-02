@@ -82,7 +82,7 @@ function Starting({ view }: { view: AppViewState }) {
         <div className="app-view-progress">
           <span style={{ width: `${view.error ? 100 : LOADING_PROGRESS[view.step]}%` }} />
         </div>
-        <p>{view.error || "The app opens here when it's ready."}</p>
+        {view.error ? <p>{view.error}</p> : null}
       </section>
     </div>
   );

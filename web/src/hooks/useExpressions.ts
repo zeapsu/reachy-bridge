@@ -75,11 +75,10 @@ export function useExpressions(daemonOnline: boolean, appActive: boolean): Expre
   // A state change (offline, an app taking over) clears a stale play error.
   useEffect(() => setError(null), [daemonOnline, appActive]);
 
-  // Populate the strips once the daemon is reachable; retry while it stays so.
-  // Each run owns its fetch: a stream drop mid-load cancels it, and the next
-  // run fetches again rather than waiting on one whose result it will drop.
+  // Populate the strips, robot off included (the controller answers
+  // from its cache, and the tiles show greyed); retry until it has the list.
   useEffect(() => {
-    if (!daemonOnline || loaded) return;
+    if (loaded) return;
     let cancelled = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
     const load = async () => {
@@ -102,7 +101,7 @@ export function useExpressions(daemonOnline: boolean, appActive: boolean): Expre
       cancelled = true;
       if (retry !== null) clearTimeout(retry);
     };
-  }, [daemonOnline, loaded]);
+  }, [loaded]);
 
   // Sync-on-load: a move may already be active (another tab, a reload
   // mid-playback). Enter the busy state and poll it out. Its own effect: the

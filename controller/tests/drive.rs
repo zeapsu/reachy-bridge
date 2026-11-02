@@ -249,7 +249,7 @@ async fn a_silent_browser_ends_the_session() {
     assert_eq!(h.state.player.current()["phase"], "driving");
     // Then nothing, as from a lost connection: the robot goes home.
     let error = tokio::time::timeout(Duration::from_secs(5), next_json(&mut client)).await.expect("session didn't end");
-    assert_eq!(error, json!({"type": "error", "detail": "Connection lost: drive again"}));
+    assert_eq!(error, json!({"type": "error", "detail": "Connection lost"}));
     h.wait("the return home", |f| f.gotos == 1).await;
     h.wait_idle().await;
 }

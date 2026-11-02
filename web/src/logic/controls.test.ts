@@ -14,29 +14,29 @@ describe("kinematicsView", () => {
     const v = kinematicsView(null, false, false, false);
     expect(v.buttons.every((b) => b.disabled)).toBe(true);
     expect(v.gravityDisabled).toBe(true);
-    expect(v.hint).toBe("Kinematics unavailable.");
+    expect(v.hint).toBe("Kinematics unavailable");
   });
   test("uninstalled engines are disabled with a title", () => {
     const v = kinematicsView(kin({ available: ["AnalyticalKinematics"], engine: "AnalyticalKinematics", active: null }), false, false, false);
     const placo = v.buttons.find((b) => b.engine === "Placo")!;
     expect(placo.disabled).toBe(true);
-    expect(placo.title).toBe("Not installed on the robot");
+    expect(placo.title).toBe("Not installed");
     expect(v.buttons.find((b) => b.engine === "AnalyticalKinematics")!.active).toBe(true);
   });
   test("gravity needs Placo running", () => {
     const v = kinematicsView(kin({ engine: "AnalyticalKinematics", active: "AnalyticalKinematics" }), false, false, false);
     expect(v.gravityDisabled).toBe(true);
-    expect(v.hint).toBe("Gravity compensation needs Placo kinematics.");
+    expect(v.hint).toBe("Gravity needs Placo");
   });
   test("saved engine differs from running: takes effect next power-on", () => {
     expect(kinematicsView(kin({ engine: "AnalyticalKinematics" }), false, false, false).hint).toBe(
-      "Takes effect at the next power-on.",
+      "At next power-on",
     );
   });
   test("gravity can't be turned on during an app, but can be turned off", () => {
     expect(kinematicsView(kin(), false, true, false).gravityDisabled).toBe(true);
     expect(kinematicsView(kin(), false, true, true).gravityDisabled).toBe(false);
-    expect(kinematicsView(kin(), false, true, false).hint).toBe("Gravity compensation is off while an app runs.");
+    expect(kinematicsView(kin(), false, true, false).hint).toBe("");
   });
   test("controls disabled (offline / busy) disables all", () => {
     const v = kinematicsView(kin(), true, false, false);

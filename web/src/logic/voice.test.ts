@@ -17,7 +17,7 @@ const session = (over: Partial<VoiceSession> = {}): VoiceSession => ({
 
 describe("voiceBlocked", () => {
   test("needs a tailnet address", () => {
-    expect(voiceBlocked({ available: true, session: null }, { kind: "off" }, false)).toContain("https");
+    expect(voiceBlocked({ available: true, session: null }, { kind: "off" }, false)).toContain("Tailscale");
   });
   test("refuses in sim mode", () => {
     expect(voiceBlocked({ available: false, session: null }, { kind: "off" })).toContain("simulation");
@@ -28,7 +28,7 @@ describe("voiceBlocked", () => {
     expect(voiceBlocked(view, { kind: "mine" })).toBeNull();
     // Free with control to take: starting takes it.
     expect(voiceBlocked(view, { kind: "free", canTake: true })).toBeNull();
-    expect(voiceBlocked(view, { kind: "free", canTake: false })).toContain("paired browser");
+    expect(voiceBlocked(view, { kind: "free", canTake: false })).toContain("Log in");
     expect(voiceBlocked(view, { kind: "other", person: "Kim", canTakeOver: false })).toContain("Kim is in control");
   });
 });

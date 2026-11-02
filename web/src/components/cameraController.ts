@@ -51,7 +51,7 @@ export class CameraController {
       // Just switched to the camera layer.
       if (!this.shouldConnect()) {
         const offline = !next.daemonOnline;
-        this.disconnect(offline ? "Daemon offline" : "Camera hidden");
+        this.disconnect(offline ? "Camera off" : "Camera hidden");
         this.setMeta(offline ? "live camera · offline" : "live camera · hidden");
       } else {
         void this.refreshAvailability();
@@ -60,7 +60,7 @@ export class CameraController {
     }
     if (!next.daemonOnline) {
       if (prev.daemonOnline) {
-        this.disconnect("Daemon offline");
+        this.disconnect("Camera off");
         this.setMeta("live camera · offline");
       }
       return;

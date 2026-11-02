@@ -98,9 +98,8 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps, catalog, manage
               className="btn danger press"
               type="button"
               disabled={jobBusy || !idle}
-              title={idle ? undefined : "Stop the app first"}
-              onClick={() => {
-                if (window.confirm(`Remove ${display}? You can install it again from Get apps.`)) catalog.remove(name);
+                            onClick={() => {
+                if (window.confirm(`Remove ${display}?`)) catalog.remove(name);
               }}
             >
               Remove
@@ -109,7 +108,7 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps, catalog, manage
         ) : action.kind === "running" ? (
           <>
             {action.showOpen ? (
-              <button className="btn primary press" type="button" title="Open the app's own interface" onClick={() => apps.openUi(name)}>
+              <button className="btn primary press" type="button" title="Open interface" onClick={() => apps.openUi(name)}>
                 Open
               </button>
             ) : null}
@@ -126,8 +125,7 @@ function AppRow({ app, gates, favorite, saving, tick, now, apps, catalog, manage
             className="btn press"
             type="button"
             disabled={action.disabled || jobBusy}
-            title={(jobBusy ? `${job?.kind === "remove" ? "Removing" : "Updating"}…` : action.title) || undefined}
-            onClick={() => apps.perform(name, "start")}
+                        onClick={() => apps.perform(name, "start")}
           >
             Start
           </button>
@@ -158,6 +156,8 @@ interface Props {
   daemonOnline: boolean;
   /** The daemon's app API answers (the robot may be off). */
   reachable: boolean;
+  /** The first status poll answered, so an unreachable daemon is really down. */
+  known: boolean;
   exprBusy: boolean;
 }
 
@@ -165,7 +165,7 @@ interface Props {
  * Installed apps as compact rows. Pinned apps (favorites, plus whichever app
  * owns the robot or failed) stay on top; everything installed is below.
  */
-export function AppsPanel({ apps, catalog, daemonOnline, reachable, exprBusy }: Props) {
+export function AppsPanel({ apps, catalog, daemonOnline, reachable, known, exprBusy }: Props) {
   const sheet = useLens<HTMLElement>();
   const [manage, setManage] = useState(false);
   const active = activeApp(apps.statuses);
@@ -222,7 +222,7 @@ export function AppsPanel({ apps, catalog, daemonOnline, reachable, exprBusy }: 
         </>
       ) : null}
       {apps.names.length === 0 ? (
-        <p className="note">{reachable ? "No apps installed yet." : "Apps show up when the daemon is online."}</p>
+        <p className="note">{reachable ? "No apps installed" : known ? "Robot service down" : "Connecting…"}</p>
       ) : null}
     </section>
   );

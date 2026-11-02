@@ -89,10 +89,10 @@ test("parseLimits reads the controller's ready message", () => {
 test("driveBlocked names the first thing in the way", () => {
   const ok = { daemonOnline: true, motorMode: "enabled", appActive: false, exprBusy: false, controlBusy: false };
   expect(driveBlocked(ok)).toBeNull();
-  expect(driveBlocked({ ...ok, daemonOnline: false })).toContain("on");
-  expect(driveBlocked({ ...ok, motorMode: "gravity_compensation" })).toContain("Enabled");
-  expect(driveBlocked({ ...ok, appActive: true, motorMode: "disabled" })).toContain("app");
-  expect(driveBlocked({ ...ok, exprBusy: true })).toContain("move");
+  expect(driveBlocked({ ...ok, daemonOnline: false })).toBe("off");
+  expect(driveBlocked({ ...ok, motorMode: "gravity_compensation" })).toBe("motors");
+  expect(driveBlocked({ ...ok, appActive: true, motorMode: "disabled" })).toBe("app");
+  expect(driveBlocked({ ...ok, exprBusy: true })).toBe("busy");
   expect(driveBlocked({ ...ok, controlBusy: true })).not.toBeNull();
 });
 

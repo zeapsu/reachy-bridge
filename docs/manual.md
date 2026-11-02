@@ -22,13 +22,17 @@ The dashboard has three tabs:
 - **Apps:** installed apps, and Get apps to install more from Hugging Face.
 - **System:** the board's stats, logs, paired devices, simulation and appearance.
 
-The top bar always shows the robot's status and the power button. It also shows a mic badge
-while anyone has an audio session open, and a Release button while you are in control.
+The top bar always shows the robot's status and the power button. The status shows the running app
+or, with a person icon, who is in control. While anyone has an audio session open, a badge shows
+one icon per live route (ear: surroundings, speaker: Reachy's voice, mic: out loud, speech bubble: to
+apps) and their name; hover it, or use a screen reader, for the full sentence. A Release button
+appears while you are in control.
 
 ## Power
 
 The robot starts off. The bridge keeps running while it is off, so you can reach the dashboard
-at any time and switch the robot on from there.
+at any time and switch the robot on from there: while it is off the robot shows dimmed and asleep,
+with a Power on button on the stage (Wake when it is asleep).
 
 | State | Meaning | What you can do |
 |---|---|---|
@@ -36,9 +40,9 @@ at any time and switch the robot on from there.
 | Starting | The robot is waking up. | Wait. |
 | On | The robot is awake. | Everything. |
 | Asleep | The robot is powered but limp, usually because an app just ended. | Power on to wake it. |
-| Daemon offline | The service that runs the robot isn't answering. | See [Troubleshooting](#troubleshooting). |
+| Robot service down | The service that runs the robot (the daemon) isn't answering. | See [Troubleshooting](#troubleshooting). |
 
-Most controls need the robot on, so they are unavailable in the other states. Expressions,
+Most controls need the robot on, so they are greyed out in the other states. Expressions,
 driving and controls come back once it is on. Starting an app wakes the robot if it is asleep; if
 it is off, power it on first.
 
@@ -67,7 +71,7 @@ because the app owns the robot, and only one can play at a time.
 Drive moves the robot by hand. The Head pad looks around. The Body pad turns when you drag
 sideways, and raises or lowers the head when you drag up or down. The sliders move the antennas.
 The pin (Hold pose) keeps the pose after you let go. Home centres the controls and ends the drive
-session, and the robot then returns to its rest pose. Driving needs the motors enabled, and it is unavailable while an app is running or a move is finishing.
+session, and the robot then returns to its rest pose. Driving needs the motors enabled, and it is unavailable while an app is running or a move is finishing. When motors or an app are what's in the way, the Drive pane offers Enable motors or Stop app.
 
 ## Motors and kinematics
 
@@ -89,12 +93,12 @@ an app, or your voice.
 The Voice pane connects your device's audio to the robot. Each direction can be switched while
 connected.
 
-| Switch | What it does |
+| Chip | What it does |
 |---|---|
-| Hear Reachy's surroundings | Plays the robot's microphone on your device. |
-| Hear what Reachy says | Plays the robot's voice, an app's voice and its sounds on your device instead of on the robot. |
-| Talk through the robot | Plays your microphone through the robot's speaker. |
-| Talk to Reachy's apps | Sends your microphone to what apps hear as the robot's microphone, so a conversation app hears you as if you were next to the robot. |
+| Listen: Surroundings | Plays the robot's microphone on your device. |
+| Listen: Reachy's voice | Plays the robot's voice, an app's voice and its sounds on your device instead of on the robot. |
+| Talk: Out loud | Plays your microphone through the robot's speaker. |
+| Talk: To apps | Sends your microphone to what apps hear as the robot's microphone, so a conversation app hears you as if you were next to the robot. |
 
 Talking through the speaker doesn't reach apps, because the robot's audio board cancels its own
 speaker output from its microphone. Anything else reading the robot's microphone, such as a remote
@@ -111,9 +115,9 @@ badge with the person's name while a session is open.
   Listening also works on the plain-http tailnet IP.
 - Control of the robot, if the dashboard has an admin.
 
-Only one browser can have a session. Starting one ends any other.
+Only one browser can have a session. If someone else has one, Start reads Take over audio, and pressing it ends theirs.
 
-**A session ends when:**
+**A session ends** (the pane says Audio ended) **when:**
 
 - the robot is turned off;
 - control or your login changes;
@@ -149,7 +153,7 @@ switch back. To enter, it must be off with no app, expression or drive session r
 the simulation can take up to a minute and a half.
 
 The simulated robot has its own apps. It has no camera or Voice pane audio, and its sounds can play
-on your device instead.
+on your device instead. A Sim badge in the top bar shows when you are driving it.
 
 ## Devices and logging in
 
@@ -169,9 +173,9 @@ unused for 30 days is logged out.
 
 | What you see | What to do |
 |---|---|
-| Daemon offline | Run `reachy-bridge status`, then `reachy-bridge logs daemon`. |
+| Robot service down | Run `reachy-bridge status`, then `reachy-bridge logs daemon`. |
 | The dashboard won't load on an iPhone by its tailnet name | Turn off iCloud Private Relay, and Limit IP Address Tracking for the network. |
-| Voice switches are unavailable | Check [what you need](#voice). |
+| Voice chips are greyed out | Check [what you need](#voice). |
 | Voice stops by itself | See [when a session ends](#voice). |
 | The mic shows as unavailable | An app has taken the hardware. Stop it. |
 | An app's interface won't open | Run `reachy-bridge logs controller`. |

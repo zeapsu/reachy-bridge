@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import type { DriveState } from "../hooks/useDrive.ts";
 import { read, write } from "../logic/appearance.ts";
-import { HOLD_KEY, inPad } from "../logic/drive.ts";
+import { HOLD_KEY, inPad, type DriveBlock } from "../logic/drive.ts";
 import "./DrivePanel.css";
 
 interface Props {
   drive: DriveState;
   /** Why driving is off right now, or null. */
-  blocked: string | null;
+  blocked: DriveBlock | null;
+  /** The blocker's fix, as a button: "motors" enables them, "app" stops the app. */
+  onEnableMotors: () => void;
+  onStopApp: () => void;
+  actionBusy: boolean;
+  fixError: string | null;
 }
 
 const KEYS: Record<string, [number, number]> = {
@@ -225,7 +230,7 @@ function Antenna({ side, disabled, sticky, reset, onHold, onRelease, onMove }: A
  * With hold on, everything stays where it was let go, and so does the robot,
  * until Home (or the session ends, when everything recentres).
  */
-export function DrivePanel({ drive, blocked }: Props) {
+export function DrivePanel({ drive, blocked, onEnableMotors, onStopApp, actionBusy, fixError }: Props) {
   const disabled = blocked !== null;
   const [hold, setHold] = useState(() => read(HOLD_KEY) === "1");
   const [reset, setReset] = useState(0);
@@ -249,14 +254,16 @@ export function DrivePanel({ drive, blocked }: Props) {
     drive.move({ antennas: antennas.current });
   };
 
-  const status = disabled ? "off" : drive.phase === "live" ? "driving" : drive.phase === "connecting" ? "connecting" : "ready";
+  const status = drive.phase === "live" ? "driving" : drive.phase === "connecting" ? "connecting" : "ready";
   return (
     <div className="pane drive">
       <div className="drive-head">
+        {disabled ? <span></span> : (
         <span className="chip">
           <span className={`dot ${status === "driving" ? "live" : status === "connecting" ? "loading" : status === "ready" ? "ok" : ""}`}></span>
           {status}
         </span>
+        )}
         <div className="drive-actions">
           <button
             className={`btn icon hold${hold ? " on" : ""}`}
@@ -275,9 +282,17 @@ export function DrivePanel({ drive, blocked }: Props) {
           </button>
         </div>
       </div>
-      {(blocked ?? drive.error) && (
-        <p className={`note${drive.error && !disabled ? " error" : ""}`}>{blocked ?? drive.error}</p>
-      )}
+      {blocked === "motors" ? (
+        <button className="btn primary press drive-fix" type="button" disabled={actionBusy} onClick={onEnableMotors}>
+          Enable motors
+        </button>
+      ) : blocked === "app" ? (
+        <button className="btn press drive-fix" type="button" disabled={actionBusy} onClick={onStopApp}>
+          Stop app
+        </button>
+      ) : null}
+      {fixError ? <p className="note error">{fixError}</p> : null}
+      {!disabled && drive.error ? <p className="note error">{drive.error}</p> : null}
       <div className="pads">
         <Pad
           label="Head"

@@ -60,17 +60,17 @@ async fn full_state(State(state): State<Shared>) -> ApiResult<Json<Value>> {
         .get_query("state/full", &[("with_doa", "true")])
         .await
         .map(Json)
-        .map_err(|_| ApiError::new(503, "Daemon unavailable"))
+        .map_err(|_| ApiError::new(503, "Robot service down"))
 }
 
 async fn daemon_status(State(state): State<Shared>) -> ApiResult<Json<Value>> {
-    state.daemon.status().await.map(Json).ok_or_else(|| ApiError::new(503, "Daemon unavailable"))
+    state.daemon.status().await.map(Json).ok_or_else(|| ApiError::new(503, "Robot service down"))
 }
 
 /// The board the runtime detected, its support tier, and the bridge features
 /// startup applied or skipped (#140). Fixed for the daemon's lifetime.
 async fn platform(State(state): State<Shared>) -> ApiResult<Json<Value>> {
-    state.daemon.get("bridge/platform").await.map(Json).map_err(|_| ApiError::new(503, "Daemon unavailable"))
+    state.daemon.get("bridge/platform").await.map(Json).map_err(|_| ApiError::new(503, "Robot service down"))
 }
 
 async fn system_stats() -> Json<Value> {

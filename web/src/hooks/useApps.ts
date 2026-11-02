@@ -46,6 +46,7 @@ export interface AppsState {
   toggleFavorite: (name: string) => Promise<void>;
   /** Starts or stops an app; starting one with a UI opens the app view. */
   perform: (name: string, action: "start" | "stop") => void;
+  actionError: { name: string; text: string } | null;
   openUi: (name: string) => void;
   /** The app UI open inside the dashboard, if any. */
   appView: AppView | null;
@@ -63,6 +64,8 @@ export function useApps(): AppsState {
   const [appBusy, setAppBusy] = useState(false);
   const [tick, setTick] = useState(0);
   const [message, setMessage] = useState<PanelMessage>({ text: "", kind: "" });
+  // The last failed stop: the status poll clears `message`, so this outlives it.
+  const [actionError, setActionError] = useState<{ name: string; text: string } | null>(null);
   const [libraryHint, setLibraryHint] = useState<PanelMessage>({ text: "", kind: "" });
 
   // Refs mirror state that async flows read after awaits.
@@ -264,10 +267,10 @@ export function useApps(): AppsState {
       }
       // :8043 (tailscale serve) forwards to the same listener.
       if (ready && proxyPort === null) {
-        updateView(seq, { error: "The controller's app proxy isn't running, so the app's interface can't open. See the controller log." });
+        updateView(seq, { error: "App interface unavailable" });
       } else if (!ready) {
         const display = viewRef.current?.display || name;
-        updateView(seq, { error: `${display} did not open its interface within 30 s.` });
+        updateView(seq, { error: `${display} didn't open within 30 s` });
       } else {
         updateView(seq, { step: "opening", url: appUiUrl(window.location.hostname, proxyPort ?? undefined) });
       }
@@ -285,6 +288,7 @@ export function useApps(): AppsState {
       if (action === "stop" && viewRef.current?.name === name) closeAppView();
       appBusyRef.current = true;
       setAppBusy(true);
+      setActionError(null);
       setMessage({ text: `${action === "start" ? "starting" : "stopping"} ${name}`, kind: "" });
       void (async () => {
         try {
@@ -307,6 +311,7 @@ export function useApps(): AppsState {
           const text = errorText(err, "App request failed");
           if (withUi) updateView(seq, { error: text });
           setMessage({ text, kind: "error" });
+          if (action === "stop") setActionError({ name, text });
           await poll();
         } finally {
           appBusyRef.current = false;
@@ -343,6 +348,7 @@ export function useApps(): AppsState {
     favoritesLoaded: () => loadedRef.current,
     toggleFavorite,
     perform,
+    actionError,
     openUi,
   };
 }
