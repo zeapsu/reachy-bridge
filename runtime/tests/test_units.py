@@ -40,7 +40,7 @@ def test_every_bridge_port_reaches_the_daemons() -> None:
 
 def test_app_installs_are_constrained() -> None:
     constraints = (UNITS.parent / "app-constraints.txt").read_text()
-    assert "opencv-python<5" in constraints
-    assert "opencv-python-headless<5" in constraints
+    for wheel in ("opencv-python", "opencv-python-headless", "opencv-contrib-python", "opencv-contrib-python-headless"):
+        assert f"{wheel}<5" in constraints
     for unit in ("reachy-bridge.service", "reachy-bridge-sim.service"):
         assert environment(unit)["UV_CONSTRAINT"] == "%h/.local/share/reachy-bridge/app-constraints.txt"

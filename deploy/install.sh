@@ -50,20 +50,32 @@ record() {
     grep -qxF "$line" "$MANIFEST" 2>/dev/null || printf '%s\n' "$line" >>"$MANIFEST"
 }
 
-# An apps venv from before app-constraints.txt may hold OpenCV 5, and both
-# OpenCV wheels at once: they share one cv2/ directory, so the later install
-# overwrote the earlier one. Leave one wheel, the one in use if both are there,
-# at the newest allowed version. Nothing else in the venv changes.
+# An apps venv from before app-constraints.txt may hold OpenCV 5, and more than
+# one OpenCV wheel: they share one cv2/ directory, so the later install overwrote
+# the earlier. Leave one, preferring headless (these devices have no display), at
+# the newest allowed version. The replacement is fetched into uv's cache through
+# a throwaway venv first, so a failed download leaves the venv as it was.
 pin_app_opencv() {
-    local python=$1/bin/python freeze wheel=opencv-python
+    local python=$1/bin/python constraints=$DEST/app-constraints.txt freeze wheel probe
+    local -a wheels=(opencv-contrib-python-headless opencv-python-headless opencv-contrib-python opencv-python)
     [[ -x $python ]] || return 0
     freeze=$(uv pip list --python "$python" --format=freeze 2>/dev/null) || return 0
-    grep -qE '^opencv-python(-headless)?==([5-9]|[1-9][0-9])\.' <<<"$freeze" || return 0
-    grep -q '^opencv-python-headless==' <<<"$freeze" && wheel=opencv-python-headless
+    grep -qE '^opencv(-contrib)?-python(-headless)?==([5-9]|[1-9][0-9])\.' <<<"$freeze" || return 0
+    for wheel in "${wheels[@]}"; do
+        grep -q "^$wheel==" <<<"$freeze" && break
+    done
     echo "Moving $1 to $wheel 4.x"
-    uv pip uninstall --python "$python" opencv-python opencv-python-headless 2>/dev/null || true
-    uv pip install --python "$python" --constraint "$DEST/app-constraints.txt" "$wheel" \
-        || echo "install: warning: no OpenCV left in $1: apps that use it fail until you run: uv pip install --python $python --constraint $DEST/app-constraints.txt $wheel" >&2
+    probe=$(mktemp -d)
+    if ! { uv venv -q --python "$python" "$probe/venv" \
+        && uv pip install -q --python "$probe/venv/bin/python" --constraint "$constraints" "$wheel"; }; then
+        rm -rf "$probe"
+        echo "install: warning: couldn't fetch $wheel 4.x; $1 keeps OpenCV 5 and apps that need 4.x fail until the next install" >&2
+        return 0
+    fi
+    rm -rf "$probe"
+    uv pip uninstall --python "$python" "${wheels[@]}" 2>/dev/null || true
+    uv pip install --python "$python" --constraint "$constraints" "$wheel" \
+        || echo "install: warning: no OpenCV left in $1: run uv pip install --python $python --constraint $constraints $wheel" >&2
 }
 
 step() { printf '\n== %s\n' "$*"; }

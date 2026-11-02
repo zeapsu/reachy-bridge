@@ -6,3 +6,5 @@
 # (reachy_baby_yoda). The 4.x line is still released.
 opencv-python<5
 opencv-python-headless<5
+opencv-contrib-python<5
+opencv-contrib-python-headless<5
