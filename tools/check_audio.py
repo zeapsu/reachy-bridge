@@ -164,7 +164,7 @@ def gateway_active() -> bool:
 def preflight() -> str | None:
     """Why this can't run now, or None."""
     if not audio_tee.is_installed():
-        return "the speaker and mic tee isn't installed (no ALSA loopback card?); see reachy-bridge check"
+        return "the speaker and mic tee isn't installed (no ALSA loopback card or alsaloop?); see reachy-bridge check"
     cli = Path.home() / ".local/bin/reachy-bridge"
     if not cli.exists():
         return f"{cli} isn't installed"
@@ -244,6 +244,9 @@ def main() -> int:
             amplitude(apps[0], TONES["voice"]),
             True,
         )
+        # A working mic is never exactly zero, even in a quiet room.
+        room = play_and_record(audio_tee.APP_VOICE_SINK, bytes(len(voice)), audio_tee.SOURCE, 2)
+        checks.check("the real mic reaches apps' mic (mic bridge)", any(room[0]))
         mic = play_and_record(audio_tee.APP_VOICE_SINK, voice, audio_tee.MIC, 2)
         checks.expect(
             "...and not the real mic the gateway listens to",

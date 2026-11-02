@@ -180,6 +180,10 @@ def test_loopback_card(tmp_path: Path):
 
 
 def test_mic_mixer(monkeypatch):
+    monkeypatch.setattr(doctor.audio_tee, "alsaloop_missing", lambda: True)
+    missing = doctor.mic_mixer(lambda _args: None)
+    assert missing.status == "warn" and "alsa-utils" in missing.detail
+    monkeypatch.setattr(doctor.audio_tee, "alsaloop_missing", lambda: False)
     monkeypatch.setattr(doctor.audio_tee, "is_installed", lambda: False)
     assert doctor.mic_mixer(lambda _args: None).status == "skip"
     monkeypatch.setattr(doctor.audio_tee, "is_installed", lambda: True)

@@ -53,8 +53,8 @@ logger = logging.getLogger(__name__)
 
 # Every version's marker starts with PREFIX; MARKER is this version's. It
 # contains the first version's marker, whose runtime would otherwise wrap it,
-# but not those of v2 to v4: rolled back to one of them, a runtime replaces this
-# tee with its own, since its install has no mic mixer.
+# but not those of v2 to v5: rolled back to one of them, a runtime replaces this
+# tee with its own, since its install has no mic mixer or an older one.
 PREFIX = "# reachy-bridge: "
 MARKER = PREFIX + "speaker tee (#219) with mic mixer (v6)"
 LOOPBACK = "Loopback"
