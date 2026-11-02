@@ -10,6 +10,10 @@ when the app asks for more, to the newest release rather than the daemon's. So
 Only packages a venv already has change: a venv without OpenCV doesn't gain
 it. An interpreter that doesn't exist is skipped. OpenCV follows the daemon too
 because nothing in the apps venv asks for 5, and Baby Yoda needs 4 (#279).
+
+The pins ignore what other installed apps require, so an app that asks for more
+than the daemon has is pulled back. ``uv pip check`` then prints the conflict
+(the install carries on), which names the app to look at.
 """
 
 from __future__ import annotations
@@ -59,6 +63,12 @@ def sync(python: str, wanted: dict[str, str], run=subprocess.run) -> list[str]:
     return requirements
 
 
+def conflicts(python: str, run=subprocess.run) -> str:
+    """What ``uv pip check`` reports wrong in ``python``'s venv, or nothing."""
+    result = run(["uv", "pip", "check", "--python", python], capture_output=True, text=True)
+    return "" if result.returncode == 0 else result.stdout.strip()
+
+
 def main(argv: list[str]) -> int:
     wanted = daemon_versions()
     failed = False
@@ -67,12 +77,14 @@ def main(argv: list[str]) -> int:
             continue
         try:
             changed = sync(python, wanted)
-        except (subprocess.CalledProcessError, ValueError, KeyError, TypeError) as exc:
+        except (subprocess.CalledProcessError, OSError, ValueError, KeyError, TypeError) as exc:
             print(f"apps venv sync: couldn't update {python}: {exc}", file=sys.stderr)
             failed = True
             continue
         if changed:
             print(f"apps venv sync: {python}: {', '.join(changed)}")
+            if found := conflicts(python):
+                print(f"apps venv sync: warning: requirements now unmet in {python}:\n{found}", file=sys.stderr)
     return 1 if failed else 0
 
 

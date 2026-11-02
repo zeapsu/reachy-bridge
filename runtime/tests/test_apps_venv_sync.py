@@ -68,3 +68,22 @@ def test_main_skips_a_missing_venv_and_reports_a_failure(
     monkeypatch.setattr(apps_venv_sync, "sync", lambda p, w: real_sync(p, w, run))
     assert apps_venv_sync.main([str(python)]) == 1
     assert "couldn't update" in capsys.readouterr().err
+
+
+def test_conflicts_reports_only_a_failed_check() -> None:
+    clean = types.SimpleNamespace(returncode=0, stdout="Checked 3 packages")
+    broken = types.SimpleNamespace(returncode=1, stdout="app requires reachy-mini>=1.14\n")
+    assert apps_venv_sync.conflicts("/p", lambda *a, **k: clean) == ""
+    assert apps_venv_sync.conflicts("/p", lambda *a, **k: broken) == "app requires reachy-mini>=1.14"
+
+
+def test_main_warns_when_a_pin_breaks_an_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(apps_venv_sync, "daemon_versions", lambda: WANTED)
+    monkeypatch.setattr(apps_venv_sync, "sync", lambda p, w: ["reachy-mini==1.13.0"])
+    monkeypatch.setattr(apps_venv_sync, "conflicts", lambda p: "app requires reachy-mini>=1.14")
+    python = tmp_path / "python"
+    python.touch()
+    assert apps_venv_sync.main([str(python)]) == 0
+    assert "app requires reachy-mini>=1.14" in capsys.readouterr().err
