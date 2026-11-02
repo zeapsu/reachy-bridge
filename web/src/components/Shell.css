@@ -187,6 +187,7 @@
 }
 .voice-badge svg { width: 16px; height: 16px; flex: none; }
 .voice-badge span:not(.voice-badge-text) { display: inline-flex; }
+.voice-badge-text { max-width: 9ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A phone keeps who is listening and the robot's status over the brand. */
 @media (max-width: 480px) {
   .top:has(.voice-badge) .brand { display: none; }
@@ -196,6 +197,5 @@
   .voice-badge-text { max-width: 6ch; }
   .top .release { padding-inline: 10px; }
 }
-.voice-badge-text { max-width: 9ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .control-who svg { width: 13px; height: 13px; flex: none; }
 .control-who.person { display: inline-flex; align-items: center; gap: 4px; }
