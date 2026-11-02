@@ -66,7 +66,11 @@ def sync(python: str, wanted: dict[str, str], run=subprocess.run) -> list[str]:
 def conflicts(python: str, run=subprocess.run) -> str:
     """What ``uv pip check`` reports wrong in ``python``'s venv, or nothing."""
     result = run(["uv", "pip", "check", "--python", python], capture_output=True, text=True)
-    return "" if result.returncode == 0 else result.stdout.strip()
+    if result.returncode == 0:
+        return ""
+    # uv writes the report to stderr, between lines about the check itself.
+    noise = ("Using Python", "Checked ", "Found ")
+    return "\n".join(line for line in result.stderr.splitlines() if line.strip() and not line.startswith(noise))
 
 
 def main(argv: list[str]) -> int:

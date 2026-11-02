@@ -71,8 +71,12 @@ def test_main_skips_a_missing_venv_and_reports_a_failure(
 
 
 def test_conflicts_reports_only_a_failed_check() -> None:
-    clean = types.SimpleNamespace(returncode=0, stdout="Checked 3 packages")
-    broken = types.SimpleNamespace(returncode=1, stdout="app requires reachy-mini>=1.14\n")
+    clean = types.SimpleNamespace(returncode=0, stderr="Checked 3 packages\n")
+    report = (
+        "Using Python 3.12.13 environment at: apps_venv\nChecked 3 packages in 1ms\nFound 1 incompatibility\n"
+        "app requires reachy-mini>=1.14\n"
+    )
+    broken = types.SimpleNamespace(returncode=1, stderr=report)
     assert apps_venv_sync.conflicts("/p", lambda *a, **k: clean) == ""
     assert apps_venv_sync.conflicts("/p", lambda *a, **k: broken) == "app requires reachy-mini>=1.14"
 
