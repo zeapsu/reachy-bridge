@@ -304,6 +304,20 @@ REQUIREMENTS: tuple[Requirement, ...] = (
     ),
     Requirement(
         "speaker_wobble",
+        "apps turn the wobble on and off through Backend.process_command",
+        _source_mentions(_BACKEND, "Backend.process_command", "SetWobblingCmd", "disable_wobbling"),
+    ),
+    Requirement(
+        "speaker_wobble",
+        "a sleep stops the wobble, and the backend keeps its media server",
+        lambda: (
+            _source_mentions(_BACKEND, "Backend.goto_sleep", "_quiesce_aim_sources")(),
+            _source_mentions(_BACKEND, "Backend.reset_to_sleep", "_quiesce_aim_sources")(),
+            _source_mentions(_BACKEND, "Backend._quiesce_aim_sources", "_media_server", "disable_wobbling")(),
+        ),
+    ),
+    Requirement(
+        "speaker_wobble",
         "the head kinematics, pose helpers and motor config for the limit check",
         lambda: (
             wobble_limits(),
@@ -604,6 +618,9 @@ def wrap_wobbling(
     disable: Callable[..., None],
     on_sample: Callable[..., Any],
     set_offsets: Callable[..., None],
+    process_command: Callable[..., Any],
+    sleep: Callable[..., Any],
+    quiesce: Callable[..., None],
 ) -> None:
     """Wrap the media server's wobbling and the backend's offsets, each as
     ``wrapper(original, self, *args)``."""
@@ -614,6 +631,10 @@ def wrap_wobbling(
     _wrap(GstMediaServer, "disable_wobbling", disable)
     _wrap(GstMediaServer, "_on_wobbler_sample", on_sample)
     _wrap(Backend, "set_speech_offsets", set_offsets)
+    _wrap(Backend, "process_command", process_command)
+    _wrap(Backend, "goto_sleep", sleep)
+    _wrap(Backend, "reset_to_sleep", sleep)
+    _wrap(Backend, "_quiesce_aim_sources", quiesce)
 
 
 def motor_ticks(angle: float) -> float:
@@ -667,8 +688,9 @@ def wobbler_sample_rate(server: Any) -> int:
     return int(server.WOBBLER_SAMPLE_RATE)
 
 
-def media_server(daemon: Any) -> Any | None:
-    return getattr(daemon, "_media_server", None)
+def media_server(owner: Any) -> Any | None:
+    """The media server of a daemon or a backend; both keep it under this name."""
+    return getattr(owner, "_media_server", None)
 
 
 def media_released(daemon: Any) -> bool:
