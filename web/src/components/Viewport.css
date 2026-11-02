@@ -35,7 +35,7 @@
   filter: saturate(0.25);
 }
 .telemetry.offline { display: none; }
-.stage-power {
+.btn.primary.stage-power {
   position: absolute;
   /* Not centred with a transform: .press scales on press and would replace it. */
   left: 0;
