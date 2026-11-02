@@ -7,6 +7,7 @@
 # Lays down, under ~/.local/share/reachy-bridge:
 #   .venv/           the runtime and Pollen's daemon (reachy-mini at the locked version)
 #   apps_venv/       community apps, managed by the daemon (left untouched here)
+#   app-overlays/    older packages for the apps that need them (app_overlays.py)
 #   bin/reachy-controller
 #   sim/             the sim daemon's working directory (sim mode, #149)
 # and the reachy-bridge and reachy-bridge-controller user units, the
@@ -119,6 +120,12 @@ mkdir -p "$DEST/bin" "$DEST/sim"
 # (MuJoCo) is for the sim daemon.
 UV_PROJECT_ENVIRONMENT="$DEST/.venv" uv sync --project "$REPO" --frozen --no-dev \
     --no-editable --package reachy-bridge-runtime --extra sim --reinstall-package reachy-bridge-runtime
+# An app that needs an older OpenCV than the shared apps venv has runs with
+# this overlay first on its path; a failed download only means those apps fail.
+apps_python=$DEST/apps_venv/bin/python
+[[ -x $apps_python ]] || apps_python=$DEST/.venv/bin/python
+"$DEST/.venv/bin/python" -m reachy_bridge_runtime.features.app_overlays "$apps_python" ||
+    echo "warning: couldn't build the app overlays; apps that need an older OpenCV fail until the next install"
 install -m 755 "$REPO/controller/target/release/reachy-controller" "$DEST/bin/reachy-controller.new"
 mv -f "$DEST/bin/reachy-controller.new" "$DEST/bin/reachy-controller"
 install -D -m 755 "$CLI" "$BIN_DIR/reachy-bridge"
