@@ -15,9 +15,10 @@ venv's numpy). ``install.sh`` builds the overlays; when a listed app starts,
 Apps don't say they need an older version (Baby Yoda allows 5), so the
 bridge looks at what they call. Before each start, the ``cv2.<name>`` uses in
 the app's package are checked against the venv's OpenCV; any missing gives
-the app the OpenCV overlay. An app that still exits with ``module 'cv2' has
-no attribute ...`` (an indirect use the scan can't see) is remembered too.
-Both land in ``<state dir>/app-overlays.json`` with the hand-kept ``APPS``.
+the app the OpenCV overlay, until a later check finds the venv has them all
+again. An app that still exits with ``module 'cv2' has no attribute ...``
+(an indirect use the scan can't see) keeps the overlay for good; delete its
+entry in ``<state dir>/app-overlays.json`` to undo that.
 
     python -m reachy_bridge_runtime.features.app_overlays [apps python]
 
@@ -33,6 +34,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from reachy_bridge_runtime import paths
@@ -52,29 +54,36 @@ OVERLAYS: dict[str, tuple[str, ...]] = {
 APPS: dict[str, tuple[str, ...]] = {}
 
 
-# What an exit error says -> the overlay that fixes it.
+# What an exit error says -> the overlay that fixes it. A circular import
+# ("partially initialized module 'cv2'") is not a missing name.
 SIGNATURES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"module 'cv2' has no attribute '\w+'"), OPENCV_OVERLAY),
+    (re.compile(r"(?<!partially initialized )module 'cv2' has no attribute '\w+'"), OPENCV_OVERLAY),
 )
+SCAN, CRASH = "scan", "crash"
 
 
 def learned_file() -> Path:
     return paths.state_dir() / "app-overlays.json"
 
 
-def learned() -> dict[str, list[str]]:
+def learned() -> dict[str, dict[str, str]]:
+    """App -> {overlay: how it was found (``scan`` or ``crash``)}."""
     try:
         data = json.loads(learned_file().read_text())
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):
         return {}
-    return {app: [o for o in names if o in OVERLAYS] for app, names in data.items() if isinstance(names, list)}
+    return {
+        app: {o: why for o, why in found.items() if isinstance(o, str) and o in OVERLAYS and isinstance(why, str)}
+        for app, found in data.items()
+        if isinstance(app, str) and isinstance(found, dict)
+    }
 
 
 def overlays_for(app_name: str) -> list[str]:
     names = list(APPS.get(app_name, ()))
-    names += [n for n in learned().get(app_name, []) if n not in names]
+    names += [n for n in learned().get(app_name, {}) if n not in names]
     return names
 
 
@@ -84,12 +93,15 @@ def learn(app_name: str, error: object) -> str | None:
         return None
     for pattern, overlay in SIGNATURES:
         if (match := pattern.search(error)) and overlay not in overlays_for(app_name):
-            return _remember(app_name, overlay, f"it exited with {match.group(0)}")
+            _store(app_name, overlay, CRASH)
+            logger.warning("%s runs with %s from its next start: it exited with %s", app_name, overlay, match.group(0))
+            return overlay
     return None
 
 
 CV2_USE = re.compile(r"\bcv2\.([A-Za-z_]\w*)")
-_cv2_names: dict[str, frozenset[str] | None] = {}
+CV2_TIMEOUT = 10.0
+_cv2_names: dict[tuple[str, float], frozenset[str]] = {}
 
 
 def cv2_uses(package: Path) -> set[str]:
@@ -103,48 +115,73 @@ def cv2_uses(package: Path) -> set[str]:
     return names
 
 
-def venv_cv2_names(python: str, run=subprocess.run) -> frozenset[str] | None:
-    """The names the venv's ``cv2`` has (None without OpenCV), once per
-    install of it."""
-    code = "import cv2, json, os; print(json.dumps([os.path.getmtime(cv2.__file__), dir(cv2)]))"
+def venv_cv2_names(python: str, site_packages: Path, run=subprocess.run) -> frozenset[str] | None:
+    """The names the venv's ``cv2`` has (None without OpenCV). Asked of the
+    venv's Python only when its OpenCV changed since the last time."""
     try:
-        done = run([python, "-I", "-c", code], capture_output=True, text=True, timeout=30)
-        stamp, names = json.loads(done.stdout)
-    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        stamp = (site_packages / "cv2" / "__init__.py").stat().st_mtime
+    except OSError:
         return None
-    key = f"{python}:{stamp}"
+    key = (python, stamp)
     if key not in _cv2_names:
-        _cv2_names[key] = frozenset(names)
+        code = "import cv2, json; print(json.dumps(dir(cv2)))"
+        try:
+            done = run([python, "-I", "-c", code], capture_output=True, text=True, timeout=CV2_TIMEOUT)
+            names = json.loads(done.stdout)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+        if not isinstance(names, list):
+            return None
+        _cv2_names[key] = frozenset(n for n in names if isinstance(n, str))
     return _cv2_names[key]
 
 
 def check_app(app_name: str, package: Path, python: str, run=subprocess.run) -> str | None:
-    """Give ``app_name`` the OpenCV overlay if it calls something the venv's
-    OpenCV lacks; the overlay's name if that's new."""
-    if OPENCV_OVERLAY in overlays_for(app_name) or not package.is_dir():
+    """Give ``app_name`` the OpenCV overlay while it calls something the
+    venv's OpenCV lacks, and drop one the scan gave it once the venv has it
+    all again; the overlay's name if newly given."""
+    if not package.is_dir():
+        logger.debug("No package folder for %s at %s; not checking its OpenCV", app_name, package)
+        return None
+    found = learned().get(app_name, {})
+    if found.get(OPENCV_OVERLAY) == CRASH or OPENCV_OVERLAY in APPS.get(app_name, ()):
         return None
     uses = cv2_uses(package)
-    if not uses:
-        return None
-    available = venv_cv2_names(python, run)
+    available = venv_cv2_names(python, package.parent, run) if uses else None
     if available is None:
         return None
     missing = sorted(uses - available)
     if not missing:
+        if OPENCV_OVERLAY in found:
+            _store(app_name, OPENCV_OVERLAY, None)
+            logger.info("%s runs with the venv's OpenCV again: it has everything the app uses", app_name)
         return None
-    return _remember(app_name, OPENCV_OVERLAY, f"the venv's OpenCV has no {', '.join(missing)}")
+    if OPENCV_OVERLAY in found:
+        return None
+    _store(app_name, OPENCV_OVERLAY, SCAN)
+    logger.warning("%s runs with %s: the venv's OpenCV has no %s", app_name, OPENCV_OVERLAY, ", ".join(missing))
+    return OPENCV_OVERLAY
 
 
-def _remember(app_name: str, overlay: str, why: str) -> str:
-    data = learned()
-    data.setdefault(app_name, []).append(overlay)
-    target = learned_file()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
-    tmp.replace(target)
-    logger.warning("%s runs with %s from now on: %s", app_name, overlay, why)
-    return overlay
+_store_lock = threading.Lock()
+
+
+def _store(app_name: str, overlay: str, why: str | None) -> None:
+    """Record (or with ``why=None`` forget) an overlay for an app."""
+    with _store_lock:
+        data = learned()
+        found = data.setdefault(app_name, {})
+        if why is None:
+            found.pop(overlay, None)
+        else:
+            found[overlay] = why
+        if not found:
+            del data[app_name]
+        target = learned_file()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        tmp.replace(target)
 
 
 def root() -> Path:

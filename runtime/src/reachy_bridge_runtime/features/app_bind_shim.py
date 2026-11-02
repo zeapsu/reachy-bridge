@@ -128,15 +128,18 @@ def loopback_address(family, kind, address, v6only=True):
 
 
 def add_overlays(value=None, path=None):
-    """Put the folders in ``REACHY_BRIDGE_APP_PATHS`` first on ``sys.path``."""
+    """Put the folders in ``REACHY_BRIDGE_APP_PATHS`` just before the first
+    site-packages on ``sys.path``: ahead of the venv's packages, after the
+    standard library."""
     if value is None:
         value = os.environ.get("REACHY_BRIDGE_APP_PATHS", "")
     path = sys.path if path is None else path
     folders = [f for f in value.split(os.pathsep) if f and os.path.isdir(f)]
-    for folder in reversed(folders):
+    for folder in folders:
         if folder in path:
             path.remove(folder)
-        path.insert(0, folder)
+    at = next((i for i, entry in enumerate(path) if os.path.basename(str(entry)) == "site-packages"), 0)
+    path[at:at] = folders
 
 
 def install():

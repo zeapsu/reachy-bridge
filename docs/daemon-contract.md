@@ -294,9 +294,11 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   `app-overlays/`. Before each start the bridge checks the app's
   `cv2.<name>` uses against the venv's OpenCV; an app missing any, or one
   that exits with `module 'cv2' has no attribute`, is recorded in
-  `<state dir>/app-overlays.json`, and its processes get the overlay first
-  on `sys.path` (the shim reads `REACHY_BRIDGE_APP_PATHS`). Other apps keep
-  the venv's OpenCV. Not caught: indirect uses through another library that
+  `<state dir>/app-overlays.json`, and its processes get the overlay ahead
+  of the venv's packages (the shim reads `REACHY_BRIDGE_APP_PATHS`). Other
+  apps keep the venv's OpenCV. A scan result is dropped once the venv's
+  OpenCV has every name again; a crash result stays until its entry is
+  deleted. Not caught: indirect uses through another library that
   don't fail with that error, and calls that still exist but changed.
 - webrtcsink runs the signalling server (`run-signalling-server`) on
   `0.0.0.0:8443` upstream. **Bridge patch (#186):** `signalling-server-host`

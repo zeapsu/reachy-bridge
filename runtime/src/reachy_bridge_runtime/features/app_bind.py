@@ -129,16 +129,19 @@ async def _start_app(original: Any, manager: Any, app_name: str, *args: Any, **k
         await asyncio.to_thread(app_overlays.check_app, app_name, site_packages(python) / app_name, str(python))
     except Exception:
         logger.exception("Could not check which OpenCV %s needs", app_name)
-    overlays = os.pathsep.join(str(p) for p in app_overlays.paths_for(app_name))
-    previous = os.environ.pop(app_overlays.PATHS_ENV, None)
+    try:
+        overlays = os.pathsep.join(str(p) for p in app_overlays.paths_for(app_name))
+    except Exception:
+        logger.exception("Starting %s without overlays: couldn't read them", app_name)
+        overlays = ""
     if overlays:
         os.environ[app_overlays.PATHS_ENV] = overlays
+    else:
+        os.environ.pop(app_overlays.PATHS_ENV, None)
     try:
         status = await original(manager, app_name, *args, **kwargs)
     finally:
         os.environ.pop(app_overlays.PATHS_ENV, None)
-        if previous is not None:
-            os.environ[app_overlays.PATHS_ENV] = previous
     _watch_exit(manager, app_name)
     return status
 

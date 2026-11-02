@@ -65,7 +65,12 @@ def test_an_app_that_exits_on_a_missing_cv2_name_gets_the_overlay_next_time(tmp_
     assert app_overlays.learn("yoda", error) == OVERLAY
     assert app_overlays.learn("yoda", error) is None  # once
     assert app_overlays.paths_for("yoda") == [folder]
-    assert json.loads((tmp_path / "state/app-overlays.json").read_text()) == {"yoda": [OVERLAY]}
+    assert json.loads((tmp_path / "state/app-overlays.json").read_text()) == {"yoda": {OVERLAY: "crash"}}
+    # A circular import isn't a missing name.
+    assert (
+        app_overlays.learn("radio", "AttributeError: partially initialized module 'cv2' has no attribute 'imread'")
+        is None
+    )
     assert app_overlays.learn("radio", "Process exited with code 1\nOSError: PortAudio library not found") is None
     assert app_overlays.learn("radio", None) is None
 
@@ -76,28 +81,71 @@ def test_an_unbuilt_overlay_is_skipped_so_the_app_still_starts(caplog: Any) -> N
     assert "isn't built" in caplog.text
 
 
-def test_the_scan_finds_cv2_names_the_venv_lacks(tmp_path: Path) -> None:
-    package = tmp_path / "yoda"
+def scanned_app(tmp_path: Path) -> Path:
+    site = tmp_path / "site-packages"
+    package = site / "yoda"
     (package / "sub").mkdir(parents=True)
     (package / "vision.py").write_text("import cv2\nd = cv2.CascadeClassifier(cv2.data.haarcascades)\n")
     (package / "sub/frame.py").write_text("x = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)\n")
+    (site / "cv2").mkdir()
+    (site / "cv2/__init__.py").write_text("")
+    return package
+
+
+def venv(names: list[str], calls: list[int] | None = None) -> Any:
+    def run(*args: Any, **kwargs: Any) -> Any:
+        if calls is not None:
+            calls.append(1)
+        return types.SimpleNamespace(stdout=json.dumps(names))
+
+    return run
+
+
+def test_the_scan_finds_cv2_names_the_venv_lacks(tmp_path: Path) -> None:
+    package = scanned_app(tmp_path)
     assert app_overlays.cv2_uses(package) == {"CascadeClassifier", "data", "cvtColor", "COLOR_BGR2GRAY"}
-
-    def venv(names: list[str]) -> Any:
-        return lambda *a, **k: types.SimpleNamespace(stdout=json.dumps([1.0, names]))
-
+    calls: list[int] = []
     assert (
-        app_overlays.check_app(
-            "yoda", package, "/py", venv(["data", "cvtColor", "COLOR_BGR2GRAY", "CascadeClassifier"])
-        )
-        is None
+        app_overlays.check_app("yoda", package, "/py", venv(["data", "cvtColor", "COLOR_BGR2GRAY"], calls)) == OVERLAY
     )
-    app_overlays._cv2_names.clear()
-    assert app_overlays.check_app("yoda", package, "/py", venv(["data", "cvtColor", "COLOR_BGR2GRAY"])) == OVERLAY
     assert app_overlays.overlays_for("yoda") == [OVERLAY]
-    # No OpenCV in the venv, or no package: nothing to decide.
-    assert app_overlays.check_app("other", package, "/py", lambda *a, **k: types.SimpleNamespace(stdout="")) is None
+    assert app_overlays.check_app("yoda", package, "/py", venv([], calls)) is None  # already given
+    assert len(calls) == 1  # the venv's OpenCV is asked once until it changes
+
+
+def test_a_scanned_overlay_is_dropped_once_the_venv_has_everything(tmp_path: Path) -> None:
+    package = scanned_app(tmp_path)
+    app_overlays.check_app("yoda", package, "/py", venv(["data", "cvtColor", "COLOR_BGR2GRAY"]))
+    (package.parent / "cv2/__init__.py").write_text("# reinstalled\n")
+    os.utime(package.parent / "cv2/__init__.py", (1, 1))
+    full = ["data", "cvtColor", "COLOR_BGR2GRAY", "CascadeClassifier"]
+    assert app_overlays.check_app("yoda", package, "/py", venv(full)) is None
+    assert app_overlays.overlays_for("yoda") == []
+
+
+def test_a_crash_learned_overlay_stays(tmp_path: Path) -> None:
+    package = scanned_app(tmp_path)
+    app_overlays.learn("yoda", "module 'cv2' has no attribute 'CascadeClassifier'")
+    full = ["data", "cvtColor", "COLOR_BGR2GRAY", "CascadeClassifier"]
+    assert app_overlays.check_app("yoda", package, "/py", venv(full)) is None
+    assert app_overlays.overlays_for("yoda") == [OVERLAY]
+
+
+def test_nothing_to_decide_without_opencv_or_a_package(tmp_path: Path) -> None:
+    package = scanned_app(tmp_path)
+    (package.parent / "cv2/__init__.py").unlink()
+    assert app_overlays.check_app("yoda", package, "/py", venv(["data"])) is None
     assert app_overlays.check_app("other", tmp_path / "missing", "/py") is None
+
+
+def test_a_malformed_record_is_ignored(tmp_path: Path) -> None:
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state/app-overlays.json").write_text(
+        json.dumps({"yoda": [["x"]], "radio": {OVERLAY: 1}, "a": {"nope": "scan"}})
+    )
+    assert app_overlays.overlays_for("yoda") == []
+    assert app_overlays.overlays_for("radio") == []
+    assert app_overlays.overlays_for("a") == []
 
 
 def test_the_shim_puts_overlays_first_on_the_path(tmp_path: Path) -> None:
@@ -106,9 +154,9 @@ def test_the_shim_puts_overlays_first_on_the_path(tmp_path: Path) -> None:
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
-    path = ["/stdlib", str(b), "/site-packages"]
+    path = ["/stdlib", str(b), "/venv/lib/python3.12/site-packages"]
     shim.add_overlays(os.pathsep.join([str(a), str(b), str(tmp_path / "missing")]), path)
-    assert path == [str(a), str(b), "/stdlib", "/site-packages"]
+    assert path == ["/stdlib", str(a), str(b), "/venv/lib/python3.12/site-packages"]
 
 
 class Manager:
@@ -133,6 +181,13 @@ def test_only_the_app_being_started_sees_its_overlays(tmp_path: Path, monkeypatc
     asyncio.run(app_bind._start_app(original, Manager(), "yoda"))
     asyncio.run(app_bind._start_app(original, Manager(), "radio"))
     assert seen == {"yoda": str(folder), "radio": None}
+    assert app_overlays.PATHS_ENV not in os.environ
+
+    async def failing(manager: Any, app_name: str) -> str:
+        raise RuntimeError("An app is already running")
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(app_bind._start_app(failing, Manager(), "yoda"))
     assert app_overlays.PATHS_ENV not in os.environ
 
 
