@@ -620,6 +620,7 @@ def wrap_wobbling(
     set_offsets: Callable[..., None],
     process_command: Callable[..., Any],
     sleep: Callable[..., Any],
+    quiesce: Callable[..., None],
 ) -> None:
     """Wrap the media server's wobbling and the backend's offsets, each as
     ``wrapper(original, self, *args)``."""
@@ -633,6 +634,7 @@ def wrap_wobbling(
     _wrap(Backend, "process_command", process_command)
     _wrap(Backend, "goto_sleep", sleep)
     _wrap(Backend, "reset_to_sleep", sleep)
+    _wrap(Backend, "_quiesce_aim_sources", quiesce)
 
 
 def motor_ticks(angle: float) -> float:

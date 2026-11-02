@@ -117,11 +117,22 @@ class Choice:
         """A wobble-off request: True if it should be ignored."""
         if self._is_app():
             return self._wanted
-        if self._sleeps:
+        if getattr(self._app, "quiescing", False):
             self._stopped_by_sleep = self._wanted
             return False
         self._wanted = False
         return False
+
+    def quiescing(self, run: Callable[[], Any]) -> Any:
+        """Run ``run``; a wobble-off during it is a sleep's, for its moves only."""
+        self._app.quiescing = True
+        try:
+            return run()
+        finally:
+            self._app.quiescing = False
+
+    def forget(self) -> None:
+        self._wanted = False
 
     def sleep_started(self) -> None:
         self._sleeps += 1
@@ -300,10 +311,16 @@ def apply() -> None:
         try:
             return await original(backend, *args, **kwargs)
         finally:
-            if choice.sleep_ended() and not upstream.backend_shutting_down(backend):
+            back_on = choice.sleep_ended()
+            if upstream.backend_shutting_down(backend):
+                choice.forget()
+            elif back_on:
                 server = upstream.media_server(backend)
                 if server is not None:
                     server.enable_wobbling(backend.set_speech_offsets)
+
+    def quiesce(original: Any, backend: Any) -> None:
+        choice.quiescing(lambda: original(backend))
 
     def enable(original: Any, server: Any, callback: Any) -> None:
         choice.enabled()
@@ -334,5 +351,5 @@ def apply() -> None:
         gate.saw_offsets()
         original(backend, limits.scale(backend, offsets))
 
-    upstream.wrap_wobbling(enable, disable, on_sample, set_offsets, process_command, sleep)
+    upstream.wrap_wobbling(enable, disable, on_sample, set_offsets, process_command, sleep, quiesce)
     logger.info("Speaker wobble: on")
