@@ -15,6 +15,9 @@ tap holds off while an app's offsets are arriving.
 While the speaker is muted for hearing, only Talk still comes out of it, so
 only Talk moves the head, and an app's own offsets are ignored.
 
+An app using the SDK's wobble also turns the daemon's off when it stops, even
+if the dashboard turned it on. ``Choice`` keeps it on then.
+
 The daemon doesn't check offsets against the robot's limits, and a driven head
 can already be near them. ``Limits`` scales down any offsets, from any source,
 that would make the head unreachable, pass a motor's limit or jump its joints.
@@ -81,6 +84,36 @@ class Gate:
         if not self.ours():
             self._app_at = self._clock()
             self._at_zero = False
+
+
+class Choice:
+    """Whether the dashboard's choice keeps the wobble on when an app turns it off."""
+
+    def __init__(self) -> None:
+        self._wanted = False
+        self._app = threading.local()
+
+    def from_app(self, run: Callable[[], Any]) -> Any:
+        """Run ``run``; wobble changes during it are the app's."""
+        self._app.active = True
+        try:
+            return run()
+        finally:
+            self._app.active = False
+
+    def _is_app(self) -> bool:
+        return getattr(self._app, "active", False)
+
+    def enabled(self) -> None:
+        if not self._is_app():
+            self._wanted = True
+
+    def keep_on(self) -> bool:
+        """A wobble-off request: True if it should be ignored."""
+        if self._is_app():
+            return self._wanted
+        self._wanted = False
+        return False
 
 
 class SpeakerSwitch:
@@ -229,8 +262,16 @@ def apply() -> None:
     tap = Tap()
     limits = Limits(*upstream.wobble_limits())
     speaker = SpeakerSwitch()
+    choice = Choice()
+
+    def process_command(original: Any, backend: Any, cmd: Any, *args: Any, **kwargs: Any) -> Any:
+        # Only this command: a sleep must still stop the wobble before it moves.
+        if type(cmd).__name__ != "SetWobblingCmd":
+            return original(backend, cmd, *args, **kwargs)
+        return choice.from_app(lambda: original(backend, cmd, *args, **kwargs))
 
     def enable(original: Any, server: Any, callback: Any) -> None:
+        choice.enabled()
         original(server, gate.wrap(callback))
         if audio_tee.is_installed():
             try:
@@ -239,6 +280,8 @@ def apply() -> None:
                 logger.warning("Couldn't start following the speaker: %s", error)
 
     def disable(original: Any, server: Any) -> None:
+        if choice.keep_on():
+            return
         tap.stop()
         original(server)
 
@@ -256,5 +299,5 @@ def apply() -> None:
         gate.saw_offsets()
         original(backend, limits.scale(backend, offsets))
 
-    upstream.wrap_wobbling(enable, disable, on_sample, set_offsets)
+    upstream.wrap_wobbling(enable, disable, on_sample, set_offsets, process_command)
     logger.info("Speaker wobble: on")

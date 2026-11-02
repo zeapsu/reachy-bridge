@@ -1,6 +1,6 @@
 import numpy as np
 
-from reachy_bridge_runtime.features.wobble import Gate, Limits, SpeakerSwitch, heard_from_speaker
+from reachy_bridge_runtime.features.wobble import Choice, Gate, Limits, SpeakerSwitch, heard_from_speaker
 
 MOVE = (0.001, 0.0, 0.0, 0.0, 0.0, 0.0)
 ZERO = (0.0,) * 6
@@ -120,3 +120,24 @@ def test_unreachable_target_or_failed_check_gives_zero():
         raise RuntimeError("no")
 
     assert Limits(broken, MOTORS).scale(None, OFFSETS) == (0.0,) * 6
+
+
+def test_an_app_stopping_keeps_the_wobble_the_dashboard_turned_on():
+    choice = Choice()
+    choice.enabled()
+    choice.from_app(choice.enabled)
+    assert choice.from_app(choice.keep_on)
+    assert not choice.keep_on()  # the dashboard can still turn it off
+
+
+def test_an_app_turns_off_its_own_wobble():
+    choice = Choice()
+    choice.from_app(choice.enabled)
+    assert not choice.from_app(choice.keep_on)
+
+
+def test_the_dashboard_turning_it_off_ends_the_choice():
+    choice = Choice()
+    choice.enabled()
+    assert not choice.keep_on()
+    assert not choice.from_app(choice.keep_on)
