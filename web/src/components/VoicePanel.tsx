@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { VoiceApi } from "../hooks/useVoice.ts";
 import type { ControlState } from "../logic/control.ts";
 import { isMine, onTailnet, talkBlocked, voiceBlocked } from "../logic/voice.ts";
+import { ROUTE_ICONS } from "./Shell.tsx";
 import "./VoicePanel.css";
 
 const secure = typeof window !== "undefined" && window.isSecureContext;
@@ -43,6 +44,7 @@ export function VoicePanel({ voice, control, robotOff }: { voice: VoiceApi; cont
       disabled={voice.busy || off || (!open && (blocked !== null || robotOff))}
       onClick={() => flip(key)}
     >
+      {ROUTE_ICONS[key]}
       {label}
     </button>
   );

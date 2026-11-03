@@ -32,7 +32,7 @@ const ICONS: Record<Tab, ReactNode> = {
 
 const stroke = { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true } as const;
 
-const ROUTE_ICONS: Record<VoiceRoute, ReactNode> = {
+export const ROUTE_ICONS: Record<VoiceRoute, ReactNode> = {
   // An ear.
   listen: (
     <svg {...stroke}>
