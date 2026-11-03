@@ -32,32 +32,30 @@ const ICONS: Record<Tab, ReactNode> = {
 
 const stroke = { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true } as const;
 
-const ROUTE_ICONS: Record<VoiceRoute, ReactNode> = {
-  // An ear.
+export const ROUTE_ICONS: Record<VoiceRoute, ReactNode> = {
   listen: (
     <svg {...stroke}>
-      <path d="M6 9a6 6 0 1 1 12 0c0 3-2 4-3 5.5S14 18 12 19.5 8 20 8 18" />
-      <path d="M10 10a2 2 0 1 1 4 0" />
+      <path d="M6 10a6 6 0 0 1 12 0c0 4-4 4-4 8a3 3 0 0 1-6 0" />
     </svg>
   ),
-  // A speaker.
   hear: (
     <svg {...stroke}>
-      <path d="M4 10v4h3l5 4V6L7 10H4Z" />
-      <path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11" />
+      <path d="M4 9v6h4l5 4V5L8 9H4Z" />
+      <path d="M17 9a4 4 0 0 1 0 6" />
     </svg>
   ),
-  // A microphone.
   talk: (
     <svg {...stroke}>
       <rect x="9" y="3" width="6" height="11" rx="3" />
       <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
     </svg>
   ),
-  // A speech bubble: talking to its apps.
   apps: (
     <svg {...stroke}>
-      <path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H10l-5 4v-4a2 2 0 0 1-1-2V6Z" />
+      <rect x="4" y="4" width="7" height="7" rx="1.5" />
+      <rect x="13" y="4" width="7" height="7" rx="1.5" />
+      <rect x="4" y="13" width="7" height="7" rx="1.5" />
+      <rect x="13" y="13" width="7" height="7" rx="1.5" />
     </svg>
   ),
 };

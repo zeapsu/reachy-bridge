@@ -38,7 +38,7 @@ const chip = (page: Page) => page.locator("#voice-panel .chip");
 
 async function voicePane(page: Page): Promise<void> {
   await page.getByRole("group", { name: "Robot controls" }).getByRole("button", { name: "Voice" }).click();
-  await expect(page.getByRole("heading", { name: "Listen and talk" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start" })).toBeVisible();
 }
 
 /** Set the switches to `route`, one at a time as a person would, each applied before the next. */
@@ -162,7 +162,7 @@ test("stopping ends the sound everywhere", async ({ page }) => {
   // It carries sound first, so the silence after Stop means something.
   await checkTraffic(page, all);
   await page.locator("#voice-stop").click();
-  await expect(chip(page)).toHaveText("off");
+  await expect(chip(page)).toHaveCount(0);
   await gatewayEnds();
   const from = { speaker: mark("speaker"), apps: mark("apps") };
   await page.waitForTimeout(MEASURE_MS);
@@ -174,7 +174,7 @@ test("stopping ends the sound everywhere", async ({ page }) => {
 test("turning the robot off ends the session", async ({ page }) => {
   await start(page, { listen: true, hear: false, talk: true, apps: false });
   await setPower(page, false);
-  await expect(chip(page)).toHaveText("off", { timeout: 30_000 });
+  await expect(chip(page)).toHaveCount(0, { timeout: 30_000 });
   await gatewayEnds();
   await expect.poll(async () => (await page.request.get("/api/audio").then((r) => r.json())).session, { timeout: 30_000 }).toBeNull();
 });

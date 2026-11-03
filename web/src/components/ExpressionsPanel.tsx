@@ -112,12 +112,12 @@ export function ExpressionsPanel({ expr, daemonOnline, controlBusy, appActive }:
 
   const playing = expr.playing;
   const showCancel = !expr.cancelHidden;
-  const title = playing ? moveLabel(playing.move) : (picked?.label ?? "");
+  const title = playing ? moveLabel(playing.move) : daemonOnline ? (picked?.label ?? "") : "";
   const meta = playing
     ? "Playing…"
     : expr.busy === "returning"
       ? "Returning home…"
-      : picked
+      : picked && daemonOnline
         ? `${kind === "emotions" ? "Emotion" : "Dance"} · ${centred + 1} of ${moves.length}`
         : "";
 

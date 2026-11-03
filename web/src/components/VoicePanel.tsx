@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { VoiceApi } from "../hooks/useVoice.ts";
 import type { ControlState } from "../logic/control.ts";
 import { isMine, onTailnet, talkBlocked, voiceBlocked } from "../logic/voice.ts";
+import { ROUTE_ICONS } from "./Shell.tsx";
 import "./VoicePanel.css";
 
 const secure = typeof window !== "undefined" && window.isSecureContext;
@@ -43,19 +44,19 @@ export function VoicePanel({ voice, control, robotOff }: { voice: VoiceApi; cont
       disabled={voice.busy || off || (!open && (blocked !== null || robotOff))}
       onClick={() => flip(key)}
     >
+      {ROUTE_ICONS[key]}
       {label}
     </button>
   );
 
   return (
-    <div className={`voice${open ? " open" : ""}`} id="voice-panel" aria-labelledby="voice-title">
-      <div className="voice-head">
-        <h3 id="voice-title">Listen and talk</h3>
-        <span className="chip">
-          <span className={`dot${voice.status === "live" ? " ok" : voice.status === "connecting" ? " loading" : ""}`}></span>
-          {voice.status === "live" ? "live" : voice.status === "connecting" ? "connecting" : "off"}
+    <div className={`voice${open ? " open" : ""}`} id="voice-panel" role="group" aria-label="Listen and talk">
+      {open ? (
+        <span className="chip voice-state">
+          <span className={`dot${voice.status === "live" ? " ok" : " loading"}`}></span>
+          {voice.status === "live" ? "live" : "connecting"}
         </span>
-      </div>
+      ) : null}
       <div className="voice-group" role="group" aria-labelledby="voice-listen-label">
         <span className="label" id="voice-listen-label">Listen</span>
         <div className="voice-chips">
