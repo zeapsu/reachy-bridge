@@ -234,7 +234,7 @@ def test_talk_reaches_the_wobble_but_not_hearing():
 
 
 def test_marker_lets_a_rolled_back_runtime_replace_this_tee():
-    for older in ("and mic tee (v2)", "(v3)", "(v4)", "(v5)"):
+    for older in ("and mic tee (v2)", "(v3)", "(v4)", "(v5)", "(v6)"):
         assert older not in audio_tee.MARKER
 
 
@@ -272,3 +272,14 @@ def test_without_alsaloop_the_tee_stays_out(tmp_path, monkeypatch):
     assert audio_tee._card_usable()
     monkeypatch.setattr(audio_tee.shutil, "which", lambda _name: None)
     assert not audio_tee._card_usable()
+
+
+def test_apps_that_name_no_device_get_the_robots_speaker_and_mic():
+    teed = audio_tee.tee(UPSTREAM)
+    assert teed is not None
+    default = teed[teed.rindex("pcm.!default") :]
+    # After upstream's own default, so it wins.
+    assert teed.index("pcm.!default") < teed.index(audio_tee.MARKER) < teed.rindex("pcm.!default")
+    assert f'playback.pcm "{audio_tee.SINK}"' in default
+    assert f'capture.pcm "{audio_tee.SOURCE}"' in default
+    assert audio_tee.untee(teed).count("pcm.!default") == 1
