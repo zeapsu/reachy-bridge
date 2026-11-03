@@ -472,6 +472,10 @@ input[type="range"]:disabled { opacity: 0.45; }
   font-size: 14px;
 }
 .field::placeholder { color: var(--ink-3); }
+/* iOS zooms the page when a focused field's text is under 16px. */
+@media (pointer: coarse) {
+  .field { font-size: 16px; }
+}
 
 .spin {
   width: 14px;
