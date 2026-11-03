@@ -53,10 +53,10 @@ logger = logging.getLogger(__name__)
 
 # Every version's marker starts with PREFIX; MARKER is this version's. It
 # contains the first version's marker, whose runtime would otherwise wrap it,
-# but not those of v2 to v5: rolled back to one of them, a runtime replaces this
+# but not those of v2 to v6: rolled back to one of them, a runtime replaces this
 # tee with its own, since its install has no mic mixer or an older one.
 PREFIX = "# reachy-bridge: "
-MARKER = PREFIX + "speaker tee (#219) with mic mixer (v6)"
+MARKER = PREFIX + "speaker tee (#219) with mic mixer and app default (v7)"
 LOOPBACK = "Loopback"
 SPEAKER_SWITCH = "Reachy Bridge Speaker"
 HEAR_SOURCE = "reachy_bridge_hear"
@@ -185,6 +185,17 @@ pcm.{SOURCE} {{
         slave {{ pcm "reachy_bridge_mic_loop_in" channels 4 }}
         ttable {{ 0.2 1 1.3 1 }}
     }}
+}}
+
+# An app that plays or records without naming a device gets the robot's
+# speaker and mic, not upstream's raw card: the bridge holds that card open, so
+# PortAudio can't list it and falls back to the board's first output (HDMI on a
+# Jetson), which rejects 16 kHz. Overrides upstream's default above; taking the
+# tee out restores it.
+pcm.!default {{
+    type asym
+    playback.pcm "{SINK}"
+    capture.pcm "{SOURCE}"
 }}
 """
 
