@@ -31,16 +31,21 @@
     filter 0.7s var(--ease);
 }
 #robot-3d.offline {
-  opacity: 0.45;
-  filter: saturate(0.25);
+  opacity: 0.35;
+  filter: grayscale(1);
 }
 .telemetry.offline { display: none; }
-.stage-power {
+.btn.stage-power {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 22px;
+  font-size: 15px;
   position: absolute;
   /* Not centred with a transform: .press scales on press and would replace it. */
   left: 0;
   right: 0;
-  bottom: 24px;
+  bottom: 32px;
   width: fit-content;
   margin-inline: auto;
 }
@@ -171,3 +176,4 @@
 @media (max-width: 420px) {
   .telemetry .doa { display: none; }
 }
+.stage-power svg { width: 16px; height: 16px; }

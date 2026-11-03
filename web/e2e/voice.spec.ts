@@ -38,7 +38,7 @@ const chip = (page: Page) => page.locator("#voice-panel .chip");
 
 async function voicePane(page: Page): Promise<void> {
   await page.getByRole("group", { name: "Robot controls" }).getByRole("button", { name: "Voice" }).click();
-  await expect(page.getByRole("heading", { name: "Listen and talk" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start" })).toBeVisible();
 }
 
 /** Set the switches to `route`, one at a time as a person would, each applied before the next. */

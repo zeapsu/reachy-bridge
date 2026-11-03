@@ -1,26 +1,13 @@
 /* Listen and talk (#219). */
 .voice {
   display: grid;
-  gap: 6px;
-  padding: 10px 12px;
-  margin-bottom: 12px;
-  border-radius: 14px;
-  border: 1px solid var(--hair);
-}
-.voice.open { border-color: var(--accent); }
-.voice-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.voice-head h3 {
-  margin: 0;
-  font-size: 14px;
+  gap: 12px;
 }
 .voice .note { margin: 0; }
-.voice > .btn { justify-self: start; }
-.voice-group { display: grid; gap: 4px; }
+.voice > .btn { width: 100%; }
+.voice-group { display: grid; gap: 6px; }
 .voice-chips { display: flex; gap: 8px; }
+.voice-chip { font-size: 13.5px; }
 .voice-chip {
   flex: 1;
   display: flex;
@@ -33,7 +20,6 @@
   background: var(--well);
   color: var(--ink-2);
   font: inherit;
-  font-size: 13px;
   cursor: pointer;
 }
 .voice-chip svg { width: 16px; height: 16px; flex: none; }
@@ -43,3 +29,4 @@
   font-weight: 600;
 }
 .voice-chip:disabled { opacity: 0.45; cursor: default; }
+.voice-state { justify-self: start; }
