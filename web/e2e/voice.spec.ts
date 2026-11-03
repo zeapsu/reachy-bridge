@@ -162,7 +162,7 @@ test("stopping ends the sound everywhere", async ({ page }) => {
   // It carries sound first, so the silence after Stop means something.
   await checkTraffic(page, all);
   await page.locator("#voice-stop").click();
-  await expect(chip(page)).toHaveText("off");
+  await expect(chip(page)).toHaveCount(0);
   await gatewayEnds();
   const from = { speaker: mark("speaker"), apps: mark("apps") };
   await page.waitForTimeout(MEASURE_MS);
@@ -174,7 +174,7 @@ test("stopping ends the sound everywhere", async ({ page }) => {
 test("turning the robot off ends the session", async ({ page }) => {
   await start(page, { listen: true, hear: false, talk: true, apps: false });
   await setPower(page, false);
-  await expect(chip(page)).toHaveText("off", { timeout: 30_000 });
+  await expect(chip(page)).toHaveCount(0, { timeout: 30_000 });
   await gatewayEnds();
   await expect.poll(async () => (await page.request.get("/api/audio").then((r) => r.json())).session, { timeout: 30_000 }).toBeNull();
 });
