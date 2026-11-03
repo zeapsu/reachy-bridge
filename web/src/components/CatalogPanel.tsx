@@ -156,7 +156,7 @@ function HfLoginRow({ catalog }: { catalog: CatalogState }) {
           <input
             className="field"
             type="password"
-            placeholder="Access token (hf_…)"
+            placeholder="Token (hf_…)"
             aria-label="Hugging Face access token"
             autoComplete="new-password"
             spellCheck={false}
