@@ -50,7 +50,7 @@ export function VoicePanel({ voice, control, robotOff }: { voice: VoiceApi; cont
   );
 
   return (
-    <div className={`voice${open ? " open" : ""}`} id="voice-panel" aria-label="Listen and talk">
+    <div className={`voice${open ? " open" : ""}`} id="voice-panel" role="group" aria-label="Listen and talk">
       {open ? (
         <span className="chip voice-state">
           <span className={`dot${voice.status === "live" ? " ok" : " loading"}`}></span>

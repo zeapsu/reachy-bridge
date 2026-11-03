@@ -7,7 +7,6 @@
 .voice > .btn { width: 100%; }
 .voice-group { display: grid; gap: 6px; }
 .voice-chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.voice-chip { font-size: 13.5px; }
 .voice-chip {
   white-space: nowrap;
   flex: 1;
@@ -21,6 +20,7 @@
   background: var(--well);
   color: var(--ink-2);
   font: inherit;
+  font-size: 13.5px;
   cursor: pointer;
 }
 .voice-chip svg { width: 16px; height: 16px; flex: none; }
