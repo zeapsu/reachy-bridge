@@ -79,8 +79,11 @@ export function useVoice(visible: boolean): VoiceApi {
   // The input picked in the panel, kept for when talking switches back on.
   const micDevice = useRef<string | undefined>(undefined);
   const [pickedMic, setPickedMic] = useState<string | undefined>(undefined);
-  // The picked input is gone (unplugged): back to the browser's default.
-  const forgetPick = useCallback(() => {
+  // The picked input is gone (unplugged): forget it and use the browser's
+  // default. Any other failure (refused, busy) stays an error.
+  const forgetPick = useCallback((e: unknown) => {
+    const name = e instanceof DOMException ? e.name : "";
+    if (!micDevice.current || (name !== "OverconstrainedError" && name !== "NotFoundError")) throw e;
     micDevice.current = undefined;
     setPickedMic(undefined);
     return microphone();
@@ -230,7 +233,7 @@ export function useVoice(visible: boolean): VoiceApi {
           setError(errorText(e, "Couldn't start the audio."));
         }
       }),
-    [run, teardown],
+    [run, teardown, forgetPick],
   );
 
   const setRoute = useCallback(
@@ -270,7 +273,7 @@ export function useVoice(visible: boolean): VoiceApi {
           setError(`${errorText(e, "Couldn't switch the audio.")} Audio stopped.`);
         }
       }),
-    [run, teardown],
+    [run, teardown, forgetPick],
   );
 
   const stop = useCallback(
