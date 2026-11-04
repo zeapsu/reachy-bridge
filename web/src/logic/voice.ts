@@ -73,3 +73,37 @@ export function voiceBadge(view: VoiceView | null, mine: string | null): string 
   if (!s) return null;
   return isMine(s, mine) ? `You're ${doing(s)}` : `${s.person || "Someone"} is ${doing(s)}`;
 }
+
+/** Quieter than this (dBFS) shows an empty meter: room noise after noise suppression. */
+export const METER_FLOOR_DB = -60;
+/** This loud (dBFS) or louder fills the meter: speaking close to the mic. */
+export const METER_TOP_DB = -12;
+/** How much of the meter falls back per second once you stop talking. */
+export const METER_FALL_PER_S = 1.5;
+
+/** The RMS of one block of samples (-1..1). */
+export function rms(samples: ArrayLike<number>): number {
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+  return samples.length ? Math.sqrt(sum / samples.length) : 0;
+}
+
+/** A level (RMS, 0..1) as a meter fill, 0..1, on a dB scale like a mixer's. */
+export function meterFill(level: number): number {
+  if (level <= 0) return 0;
+  const db = 20 * Math.log10(level);
+  return Math.min(1, Math.max(0, (db - METER_FLOOR_DB) / (METER_TOP_DB - METER_FLOOR_DB)));
+}
+
+/** The next shown fill: jumps up at once, falls back smoothly (`dt` seconds since the last frame). */
+export function meterStep(shown: number, fill: number, dt: number): number {
+  return fill >= shown ? fill : Math.max(fill, shown - METER_FALL_PER_S * dt);
+}
+
+/** How long a new mic may stay silent before the panel offers other inputs. */
+export const MIC_SILENT_MS = 4000;
+/**
+ * Any level above this (RMS, about -90 dBFS) means the mic is live, even a
+ * quiet room after noise suppression; a dead or muted input sends zeros.
+ */
+export const MIC_ALIVE_RMS = 3e-5;

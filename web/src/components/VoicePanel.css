@@ -30,3 +30,49 @@
 }
 .voice-chip:disabled { opacity: 0.45; cursor: default; }
 .voice-state { justify-self: start; }
+
+/* The lit Talk chip fills with your mic's level (--level, 0..1, useMicLevel). */
+.voice { --level: 0; }
+.voice.sending .voice-chip[aria-checked="true"]:is(#voice-talk, #voice-apps) {
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.42) 0 calc(var(--level) * 100%), transparent 0),
+    var(--accent);
+}
+/* No sound from the mic since it started: offer the other inputs. */
+.mic-silent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  border-radius: 14px;
+  background: var(--well);
+  color: var(--warn);
+}
+.mic-silent svg { width: 16px; height: 16px; flex: none; }
+.mic-silent select {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  text-overflow: ellipsis;
+}
+/* iOS zooms the page when a focused field's text is under 16px (#287). */
+@media (pointer: coarse) {
+  .mic-silent select { font-size: 16px; }
+}
+/* Empty until the mic row shows: take back the grid gap it would add. */
+.mic-live:empty { margin-top: -6px; }
+.mic-silent .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.mic-silent { position: relative; }

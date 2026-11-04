@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { VoiceSession } from "../api/voice.ts";
-import { onTailnet, talkBlocked, voiceBadge, voiceBlocked } from "./voice.ts";
+import { METER_FALL_PER_S, meterFill, meterStep, onTailnet, rms, talkBlocked, voiceBadge, voiceBlocked } from "./voice.ts";
 
 const session = (over: Partial<VoiceSession> = {}): VoiceSession => ({
   id: null,
@@ -75,5 +75,25 @@ describe("voiceBadge", () => {
     expect(voiceBadge({ available: true, session: open }, "r1")).toBe("You're listening");
     expect(voiceBadge({ available: true, session: open }, null)).toBe("Someone is listening");
     expect(voiceBadge({ available: true, session: open }, "r0")).toBe("Someone is listening");
+  });
+});
+
+describe("mic meter", () => {
+  test("rms of a block", () => {
+    expect(rms([])).toBe(0);
+    expect(rms([0.5, -0.5, 0.5, -0.5])).toBeCloseTo(0.5);
+  });
+  test("fill is empty for silence and full when loud", () => {
+    expect(meterFill(0)).toBe(0);
+    expect(meterFill(0.0001)).toBe(0); // -80 dBFS: below the floor
+    expect(meterFill(1)).toBe(1);
+    const mid = meterFill(10 ** (-36 / 20));
+    expect(mid).toBeGreaterThan(0.4);
+    expect(mid).toBeLessThan(0.6);
+  });
+  test("jumps up at once, falls back smoothly", () => {
+    expect(meterStep(0.2, 0.9, 0.016)).toBe(0.9);
+    expect(meterStep(0.9, 0, 0.1)).toBeCloseTo(0.9 - METER_FALL_PER_S * 0.1);
+    expect(meterStep(0.1, 0, 1)).toBe(0);
   });
 });

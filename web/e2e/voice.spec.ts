@@ -178,3 +178,17 @@ test("turning the robot off ends the session", async ({ page }) => {
   await gatewayEnds();
   await expect.poll(async () => (await page.request.get("/api/audio").then((r) => r.json())).session, { timeout: 30_000 }).toBeNull();
 });
+
+const level = (page: Page) => page.locator("#voice-panel").evaluate((el) => Number((el as HTMLElement).style.getPropertyValue("--level") || 0));
+const micPicker = (page: Page) => page.getByRole("combobox", { name: "Microphone" });
+
+test("the lit Talk chip shows this browser's mic level", async ({ page }) => {
+  await start(page, { listen: false, hear: false, talk: true, apps: false });
+  await expect.poll(() => level(page), { timeout: 10_000 }).toBeGreaterThan(0.1);
+  // Sound came through, so no other inputs are offered.
+  await page.waitForTimeout(5000);
+  await expect(micPicker(page)).toHaveCount(0);
+  // Talk off: the meter stops.
+  await sw(page, "talk").click();
+  await expect.poll(() => level(page)).toBe(0);
+});

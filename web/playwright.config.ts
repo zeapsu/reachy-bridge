@@ -16,7 +16,7 @@ const voice = process.env.SIM_AUDIO
   ? [
       {
         name: "voice",
-        testMatch: "voice.spec.ts",
+        testMatch: /voice(-silent-mic)?\.spec\.ts/,
         use: {
           ...devices["Desktop Chrome"],
           viewport: { width: 1280, height: 800 },
@@ -48,8 +48,8 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   projects: [
-    { name: "desktop", testIgnore: "voice.spec.ts", use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } } },
-    { name: "phone", testIgnore: "voice.spec.ts", use: { ...devices["Pixel 7"] } },
+    { name: "desktop", testIgnore: /voice(-silent-mic)?\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } } },
+    { name: "phone", testIgnore: /voice(-silent-mic)?\.spec\.ts/, use: { ...devices["Pixel 7"] } },
     ...voice,
   ],
 });
