@@ -20,8 +20,13 @@ export interface VoiceApi {
   /** This browser's mic while it's sending, for the level meter. */
   micTrack: MediaStreamTrack | null;
   start: (route: VoiceRoute) => Promise<void>;
-  /** Send another input (a deviceId) while talking, without reconnecting. */
+  /**
+   * Use another input (a deviceId): at once while talking, without
+   * reconnecting, or from the next time talking starts.
+   */
   switchMic: (deviceId: string) => Promise<void>;
+  /** The input picked with switchMic, if any. */
+  pickedMic: string | undefined;
   /** Switch listening or talking without reconnecting. */
   setRoute: (route: VoiceRoute) => Promise<void>;
   stop: () => Promise<void>;
@@ -73,6 +78,7 @@ export function useVoice(visible: boolean): VoiceApi {
   const [micTrack, setMicTrack] = useState<MediaStreamTrack | null>(null);
   // The input picked in the panel, kept for when talking switches back on.
   const micDevice = useRef<string | undefined>(undefined);
+  const [pickedMic, setPickedMic] = useState<string | undefined>(undefined);
   const speaker = useRef<HTMLAudioElement | null>(null);
 
   const teardown = useCallback((why: string | null = null) => {
@@ -271,7 +277,7 @@ export function useVoice(visible: boolean): VoiceApi {
     [run, teardown],
   );
 
-  const switchMic = useCallback(
+  const swapMic = useCallback(
     (deviceId: string) =>
       run(async () => {
         const sender = pc.current?.getTransceivers()[0]?.sender;
@@ -304,10 +310,21 @@ export function useVoice(visible: boolean): VoiceApi {
         mic.current.stop();
         mic.current = next;
         micDevice.current = deviceId;
+        setPickedMic(deviceId);
         setMicTrack(next);
       }),
     [run],
   );
 
-  return { view, mine, needsTap, hear, status, route, error, busy, micTrack, start, switchMic, setRoute, stop };
+  const switchMic = useCallback(
+    async (deviceId: string) => {
+      if (mic.current) return swapMic(deviceId);
+      // Not talking yet: starting talking uses it.
+      micDevice.current = deviceId;
+      setPickedMic(deviceId);
+    },
+    [swapMic],
+  );
+
+  return { view, mine, needsTap, hear, status, route, error, busy, micTrack, start, switchMic, pickedMic, setRoute, stop };
 }
