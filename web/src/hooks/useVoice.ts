@@ -296,6 +296,11 @@ export function useVoice(visible: boolean): VoiceApi {
           setError(errorText(e, "Couldn't switch the microphone."));
           return;
         }
+        // The session may have ended while the swap was pending.
+        if (pc.current?.getTransceivers()[0]?.sender !== sender || !mic.current) {
+          next.stop();
+          return;
+        }
         mic.current.stop();
         mic.current = next;
         micDevice.current = deviceId;

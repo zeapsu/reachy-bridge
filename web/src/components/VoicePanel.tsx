@@ -102,24 +102,28 @@ export function VoicePanel({ voice, control, robotOff }: { voice: VoiceApi; cont
           {chip("voice-talk", "talk", "Out loud", "talk through the robot", noTalk !== null)}
           {chip("voice-apps", "apps", "To apps", "talk to Reachy's apps", noTalk !== null)}
         </div>
-        {silent && sending ? (
-          <label className="mic-silent">
-            {MIC_OFF_ICON}
-            <select
-              aria-label="Microphone"
-              value={current}
-              disabled={voice.busy}
-              onChange={(e) => void voice.switchMic(e.target.value)}
-            >
-              {inputs.some((d) => d.deviceId === current) ? null : <option value={current}>{sending.label || "Microphone"}</option>}
-              {inputs.map((d, i) => (
-                <option key={d.deviceId} value={d.deviceId}>
-                  {d.label || `Microphone ${i + 1}`}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
+        {/* Announced as it appears; the select says which mic is silent. */}
+        <div className="mic-live" aria-live="polite">
+          {silent && sending ? (
+            <label className="mic-silent">
+              <span className="sr-only">No sound from this microphone</span>
+              {MIC_OFF_ICON}
+              <select
+                aria-label="Microphone"
+                value={current}
+                disabled={voice.busy}
+                onChange={(e) => void voice.switchMic(e.target.value)}
+              >
+                {inputs.some((d) => d.deviceId === current) ? null : <option value={current}>{sending.label || "Microphone"}</option>}
+                {inputs.map((d, i) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label || `Microphone ${i + 1}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+        </div>
         {noTalk ? <p className="note" id="voice-talk-note">{noTalk}</p> : null}
       </div>
       {open && voice.needsTap ? (

@@ -65,3 +65,14 @@
 @media (pointer: coarse) {
   .mic-silent select { font-size: 16px; }
 }
+/* Empty until the mic row shows: take back the grid gap it would add. */
+.mic-live:empty { margin-top: -6px; }
+.mic-silent .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.mic-silent { position: relative; }

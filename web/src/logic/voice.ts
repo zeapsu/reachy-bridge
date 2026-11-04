@@ -102,3 +102,8 @@ export function meterStep(shown: number, fill: number, dt: number): number {
 
 /** How long a new mic may stay silent before the panel offers other inputs. */
 export const MIC_SILENT_MS = 4000;
+/**
+ * Any level above this (RMS, about -90 dBFS) means the mic is live, even a
+ * quiet room after noise suppression; a dead or muted input sends zeros.
+ */
+export const MIC_ALIVE_RMS = 3e-5;
