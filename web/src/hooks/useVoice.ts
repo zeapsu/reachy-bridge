@@ -79,6 +79,12 @@ export function useVoice(visible: boolean): VoiceApi {
   // The input picked in the panel, kept for when talking switches back on.
   const micDevice = useRef<string | undefined>(undefined);
   const [pickedMic, setPickedMic] = useState<string | undefined>(undefined);
+  // The picked input is gone (unplugged): back to the browser's default.
+  const forgetPick = useCallback(() => {
+    micDevice.current = undefined;
+    setPickedMic(undefined);
+    return microphone();
+  }, []);
   const speaker = useRef<HTMLAudioElement | null>(null);
 
   const teardown = useCallback((why: string | null = null) => {
@@ -173,7 +179,7 @@ export function useVoice(visible: boolean): VoiceApi {
           // Take control now: the mic prompt below can outlast the tap's activation.
           await takeControlIfFree(true);
           // Ask for the mic first: a refusal shouldn't open the robot's.
-          const track = speaks(next) ? await microphone(micDevice.current).catch(() => microphone()) : null;
+          const track = speaks(next) ? await microphone(micDevice.current).catch(forgetPick) : null;
           mic.current = track;
           setMicTrack(track);
           const { id: sid, ref, offer } = await apiJson<VoiceOffer>(paths.voiceSession, { method: "POST", body: JSON.stringify(next) });
@@ -236,7 +242,7 @@ export function useVoice(visible: boolean): VoiceApi {
         if (speaks(next) && !mic.current) {
           // Nothing has changed yet, so a refused mic just leaves the switch off.
           try {
-            mic.current = await microphone(micDevice.current).catch(() => microphone());
+            mic.current = await microphone(micDevice.current).catch(forgetPick);
           } catch (e) {
             setError(errorText(e, "Couldn't switch the audio."));
             return;

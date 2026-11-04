@@ -20,7 +20,7 @@ const MIC_OFF_ICON = (
  * This browser's audio inputs, listed while `want`. Names (labels) come only
  * once the page may use the mic; before that they're blank.
  */
-function useInputs(want: boolean): MediaDeviceInfo[] {
+function useInputs(want: boolean, refresh: string | undefined): MediaDeviceInfo[] {
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([]);
   useEffect(() => {
     const devices = navigator.mediaDevices;
@@ -33,7 +33,9 @@ function useInputs(want: boolean): MediaDeviceInfo[] {
     load();
     devices.addEventListener("devicechange", load);
     return () => devices.removeEventListener("devicechange", load);
-  }, [want]);
+    // `refresh`: a new mic track; the first one also brings mic permission,
+    // and with it the names, which devicechange doesn't always announce.
+  }, [want, refresh]);
   return inputs;
 }
 
@@ -60,14 +62,18 @@ export function VoicePanel({ voice, control, robotOff }: { voice: VoiceApi; cont
   // The mic row: while a Talk chip is on, before Start too, so the mic can be
   // picked first; that needs the mic names, which a first visit doesn't have.
   const talkOn = (route.talk || route.apps) && noTalk === null;
-  const all = useInputs(talkOn);
+  const all = useInputs(talkOn, sending?.id);
   // Chrome adds "default" and "communications" aliases of real inputs.
-  const inputs = all.filter((d) => d.deviceId !== "default" && d.deviceId !== "communications");
+  const inputs = all.filter((d) => d.deviceId && d.deviceId !== "default" && d.deviceId !== "communications");
   const named = inputs.some((d) => d.label);
   const showMics = talkOn && (sending !== null || (!open && named && blocked === null && !robotOff));
-  const current = sending ? (sending.getSettings().deviceId ?? "") : (voice.pickedMic ?? "");
   const currentName =
     sending?.label || all.find((d) => d.deviceId === "default")?.label.replace(/^Default - /, "") || "Microphone";
+  const picked = sending ? (sending.getSettings().deviceId ?? "") : (voice.pickedMic ?? "");
+  // The "default" alias isn't listed, so show the real input it stands for.
+  const current = inputs.some((d) => d.deviceId === picked)
+    ? picked
+    : (inputs.find((d) => d.label === currentName)?.deviceId ?? picked);
 
   const flip = (key: "listen" | "talk" | "hear" | "apps") => {
     const next = { ...route, [key]: !route[key] };
