@@ -17,7 +17,11 @@ export interface VoiceApi {
   route: VoiceRoute;
   error: string | null;
   busy: boolean;
+  /** This browser's mic while it's sending, for the level meter. */
+  micTrack: MediaStreamTrack | null;
   start: (route: VoiceRoute) => Promise<void>;
+  /** Send another input (a deviceId) while talking, without reconnecting. */
+  switchMic: (deviceId: string) => Promise<void>;
   /** Switch listening or talking without reconnecting. */
   setRoute: (route: VoiceRoute) => Promise<void>;
   stop: () => Promise<void>;
@@ -27,9 +31,9 @@ const OFF: VoiceRoute = { listen: false, talk: false, hear: false, apps: false }
 /** Either way of talking needs this browser's mic. */
 const speaks = (r: VoiceRoute) => r.talk || r.apps;
 
-async function microphone(): Promise<MediaStreamTrack> {
+async function microphone(deviceId?: string): Promise<MediaStreamTrack> {
   const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, ...(deviceId ? { deviceId: { exact: deviceId } } : {}) },
   });
   return stream.getAudioTracks()[0];
 }
@@ -66,6 +70,9 @@ export function useVoice(visible: boolean): VoiceApi {
   const openedAt = useRef(0);
   const mineRef = useRef<string | null>(null);
   const mic = useRef<MediaStreamTrack | null>(null);
+  const [micTrack, setMicTrack] = useState<MediaStreamTrack | null>(null);
+  // The input picked in the panel, kept for when talking switches back on.
+  const micDevice = useRef<string | undefined>(undefined);
   const speaker = useRef<HTMLAudioElement | null>(null);
 
   const teardown = useCallback((why: string | null = null) => {
@@ -73,6 +80,7 @@ export function useVoice(visible: boolean): VoiceApi {
     pc.current = null;
     mic.current?.stop();
     mic.current = null;
+    setMicTrack(null);
     if (speaker.current) speaker.current.srcObject = null;
     setNeedsTap(false);
     id.current = null;
@@ -159,8 +167,9 @@ export function useVoice(visible: boolean): VoiceApi {
           // Take control now: the mic prompt below can outlast the tap's activation.
           await takeControlIfFree(true);
           // Ask for the mic first: a refusal shouldn't open the robot's.
-          const track = speaks(next) ? await microphone() : null;
+          const track = speaks(next) ? await microphone(micDevice.current).catch(() => microphone()) : null;
           mic.current = track;
+          setMicTrack(track);
           const { id: sid, ref, offer } = await apiJson<VoiceOffer>(paths.voiceSession, { method: "POST", body: JSON.stringify(next) });
           opened = sid;
           id.current = sid;
@@ -221,7 +230,7 @@ export function useVoice(visible: boolean): VoiceApi {
         if (speaks(next) && !mic.current) {
           // Nothing has changed yet, so a refused mic just leaves the switch off.
           try {
-            mic.current = await microphone();
+            mic.current = await microphone(micDevice.current).catch(() => microphone());
           } catch (e) {
             setError(errorText(e, "Couldn't switch the audio."));
             return;
@@ -230,11 +239,13 @@ export function useVoice(visible: boolean): VoiceApi {
         try {
           if (speaks(next)) {
             await sender.replaceTrack(mic.current);
+            setMicTrack(mic.current);
           } else if (mic.current) {
             // Release the mic, so the browser's own mic indicator goes off too.
             await sender.replaceTrack(null);
             mic.current.stop();
             mic.current = null;
+            setMicTrack(null);
           }
           if (speaker.current) speaker.current.muted = !(next.listen || next.hear);
           setRouteState(next);
@@ -260,5 +271,38 @@ export function useVoice(visible: boolean): VoiceApi {
     [run, teardown],
   );
 
-  return { view, mine, needsTap, hear, status, route, error, busy, start, setRoute, stop };
+  const switchMic = useCallback(
+    (deviceId: string) =>
+      run(async () => {
+        const sender = pc.current?.getTransceivers()[0]?.sender;
+        if (!sender || !mic.current) return;
+        let next: MediaStreamTrack;
+        try {
+          next = await microphone(deviceId);
+        } catch (e) {
+          // The old mic is still sending.
+          setError(errorText(e, "Couldn't switch the microphone."));
+          return;
+        }
+        // Stopped or switched off meanwhile: drop the new one.
+        if (pc.current?.getTransceivers()[0]?.sender !== sender || !mic.current) {
+          next.stop();
+          return;
+        }
+        try {
+          await sender.replaceTrack(next);
+        } catch (e) {
+          next.stop();
+          setError(errorText(e, "Couldn't switch the microphone."));
+          return;
+        }
+        mic.current.stop();
+        mic.current = next;
+        micDevice.current = deviceId;
+        setMicTrack(next);
+      }),
+    [run],
+  );
+
+  return { view, mine, needsTap, hear, status, route, error, busy, micTrack, start, switchMic, setRoute, stop };
 }

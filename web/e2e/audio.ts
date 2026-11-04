@@ -25,7 +25,16 @@ export const SILENT = 0.005;
  * run's audio dir.
  */
 export function browserMicFile(): string {
-  const path = join(env("SIM_AUDIO", "."), `browser-mic-${TONES.browser}.wav`);
+  return micFile(`browser-mic-${TONES.browser}.wav`, 0.3);
+}
+
+/** A browser mic that sends only silence: a dead or wrong input. */
+export function silentMicFile(): string {
+  return micFile("browser-mic-silent.wav", 0);
+}
+
+function micFile(name: string, volume: number): string {
+  const path = join(env("SIM_AUDIO", "."), name);
   if (existsSync(path)) return path;
   const rate = 48000;
   const seconds = 2;
@@ -33,7 +42,7 @@ export function browserMicFile(): string {
   const data = Buffer.alloc(samples * 2);
   for (let i = 0; i < samples; i++) {
     const on = (i / rate) % 0.5 < 0.3;
-    data.writeInt16LE(on ? Math.round(0.3 * 32767 * Math.sin((2 * Math.PI * TONES.browser * i) / rate)) : 0, i * 2);
+    data.writeInt16LE(on ? Math.round(volume * 32767 * Math.sin((2 * Math.PI * TONES.browser * i) / rate)) : 0, i * 2);
   }
   const header = Buffer.alloc(44);
   header.write("RIFF", 0);
