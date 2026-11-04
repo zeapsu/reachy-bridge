@@ -17,7 +17,7 @@ export function useMicLevel(track: MediaStreamTrack | null, el: RefObject<HTMLEl
     const node = el.current;
     if (!track) setSilent(false);
     if (!track || !node || typeof AudioContext === "undefined") return;
-    let ctx: AudioContext;
+    let ctx: AudioContext | undefined;
     let source: MediaStreamAudioSourceNode;
     let analyser: AnalyserNode;
     try {
@@ -26,12 +26,14 @@ export function useMicLevel(track: MediaStreamTrack | null, el: RefObject<HTMLEl
       analyser = ctx.createAnalyser();
     } catch {
       // No meter (e.g. too many audio contexts); talking still works.
+      void ctx?.close().catch(() => {});
       return;
     }
+    const context = ctx;
     analyser.fftSize = 1024;
     source.connect(analyser);
     // Safari may start it suspended; a page that's capturing may resume it.
-    if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+    if (context.state === "suspended") void context.resume().catch(() => {});
     const samples = new Float32Array(analyser.fftSize);
     let shown = 0;
     let heard = false;
@@ -50,7 +52,7 @@ export function useMicLevel(track: MediaStreamTrack | null, el: RefObject<HTMLEl
       if (!heard && level > MIC_ALIVE_RMS) {
         heard = true;
         setSilent(false);
-      } else if (!heard && ctx.state === "running" && document.visibilityState === "visible") {
+      } else if (!heard && context.state === "running" && document.visibilityState === "visible") {
         // A frame after a pause (hidden tab) counts as one frame, not the gap.
         quietMs += Math.min(dt, 100);
         if (quietMs > MIC_SILENT_MS) setSilent(true);
@@ -62,7 +64,7 @@ export function useMicLevel(track: MediaStreamTrack | null, el: RefObject<HTMLEl
       cancelAnimationFrame(frame);
       node.style.setProperty("--level", "0");
       source.disconnect();
-      void ctx.close().catch(() => {});
+      void context.close().catch(() => {});
     };
   }, [track, el]);
   return silent;
