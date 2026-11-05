@@ -185,10 +185,12 @@ const micPicker = (page: Page) => page.getByRole("combobox", { name: "Microphone
 test("the lit Talk chip shows this browser's mic level", async ({ page }) => {
   await start(page, { listen: false, hear: false, talk: true, apps: false });
   await expect.poll(() => level(page), { timeout: 10_000 }).toBeGreaterThan(0.1);
-  // Sound came through, so no other inputs are offered.
+  // The mic in use is shown, and since sound came through it isn't flagged.
+  await expect(micPicker(page)).toBeVisible();
   await page.waitForTimeout(5000);
-  await expect(micPicker(page)).toHaveCount(0);
-  // Talk off: the meter stops.
+  await expect(page.locator(".mic-row.silent")).toHaveCount(0);
+  // Talk off: the meter stops and the mic row goes.
   await sw(page, "talk").click();
   await expect.poll(() => level(page)).toBe(0);
+  await expect(micPicker(page)).toHaveCount(0);
 });

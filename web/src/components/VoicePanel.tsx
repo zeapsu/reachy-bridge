@@ -16,8 +16,11 @@ const MIC_OFF_ICON = (
   </svg>
 );
 
-/** This browser's audio inputs, listed while `want` (names need mic permission, which talking has). */
-function useInputs(want: boolean): MediaDeviceInfo[] {
+/**
+ * This browser's audio inputs, listed while `want`. Names (labels) come only
+ * once the page may use the mic; before that they're blank.
+ */
+function useInputs(want: boolean, refresh: string | undefined): MediaDeviceInfo[] {
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([]);
   useEffect(() => {
     const devices = navigator.mediaDevices;
@@ -25,12 +28,14 @@ function useInputs(want: boolean): MediaDeviceInfo[] {
     const load = () =>
       void devices
         .enumerateDevices()
-        .then((all) => setInputs(all.filter((d) => d.kind === "audioinput" && d.deviceId !== "default" && d.deviceId !== "communications")))
+        .then((all) => setInputs(all.filter((d) => d.kind === "audioinput")))
         .catch(() => {});
     load();
     devices.addEventListener("devicechange", load);
     return () => devices.removeEventListener("devicechange", load);
-  }, [want]);
+    // `refresh`: a new mic track; the first one also brings mic permission,
+    // and with it the names, which devicechange doesn't always announce.
+  }, [want, refresh]);
   return inputs;
 }
 
@@ -54,8 +59,21 @@ export function VoicePanel({ voice, control, robotOff }: { voice: VoiceApi; cont
   const root = useRef<HTMLDivElement>(null);
   const sending = open && (route.talk || route.apps) ? voice.micTrack : null;
   const silent = useMicLevel(sending, root);
-  const inputs = useInputs(silent);
-  const current = sending?.getSettings().deviceId ?? "";
+  // The mic row: while a Talk chip is on, before Start too, so the mic can be
+  // picked first; that needs the mic names, which a first visit doesn't have.
+  const talkOn = (route.talk || route.apps) && noTalk === null;
+  const all = useInputs(talkOn, sending?.id);
+  // Chrome adds "default" and "communications" aliases of real inputs.
+  const inputs = all.filter((d) => d.deviceId && d.deviceId !== "default" && d.deviceId !== "communications");
+  const named = inputs.some((d) => d.label);
+  const showMics = talkOn && (sending !== null || (!open && named && blocked === null && !robotOff));
+  const currentName =
+    sending?.label || all.find((d) => d.deviceId === "default")?.label.replace(/^Default - /, "") || "Microphone";
+  const picked = sending ? (sending.getSettings().deviceId ?? "") : (voice.pickedMic ?? "");
+  // The "default" alias isn't listed, so show the real input it stands for.
+  const current = inputs.some((d) => d.deviceId === picked)
+    ? picked
+    : (inputs.find((d) => d.label === currentName)?.deviceId ?? picked);
 
   const flip = (key: "listen" | "talk" | "hear" | "apps") => {
     const next = { ...route, [key]: !route[key] };
@@ -102,28 +120,29 @@ export function VoicePanel({ voice, control, robotOff }: { voice: VoiceApi; cont
           {chip("voice-talk", "talk", "Out loud", "talk through the robot", noTalk !== null)}
           {chip("voice-apps", "apps", "To apps", "talk to Reachy's apps", noTalk !== null)}
         </div>
-        {/* Announced as it appears; the select says which mic is silent. */}
-        <div className="mic-live" aria-live="polite">
-          {silent && sending ? (
-            <label className="mic-silent">
-              <span className="sr-only">No sound from this microphone</span>
-              {MIC_OFF_ICON}
-              <select
-                aria-label="Microphone"
-                value={current}
-                disabled={voice.busy}
-                onChange={(e) => void voice.switchMic(e.target.value)}
-              >
-                {inputs.some((d) => d.deviceId === current) ? null : <option value={current}>{sending.label || "Microphone"}</option>}
-                {inputs.map((d, i) => (
-                  <option key={d.deviceId} value={d.deviceId}>
-                    {d.label || `Microphone ${i + 1}`}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-        </div>
+        {/* The mic in use, shown whenever a Talk chip is on: a wrong mic that
+            still hears the room can't be told from a quiet one by its level. */}
+        {showMics ? (
+          <label className={`mic-row${silent ? " silent" : ""}`}>
+            <span className="sr-only" aria-live="polite">
+              {silent ? "No sound from this microphone" : ""}
+            </span>
+            {silent ? MIC_OFF_ICON : ROUTE_ICONS.talk}
+            <select
+              aria-label="Microphone"
+              value={current}
+              disabled={voice.busy}
+              onChange={(e) => void voice.switchMic(e.target.value)}
+            >
+              {inputs.some((d) => d.deviceId === current) ? null : <option value={current}>{currentName}</option>}
+              {inputs.map((d, i) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || `Microphone ${i + 1}`}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {noTalk ? <p className="note" id="voice-talk-note">{noTalk}</p> : null}
       </div>
       {open && voice.needsTap ? (

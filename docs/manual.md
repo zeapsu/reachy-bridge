@@ -107,11 +107,13 @@ session connected through the daemon, also hears you when you talk to apps.
 **Your mic level.** While you talk, the lit Talk chip fills from the left with your microphone's
 level. If it stays flat while you speak, the robot isn't getting your voice.
 
-**Picking a microphone.** If no sound comes from your microphone for 4 seconds after talking
-starts, a row with a crossed-out mic appears under the Talk chips. It shows the input your browser
-is using; pick another one there and it switches at once, without reconnecting. The row goes away
-when talking stops, and stays away for that microphone once sound comes through. The input you pick
-is kept until you leave the page.
+**Picking a microphone.** While Out loud or To apps is on, a row under the Talk chips shows the
+microphone your browser will send, so you can pick another before pressing Start. While talking,
+picking switches at once without reconnecting; the choice is kept until you leave the page. On a
+first visit the browser doesn't share microphone names until talking starts, so the row shows up
+then. The row turns amber with a crossed-out mic if no sound at all has come from the microphone
+since it started (a dead or muted input). A wrong microphone that still hears the room, such as a
+Bluetooth speaker's, isn't flagged, so check the name.
 
 **Privacy.** Nothing in the room signals that someone is listening. Every dashboard shows a mic
 badge with the person's name while a session is open.
@@ -186,7 +188,7 @@ unused for 30 days is logged out.
 | The dashboard won't load on an iPhone by its tailnet name | Turn off iCloud Private Relay, and Limit IP Address Tracking for the network. |
 | Voice chips are greyed out | Check [what you need](#voice). |
 | Voice stops by itself | See [when a session ends](#voice). |
-| Talk is on but the robot is silent, and the Talk chip doesn't fill when you speak | Your device is using another microphone, or it's muted. Pick another input in the row under Talk. If none works, check the input in your computer's sound settings (Safari on a Mac always uses the system's default input), the browser's site permissions, and any mute switch on a headset. |
+| Talk is on but the robot is silent, and the Talk chip doesn't fill when you speak | Your device is using another microphone, or it's muted. Check the microphone named under the Talk chips and pick another. If none works, check the input in your computer's sound settings (Safari on a Mac always uses the system's default input), the browser's site permissions, and any mute switch on a headset. |
 | The mic shows as unavailable | An app has taken the hardware. Stop it. |
 | An app's interface won't open | Run `reachy-bridge logs controller`. |
 
