@@ -92,10 +92,6 @@ export function useApps(): AppsState {
       if (Array.isArray(result)) {
         namesRef.current = result.map((app) => app.name);
         statusesRef.current = result;
-        // An app uninstalled since favorites loaded must not keep a slot: it
-        // would count toward the limit but never render.
-        const pruned = normalizeFavorites(favoritesRef.current, namesRef.current);
-        if (pruned.length !== favoritesRef.current.length) writeFavorites(pruned);
         setStatuses(result);
         setMessage({ text: "", kind: "" });
       }
@@ -137,12 +133,13 @@ export function useApps(): AppsState {
         }
       }
       const previous = [...favoritesRef.current];
-      const toggled = toggleFavoriteList(previous, name);
+      // Count and save only installed pins: the controller refuses unknown names.
+      const toggled = toggleFavoriteList(normalizeFavorites(previous, namesRef.current), name);
       if (!toggled.ok) {
         setLibraryHint({ text: toggled.error, kind: "error" });
         return;
       }
-      const next = normalizeFavorites(toggled.next, namesRef.current);
+      const next = toggled.next;
       writeFavorites(next);
       savingRef.current = true;
       setFavoritesSaving(true);
@@ -332,12 +329,15 @@ export function useApps(): AppsState {
     [openView, showWhenReady],
   );
 
+  const names = statuses.map((app) => app.name);
   return {
     appView,
     closeAppView,
     statuses,
-    names: statuses.map((app) => app.name),
-    favorites,
+    names,
+    // An update uninstalls and reinstalls the app, so a pin missing from the
+    // installed list is hidden, not dropped, and comes back with the app.
+    favorites: normalizeFavorites(favorites, names),
     favoritesSaving,
     appBusy,
     tick,
