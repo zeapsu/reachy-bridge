@@ -70,3 +70,22 @@ test("an app starts, shows its UI and stops", async ({ page }) => {
   await expect(view).toBeHidden({ timeout: 60_000 });
   await expect(row.getByRole("button", { name: /^Sim Ui App Not running/ })).toBeVisible({ timeout: 60_000 });
 });
+
+test("the favicon, home-screen icon and manifest icons load", async ({ page, request }) => {
+  await open(page);
+  const links = await page.locator('head link[rel="icon"], head link[rel="apple-touch-icon"]').evaluateAll((els) =>
+    els.map((el) => (el as HTMLLinkElement).href),
+  );
+  expect(links.length).toBe(2);
+  const manifestUrl = await page.locator('head link[rel="manifest"]').getAttribute("href");
+  const manifest = await request.get(manifestUrl ?? "");
+  expect(manifest.ok()).toBe(true);
+  expect(manifest.headers()["content-type"]).toContain("manifest+json");
+  const { icons } = (await manifest.json()) as { icons: { src: string; purpose: string }[] };
+  expect(icons.map((i) => i.purpose).sort()).toEqual(["any", "any", "maskable"]);
+  for (const url of [...links, ...icons.map((i) => i.src)]) {
+    const res = await request.get(url);
+    expect(res.ok(), url).toBe(true);
+    expect(res.headers()["content-type"], url).toMatch(/^image\//);
+  }
+});
