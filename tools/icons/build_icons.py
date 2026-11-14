@@ -5,12 +5,10 @@
 """Build the dashboard's icons from one master image.
 
 `source-tile.png` is the generated tile artwork as delivered. This script
-fixes it into the masters, then exports every icon size from them:
-
-- master-tile.png: the tile with both eyes the same size (the right eye is a
-  copy of the left, placed symmetrically about the head) and the bridge camera
-  re-centred between them.
-- master-head.png: the head alone (antennas, shell, eyes) on transparency.
+fixes it (both eyes the same size: the right eye becomes a copy of the left,
+placed symmetrically about the head, and the bridge camera is re-centred),
+then exports every icon size from the fixed tile. It also writes
+master-head.png, the head alone on transparency, kept as a reusable cut-out.
 
 Exports, into web/public/:
 
