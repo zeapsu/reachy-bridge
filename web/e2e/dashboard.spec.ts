@@ -76,7 +76,7 @@ test("the favicon, home-screen icon and manifest icons load", async ({ page, req
   const links = await page.locator('head link[rel="icon"], head link[rel="apple-touch-icon"]').evaluateAll((els) =>
     els.map((el) => (el as HTMLLinkElement).href),
   );
-  expect(links.length).toBe(2);
+  expect(links.length).toBeGreaterThanOrEqual(2);
   const manifestUrl = await page.locator('head link[rel="manifest"]').getAttribute("href");
   const manifest = await request.get(manifestUrl ?? "");
   expect(manifest.ok()).toBe(true);

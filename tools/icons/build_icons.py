@@ -198,7 +198,6 @@ def main() -> None:
     src = cv2.imread(str(HERE / "source-tile.png"))
     tile = eyes_fixed(src)
     alpha = head_mask(tile)
-    cv2.imwrite(str(HERE / "master-tile.png"), tile)
     cut = rgba(tile, alpha)
     box = cut.getbbox()
     head = square(cut, box)
