@@ -57,9 +57,9 @@ These hold on any machine with the robot attached.
   and when you hand it back.
 - **Tailscale Serve:** the root HTTPS mapping may belong to another service. Never run
   `tailscale serve reset` and never touch the root mapping. The bridge uses its own ports (the
-  dashboard on HTTPS :10000). Never serve the signalling (:8443) or app UI ports on their own
-  port numbers: tailscaled then holds `<tailnet IP>:<port>` and the daemon's and apps' binds
-  fail at power-on (#158). Agents don't change `tailscale serve`; the owner runs
+  dashboard on HTTPS :10000, the running app's UI on :8043). Never serve the signalling (:8443)
+  or app UI ports on their own port numbers: tailscaled then holds `<tailnet IP>:<port>`, and a
+  runtime that binds those ports on all interfaces fails at power-on (#158). Agents don't change `tailscale serve`; the owner runs
   `reachy-bridge serve` (it asks for sudo) for new mappings.
 - Manage the services with `reachy-bridge {status,start,stop,restart,logs,serve}` (installed in
   `~/.local/bin`, which a non-interactive SSH shell doesn't have on `PATH`).
@@ -83,8 +83,8 @@ These hold on any machine with the robot attached.
   `uv sync` after every checkout or pull; use `uv run`, don't call `.venv/bin/python` or
   activate the venv. A moved checkout needs `rm -rf .venv && uv sync`.
 - Daemon API docs: `http://127.0.0.1:8000/docs`. Robot on/off:
-  `POST /api/daemon/start?wake_up=false`, `POST /api/daemon/stop`; state from
-  `GET /api/daemon/status`.
+  `POST /api/daemon/start?wake_up=false`, `POST /api/daemon/stop?goto_sleep=true` (both query
+  parameters are required; see `docs/daemon-contract.md`); state from `GET /api/daemon/status`.
 
 ## Testing
 - Rust controller: `cargo fmt --check`, `cargo test` and
