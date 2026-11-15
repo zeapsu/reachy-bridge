@@ -3,6 +3,8 @@ import { useLens } from "../glass.ts";
 import type { PowerView } from "../logic/power.ts";
 import { robotStatus, type Tab } from "../logic/shell.ts";
 import type { VoiceRoute } from "../logic/voice.ts";
+import type { ProfileView } from "../logic/auth.ts";
+import { ProfileChip } from "./Profiles.tsx";
 import { Segmented } from "./Segmented.tsx";
 import "./Shell.css";
 
@@ -78,6 +80,14 @@ const PERSON_ICON = (
 const LABELS: Record<Tab, string> = { robot: "Robot", apps: "Apps", system: "System" };
 const ORDER: Tab[] = ["robot", "apps", "system"];
 
+/** A padlock on a tab only the admin opens (#297). */
+const LOCK = (
+  <svg {...stroke} className="tab-lock">
+    <rect x="5" y="11" width="14" height="10" rx="2.5" />
+    <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+  </svg>
+);
+
 interface Props {
   tab: Tab;
   onTab: (tab: Tab) => void;
@@ -97,10 +107,34 @@ interface Props {
   onRelease: () => void;
   /** A control action is running. */
   controlBusy: boolean;
+  /** Family mode (#297): this browser's profile, and its chip opens the profile sheet. */
+  profile: ProfileView | null;
+  onProfile: () => void;
+  /** System is the admin's only. */
+  systemLocked: boolean;
+  /** The profile can't power the robot. */
+  powerLocked: boolean;
 }
 
 /** Brand, the section tabs (a bottom bar on phones), robot status and power. */
-export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, sim, voice, voiceLive, holder, onRelease, controlBusy }: Props) {
+export function TopBar({
+  tab,
+  onTab,
+  power,
+  onPower,
+  daemonOnline,
+  activeApp,
+  sim,
+  voice,
+  voiceLive,
+  holder,
+  onRelease,
+  controlBusy,
+  profile,
+  onProfile,
+  systemLocked,
+  powerLocked,
+}: Props) {
   const tabs = useLens<HTMLDivElement>();
   const status = robotStatus(power, daemonOnline, activeApp);
   const person = holder && holder !== "you" ? holder : null;
@@ -114,13 +148,17 @@ export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, si
           role="tabs"
           label="Sections"
           className="tabs"
-          options={ORDER.map((t) => ({ value: t, label: LABELS[t] }))}
+          options={ORDER.map((t) => {
+            const locked = systemLocked && t === "system";
+            return { value: t, disabled: locked, title: locked ? `${LABELS[t]}: admin only` : undefined, label: locked ? <>{LOCK}{LABELS[t]}</> : LABELS[t] };
+          })}
           panelId={(t) => `view-${t}`}
           value={tab}
           onChange={onTab}
         />
       </div>
       <div className="top-right">
+        {profile ? <ProfileChip profile={profile} onOpen={onProfile} /> : null}
         {voice ? (
           <span className="glass voice-badge" role="status" title={voice} aria-label={voice}>
             {voiceLive?.routes.length ? voiceLive.routes.map((route) => <span key={route}>{ROUTE_ICONS[route]}</span>) : <span>{MUTED_ICON}</span>}
@@ -156,7 +194,7 @@ export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, si
           id="daemon-power"
           title={power.title}
           aria-label={power.title}
-          disabled={power.disabled}
+          disabled={power.disabled || powerLocked}
           onClick={onPower}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
@@ -169,7 +207,7 @@ export function TopBar({ tab, onTab, power, onPower, daemonOnline, activeApp, si
   );
 }
 
-export function PhoneTabs({ tab, onTab }: { tab: Tab; onTab: (tab: Tab) => void }) {
+export function PhoneTabs({ tab, onTab, systemLocked }: { tab: Tab; onTab: (tab: Tab) => void; systemLocked: boolean }) {
   const bar = useLens<HTMLElement>();
   return (
     <nav className="glass phone-tabs" data-lens ref={bar}>
@@ -179,8 +217,11 @@ export function PhoneTabs({ tab, onTab }: { tab: Tab; onTab: (tab: Tab) => void 
         className="tabs"
         options={ORDER.map((t) => ({
           value: t,
+          disabled: systemLocked && t === "system",
+          title: systemLocked && t === "system" ? `${LABELS[t]}: admin only` : undefined,
           label: (
             <>
+              {systemLocked && t === "system" ? LOCK : null}
               {ICONS[t]}
               <span>{LABELS[t]}</span>
             </>

@@ -12,6 +12,7 @@ import { AppearancePanel, Wallpaper } from "./components/Appearance.tsx";
 import { AuthGate } from "./components/Login.tsx";
 import { Segmented } from "./components/Segmented.tsx";
 import { PhoneTabs, TopBar } from "./components/Shell.tsx";
+import { ProfilePicker, ProfileSheet, ProfilesPanel } from "./components/Profiles.tsx";
 import { SimPanel } from "./components/SimPanel.tsx";
 import { VoicePanel } from "./components/VoicePanel.tsx";
 import { LogsPanel, StatsPanel } from "./components/SystemPanel.tsx";
@@ -28,17 +29,22 @@ import { useExpressions } from "./hooks/useExpressions.ts";
 import { usePageVisible } from "./hooks/usePageVisible.ts";
 import { usePoll } from "./hooks/usePoll.ts";
 import { usePower } from "./hooks/usePower.ts";
+import { useProfile } from "./hooks/useProfile.ts";
 import { useSim } from "./hooks/useSim.ts";
 import { useSimSounds } from "./hooks/useSimSounds.ts";
 import { useVoice } from "./hooks/useVoice.ts";
-import { activeApp } from "./logic/apps.ts";
+import { activeApp, appForName } from "./logic/apps.ts";
 import { read, write } from "./logic/appearance.ts";
 import { controlState, holderLabel } from "./logic/control.ts";
 import { driveBlocked } from "./logic/drive.ts";
 import { TAB_KEY, parseTab, stageNote, type Tab } from "./logic/shell.ts";
 import { voiceBadge, voiceLive } from "./logic/voice.ts";
+import { allowedApps } from "./logic/profile.ts";
 
 const POLL_MS = 1000;
+
+type Pane = "expressions" | "drive" | "controls" | "voice";
+const PANES: Pane[] = ["expressions", "drive", "controls", "voice"];
 
 /** The login screen when LAN access needs it (#141), else the dashboard. */
 export function App() {
@@ -64,8 +70,21 @@ function Dashboard() {
   const [kinematics, setKinematics] = useState<Kinematics | null>(null);
   const poseSink = useRef<PoseSink | null>(null);
   const look = useAppearance();
-  const [tab, setTabState] = useState<Tab>(() => parseTab(read(TAB_KEY)));
-  const [pane, setPane] = useState<"expressions" | "drive" | "controls" | "voice">("expressions");
+  const [savedTab, setTabState] = useState<Tab>(() => parseTab(read(TAB_KEY)));
+  const [paneChoice, setPane] = useState<Pane>("expressions");
+  const me = useProfile(visible);
+  const may = me.rights;
+  const [sheetOpen, setSheetOpen] = useState(false);
+  // Family mode (#297): what this profile can't open is dimmed, and never shown.
+  const paneOff: Record<Pane, boolean> = {
+    expressions: !may.can.drive,
+    drive: !may.can.drive,
+    controls: !may.controls,
+    voice: !may.can.voice,
+  };
+  const pane: Pane = paneOff[paneChoice] ? (PANES.find((p) => !paneOff[p]) ?? paneChoice) : paneChoice;
+  const systemOpen = me.loaded && may.system;
+  const tab: Tab = savedTab === "system" && !systemOpen ? "robot" : savedTab;
   const side = useLens<HTMLElement>();
 
   const reloadKinematics = useCallback(async () => {
@@ -177,19 +196,31 @@ function Dashboard() {
           holder={holderLabel(controlState(control.view))}
           onRelease={() => void control.act(paths.controlRelease)}
           controlBusy={control.busy}
+          profile={me.profile}
+          onProfile={() => setSheetOpen(true)}
+          systemLocked={me.loaded && !may.system}
+          powerLocked={!may.can.power}
         />
 
         <main className={`view robot${pane === "drive" ? " driving" : ""}`} id="view-robot" role="tabpanel" hidden={tab !== "robot"} aria-label="Robot">
-          <Viewport daemonOnline={daemonOnline} note={stageNote(power.view, daemonOnline)} onPower={power.toggle} powerDisabled={power.view.disabled} visible={visible && tab === "robot"} poseSink={poseSink} />
+          <Viewport
+            daemonOnline={daemonOnline}
+            note={stageNote(power.view, daemonOnline)}
+            onPower={power.toggle}
+            powerDisabled={power.view.disabled || !may.can.power}
+            cameraLocked={!may.can.camera}
+            visible={visible && tab === "robot"}
+            poseSink={poseSink}
+          />
           <section className="glass sheet side" data-lens ref={side} aria-label="Robot controls">
             <ControlStrip control={control} />
             <Segmented
               label="Robot controls"
               options={[
-                { value: "expressions", label: "Expressions" },
-                { value: "drive", label: "Drive" },
-                { value: "controls", label: "Controls" },
-                { value: "voice", label: "Voice" },
+                { value: "expressions", label: "Expressions", disabled: paneOff.expressions },
+                { value: "drive", label: "Drive", disabled: paneOff.drive },
+                { value: "controls", label: "Controls", disabled: paneOff.controls },
+                { value: "voice", label: "Voice", disabled: paneOff.voice },
               ]}
               value={pane}
               onChange={setPane}
@@ -235,22 +266,53 @@ function Dashboard() {
           {/* Nothing until the target is known: the robot's and the sim's apps differ (#218). */}
           {sim.target === null ? null : (
             <>
-              <AppsPanel apps={apps} catalog={catalog} daemonOnline={daemonOnline} reachable={appsReachable} known={power.view.known} exprBusy={expr.busy !== null} />
-              <CatalogPanel catalog={catalog} reachable={appsReachable} known={power.view.known} />
+              <AppsPanel
+                apps={apps}
+                catalog={catalog}
+                daemonOnline={daemonOnline}
+                reachable={appsReachable}
+                known={power.view.known}
+                exprBusy={expr.busy !== null}
+                names={allowedApps(apps.names, may.apps)}
+                canManage={may.admin}
+              />
+              {/* Installing is the admin's (#221). */}
+              {may.admin ? <CatalogPanel catalog={catalog} reachable={appsReachable} known={power.view.known} /> : null}
             </>
           )}
         </main>
 
         <main className="view list" id="view-system" role="tabpanel" hidden={tab !== "system"} aria-label="System">
-          <StatsPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
-          <AudioPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
-          <SimPanel sim={sim} sounds={simSounds} powerStatus={power.status} control={control} />
-          <LogsPanel live={visible && tab === "system"} />
-          <DevicesPanel />
-          <AppearancePanel look={look} />
+          {/* System is the admin's (#297): its panels load only for one. */}
+          {systemOpen ? (
+            <>
+              {may.family ? <ProfilesPanel installed={apps.names.map((name) => ({ name, display: appForName(apps.statuses, name).display || name }))} /> : null}
+              <StatsPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
+              <AudioPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
+              <SimPanel sim={sim} sounds={simSounds} powerStatus={power.status} control={control} />
+              <LogsPanel live={visible && tab === "system"} />
+              <DevicesPanel />
+              {/* In family mode the look lives on the profile chip. */}
+              {may.family ? null : <AppearancePanel look={look} />}
+            </>
+          ) : null}
         </main>
       </div>
-      <PhoneTabs tab={tab} onTab={setTab} />
+      <PhoneTabs tab={tab} onTab={setTab} systemLocked={me.loaded && !may.system} />
+      {me.profile && sheetOpen ? (
+        <ProfileSheet
+          profile={me.profile}
+          onClose={() => setSheetOpen(false)}
+          onSwitch={() => {
+            setSheetOpen(false);
+            void me.pick(null);
+          }}
+        >
+          {me.profile.shared || me.profile.admin ? null : <DevicesPanel />}
+          <AppearancePanel look={look} />
+        </ProfileSheet>
+      ) : null}
+      {may.picking ? <ProfilePicker onPick={(person) => me.pick(person)} error={me.error} /> : null}
       <ControlToast control={control} />
       {apps.appView ? (
         <AppView

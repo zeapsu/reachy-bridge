@@ -16,6 +16,8 @@ interface Props {
   note: StageNote | null;
   onPower: () => void;
   powerDisabled: boolean;
+  /** The profile can't use the camera (#297). */
+  cameraLocked: boolean;
   visible: boolean;
   /** The viewport installs its 10 Hz pose writer here. */
   poseSink: RefObject<PoseSink | null>;
@@ -46,7 +48,7 @@ const MODES: { value: ViewMode; title: string; label: ReactNode }[] = [
 
 type Cache = Partial<Record<keyof PoseFrame, unknown>>;
 
-export function Viewport({ daemonOnline, note, onPower, powerDisabled, visible, poseSink }: Props) {
+export function Viewport({ daemonOnline, note, onPower, powerDisabled, cameraLocked, visible, poseSink }: Props) {
   const [mode, setMode] = useState<ViewMode>("3d");
   const [meta, setMeta] = useState(MODE_META["3d"]);
 
@@ -142,9 +144,17 @@ export function Viewport({ daemonOnline, note, onPower, powerDisabled, visible, 
     };
   }, []);
 
+  // A profile that loses the camera goes back to the 3D view.
   useEffect(() => {
-    camera.current?.update({ selected: mode === "camera", daemonOnline, visible });
-  }, [mode, daemonOnline, visible]);
+    if (cameraLocked && mode === "camera") {
+      setMode("3d");
+      setMeta(MODE_META["3d"]);
+    }
+  }, [cameraLocked, mode]);
+
+  useEffect(() => {
+    camera.current?.update({ selected: mode === "camera" && !cameraLocked, daemonOnline, visible });
+  }, [mode, daemonOnline, visible, cameraLocked]);
 
   const selectMode = (next: ViewMode) => {
     setMode(next);
@@ -182,7 +192,12 @@ export function Viewport({ daemonOnline, note, onPower, powerDisabled, visible, 
 
       <div className="stage-top">
         <div className="glass stage-modes">
-          <Segmented label="View" options={MODES} value={mode} onChange={selectMode} />
+          <Segmented
+            label="View"
+            options={MODES.map((m) => (m.value === "camera" && cameraLocked ? { ...m, disabled: true } : m))}
+            value={mode}
+            onChange={selectMode}
+          />
         </div>
         {mode === "camera" ? <span className="chip camera-meta">{meta.replace(/^live camera · /, "")}</span> : null}
       </div>

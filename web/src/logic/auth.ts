@@ -14,6 +14,41 @@ export interface AuthStatus {
   device?: string | null;
   person?: string | null;
   role?: Role | null;
+  /** What this browser may do, in admin mode (#297); missing before it. */
+  profile?: ProfileView | null;
+}
+
+/** The switches a profile has (#297). */
+export interface Can {
+  power: boolean;
+  drive: boolean;
+  voice: boolean;
+  camera: boolean;
+}
+
+export type Kind = "grown" | "kid";
+
+/** `profile` in GET /api/auth/status. */
+export interface ProfileView {
+  /** The acting person; null on a shared device nobody has picked on. */
+  name: string | null;
+  admin: boolean;
+  shared: boolean;
+  kind: Kind;
+  /** null: every installed app. */
+  apps: string[] | null;
+  can: Can;
+}
+
+/** One item of GET /api/auth/profiles (as the admin sees it). */
+export interface ProfileItem {
+  name: string;
+  admin: boolean;
+  kind?: Kind;
+  apps?: string[] | null;
+  can?: Can;
+  /** Device ids of its own (not shared). */
+  devices?: string[];
 }
 
 /** One item of GET /api/auth/devices */
@@ -27,6 +62,8 @@ export interface PairedDevice {
   /** Who uses it; missing from controllers before #221. */
   person?: string;
   role?: Role;
+  /** A family tablet (#297). */
+  shared?: boolean;
   /** This browser's own device. */
   current: boolean;
 }

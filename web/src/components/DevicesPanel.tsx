@@ -19,6 +19,8 @@ export function DevicesPanel() {
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [person, setPerson] = useState("");
+  // A family tablet (#297): no person of its own, profiles are picked on it.
+  const [shared, setShared] = useState(false);
   const [hint, setHint] = useState<{ text: string; error: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   // No admin yet (LAN mode can manage devices before one exists).
@@ -59,11 +61,12 @@ export function DevicesPanel() {
     }
     setBusy(true);
     try {
-      const body = { code: normalized, name: name.trim() || undefined, person: person.trim() || undefined };
+      const body = { code: normalized, name: name.trim() || undefined, person: shared ? undefined : person.trim() || undefined, shared };
       await apiJson(paths.authApprove, { method: "POST", body: JSON.stringify(body) });
       setCode("");
       setName("");
       setPerson("");
+      setShared(false);
       setHint({ text: "Approved", error: false });
       // The device appears once its browser collects the token.
       setTimeout(() => void reload(), 3000);
@@ -124,13 +127,26 @@ export function DevicesPanel() {
             onChange={(e) => setCode(e.target.value)}
           />
           <input className="field" aria-label="Device name (optional)" placeholder="device" maxLength={64} value={name} onChange={(e) => setName(e.target.value)} />
-          <input className="field" aria-label="Person (optional)" placeholder="person" maxLength={64} list="devices-people" value={person} onChange={(e) => setPerson(e.target.value)} />
+          <input
+            className="field"
+            aria-label="Person (optional)"
+            placeholder={shared ? "everyone" : "person"}
+            maxLength={64}
+            list="devices-people"
+            value={shared ? "" : person}
+            disabled={shared}
+            onChange={(e) => setPerson(e.target.value)}
+          />
           {/* Existing people, so a second device joins its person (control moves between their devices) rather than a near-duplicate name. */}
           <datalist id="devices-people">
-            {[...new Set(devices.map((d) => d.person || d.name))].map((p) => (
+            {[...new Set(devices.filter((d) => !d.shared).map((d) => d.person || d.name))].map((p) => (
               <option key={p} value={p} />
             ))}
           </datalist>
+          <label className="row devices-shared">
+            <span>Shared</span>
+            <button className="switch" type="button" role="switch" aria-label="Shared device" aria-checked={shared} onClick={() => setShared(!shared)}></button>
+          </label>
           <button className="btn primary press" type="submit" disabled={busy}>
             Approve
           </button>
@@ -146,7 +162,11 @@ export function DevicesPanel() {
               <li key={device.id}>
                 <span className="devices-name">
                   {device.name}
-                  {device.person && device.person !== device.name && <span className="devices-person"> · {device.person}</span>}
+                  {device.shared ? (
+                    <span className="devices-person"> · shared</span>
+                  ) : (
+                    device.person && device.person !== device.name && <span className="devices-person"> · {device.person}</span>
+                  )}
                   {device.role === "admin" && <span className="devices-role"> · admin</span>}
                   {device.current && <span className="devices-current"> · this browser</span>}
                 </span>

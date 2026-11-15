@@ -159,20 +159,24 @@ interface Props {
   /** The first status poll answered, so an unreachable daemon is really down. */
   known: boolean;
   exprBusy: boolean;
+  /** The installed apps this profile sees (#297); `apps.names` without one. */
+  names: string[];
+  /** Updates and removals are the admin's (#297). */
+  canManage: boolean;
 }
 
 /**
  * Installed apps as compact rows. Pinned apps (favorites, plus whichever app
  * owns the robot or failed) stay on top; everything installed is below.
  */
-export function AppsPanel({ apps, catalog, daemonOnline, reachable, known, exprBusy }: Props) {
+export function AppsPanel({ apps, catalog, daemonOnline, reachable, known, exprBusy, names, canManage }: Props) {
   const sheet = useLens<HTMLElement>();
   const [manage, setManage] = useState(false);
   const active = activeApp(apps.statuses);
   const gates: ActionGates = { anyActive: Boolean(active), appBusy: apps.appBusy, daemonOnline, exprBusy };
   const now = Date.now();
-  const pinned = visibleAppNames(apps.names, apps.statuses, apps.favorites);
-  const rest = apps.names.filter((name) => !pinned.includes(name));
+  const pinned = visibleAppNames(names, apps.statuses, apps.favorites);
+  const rest = names.filter((name) => !pinned.includes(name));
   const row = (name: string) => (
     <AppRow
       key={name}
@@ -184,7 +188,7 @@ export function AppsPanel({ apps, catalog, daemonOnline, reachable, known, exprB
       now={now}
       apps={apps}
       catalog={catalog}
-      manage={manage}
+      manage={manage && canManage}
     />
   );
 
@@ -196,7 +200,7 @@ export function AppsPanel({ apps, catalog, daemonOnline, reachable, known, exprB
           {apps.favoritesSaving ? <span className="spin" aria-hidden="true"></span> : null}
           {apps.favorites.length}/{MAX_FAVORITES} pinned
         </span>
-        {apps.names.length ? (
+        {names.length && canManage ? (
           <button className="btn quiet press" type="button" aria-pressed={manage} onClick={() => setManage(!manage)}>
             {manage ? "Done" : catalog.updates.length ? `Manage · ${catalog.updates.length} update${catalog.updates.length > 1 ? "s" : ""}` : "Manage"}
           </button>
@@ -221,8 +225,8 @@ export function AppsPanel({ apps, catalog, daemonOnline, reachable, known, exprB
           </ul>
         </>
       ) : null}
-      {apps.names.length === 0 ? (
-        <p className="note">{reachable ? "No apps installed" : known ? "Robot service down" : "Connecting…"}</p>
+      {names.length === 0 ? (
+        <p className="note">{apps.names.length ? "No apps" : reachable ? "No apps installed" : known ? "Robot service down" : "Connecting…"}</p>
       ) : null}
     </section>
   );
