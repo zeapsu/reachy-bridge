@@ -149,12 +149,12 @@ contributors stop at a ready PR with their review results in it.
    `tools/review_gate.sh`, the authoritative path list. A PR that is security-relevant by the
    list above but touches no `SECURITY_PATHS` file must get the `security` label, or the check
    asks for one review only. Note "security-relevant, merged" in the owner's summary.
-4. Record each clean review in a PR conversation comment from the owner's GitHub account,
+4. Record each clean review in its own PR conversation comment from the owner's GitHub account,
    naming the full 40-character sha of the head commit the reviewer was given
    (`gh pr view <n> --json headRefOid -q .headRefOid`). The merging agent posts it after the
    reviewer reports clean on that commit, for example
-   `gh pr comment <n> --body 'Review: clean @<full sha>'`. Each marker is a whole line with
-   nothing else on it: `Review: clean @<sha>`, plus `Security review: clean @<sha>` and
+   `gh pr comment <n> --body 'Review: clean @<full sha>'`. One marker per comment, with nothing
+   else in the comment: `Review: clean @<sha>`, plus `Security review: clean @<sha>` and
    `Second review: clean @<sha>` for security-relevant PRs. Edited comments and review bodies
    don't count; post a new comment instead. Any new push, including a merge of `main`, needs
    fresh markers. Before posting, check `gh api user -q .login` is the owner's
