@@ -1372,7 +1372,7 @@ async fn list_profiles(State(state): State<Shared>, Extension(ctx): Extension<Au
                 .filter(|d| !d.shared && (d.person == *name || (d.person.is_empty() && d.name == *name)))
                 .map(|d| d.id.clone())
                 .collect();
-            json!({"name": name, "admin": admin, "kind": profile.kind, "apps": profile.apps, "can": profile.can, "devices": devices})
+            json!({"name": name, "admin": admin, "apps": profile.apps, "can": profile.can, "devices": devices})
         })
         .collect();
     Json(json!({"profiles": list}))
@@ -1385,8 +1385,6 @@ struct ProfileBody {
     create: bool,
     /// A new name, to rename the profile (and move its devices).
     name: Option<String>,
-    #[serde(default)]
-    kind: profiles::Kind,
     #[serde(default)]
     apps: Option<Vec<String>>,
     #[serde(default)]
@@ -1413,7 +1411,7 @@ async fn save_profile(
     if auth.is_admin_person(&person) || auth.is_admin_person(&name) {
         return Err(ApiError::new(409, "an admin's profile always has everything"));
     }
-    let profile = profiles::cleaned(Profile { name: name.clone(), kind: body.kind, apps: body.apps, can: body.can });
+    let profile = profiles::cleaned(Profile { name: name.clone(), apps: body.apps, can: body.can });
     let renamed = name != person;
     // Approving matches names ignoring case, so two may not differ only by it.
     let lower = name.to_lowercase();
@@ -1462,7 +1460,7 @@ async fn save_profile(
     }
     auth.rules_changed(&auth.devices_of(&name));
     tracing::info!("auth: profile {person:?} saved as {name:?} by {}", ctx.by());
-    Ok(Json(json!({"name": profile.name, "kind": profile.kind, "apps": profile.apps, "can": profile.can})))
+    Ok(Json(json!({"name": profile.name, "apps": profile.apps, "can": profile.can})))
 }
 
 /// Remove a profile with no devices of its own: an admin only.

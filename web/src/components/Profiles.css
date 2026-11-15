@@ -1,4 +1,4 @@
-/* Family mode (#297): profile chip, picker, sheet and the admin's editor. */
+/* Profiles (#297): profile chip, picker, sheet and the admin's editor. */
 .avatar {
   display: inline-grid;
   place-items: center;
@@ -37,7 +37,7 @@
   place-items: center;
   padding: 16px;
   overflow-y: auto;
-  background: rgba(6, 9, 14, 0.72);
+  background: rgba(var(--veil), 0.72);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
 }
@@ -74,7 +74,6 @@
 .profiles-list .btn { grid-area: action; }
 .profile-kind { padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--well); color: var(--ink-2); }
 .profile-kind.kind-admin { color: var(--accent); }
-.profile-kind.kind-kid { color: hsl(330 70% 55%); }
 
 .profile-edit-head { display: flex; gap: 14px; align-items: center; }
 .profile-edit-head .field { flex: 1; font-size: 17px; font-weight: 600; }

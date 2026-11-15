@@ -2,14 +2,13 @@
 //!
 //! A profile is a person (the `person` every paired device has, #221) plus
 //! what the admin allows them: the apps they see and start (all, or a list),
-//! and four switches: robot power, drive and expressions (with turning the
-//! motors on, which they need), voice, and the camera. A kid profile also
-//! loses the Controls pane: volume, sounds, and any other motor mode. The System tab (board stats, logs,
-//! the microphone meter, the sim switch) is the admin's only, for every
-//! profile.
+//! and five switches: robot power, drive and expressions (with turning the
+//! motors on, which they need), voice, the camera, and the Controls pane
+//! (volume, sounds, and any other motor mode). The System tab (board stats,
+//! logs, the microphone meter, the sim switch) is the admin's only, for
+//! every profile.
 //!
-//! A person without a stored profile is a grown-up with everything
-//! allowed, so devices paired before #297 keep working as they did, minus
+//! A person without a stored profile has everything allowed, so devices paired before #297 keep working as they did, minus
 //! System. Admin devices, the local key, and every request outside admin
 //! mode have [`Access::Full`].
 //!
@@ -29,10 +28,11 @@ use serde_json::{Value, json};
 
 use crate::error::ApiError;
 
-/// Kids lose the Controls pane; otherwise the same rules as grown-ups.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Profiles saved before the Controls switch had a kind instead: a kid
+/// had Controls off. Read only, to carry that over.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Kind {
+enum Kind {
     #[default]
     Grown,
     Kid,
@@ -56,35 +56,57 @@ pub struct Can {
     pub voice: bool,
     #[serde(default = "yes")]
     pub camera: bool,
+    /// The Controls pane: volume, sounds, and motor modes other than on.
+    #[serde(default = "yes")]
+    pub controls: bool,
 }
 
 impl Default for Can {
     fn default() -> Self {
-        Self { power: true, drive: true, voice: true, camera: true }
+        Self { power: true, drive: true, voice: true, camera: true, controls: true }
     }
 }
 
 impl Can {
-    const NOTHING: Self = Self { power: false, drive: false, voice: false, camera: false };
+    const NOTHING: Self = Self { power: false, drive: false, voice: false, camera: false, controls: false };
 }
 
 /// A stored profile, keyed by person name.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "Stored")]
 pub struct Profile {
     pub name: String,
-    #[serde(default)]
-    pub kind: Kind,
     /// `None`: every installed app.
-    #[serde(default)]
     pub apps: Option<Vec<String>>,
-    #[serde(default)]
     pub can: Can,
 }
 
+/// A profile as saved, older ones with a kind.
+#[derive(Deserialize)]
+struct Stored {
+    name: String,
+    #[serde(default)]
+    kind: Kind,
+    #[serde(default)]
+    apps: Option<Vec<String>>,
+    #[serde(default)]
+    can: Can,
+}
+
+impl From<Stored> for Profile {
+    fn from(stored: Stored) -> Self {
+        let mut can = stored.can;
+        if stored.kind == Kind::Kid {
+            can.controls = false;
+        }
+        Self { name: stored.name, apps: stored.apps, can }
+    }
+}
+
 impl Profile {
-    /// A person nobody has restricted: a grown-up with everything.
+    /// A person nobody has restricted: everything allowed.
     pub fn open(name: &str) -> Self {
-        Self { name: name.to_string(), kind: Kind::Grown, apps: None, can: Can::default() }
+        Self { name: name.to_string(), apps: None, can: Can::default() }
     }
 
     pub fn allows_app(&self, app: &str) -> bool {
@@ -120,22 +142,12 @@ impl Access {
         }
     }
 
-    fn kid(&self) -> bool {
-        match self {
-            Self::Full => false,
-            Self::Limited(profile) => profile.kind == Kind::Kid,
-            Self::Unpicked => true,
-        }
-    }
-
     /// What the dashboard shows and dims, for `/api/auth/status`.
     pub fn view(&self) -> Value {
         match self {
-            Self::Full => json!({"admin": true, "kind": "grown", "apps": null, "can": Can::default()}),
-            Self::Limited(profile) => {
-                json!({"admin": false, "kind": profile.kind, "apps": profile.apps, "can": profile.can})
-            }
-            Self::Unpicked => json!({"admin": false, "kind": "kid", "apps": [], "can": Can::NOTHING}),
+            Self::Full => json!({"admin": true, "apps": null, "can": Can::default()}),
+            Self::Limited(profile) => json!({"admin": false, "apps": profile.apps, "can": profile.can}),
+            Self::Unpicked => json!({"admin": false, "apps": [], "can": Can::NOTHING}),
         }
     }
 }
@@ -154,7 +166,7 @@ fn system(path: &str) -> bool {
         || path == "/api/sim/sounds-stream"
 }
 
-/// The Controls pane's changes (a kid's profile can't make them).
+/// The Controls pane's changes (the Controls switch).
 fn controls(method: &Method, path: &str) -> bool {
     !method.is_safe()
         && (under(path, "/api/volume")
@@ -187,8 +199,8 @@ pub fn check(method: &Method, path: &str, access: &Access) -> Result<(), ApiErro
     if drives && !can.drive {
         return refuse("Drive");
     }
-    // Driving needs the motors on; only grown-ups make the robot go limp.
-    if acts && access.kid() && under(path, "/api/motors/set_mode") && path != "/api/motors/set_mode/enabled" {
+    // Driving needs the motors on; making the robot go limp is a Control.
+    if acts && !can.controls && under(path, "/api/motors/set_mode") && path != "/api/motors/set_mode/enabled" {
         return refuse("Controls");
     }
     if under(path, "/api/audio/session") && !can.voice {
@@ -197,7 +209,7 @@ pub fn check(method: &Method, path: &str, access: &Access) -> Result<(), ApiErro
     if path == "/api/camera/stream" && !can.camera {
         return refuse("Camera");
     }
-    if access.kid() && controls(method, path) {
+    if !can.controls && controls(method, path) {
         return refuse("Controls");
     }
     Ok(())
@@ -217,10 +229,9 @@ pub fn cleaned(mut profile: Profile) -> Profile {
 mod tests {
     use super::*;
 
-    fn kid(can: Can, apps: &[&str]) -> Access {
+    fn limited(can: Can, apps: &[&str]) -> Access {
         Access::Limited(Arc::new(Profile {
             name: "Mia".into(),
-            kind: Kind::Kid,
             apps: Some(apps.iter().map(|a| a.to_string()).collect()),
             can,
         }))
@@ -256,7 +267,7 @@ mod tests {
 
     #[test]
     fn switches_refuse_their_routes() {
-        let none = kid(Can::NOTHING, &[]);
+        let none = limited(Can::NOTHING, &[]);
         for (method, path) in [
             (Method::POST, "/api/daemon/start"),
             (Method::POST, "/api/daemon/stop"),
@@ -276,15 +287,16 @@ mod tests {
         for path in ["/api/daemon/status", "/api/audio", "/api/camera/availability", "/api/expressions/current"] {
             assert!(check(&Method::GET, path, &none).is_ok(), "{path}");
         }
-        let all = kid(Can::default(), &[]);
-        assert!(check(&Method::POST, "/api/daemon/start", &all).is_ok());
-        assert!(check(&Method::GET, "/api/camera/stream", &all).is_ok());
-        // Kids never get Controls; grown-ups do.
-        assert!(check(&Method::POST, "/api/volume/set", &all).is_err());
-        assert!(check(&Method::POST, "/api/motors/set_mode/enabled", &all).is_ok());
-        assert!(check(&Method::POST, "/api/motors/set_mode/disabled", &all).is_err());
-        let grown = Access::Limited(Arc::new(Profile::open("Sam")));
-        assert!(check(&Method::POST, "/api/volume/set", &grown).is_ok());
+        let no_controls = limited(Can { controls: false, ..Can::default() }, &[]);
+        assert!(check(&Method::POST, "/api/daemon/start", &no_controls).is_ok());
+        assert!(check(&Method::GET, "/api/camera/stream", &no_controls).is_ok());
+        // Without Controls: no volume, and the motors only turn on.
+        assert!(check(&Method::POST, "/api/volume/set", &no_controls).is_err());
+        assert!(check(&Method::POST, "/api/motors/set_mode/enabled", &no_controls).is_ok());
+        assert!(check(&Method::POST, "/api/motors/set_mode/disabled", &no_controls).is_err());
+        let open = Access::Limited(Arc::new(Profile::open("Sam")));
+        assert!(check(&Method::POST, "/api/volume/set", &open).is_ok());
+        assert!(check(&Method::POST, "/api/motors/set_mode/disabled", &open).is_ok());
     }
 
     #[test]
@@ -293,18 +305,22 @@ mod tests {
         assert!(check(&Method::POST, "/api/daemon/start", &Access::Unpicked).is_err());
         assert!(check(&Method::GET, "/api/daemon/status", &Access::Unpicked).is_ok());
         assert!(!Access::Unpicked.allows_app("anything"));
-        assert!(check(&Method::POST, "/api/control/take", &kid(Can::NOTHING, &[])).is_ok());
+        assert!(check(&Method::POST, "/api/control/take", &limited(Can::NOTHING, &[])).is_ok());
     }
 
     #[test]
     fn app_lists_and_old_files() {
-        let mia = kid(Can::default(), &["dance"]);
+        let mia = limited(Can::default(), &["dance"]);
         assert!(mia.allows_app("dance"));
         assert!(!mia.allows_app("dj_reactor"));
         assert!(Access::Limited(Arc::new(Profile::open("Sam"))).allows_app("dj_reactor"));
         // Switches a file doesn't name are on.
         let p: Profile = serde_json::from_value(json!({"name": "Leo", "can": {"power": false}})).unwrap();
         assert_eq!(p.can, Can { power: false, ..Can::default() });
-        assert_eq!((p.kind, p.apps), (Kind::Grown, None));
+        assert_eq!(p.apps, None);
+        // A kid saved before the Controls switch keeps Controls off.
+        let p: Profile = serde_json::from_value(json!({"name": "Mia", "kind": "kid"})).unwrap();
+        assert_eq!(p.can, Can { controls: false, ..Can::default() });
+        assert!(serde_json::to_value(&p).unwrap().get("kind").is_none());
     }
 }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { allowedApps, appsText, profileInitial, rights } from "./profile.ts";
 
-const kid = { name: "Mia", admin: false, shared: false, kind: "kid" as const, apps: ["dance"], can: { power: false, drive: true, voice: false, camera: false } };
+const mia = { name: "Mia", admin: false, shared: false, apps: ["dance"], can: { power: false, drive: true, voice: false, camera: false, controls: false } };
 
 describe("rights", () => {
   test("no profile (no admin mode) allows everything", () => {
@@ -9,20 +9,20 @@ describe("rights", () => {
     expect([r.family, r.system, r.controls, r.can.power, r.apps, r.picking]).toEqual([false, true, true, true, null, false]);
   });
   test("the admin has everything", () => {
-    const r = rights({ ...kid, admin: true });
+    const r = rights({ ...mia, admin: true });
     expect([r.family, r.system, r.controls, r.can.camera, r.apps]).toEqual([true, true, true, true, null]);
   });
-  test("a kid loses System and Controls and keeps its switches", () => {
-    const r = rights(kid);
+  test("a limited profile loses System, and Controls with its switch", () => {
+    const r = rights(mia);
     expect([r.system, r.controls, r.can.power, r.can.drive, r.apps]).toEqual([false, false, false, true, ["dance"]]);
   });
-  test("a grown-up keeps Controls but not System", () => {
-    const r = rights({ ...kid, kind: "grown" });
+  test("Controls on keeps the pane but not System", () => {
+    const r = rights({ ...mia, can: { ...mia.can, controls: true } });
     expect([r.system, r.controls]).toEqual([false, true]);
   });
   test("a shared device without a pick is picking", () => {
-    expect(rights({ ...kid, name: null, shared: true }).picking).toBe(true);
-    expect(rights({ ...kid, shared: true }).picking).toBe(false);
+    expect(rights({ ...mia, name: null, shared: true }).picking).toBe(true);
+    expect(rights({ ...mia, shared: true }).picking).toBe(false);
   });
 });
 
