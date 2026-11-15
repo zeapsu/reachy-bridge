@@ -138,7 +138,7 @@ struct Device {
     last_seen: u64,
     /// Peer address at pairing, then at the last recorded visit.
     peer: String,
-    /// A family tablet (#297): it belongs to nobody, and whoever uses it
+    /// A shared tablet (#297): it belongs to nobody, and whoever uses it
     /// picks a profile. Always a member.
     #[serde(default)]
     shared: bool,
@@ -151,7 +151,8 @@ struct DevicesFile {
     admin_mode: bool,
     devices: Vec<Device>,
     /// What each person may do (#297); people without one may do everything.
-    /// A damaged entry is skipped, not the whole file.
+    /// A damaged entry locks its person (or is skipped if it names nobody),
+    /// rather than failing the whole file.
     #[serde(default, deserialize_with = "lenient_profiles")]
     profiles: Vec<Profile>,
 }
@@ -160,11 +161,17 @@ fn lenient_profiles<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
     let values = Vec::<Value>::deserialize(deserializer)?;
     Ok(values
         .into_iter()
-        .filter_map(|v| match serde_json::from_value::<Profile>(v) {
+        .filter_map(|v| match serde_json::from_value::<Profile>(v.clone()) {
             Ok(p) => Some(p),
+            // A damaged entry that names someone fails closed: that person
+            // gets nothing rather than everything.
             Err(error) => {
-                tracing::error!("auth: skipped a damaged profile in {DEVICES_FILE} ({error})");
-                None
+                let name = v.get("name").and_then(Value::as_str).map(Profile::locked);
+                tracing::error!(
+                    "auth: a damaged profile in {DEVICES_FILE} ({error}); locked: {:?}",
+                    name.as_ref().map(|p| &p.name)
+                );
+                name
             }
         })
         .collect())
@@ -689,7 +696,7 @@ impl Auth {
             // A shared device never acts as an admin's person, even through a
             // pick made before they became one: it picks again.
             Some(person) if device.shared && self.is_admin_person(&person) => {
-                self.picks.lock().unwrap().remove(&device.id);
+                self.drop_pick(&device.id, &person);
                 Access::Unpicked
             }
             // An admin's other devices are never restricted by a stored profile.
@@ -697,13 +704,30 @@ impl Auth {
                 Access::Limited(std::sync::Arc::new(Profile::open(&person)))
             }
             // A shared device's pick must still name someone; else it picks again.
-            Some(person) if device.shared && !self.people().iter().any(|(name, _)| *name == person) => Access::Unpicked,
+            Some(person) if device.shared && !self.people().iter().any(|(name, _)| *name == person) => {
+                self.drop_pick(&device.id, &person);
+                Access::Unpicked
+            }
             Some(person) => Access::Limited(std::sync::Arc::new(self.profile(&person))),
             None => Access::Unpicked,
         }
     }
 
-    /// `person`'s stored profile, or an open grown-up one.
+    /// A shared device's pick no longer holds: it shows the picker again,
+    /// and what it had open under the pick ends.
+    /// Only if it still names `person`: a pick made since then stays.
+    fn drop_pick(&self, device: &str, person: &str) {
+        let dropped = {
+            let mut picks = self.picks.lock().unwrap();
+            let current = picks.get(device).is_some_and(|p| p == person);
+            current && picks.remove(device).is_some()
+        };
+        if dropped {
+            self.rules_changed(&[device.to_string()]);
+        }
+    }
+
+    /// `person`'s stored profile, or an open one.
     fn profile(&self, person: &str) -> Profile {
         let profiles = self.profiles.lock().unwrap();
         profiles.iter().find(|p| p.name == person).cloned().unwrap_or_else(|| Profile::open(person))
@@ -955,7 +979,7 @@ async fn status(State(state): State<Shared>, Extension(ctx): Extension<AuthConte
         "device": ctx.device,
         "person": ctx.person,
         "role": ctx.role,
-        // Family mode (#297): what this browser may do, once an admin exists.
+        // Profiles (#297): what this browser may do, once an admin exists.
         "profile": (auth.admin_mode() && (ctx.device.is_some() || ctx.local)).then(|| {
             let mut view = ctx.access.view();
             view["name"] = json!(ctx.person);
@@ -1103,7 +1127,7 @@ struct ApproveBody {
     person: Option<String>,
     #[serde(default)]
     role: Role,
-    /// A family tablet: no person of its own (#297).
+    /// A shared tablet: no person of its own (#297).
     #[serde(default)]
     shared: bool,
 }
@@ -1157,7 +1181,7 @@ pub struct ApproveAs<'a> {
     pub name: Option<&'a str>,
     pub person: Option<&'a str>,
     pub role: Role,
-    /// A family tablet (#297).
+    /// A shared tablet (#297).
     pub shared: bool,
 }
 
@@ -1306,12 +1330,12 @@ async fn revoke(
     // nobody waits for it to go silent.
     state.control.forget(&id);
     auth.picks.lock().unwrap().remove(&id);
-    // Tablets that picked this person may have lost their pick with it.
+    // The person's rights may change with it (their last admin device, or
+    // their last device a tablet's pick needs): their other devices and
+    // those tablets reconnect under the new rules.
     let person = if removed.person.is_empty() { removed.name.clone() } else { removed.person.clone() };
     if !removed.shared {
-        let tablets: Vec<String> =
-            auth.picks.lock().unwrap().iter().filter(|(_, p)| **p == person).map(|(id, _)| id.clone()).collect();
-        auth.rules_changed(&tablets);
+        auth.rules_changed(&auth.devices_of(&person));
     }
     auth.revoked.send_modify(|n| *n += 1);
     let by = ctx.by();
@@ -1319,7 +1343,7 @@ async fn revoke(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Family mode (#297): the people a profile can belong to.
+/// Profiles (#297): the people a profile can belong to.
 impl Auth {
     /// Everyone with a profile or a device of their own, sorted, and whether
     /// they have an admin device (an admin's profile is never restricted or
@@ -1372,7 +1396,9 @@ async fn list_profiles(State(state): State<Shared>, Extension(ctx): Extension<Au
                 .filter(|d| !d.shared && (d.person == *name || (d.person.is_empty() && d.name == *name)))
                 .map(|d| d.id.clone())
                 .collect();
-            json!({"name": name, "admin": admin, "kind": profile.kind, "apps": profile.apps, "can": profile.can, "devices": devices})
+            // `kind` for a dashboard tab from before the Controls switch.
+            let kind = if profile.can.controls { "grown" } else { "kid" };
+            json!({"name": name, "admin": admin, "kind": kind, "apps": profile.apps, "can": profile.can, "devices": devices})
         })
         .collect();
     Json(json!({"profiles": list}))
@@ -1386,11 +1412,13 @@ struct ProfileBody {
     /// A new name, to rename the profile (and move its devices).
     name: Option<String>,
     #[serde(default)]
-    kind: profiles::Kind,
-    #[serde(default)]
     apps: Option<Vec<String>>,
     #[serde(default)]
-    can: profiles::Can,
+    can: Value,
+    /// Sent by dashboards from before the Controls switch: "kid" means
+    /// Controls off, unless the switch itself is sent.
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 /// Create, change or rename a profile: an admin only.
@@ -1413,19 +1441,25 @@ async fn save_profile(
     if auth.is_admin_person(&person) || auth.is_admin_person(&name) {
         return Err(ApiError::new(409, "an admin's profile always has everything"));
     }
-    let profile = profiles::cleaned(Profile { name: name.clone(), kind: body.kind, apps: body.apps, can: body.can });
+    let can = profiles::Can::from_body(body.can, body.kind.as_deref()).map_err(|error| ApiError::new(400, error))?;
+    let profile = profiles::cleaned(Profile { name: name.clone(), apps: body.apps, can });
     let renamed = name != person;
     // Approving matches names ignoring case, so two may not differ only by it.
     let lower = name.to_lowercase();
     {
+        // Pending first, as `poll` takes it: a browser approved for the old
+        // name can't log in between the rename and its approval following.
+        let mut pending = auth.pending.lock().unwrap();
         let mut devices = auth.devices.lock().unwrap();
         let mut stored = auth.profiles.lock().unwrap();
-        let taken = (renamed || body.create)
-            && (stored.iter().any(|p| p.name.to_lowercase() == lower && (body.create || p.name != person))
-                || devices.iter().any(|d| {
-                    let who = if d.person.is_empty() { &d.name } else { &d.person };
-                    !d.shared && who.to_lowercase() == lower && (body.create || *who != person)
-                }));
+        let who = |d: &Device| if d.person.is_empty() { d.name.clone() } else { d.person.clone() };
+        let exists = stored.iter().any(|p| p.name == person) || devices.iter().any(|d| !d.shared && who(d) == person);
+        // A new name (added, renamed, or never seen) takes no existing one,
+        // nor one that differs from someone else's only by case. Editing an
+        // existing profile in place always goes through.
+        let clash = |other: &str| other.to_lowercase() == lower && (body.create || other != person);
+        let taken = (body.create || renamed || !exists)
+            && (stored.iter().any(|p| clash(&p.name)) || devices.iter().any(|d| !d.shared && clash(&who(d))));
         if taken {
             return Err(ApiError::new(409, format!("{name} already has a profile")));
         }
@@ -1447,10 +1481,16 @@ async fn save_profile(
             return Err(ApiError::new(500, "could not save the profile"));
         }
         // Shared tablets using the profile follow the new name, before any
-        // request can see the profile under its new name only.
+        // request can see the profile under its new name only; so do
+        // browsers approved for it that haven't logged in yet.
         if renamed {
             for p in auth.picks.lock().unwrap().values_mut().filter(|p| **p == person) {
                 *p = name.clone();
+            }
+            for request in &mut pending.requests {
+                if let Some(approval) = request.approved.as_mut().filter(|a| !a.shared && a.person == person) {
+                    approval.person = name.clone();
+                }
             }
         }
     }
@@ -1462,7 +1502,7 @@ async fn save_profile(
     }
     auth.rules_changed(&auth.devices_of(&name));
     tracing::info!("auth: profile {person:?} saved as {name:?} by {}", ctx.by());
-    Ok(Json(json!({"name": profile.name, "kind": profile.kind, "apps": profile.apps, "can": profile.can})))
+    Ok(Json(json!({"name": profile.name, "apps": profile.apps, "can": profile.can})))
 }
 
 /// Remove a profile with no devices of its own: an admin only.
@@ -1477,6 +1517,8 @@ async fn delete_profile(
     }
     let person = label(Some(&person));
     {
+        // Pending first, as `poll` takes it (see `save_profile`).
+        let mut pending = auth.pending.lock().unwrap();
         let devices = auth.devices.lock().unwrap();
         if devices.iter().any(|d| !d.shared && (d.person == person || (d.person.is_empty() && d.name == person))) {
             return Err(ApiError::new(409, "log out this profile's devices first"));
@@ -1491,6 +1533,9 @@ async fn delete_profile(
             tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
             return Err(ApiError::new(500, "could not save the profiles"));
         }
+        // A browser approved for this profile and not yet logged in would
+        // arrive with no profile, so with everything: it asks again instead.
+        pending.requests.retain(|r| r.approved.as_ref().is_none_or(|a| a.shared || a.person != person));
     }
     let ids: Vec<String> = {
         let mut picks = auth.picks.lock().unwrap();
@@ -1632,6 +1677,20 @@ mod tests {
         assert!(mentions_admin(b"{\"admin_mode\": false, \"devices\": [{\"role\": \"admin\", \"x"));
         assert!(!mentions_admin(b"{\"admin_mode\": false, \"devices\": [{\"role\": \"member\", \"x"));
         assert!(!mentions_admin(b"{not json"));
+    }
+
+    #[test]
+    fn a_damaged_profile_locks_its_person() {
+        let file: DevicesFile = serde_json::from_value(json!({
+            "devices": [],
+            "profiles": [{"name": "Mia", "kind": "Kid"}, {"name": "Leo", "kind": null}, {"apps": 3}, {"name": "Sam", "kind": "kid"}],
+        }))
+        .unwrap();
+        let names: Vec<&str> = file.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Mia", "Leo", "Sam"]);
+        assert_eq!(file.profiles[0], Profile::locked("Mia"));
+        assert_eq!(file.profiles[1], Profile::locked("Leo"));
+        assert!(!file.profiles[2].can.controls && file.profiles[2].can.power);
     }
 
     #[test]

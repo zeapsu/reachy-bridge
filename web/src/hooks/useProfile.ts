@@ -17,7 +17,7 @@ export interface ProfileApi {
   reload: () => Promise<void>;
 }
 
-/** This browser's profile in family mode (#297), from /api/auth/status. */
+/** This browser's profile with profiles (#297), from /api/auth/status. */
 export function useProfile(visible: boolean): ProfileApi {
   const [profile, setProfile] = useState<ProfileView | null>(null);
   const [error, setError] = useState<string | null>(null);

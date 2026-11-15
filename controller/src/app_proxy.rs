@@ -194,7 +194,7 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
         Ok(found) => found,
         Err(why) => return unavailable(why, dashboard.as_deref()),
     };
-    // Family mode (#297): only apps on the acting profile's list.
+    // Profiles (#297): only apps on the acting profile's list.
     if let Some(device) = &device
         && !proxy.state.auth.access_for_device(device).allows_app(&app)
     {

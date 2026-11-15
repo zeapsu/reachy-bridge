@@ -2,9 +2,8 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import { apiJson, errorText, paths } from "../api.ts";
 import { useLens } from "../glass.ts";
 import { appHue, appInitial } from "../logic/apps.ts";
-import type { Can, Kind, PairedDevice, ProfileItem, ProfileView } from "../logic/auth.ts";
-import { ALL_CAN, KID_CAN, KIND_LABEL, appsText, profileHue, profileInitial } from "../logic/profile.ts";
-import { Segmented } from "./Segmented.tsx";
+import type { Can, PairedDevice, ProfileItem, ProfileView } from "../logic/auth.ts";
+import { ALL_CAN, NEW_CAN, appsText, profileHue, profileInitial } from "../logic/profile.ts";
 import "./Profiles.css";
 
 const stroke = { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true } as const;
@@ -57,11 +56,17 @@ const CAN_ROWS: { key: keyof Can; label: string; icon: ReactNode }[] = [
       </svg>
     ),
   },
-];
-
-const KINDS: { value: Kind; label: string }[] = [
-  { value: "grown", label: KIND_LABEL.grown },
-  { value: "kid", label: KIND_LABEL.kid },
+  {
+    key: "controls",
+    label: "Volume, sounds and motors",
+    icon: (
+      <svg {...stroke}>
+        <path d="M4 7h9M17 7h3M4 17h3M11 17h9" />
+        <circle cx="15" cy="7" r="2" />
+        <circle cx="9" cy="17" r="2" />
+      </svg>
+    ),
+  },
 ];
 
 export function Avatar({ name, size = 26 }: { name: string | null; size?: number }) {
@@ -191,7 +196,7 @@ export function ProfileSheet({
             <Avatar name={profile.name} size={44} />
             <span className="profile-sheet-name">
               {profile.name ?? "Shared"}
-              <span className="profile-sheet-kind">{profile.admin ? "Admin" : KIND_LABEL[profile.kind]}</span>
+              <span className="profile-sheet-sub">{profile.admin ? "Admin" : appsText(profile.apps)}</span>
             </span>
             {profile.shared ? (
               <button className="btn press" type="button" onClick={onSwitch}>
@@ -228,8 +233,7 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
   const sheet = useLens<HTMLElement>();
   const [saved, setSaved] = useState<string | null>(initial?.name ?? null);
   const [name, setName] = useState(initial?.name ?? "");
-  const [kind, setKind] = useState<Kind>(initial?.kind ?? "kid");
-  const [can, setCan] = useState<Can>(initial?.can ?? KID_CAN);
+  const [can, setCan] = useState<Can>(initial?.can ?? NEW_CAN);
   const [apps, setApps] = useState<string[] | null>(initial ? (initial.apps ?? null) : []);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -237,15 +241,15 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
 
   // Saves run one at a time, each sending the newest values to the name
   // the profile has on the robot at that moment (a rename changes it).
-  const latest = useRef({ name, kind, can, apps });
-  latest.current = { ...latest.current, name, kind, can, apps };
+  const latest = useRef({ name, can, apps });
+  latest.current = { ...latest.current, name, can, apps };
   const savedRef = useRef(saved);
   // What the robot holds, to put back when a save fails.
-  const good = useRef({ name, kind, can, apps });
+  const good = useRef({ name, can, apps });
   const queue = useRef(Promise.resolve());
   const pending = useRef(0);
 
-  const save = (next: { kind?: Kind; can?: Can; apps?: string[] | null }) => {
+  const save = (next: { can?: Can; apps?: string[] | null }) => {
     latest.current = { ...latest.current, ...next };
     if (!latest.current.name.trim()) {
       setError("A profile needs a name.");
@@ -254,12 +258,12 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
     pending.current += 1;
     setBusy(true);
     queue.current = queue.current.then(async () => {
-      const { name: typed, kind: k, can: c, apps: a } = latest.current;
-      const body = { name: typed.trim(), kind: k, can: c, apps: a, create: savedRef.current === null };
+      const { name: typed, can: c, apps: a } = latest.current;
+      const body = { name: typed.trim(), can: c, apps: a, create: savedRef.current === null };
       try {
         await apiJson(paths.authProfile(savedRef.current ?? body.name), { method: "PUT", body: JSON.stringify(body) });
         savedRef.current = body.name;
-        good.current = { name: body.name, kind: k, can: c, apps: a };
+        good.current = { name: body.name, can: c, apps: a };
         setSaved(body.name);
         setError(null);
         await onChanged();
@@ -269,7 +273,6 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
         if (savedRef.current !== null) {
           latest.current = { ...good.current };
           setName(good.current.name);
-          setKind(good.current.kind);
           setCan(good.current.can);
           setApps(good.current.apps);
         }
@@ -349,15 +352,6 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
       </p>
       {saved ? (
         <>
-          <Segmented
-            label="Kind"
-            options={KINDS}
-            value={kind}
-            onChange={(next) => {
-              setKind(next);
-              void save({ kind: next });
-            }}
-          />
           <div className="group">
             <span className="label">Can</span>
             {CAN_ROWS.map((row) => (
@@ -501,7 +495,7 @@ export function ProfilesPanel({ installed }: { installed: InstalledApp[] }) {
             <Avatar name={p.name} size={40} />
             <span className="profiles-name">{p.name}</span>
             <span className="profiles-meta">
-              <span className={`profile-kind kind-${p.admin ? "admin" : (p.kind ?? "grown")}`}>{p.admin ? "Admin" : KIND_LABEL[p.kind ?? "grown"]}</span>
+              {p.admin ? <span className="profile-tag">Admin</span> : null}
               {[...(p.devices ?? []).map(deviceName), appsText(p.admin ? null : p.apps)].join(" · ")}
             </span>
             {p.admin ? null : (

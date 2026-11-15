@@ -24,9 +24,9 @@ export interface Can {
   drive: boolean;
   voice: boolean;
   camera: boolean;
+  /** The Controls pane: volume, sounds and motor modes. */
+  controls: boolean;
 }
-
-export type Kind = "grown" | "kid";
 
 /** `profile` in GET /api/auth/status. */
 export interface ProfileView {
@@ -34,7 +34,6 @@ export interface ProfileView {
   name: string | null;
   admin: boolean;
   shared: boolean;
-  kind: Kind;
   /** null: every installed app. */
   apps: string[] | null;
   can: Can;
@@ -44,7 +43,6 @@ export interface ProfileView {
 export interface ProfileItem {
   name: string;
   admin: boolean;
-  kind?: Kind;
   apps?: string[] | null;
   can?: Can;
   /** Device ids of its own (not shared). */
@@ -62,7 +60,7 @@ export interface PairedDevice {
   /** Who uses it; missing from controllers before #221. */
   person?: string;
   role?: Role;
-  /** A family tablet (#297). */
+  /** A shared tablet (#297). */
   shared?: boolean;
   /** This browser's own device. */
   current: boolean;

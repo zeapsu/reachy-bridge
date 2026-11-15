@@ -75,7 +75,7 @@ function Dashboard() {
   const me = useProfile(visible);
   const may = me.rights;
   const [sheetOpen, setSheetOpen] = useState(false);
-  // Family mode (#297): what this profile can't open is dimmed, and never shown.
+  // Profiles (#297): what this profile can't open is dimmed, and never shown.
   const paneOff: Record<Pane, boolean> = {
     expressions: !may.can.drive,
     drive: !may.can.drive,
@@ -157,6 +157,15 @@ function Dashboard() {
   useEffect(() => {
     if (visible) void apps.loadFavorites();
   }, [visible, apps.loadFavorites]);
+  // Pins are each person's own: a tablet that switches profile reloads them.
+  const actingPerson = me.profile ? (me.profile.name ?? "") : null;
+  const pinsOwner = useRef(actingPerson);
+  useEffect(() => {
+    if (pinsOwner.current === actingPerson) return;
+    const first = pinsOwner.current === null;
+    pinsOwner.current = actingPerson;
+    if (!first) void apps.reloadFavorites();
+  }, [actingPerson, apps.reloadFavorites]);
 
   const setTab = (next: Tab) => {
     setTabState(next);
@@ -254,6 +263,7 @@ function Dashboard() {
                 setStopping={power.setStopping}
                 pollPower={power.poll}
                 onReturningHome={expr.enterReturningHome}
+                motorsLocked={!may.can.drive}
               />
             </div>
             <div hidden={pane !== "voice" || paneOff.voice}>
@@ -292,7 +302,7 @@ function Dashboard() {
               <SimPanel sim={sim} sounds={simSounds} powerStatus={power.status} control={control} />
               <LogsPanel live={visible && tab === "system"} />
               <DevicesPanel />
-              {/* In family mode the look lives on the profile chip. */}
+              {/* With profiles the look lives on the profile chip. */}
               {may.family ? null : <AppearancePanel look={look} />}
             </>
           ) : null}
