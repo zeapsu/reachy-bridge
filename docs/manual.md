@@ -12,6 +12,7 @@ bridge, see the [README](../README.md).
 - [Apps](#apps)
 - [Simulation](#simulation)
 - [Devices and logging in](#devices-and-logging-in)
+- [Family profiles](#family-profiles)
 - [Troubleshooting](#troubleshooting)
 
 ## The dashboard
@@ -20,7 +21,9 @@ The dashboard has three tabs:
 
 - **Robot:** the live view of the robot, with panes for Expressions, Drive, Controls and Voice.
 - **Apps:** installed apps, and Get apps to install more from Hugging Face.
-- **System:** the board's stats, logs, paired devices, simulation and appearance.
+- **System:** the board's stats, logs, paired devices, simulation and appearance. Once the
+  dashboard has an admin, System is the admin's only: other people see it dimmed with a lock (see
+  [Family profiles](#family-profiles)).
 
 The top bar always shows the robot's status and the power button. The status shows the running app
 or, with a person icon, who is in control. While anyone has an audio session open, a badge shows
@@ -179,6 +182,44 @@ code, so only the command on the robot can approve it.
 
 **Removing a browser.** Revoke it under Devices, or run `reachy-bridge devices revoke <n>`. A browser
 unused for 30 days is logged out.
+
+**Shared browsers.** Turn on Shared when approving a family tablet. It belongs to nobody: whoever
+picks it up chooses their profile (see below).
+
+## Family profiles
+
+Once the dashboard has an admin, everyone who uses it has a profile: the person each browser was
+approved for. Only the admin sees System, and only the admin manages profiles, under System ›
+Profiles. Everyone else has a chip with their name in the top bar. Tap it for the browser's
+appearance and to log this browser out.
+
+**What a profile can do.** Each profile is a Grown-up or a Kid, with:
+
+- **Apps:** all installed apps, or the ones you switch on. The Apps tab lists only those, and the
+  robot refuses to start, stop or open any other. Starting an app wakes the robot, even for a profile
+  that can't use the power button.
+- **Power on and off**, **Drive and expressions**, **Talk and listen**, and **Camera**: anything
+  switched off is dimmed in the dashboard and refused by the robot.
+- **Kid** profiles also lose the Controls pane (volume, sounds and motor mode). They can still turn
+  the motors on to drive, but never make the robot go limp.
+
+People approved before profiles existed are Grown-ups with everything allowed, so nothing changes for
+them except System. A new profile starts as a Kid with no apps, power and driving on, and Talk and
+camera off. Changes apply within seconds. That profile's open camera, voice or live views reconnect
+under the new rules; nobody else's do. Each profile keeps its own pinned apps. The admin's profile always has
+everything, and can't be restricted.
+
+**Adding someone.** Add a profile, then approve their browser with their name as the person
+(upper or lower case doesn't matter). To
+move a browser to another profile, log it out and approve it again. A profile with browsers of its own
+can't be removed: log them out first. Renaming a profile moves its browsers with it.
+
+**Shared tablets.** A browser approved as Shared shows everyone's profile when it opens. Pick yours.
+Admins are shown dimmed with a lock, because an admin's profile works only on the admin's own
+browsers. Until someone picks, the tablet can only watch. Switch in the chip's sheet hands it back
+to the picker, which ends that person's control and voice session. Anyone can pick any non-admin
+profile on a shared tablet, and then acts as that person, including taking over control from that
+person's own browser. Don't share one between people with different rules if that matters. After the robot restarts, the tablet asks again.
 
 ## Troubleshooting
 
