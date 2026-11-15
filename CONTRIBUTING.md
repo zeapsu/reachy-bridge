@@ -47,7 +47,7 @@ CI runs these on every PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPac
 |---|---|
 | python | `uv run pytest`, `uv run ruff check runtime tools`, `uv run reachy-bridge-runtime --check` |
 | rust-web | `cargo test` and `cargo clippy --all-targets` in `controller/`; `bun run typecheck`, `bun test`, `bun run build` in `web/` |
-| shell | `shellcheck` on the scripts in `deploy/` and `tools/`; `bash tools/test_uninstall.sh` and `bash tools/test_cli.sh` (the `reachy-bridge` command's robot-off gate, sim mode, deploy and rollback) |
+| shell | `shellcheck` on the scripts in `deploy/` and `tools/`; `bash tools/test_uninstall.sh`, `bash tools/test_cli.sh` (the `reachy-bridge` command's robot-off gate, sim mode, deploy and rollback) and `bash tools/test_review_gate.sh` (the review check) |
 | sim | `uv run python tools/sim/run.py`: the controller against a sim daemon (see [`tools/sim/README.md`](tools/sim/README.md)) |
 | browser | `uv run python tools/sim/run.py --audio -- bash -c 'cd web && bunx playwright test'`: the dashboard in Chromium against the sim stack, at desktop and phone sizes, and the voice pane's audio routing over WebRTC with a test tone per source (`--audio`; needs gstreamer1.0-plugins-bad and gstreamer1.0-nice, and an address on the tailnet or in `AUDIO_GATEWAY_NETS`) (not required yet) |
 | install | `deploy/install.sh` on a fresh runner with a systemd user manager, checked by `tools/check_install.sh`; run twice, then `reachy-bridge uninstall --yes` and `check_install.sh --gone` (not required yet) |
@@ -198,12 +198,32 @@ say-so.
    see what's taken.
 3. Before asking for review, merge the current `main` into your branch and rerun the
    checks.
-4. Merge once every gate passes: CI green with the current `main` merged in, and a
+4. Merge only once every gate passes: CI green with the current `main` merged in, and a
    separate read-only review (a reviewer with fresh context, given the diff) with no
    unresolved correctness findings. Security-relevant PRs (login, sessions, headers,
    anything exposed beyond `127.0.0.1`, secrets, update signing) also need a dedicated
-   security review and a second independent reviewer, both clean. Merge with a merge
-   commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
+   security review and a second independent reviewer, both clean.
+5. Record each clean review as a PR comment of its own (not a review body) that holds
+   only the marker and the full 40-digit sha of the head commit the reviewer was
+   given: `Review: clean @<sha>`, and for a security-relevant PR also
+   `Security review: clean @<sha>` and `Second review: clean @<sha>`, each in its own
+   comment. Don't edit a marker comment; post a new one. The required `review` check
+   (`tools/review_gate.sh`, #302) stays pending until the repo owner's account has
+   posted them for the PR's current head, so a new push, including a merge of `main`,
+   needs fresh markers; and a head commit shared by two open PRs stays pending. Get the
+   head with `gh pr view <n> --json headRefOid -q .headRefOid`, and wait for the check
+   with `gh pr checks <n> --required --watch` before merging; when it stays pending, its
+   description (`gh pr checks <n> --json name,state,description`) and its run's log say
+   what's missing. The gate treats a PR as security-relevant when it has the `security`
+   or `auth` label or changes a file in the script's `SECURITY_PATHS`: login, sessions, pairing and setup and the guards and
+   headers that apply them, the app proxy, bind addresses and what's exposed, request
+   signing, app binding, secrets, the installer, dependency manifests and lock files,
+   build scripts and toolchains, everything under `.github/`, the agent rules and
+   agent config, and the gate itself. Label a PR
+   `security` when it is security-relevant by the list in step 4 but touches none of
+   those files. Dependabot's own
+   PRs pass without markers, whatever they change; the owner merges its major updates.
+6. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
    `main` directly. Only Dependabot's PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
    again.
 
