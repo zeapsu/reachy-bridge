@@ -88,7 +88,7 @@ const WS_HANDSHAKE: [&str; 4] =
 pub struct AppProxy {
     state: Shared,
     http: reqwest::Client,
-    cached: Mutex<Option<(Option<u16>, Instant)>>,
+    cached: Mutex<Option<(CurrentApp, Instant)>>,
     /// The controller's own listeners: never an upstream, whatever an app's
     /// manifest says (that would loop, or re-expose the controller API).
     own_ports: Vec<u16>,
@@ -97,6 +97,9 @@ pub struct AppProxy {
 }
 
 type Proxy = Arc<AppProxy>;
+
+/// The current app's UI port and name, when it has a UI.
+type CurrentApp = Option<(u16, String)>;
 
 /// Why there is no upstream to forward to.
 enum Unavailable {
@@ -123,12 +126,13 @@ pub fn router(state: Shared, dashboard_port: u16, own_ports: &[u16]) -> Router {
 }
 
 impl AppProxy {
-    /// UI port of the daemon's current app, while it is starting or running.
-    async fn port(&self) -> Result<u16, Unavailable> {
-        if let Some((port, at)) = *self.cached.lock().unwrap()
+    /// UI port and name of the daemon's current app, while it is starting
+    /// or running.
+    async fn port(&self) -> Result<(u16, String), Unavailable> {
+        if let Some((port, at)) = &*self.cached.lock().unwrap()
             && at.elapsed() < PORT_TTL
         {
-            return port.ok_or(Unavailable::NoApp);
+            return port.clone().ok_or(Unavailable::NoApp);
         }
         let current = self.state.apps.current().await.map_err(|_| Unavailable::Daemon)?;
         let name = current
@@ -142,10 +146,11 @@ impl AppProxy {
                 .ui_port(&name)
                 .await
                 .map_err(|_| Unavailable::Daemon)?
-                .filter(|port| !self.own_ports.contains(port)),
+                .filter(|port| !self.own_ports.contains(port))
+                .map(|port| (port, name)),
             None => None,
         };
-        *self.cached.lock().unwrap() = Some((port, Instant::now()));
+        *self.cached.lock().unwrap() = Some((port.clone(), Instant::now()));
         port.ok_or(Unavailable::NoApp)
     }
 
@@ -166,7 +171,7 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
     };
     // Control (#221): watchers load the app's pages, only the holder acts.
     let (device, local) = match &credential {
-        Credential::Device(id) => (Some(id.clone()), false),
+        Credential::Device(id, _) => (Some(id.clone()), false),
         Credential::Local => (None, true),
         Credential::Trusted => (None, false),
     };
@@ -185,10 +190,17 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
     let mut headers = parts.headers.clone();
     strip_hop_by_hop(&mut headers);
     strip_credentials(&mut headers);
-    let port = match proxy.port().await {
-        Ok(port) => port,
+    let (port, app) = match proxy.port().await {
+        Ok(found) => found,
         Err(why) => return unavailable(why, dashboard.as_deref()),
     };
+    // Family mode (#297): only apps on the acting profile's list.
+    if let Some(device) = &device
+        && !proxy.state.auth.access_for_device(device).allows_app(&app)
+    {
+        tracing::warn!("app proxy: refused {app} for device {device}: off for its profile");
+        return (StatusCode::FORBIDDEN, "this app is off for this profile").into_response();
+    }
     add_forwarded(&mut headers, &parts.headers, peer);
     let path = parts.uri.path_and_query().map_or("/", |pq| pq.as_str()).to_string();
 
@@ -283,7 +295,7 @@ async fn websocket(
         // Dropping the pipe closes both sockets when the login stops counting.
         // In admin mode the device acting through the app holds control.
         let holder = match &credential {
-            Credential::Device(id) => Some(id.clone()),
+            Credential::Device(id, _) => Some(id.clone()),
             _ => None,
         };
         // A message from the browser is the holder acting through the app.

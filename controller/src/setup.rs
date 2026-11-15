@@ -356,9 +356,12 @@ async fn confirm(
     }
     let result = state.auth.approve_code(
         &proposal.code,
-        Some(&proposal.name),
-        Some(&proposal.person),
-        Role::Admin,
+        crate::auth::ApproveAs {
+            name: Some(&proposal.name),
+            person: Some(&proposal.person),
+            role: Role::Admin,
+            shared: false,
+        },
         "the setup page (confirmed on the terminal)",
         true,
     );
