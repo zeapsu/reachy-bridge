@@ -696,7 +696,7 @@ impl Auth {
             // A shared device never acts as an admin's person, even through a
             // pick made before they became one: it picks again.
             Some(person) if device.shared && self.is_admin_person(&person) => {
-                self.drop_pick(&device.id);
+                self.drop_pick(&device.id, &person);
                 Access::Unpicked
             }
             // An admin's other devices are never restricted by a stored profile.
@@ -705,7 +705,7 @@ impl Auth {
             }
             // A shared device's pick must still name someone; else it picks again.
             Some(person) if device.shared && !self.people().iter().any(|(name, _)| *name == person) => {
-                self.drop_pick(&device.id);
+                self.drop_pick(&device.id, &person);
                 Access::Unpicked
             }
             Some(person) => Access::Limited(std::sync::Arc::new(self.profile(&person))),
@@ -715,8 +715,14 @@ impl Auth {
 
     /// A shared device's pick no longer holds: it shows the picker again,
     /// and what it had open under the pick ends.
-    fn drop_pick(&self, device: &str) {
-        if self.picks.lock().unwrap().remove(device).is_some() {
+    /// Only if it still names `person`: a pick made since then stays.
+    fn drop_pick(&self, device: &str, person: &str) {
+        let dropped = {
+            let mut picks = self.picks.lock().unwrap();
+            let current = picks.get(device).is_some_and(|p| p == person);
+            current && picks.remove(device).is_some()
+        };
+        if dropped {
             self.rules_changed(&[device.to_string()]);
         }
     }
@@ -1390,7 +1396,9 @@ async fn list_profiles(State(state): State<Shared>, Extension(ctx): Extension<Au
                 .filter(|d| !d.shared && (d.person == *name || (d.person.is_empty() && d.name == *name)))
                 .map(|d| d.id.clone())
                 .collect();
-            json!({"name": name, "admin": admin, "apps": profile.apps, "can": profile.can, "devices": devices})
+            // `kind` for a dashboard tab from before the Controls switch.
+            let kind = if profile.can.controls { "grown" } else { "kid" };
+            json!({"name": name, "admin": admin, "kind": kind, "apps": profile.apps, "can": profile.can, "devices": devices})
         })
         .collect();
     Json(json!({"profiles": list}))
@@ -1439,13 +1447,19 @@ async fn save_profile(
     // Approving matches names ignoring case, so two may not differ only by it.
     let lower = name.to_lowercase();
     {
+        // Pending first, as `poll` takes it: a browser approved for the old
+        // name can't log in between the rename and its approval following.
+        let mut pending = auth.pending.lock().unwrap();
         let mut devices = auth.devices.lock().unwrap();
         let mut stored = auth.profiles.lock().unwrap();
-        // Adding takes no existing name; any save refuses one that differs
-        // from someone else's only by case.
-        let clash = |who: &str| who.to_lowercase() == lower && (body.create || who != person);
-        let taken = stored.iter().any(|p| clash(&p.name))
-            || devices.iter().any(|d| !d.shared && clash(if d.person.is_empty() { &d.name } else { &d.person }));
+        let who = |d: &Device| if d.person.is_empty() { d.name.clone() } else { d.person.clone() };
+        let exists = stored.iter().any(|p| p.name == person) || devices.iter().any(|d| !d.shared && who(d) == person);
+        // A new name (added, renamed, or never seen) takes no existing one,
+        // nor one that differs from someone else's only by case. Editing an
+        // existing profile in place always goes through.
+        let clash = |other: &str| other.to_lowercase() == lower && (body.create || other != person);
+        let taken = (body.create || renamed || !exists)
+            && (stored.iter().any(|p| clash(&p.name)) || devices.iter().any(|d| !d.shared && clash(&who(d))));
         if taken {
             return Err(ApiError::new(409, format!("{name} already has a profile")));
         }
@@ -1467,20 +1481,20 @@ async fn save_profile(
             return Err(ApiError::new(500, "could not save the profile"));
         }
         // Shared tablets using the profile follow the new name, before any
-        // request can see the profile under its new name only.
+        // request can see the profile under its new name only; so do
+        // browsers approved for it that haven't logged in yet.
         if renamed {
             for p in auth.picks.lock().unwrap().values_mut().filter(|p| **p == person) {
                 *p = name.clone();
             }
+            for request in &mut pending.requests {
+                if let Some(approval) = request.approved.as_mut().filter(|a| !a.shared && a.person == person) {
+                    approval.person = name.clone();
+                }
+            }
         }
     }
     if renamed {
-        // Browsers approved for the old name and not yet logged in follow it.
-        for request in &mut auth.pending.lock().unwrap().requests {
-            if let Some(approval) = request.approved.as_mut().filter(|a| !a.shared && a.person == person) {
-                approval.person = name.clone();
-            }
-        }
         // Control follows a person: whoever holds it under the old name lets go.
         state.control.forget_person(&person);
         // So do the person's pinned apps.
@@ -1503,6 +1517,8 @@ async fn delete_profile(
     }
     let person = label(Some(&person));
     {
+        // Pending first, as `poll` takes it (see `save_profile`).
+        let mut pending = auth.pending.lock().unwrap();
         let devices = auth.devices.lock().unwrap();
         if devices.iter().any(|d| !d.shared && (d.person == person || (d.person.is_empty() && d.name == person))) {
             return Err(ApiError::new(409, "log out this profile's devices first"));
@@ -1517,6 +1533,9 @@ async fn delete_profile(
             tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
             return Err(ApiError::new(500, "could not save the profiles"));
         }
+        // A browser approved for this profile and not yet logged in would
+        // arrive with no profile, so with everything: it asks again instead.
+        pending.requests.retain(|r| r.approved.as_ref().is_none_or(|a| a.shared || a.person != person));
     }
     let ids: Vec<String> = {
         let mut picks = auth.picks.lock().unwrap();
@@ -1528,13 +1547,6 @@ async fn delete_profile(
         state.control.forget(id);
     }
     auth.rules_changed(&ids);
-    // A browser approved for this profile and not yet logged in would arrive
-    // with no profile, so with everything: it asks again instead.
-    auth.pending
-        .lock()
-        .unwrap()
-        .requests
-        .retain(|r| r.approved.as_ref().is_none_or(|a| a.shared || a.person != person));
     tracing::info!("auth: profile {person:?} removed by {}", ctx.by());
     Ok(StatusCode::NO_CONTENT)
 }

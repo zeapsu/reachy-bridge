@@ -201,7 +201,7 @@ appearance and to log this browser out.
 - **Power on and off**, **Drive and expressions**, **Talk and listen**, **Camera**, and **Volume,
   sounds and motors** (the Controls pane): anything switched off is dimmed in the dashboard and
   refused by the robot. Without Controls, a profile can still turn the motors on to drive, but never
-  make the robot go limp.
+  make the robot go limp. Motor modes also need Drive and expressions.
 
 People approved before profiles existed have everything allowed, so nothing changes for them except
 System. A new profile starts with no apps, power and driving on, and Talk, camera and Controls off.

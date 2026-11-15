@@ -156,6 +156,7 @@ export function useApps(): AppsState {
         return;
       }
       const next = toggled.next;
+      const gen = favoritesGen.current;
       writeFavorites(next);
       savingRef.current = true;
       setFavoritesSaving(true);
@@ -163,6 +164,8 @@ export function useApps(): AppsState {
         await apiJson(paths.appsFavorites, { method: "PUT", body: JSON.stringify({ favorites: next }) });
         setLibraryHint({ text: "", kind: "" });
       } catch (err) {
+        // Put back the pins only if they are still this profile's.
+        if (gen !== favoritesGen.current) return;
         writeFavorites(previous);
         setLibraryHint({ text: errorText(err, "Could not save favorites."), kind: "error" });
       } finally {

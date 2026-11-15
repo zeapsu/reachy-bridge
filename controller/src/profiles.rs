@@ -190,9 +190,13 @@ impl Access {
     /// What the dashboard shows and dims, for `/api/auth/status`.
     pub fn view(&self) -> Value {
         match self {
-            Self::Full => json!({"admin": true, "apps": null, "can": Can::default()}),
-            Self::Limited(profile) => json!({"admin": false, "apps": profile.apps, "can": profile.can}),
-            Self::Unpicked => json!({"admin": false, "apps": [], "can": Can::NOTHING}),
+            // `kind` for a dashboard tab from before the Controls switch.
+            Self::Full => json!({"admin": true, "kind": "grown", "apps": null, "can": Can::default()}),
+            Self::Limited(profile) => {
+                let kind = if profile.can.controls { "grown" } else { "kid" };
+                json!({"admin": false, "kind": kind, "apps": profile.apps, "can": profile.can})
+            }
+            Self::Unpicked => json!({"admin": false, "kind": "kid", "apps": [], "can": Can::NOTHING}),
         }
     }
 }

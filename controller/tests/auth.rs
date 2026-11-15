@@ -1725,6 +1725,13 @@ async fn names_never_differ_only_by_case_and_old_dashboards_still_save() {
     let mia = list.as_array().unwrap().iter().find(|p| p["name"] == "Mia").unwrap().clone();
     assert_eq!(mia["can"]["controls"], false);
     assert_eq!(h.put_profile(&as_admin, "Mia", json!({"kind": "teen"})).await.status, StatusCode::BAD_REQUEST);
+    // An admin paired as "mia" keeps that exact name; Mia's own profile
+    // still saves in place.
+    let key = h.key();
+    h.paired_as(LAN, &[("x-reachy-bridge-key", &key)], json!({"name": "laptop", "person": "mia", "role": "admin"}))
+        .await;
+    assert_eq!(h.put_profile(&as_admin, "Mia", limited_profile()).await.status, StatusCode::OK);
+    assert_eq!(h.put_profile(&as_admin, "Mia", json!({"name": "MIA"})).await.status, StatusCode::CONFLICT);
 }
 
 #[tokio::test]
