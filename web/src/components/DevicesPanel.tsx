@@ -145,7 +145,15 @@ export function DevicesPanel() {
           </datalist>
           <label className="row devices-shared">
             <span>Shared</span>
-            <button className="switch" type="button" role="switch" aria-label="Shared device" aria-checked={shared} onClick={() => setShared(!shared)}></button>
+            <button
+              className="switch"
+              type="button"
+              role="switch"
+              aria-label="Shared device"
+              aria-checked={shared}
+              disabled={noAdmin}
+              onClick={() => setShared(!shared)}
+            ></button>
           </label>
           <button className="btn primary press" type="submit" disabled={busy}>
             Approve

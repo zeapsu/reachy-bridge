@@ -33,12 +33,13 @@ export function useProfile(visible: boolean): ProfileApi {
     }
   }, []);
 
+  // Until the first answer, retry every 2 s (System stays closed till then).
   useEffect(() => {
     if (!visible) return;
     void reload();
-    const timer = window.setInterval(() => void reload(), PROFILE_POLL_MS);
+    const timer = window.setInterval(() => void reload(), loaded ? PROFILE_POLL_MS : 2000);
     return () => window.clearInterval(timer);
-  }, [visible, reload]);
+  }, [visible, reload, loaded]);
 
   const pick = useCallback(
     async (person: string | null) => {

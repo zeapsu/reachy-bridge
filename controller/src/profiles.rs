@@ -2,10 +2,11 @@
 //!
 //! A profile is a person (the `person` every paired device has, #221) plus
 //! what the admin allows them: the apps they see and start (all, or a list),
-//! and four switches: robot power, drive and expressions, voice, and the
-//! camera. A kid profile also loses the Controls pane (volume, sounds,
-//! motor mode). The System tab (board stats, logs, the microphone meter,
-//! the sim switch) is the admin's only, for every profile.
+//! and four switches: robot power, drive and expressions (with turning the
+//! motors on, which they need), voice, and the camera. A kid profile also
+//! loses the Controls pane: volume, sounds, and any other motor mode. The System tab (board stats, logs,
+//! the microphone meter, the sim switch) is the admin's only, for every
+//! profile.
 //!
 //! A person without a stored profile is a grown-up with everything
 //! allowed, so devices paired before #297 keep working as they did, minus
@@ -186,6 +187,10 @@ pub fn check(method: &Method, path: &str, access: &Access) -> Result<(), ApiErro
     if drives && !can.drive {
         return refuse("Drive");
     }
+    // Driving needs the motors on; only grown-ups make the robot go limp.
+    if acts && access.kid() && under(path, "/api/motors/set_mode") && path != "/api/motors/set_mode/enabled" {
+        return refuse("Controls");
+    }
     if under(path, "/api/audio/session") && !can.voice {
         return refuse("Voice");
     }
@@ -276,6 +281,8 @@ mod tests {
         assert!(check(&Method::GET, "/api/camera/stream", &all).is_ok());
         // Kids never get Controls; grown-ups do.
         assert!(check(&Method::POST, "/api/volume/set", &all).is_err());
+        assert!(check(&Method::POST, "/api/motors/set_mode/enabled", &all).is_ok());
+        assert!(check(&Method::POST, "/api/motors/set_mode/disabled", &all).is_err());
         let grown = Access::Limited(Arc::new(Profile::open("Sam")));
         assert!(check(&Method::POST, "/api/volume/set", &grown).is_ok());
     }

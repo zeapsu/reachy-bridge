@@ -225,10 +225,10 @@ function Dashboard() {
               value={pane}
               onChange={setPane}
             />
-            <div hidden={pane !== "expressions"}>
+            <div hidden={pane !== "expressions" || paneOff.expressions}>
               <ExpressionsPanel expr={expr} daemonOnline={daemonOnline} controlBusy={controlBusy} appActive={appActive} />
             </div>
-            <div hidden={pane !== "drive"}>
+            <div hidden={pane !== "drive" || paneOff.drive}>
               <DrivePanel
                 drive={drive}
                 blocked={blocked}
@@ -238,7 +238,7 @@ function Dashboard() {
                 onStopApp={() => active && apps.perform(active.name, "stop")}
               />
             </div>
-            <div hidden={pane !== "controls"}>
+            <div hidden={pane !== "controls" || paneOff.controls}>
               <ControlsPanel
                 daemonOnline={daemonOnline}
                 controlBusy={controlBusy}
@@ -256,7 +256,7 @@ function Dashboard() {
                 onReturningHome={expr.enterReturningHome}
               />
             </div>
-            <div hidden={pane !== "voice"}>
+            <div hidden={pane !== "voice" || paneOff.voice}>
               <VoicePanel voice={voice} control={controlState(control.view)} robotOff={power.view.known && (power.view.powerClass === "" || power.view.powerClass === "disabled")} />
             </div>
           </section>

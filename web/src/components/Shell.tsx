@@ -150,7 +150,7 @@ export function TopBar({
           className="tabs"
           options={ORDER.map((t) => {
             const locked = systemLocked && t === "system";
-            return { value: t, disabled: locked, title: locked ? `${LABELS[t]}: admin only` : undefined, label: locked ? <>{LOCK}{LABELS[t]}</> : LABELS[t] };
+            return { value: t, disabled: locked, label: locked ? <>{LOCK}{LABELS[t]}</> : LABELS[t] };
           })}
           panelId={(t) => `view-${t}`}
           value={tab}
@@ -218,7 +218,6 @@ export function PhoneTabs({ tab, onTab, systemLocked }: { tab: Tab; onTab: (tab:
         options={ORDER.map((t) => ({
           value: t,
           disabled: systemLocked && t === "system",
-          title: systemLocked && t === "system" ? `${LABELS[t]}: admin only` : undefined,
           label: (
             <>
               {systemLocked && t === "system" ? LOCK : null}

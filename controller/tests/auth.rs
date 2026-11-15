@@ -1620,6 +1620,7 @@ async fn a_members_streams_end_when_profiles_change() {
     };
     let mut sams = open(sam.clone()).await;
     let mut admins = open(admin.clone()).await;
+    let mut mias = open(_mia.clone()).await;
     assert_eq!(
         h.put_profile(&[("cookie", &admin)], "Sam", json!({"can": {"camera": false}})).await.status,
         StatusCode::OK
@@ -1629,4 +1630,50 @@ async fn a_members_streams_end_when_profiles_change() {
     let admin_open =
         tokio::time::timeout(Duration::from_millis(300), async { while admins.next().await.is_some() {} }).await;
     assert!(admin_open.is_err(), "the admin's stream ended");
+    let mia_open =
+        tokio::time::timeout(Duration::from_millis(300), async { while mias.next().await.is_some() {} }).await;
+    assert!(mia_open.is_err(), "Mia's stream ended when Sam's profile changed");
+}
+
+#[tokio::test]
+async fn adding_a_profile_never_overwrites_one() {
+    let (h, admin, _sam, _mia) = family_harness().await;
+    let add = |name: &str| json!({"name": name, "create": true, "kind": "kid", "apps": []});
+    // Sam has devices but no stored profile; Leo is new.
+    assert_eq!(h.put_profile(&[("cookie", &admin)], "Sam", add("Sam")).await.status, StatusCode::CONFLICT);
+    assert_eq!(h.put_profile(&[("cookie", &admin)], "Leo", add("Leo")).await.status, StatusCode::OK);
+    assert_eq!(h.put_profile(&[("cookie", &admin)], "Leo", add("Leo")).await.status, StatusCode::CONFLICT);
+    // Editing it (no create) still works.
+    assert_eq!(h.put_profile(&[("cookie", &admin)], "Leo", json!({"kind": "grown"})).await.status, StatusCode::OK);
+    // A shared device needs an admin: none without admin mode.
+    let h2 = harness(lan()).await;
+    let (_, code, _) = h2.pair(LAN).await;
+    let r = h2.call("POST", "/api/auth/approve", LOOPBACK, &[], Some(json!({"code": code, "shared": true}))).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn removing_a_picked_profile_hands_the_tablet_back() {
+    let (h, admin, _sam, _mia) = family_harness().await;
+    let tablet = h.paired_as(LAN, &[("cookie", &admin)], json!({"name": "tablet", "shared": true})).await;
+    assert_eq!(h.put_profile(&[("cookie", &admin)], "Leo", json!({"kind": "kid"})).await.status, StatusCode::OK);
+    let r = h.call("POST", "/api/auth/pick", LAN, &[("cookie", &tablet)], Some(json!({"person": "Leo"}))).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(h.status_of(LAN, &tablet).await["person"], "Leo");
+    let r = h.call("DELETE", "/api/auth/profiles/Leo", LOOPBACK, &[("cookie", &admin)], None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.status_of(LAN, &tablet).await["person"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_new_device_joins_a_profile_whatever_the_case_and_kids_never_go_limp() {
+    let (h, admin, _sam, _mia) = family_harness().await;
+    assert_eq!(h.put_profile(&[("cookie", &admin)], "Mia", kid_profile()).await.status, StatusCode::OK);
+    let phone =
+        h.paired_as("192.168.1.52:50000", &[("cookie", &admin)], json!({"name": "phone", "person": "mia"})).await;
+    let status = h.status_of("192.168.1.52:50000", &phone).await;
+    assert_eq!((status["person"].clone(), status["profile"]["kind"].clone()), (json!("Mia"), json!("kid")));
+    assert_eq!(h.control("192.168.1.52:50000", &phone, "take", None).await.status, StatusCode::OK);
+    let limp = h.call("POST", "/api/motors/set_mode/disabled", "192.168.1.52:50000", &[("cookie", &phone)], None).await;
+    assert_eq!(limp.status, StatusCode::FORBIDDEN);
 }

@@ -151,8 +151,23 @@ struct DevicesFile {
     admin_mode: bool,
     devices: Vec<Device>,
     /// What each person may do (#297); people without one may do everything.
-    #[serde(default)]
+    /// A damaged entry is skipped, not the whole file.
+    #[serde(default, deserialize_with = "lenient_profiles")]
     profiles: Vec<Profile>,
+}
+
+fn lenient_profiles<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Profile>, D::Error> {
+    let values = Vec::<Value>::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .filter_map(|v| match serde_json::from_value::<Profile>(v) {
+            Ok(p) => Some(p),
+            Err(error) => {
+                tracing::error!("auth: skipped a damaged profile in {DEVICES_FILE} ({error})");
+                None
+            }
+        })
+        .collect())
 }
 
 /// An approved pairing request, waiting for its browser to collect the token.
@@ -226,10 +241,10 @@ pub struct Auth {
     /// The profile picked on each shared device, by device id. Kept in
     /// memory: after a restart the tablet asks again.
     picks: Mutex<HashMap<String, String>>,
-    /// Bumped when a profile changes or a shared device switches profile:
-    /// members' streams opened before then end (they reconnect under the
-    /// new rules).
-    generation: std::sync::atomic::AtomicU64,
+    /// Per member device, bumped when its profile changes or (a shared
+    /// device) it switches profile: its streams opened before then end
+    /// (they reconnect under the new rules). Nobody else's do.
+    generations: Mutex<HashMap<String, u64>>,
 }
 
 /// Who a request comes from, as decided by [`guard`].
@@ -493,7 +508,7 @@ impl Auth {
             revoked: tokio::sync::watch::channel(0).0,
             profiles: Mutex::new(profiles),
             picks: Mutex::new(HashMap::new()),
-            generation: 0.into(),
+            generations: Mutex::new(HashMap::new()),
         }
     }
 
@@ -617,24 +632,45 @@ impl Auth {
         match credential {
             Credential::Local => true,
             Credential::Device(id, generation) => {
-                self.has_device(id) && generation.is_none_or(|g| g == self.generation())
+                self.has_device(id) && generation.is_none_or(|g| g == self.generation(id))
             }
             Credential::Trusted => !self.admin_mode(),
         }
     }
 
-    fn generation(&self) -> u64 {
-        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    fn generation(&self, device: &str) -> u64 {
+        self.generations.lock().unwrap().get(device).copied().unwrap_or(0)
     }
 
-    /// Profiles changed: members' open streams end (see `generation`).
-    fn profiles_changed(&self) {
-        self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    /// These devices' rules changed: their open streams end (see `generations`).
+    fn rules_changed(&self, devices: &[String]) {
+        if devices.is_empty() {
+            return;
+        }
+        let mut generations = self.generations.lock().unwrap();
+        for id in devices {
+            *generations.entry(id.clone()).or_default() += 1;
+        }
+        drop(generations);
         self.revoked.send_modify(|n| *n += 1);
     }
 
+    /// The devices acting as `person`: its own, and shared ones it picked.
+    fn devices_of(&self, person: &str) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .devices
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|d| !d.shared && (d.person == person || (d.person.is_empty() && d.name == person)))
+            .map(|d| d.id.clone())
+            .collect();
+        ids.extend(self.picks.lock().unwrap().iter().filter(|(_, p)| **p == person).map(|(id, _)| id.clone()));
+        ids
+    }
+
     fn device_credential(&self, device: &Paired) -> Credential {
-        let generation = (device.role != Role::Admin).then(|| self.generation());
+        let generation = (device.role != Role::Admin).then(|| self.generation(&device.id));
         Credential::Device(device.id.clone(), generation)
     }
 
@@ -650,6 +686,12 @@ impl Auth {
             return Access::Full;
         }
         match self.acting_person(device) {
+            // An admin's other devices are never restricted by a stored profile.
+            Some(person) if self.is_admin_person(&person) => {
+                Access::Limited(std::sync::Arc::new(Profile::open(&person)))
+            }
+            // A shared device's pick must still name someone; else it picks again.
+            Some(person) if device.shared && !self.people().iter().any(|(name, _)| *name == person) => Access::Unpicked,
             Some(person) => Access::Limited(std::sync::Arc::new(self.profile(&person))),
             None => Access::Unpicked,
         }
@@ -1085,6 +1127,9 @@ async fn approve(
     if body.shared && body.role == Role::Admin {
         return Err(ApiError::new(400, "a shared device can't be an admin"));
     }
+    if body.shared && !state.auth.admin_mode() {
+        return Err(ApiError::new(409, "shared devices need an admin first"));
+    }
     state
         .auth
         .approve_code(
@@ -1174,6 +1219,13 @@ impl Auth {
         let person = label(person);
         // A shared device's person is only a label: profiles are picked on it.
         let person = if person.is_empty() || shared { name.clone() } else { person };
+        // "mia" joins Mia's profile rather than starting an unrestricted one.
+        let person = if shared {
+            person
+        } else {
+            let lower = person.to_lowercase();
+            self.people().into_iter().map(|(n, _)| n).find(|n| n.to_lowercase() == lower).unwrap_or(person)
+        };
         request.approved = Some(Approval { name: name.clone(), person: person.clone(), role, shared });
         request.attempts = 0;
         request.expires = request.expires.max(now + APPROVED_GRACE);
@@ -1313,6 +1365,9 @@ async fn list_profiles(State(state): State<Shared>, Extension(ctx): Extension<Au
 
 #[derive(Deserialize)]
 struct ProfileBody {
+    /// Adding a new profile: refused if the name is taken.
+    #[serde(default)]
+    create: bool,
     /// A new name, to rename the profile (and move its devices).
     name: Option<String>,
     #[serde(default)]
@@ -1348,7 +1403,7 @@ async fn save_profile(
     {
         let mut devices = auth.devices.lock().unwrap();
         let mut stored = auth.profiles.lock().unwrap();
-        let taken = renamed
+        let taken = (renamed || body.create)
             && (stored.iter().any(|p| p.name == name)
                 || devices.iter().any(|d| !d.shared && (d.person == name || (d.person.is_empty() && d.name == name))));
         if taken {
@@ -1371,16 +1426,21 @@ async fn save_profile(
             tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
             return Err(ApiError::new(500, "could not save the profile"));
         }
+        // Shared tablets using the profile follow the new name, before any
+        // request can see the profile under its new name only.
+        if renamed {
+            for p in auth.picks.lock().unwrap().values_mut().filter(|p| **p == person) {
+                *p = name.clone();
+            }
+        }
     }
     if renamed {
-        // Shared tablets using the profile follow the new name.
-        for p in auth.picks.lock().unwrap().values_mut().filter(|p| **p == person) {
-            *p = name.clone();
-        }
         // Control follows a person: whoever holds it under the old name lets go.
         state.control.forget_person(&person);
+        // So do the person's pinned apps.
+        crate::routes::apps::rename_pins(&state.state_dir, &person, &name);
     }
-    auth.profiles_changed();
+    auth.rules_changed(&auth.devices_of(&name));
     tracing::info!("auth: profile {person:?} saved as {name:?} by {}", ctx.by());
     Ok(Json(json!({"name": profile.name, "kind": profile.kind, "apps": profile.apps, "can": profile.can})))
 }
@@ -1395,6 +1455,7 @@ async fn delete_profile(
     if !auth.admin_mode() || !(ctx.local || ctx.role == Some(Role::Admin)) {
         return Err(ApiError::new(403, "only an admin can change profiles"));
     }
+    let person = label(Some(&person));
     {
         let devices = auth.devices.lock().unwrap();
         if devices.iter().any(|d| !d.shared && (d.person == person || (d.person.is_empty() && d.name == person))) {
@@ -1420,7 +1481,7 @@ async fn delete_profile(
     for id in &ids {
         state.control.forget(id);
     }
-    auth.profiles_changed();
+    auth.rules_changed(&ids);
     tracing::info!("auth: profile {person:?} removed by {}", ctx.by());
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1465,7 +1526,7 @@ async fn pick(
     if before != person {
         // The last person's control and streams don't carry over.
         state.control.forget(&device);
-        auth.profiles_changed();
+        auth.rules_changed(std::slice::from_ref(&device));
         tracing::info!("auth: shared device {device} now used by {person:?}");
     }
     Ok(Json(json!({"person": person})))

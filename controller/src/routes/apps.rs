@@ -62,7 +62,6 @@ fn load_favorites(dir: &Path, sim: bool, person: Option<&str>) -> Option<Vec<Str
 /// Write atomically: a temp file in the same directory, fsync, rename. A
 /// person's pins go under `people`; without one, the shared list.
 fn save_favorites(dir: &Path, sim: bool, person: Option<&str>, favorites: &[String]) -> std::io::Result<()> {
-    use std::io::Write;
     std::fs::create_dir_all(dir)?;
     let mut payload = read_favorites_file(dir, sim);
     match person {
@@ -74,11 +73,33 @@ fn save_favorites(dir: &Path, sim: bool, person: Option<&str>, favorites: &[Stri
         }
         None => payload["favorites"] = json!(favorites),
     }
+    write_favorites_file(dir, sim, &payload)
+}
+
+fn write_favorites_file(dir: &Path, sim: bool, payload: &Value) -> std::io::Result<()> {
+    use std::io::Write;
     let tmp = dir.join(format!(".favorites.{}.tmp", std::process::id()));
     let mut file = std::fs::File::create(&tmp)?;
     file.write_all(payload.to_string().as_bytes())?;
     file.sync_all()?;
     std::fs::rename(&tmp, favorites_path(dir, sim))
+}
+
+/// A profile was renamed (#297): its pins move with it, robot and sim.
+pub fn rename_pins(dir: &Path, from: &str, to: &str) {
+    for sim in [false, true] {
+        let mut payload = read_favorites_file(dir, sim);
+        let Some(people) = payload.get_mut("people").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        let Some(pins) = people.remove(from) else {
+            continue;
+        };
+        people.insert(to.to_string(), pins);
+        if let Err(error) = write_favorites_file(dir, sim, &payload) {
+            tracing::warn!(%error, "could not move pins from {from:?} to {to:?}");
+        }
+    }
 }
 
 /// Whose pins a request reads and writes: the acting person in admin mode.
@@ -105,6 +126,10 @@ async fn put_favorites(
     body: Bytes,
 ) -> ApiResult<Json<Value>> {
     let ctx = ctx.map(|Extension(c)| c);
+    // An unpicked shared tablet has no pins of its own to write (#297).
+    if ctx.as_ref().is_some_and(|c| matches!(c.access, crate::profiles::Access::Unpicked)) {
+        return Err(ApiError::new(403, "pick a profile first"));
+    }
     let invalid = || ApiError::new(422, "Invalid favorites payload");
     let payload: Value = serde_json::from_slice(&body).map_err(|_| invalid())?;
     let favorites: Vec<String> =

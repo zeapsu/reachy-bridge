@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { apiJson, errorText, paths } from "../api.ts";
 import { useLens } from "../glass.ts";
 import { appHue, appInitial } from "../logic/apps.ts";
@@ -120,10 +120,15 @@ export function ProfilePicker({ onPick, error }: { onPick: (person: string) => P
   const sheet = useLens<HTMLDivElement>();
   const [people, setPeople] = useState<ProfileItem[] | null>(null);
   const [busy, setBusy] = useState(false);
+  // Re-read now and then: a failed load retries, and new profiles appear.
   useEffect(() => {
-    void apiJson<{ profiles: ProfileItem[] }>(paths.authProfiles)
-      .then((body) => setPeople(body.profiles))
-      .catch(() => setPeople([]));
+    const load = () =>
+      void apiJson<{ profiles: ProfileItem[] }>(paths.authProfiles)
+        .then((body) => setPeople(body.profiles))
+        .catch(() => undefined);
+    load();
+    const timer = window.setInterval(load, 5000);
+    return () => window.clearInterval(timer);
   }, []);
   return (
     <Layer label="Pick a profile">
@@ -230,24 +235,38 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
   const [busy, setBusy] = useState(false);
   const own = devices.filter((d) => initial?.devices?.includes(d.id));
 
-  const save = async (next: { name?: string; kind?: Kind; can?: Can; apps?: string[] | null }) => {
-    const target = saved ?? next.name ?? name;
-    const body = { name: (next.name ?? name).trim(), kind: next.kind ?? kind, can: next.can ?? can, apps: next.apps === undefined ? apps : next.apps };
-    if (!body.name) {
+  // Saves run one at a time, each sending the newest values to the name
+  // the profile has on the robot at that moment (a rename changes it).
+  const latest = useRef({ name, kind, can, apps });
+  latest.current = { ...latest.current, name, kind, can, apps };
+  const savedRef = useRef(saved);
+  const queue = useRef(Promise.resolve());
+  const pending = useRef(0);
+
+  const save = (next: { kind?: Kind; can?: Can; apps?: string[] | null }) => {
+    latest.current = { ...latest.current, ...next };
+    if (!latest.current.name.trim()) {
       setError("A profile needs a name.");
       return;
     }
+    pending.current += 1;
     setBusy(true);
-    setError(null);
-    try {
-      await apiJson(paths.authProfile(target.trim()), { method: "PUT", body: JSON.stringify(body) });
-      setSaved(body.name);
-      await onChanged();
-    } catch (err) {
-      setError(errorText(err, "Couldn't save the profile"));
-    } finally {
-      setBusy(false);
-    }
+    queue.current = queue.current.then(async () => {
+      const { name: typed, kind: k, can: c, apps: a } = latest.current;
+      const body = { name: typed.trim(), kind: k, can: c, apps: a, create: savedRef.current === null };
+      try {
+        await apiJson(paths.authProfile(savedRef.current ?? body.name), { method: "PUT", body: JSON.stringify(body) });
+        savedRef.current = body.name;
+        setSaved(body.name);
+        setError(null);
+        await onChanged();
+      } catch (err) {
+        setError(errorText(err, "Couldn't save the profile"));
+      } finally {
+        pending.current -= 1;
+        if (pending.current === 0) setBusy(false);
+      }
+    });
   };
 
   const remove = async () => {
@@ -342,7 +361,6 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
                   role="switch"
                   aria-label={row.label}
                   aria-checked={can[row.key]}
-                  disabled={busy}
                   onClick={() => {
                     const next = { ...can, [row.key]: !can[row.key] };
                     setCan(next);
@@ -362,7 +380,6 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
                 role="switch"
                 aria-label="All apps"
                 aria-checked={apps === null}
-                disabled={busy}
                 onClick={() => {
                   const next = apps === null ? [] : null;
                   setApps(next);
@@ -386,8 +403,7 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
                         role="switch"
                         aria-label={display}
                         aria-checked={on}
-                        disabled={busy}
-                        onClick={() => toggleApp(app, !on)}
+                              onClick={() => toggleApp(app, !on)}
                       ></button>
                     </li>
                   );

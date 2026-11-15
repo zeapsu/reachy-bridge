@@ -200,15 +200,17 @@ appearance and to log this browser out.
   that can't use the power button.
 - **Power on and off**, **Drive and expressions**, **Talk and listen**, and **Camera**: anything
   switched off is dimmed in the dashboard and refused by the robot.
-- **Kid** profiles also lose the Controls pane (volume, sounds and motor mode).
+- **Kid** profiles also lose the Controls pane (volume, sounds and motor mode). They can still turn
+  the motors on to drive, but never make the robot go limp.
 
 People approved before profiles existed are Grown-ups with everything allowed, so nothing changes for
 them except System. A new profile starts as a Kid with no apps, power and driving on, and Talk and
-camera off. Changes apply within seconds. A profile's open camera, voice or live views reconnect
-under the new rules. Each profile keeps its own pinned apps. The admin's profile always has
+camera off. Changes apply within seconds. That profile's open camera, voice or live views reconnect
+under the new rules; nobody else's do. Each profile keeps its own pinned apps. The admin's profile always has
 everything, and can't be restricted.
 
-**Adding someone.** Add a profile, then approve their browser with their name as the person. To
+**Adding someone.** Add a profile, then approve their browser with their name as the person
+(upper or lower case doesn't matter). To
 move a browser to another profile, log it out and approve it again. A profile with browsers of its own
 can't be removed: log them out first. Renaming a profile moves its browsers with it.
 
@@ -216,8 +218,8 @@ can't be removed: log them out first. Renaming a profile moves its browsers with
 Admins are shown dimmed with a lock, because an admin's profile works only on the admin's own
 browsers. Until someone picks, the tablet can only watch. Switch in the chip's sheet hands it back
 to the picker, which ends that person's control and voice session. Anyone can pick any non-admin
-profile on a shared tablet, so don't share one between people with different rules if that
-matters. After the robot restarts, the tablet asks again.
+profile on a shared tablet, and then acts as that person, including taking over control from that
+person's own browser. Don't share one between people with different rules if that matters. After the robot restarts, the tablet asks again.
 
 ## Troubleshooting
 
