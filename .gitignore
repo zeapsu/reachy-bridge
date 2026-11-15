@@ -27,7 +27,7 @@ env/
 !.env.example
 
 # --- Operator-local agent instructions (AGENTS.md and CLAUDE.md are public) ---
-/CLAUDE.local.md
+CLAUDE.local.md
 
 # --- Model / data caches ---
 .cache/
