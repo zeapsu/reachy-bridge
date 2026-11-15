@@ -240,6 +240,8 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
   const latest = useRef({ name, kind, can, apps });
   latest.current = { ...latest.current, name, kind, can, apps };
   const savedRef = useRef(saved);
+  // What the robot holds, to put back when a save fails.
+  const good = useRef({ name, kind, can, apps });
   const queue = useRef(Promise.resolve());
   const pending = useRef(0);
 
@@ -257,11 +259,20 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
       try {
         await apiJson(paths.authProfile(savedRef.current ?? body.name), { method: "PUT", body: JSON.stringify(body) });
         savedRef.current = body.name;
+        good.current = { name: body.name, kind: k, can: c, apps: a };
         setSaved(body.name);
         setError(null);
         await onChanged();
       } catch (err) {
         setError(errorText(err, "Couldn't save the profile"));
+        // Show what the robot kept, so the next change doesn't retry this one.
+        if (savedRef.current !== null) {
+          latest.current = { ...good.current };
+          setName(good.current.name);
+          setKind(good.current.kind);
+          setCan(good.current.can);
+          setApps(good.current.apps);
+        }
       } finally {
         pending.current -= 1;
         if (pending.current === 0) setBusy(false);
@@ -403,7 +414,7 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
                         role="switch"
                         aria-label={display}
                         aria-checked={on}
-                              onClick={() => toggleApp(app, !on)}
+                        onClick={() => toggleApp(app, !on)}
                       ></button>
                     </li>
                   );

@@ -78,7 +78,9 @@ fn save_favorites(dir: &Path, sim: bool, person: Option<&str>, favorites: &[Stri
 
 fn write_favorites_file(dir: &Path, sim: bool, payload: &Value) -> std::io::Result<()> {
     use std::io::Write;
-    let tmp = dir.join(format!(".favorites.{}.tmp", std::process::id()));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".favorites.{}.{n}.tmp", std::process::id()));
     let mut file = std::fs::File::create(&tmp)?;
     file.write_all(payload.to_string().as_bytes())?;
     file.sync_all()?;

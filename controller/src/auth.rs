@@ -686,6 +686,12 @@ impl Auth {
             return Access::Full;
         }
         match self.acting_person(device) {
+            // A shared device never acts as an admin's person, even through a
+            // pick made before they became one: it picks again.
+            Some(person) if device.shared && self.is_admin_person(&person) => {
+                self.picks.lock().unwrap().remove(&device.id);
+                Access::Unpicked
+            }
             // An admin's other devices are never restricted by a stored profile.
             Some(person) if self.is_admin_person(&person) => {
                 Access::Limited(std::sync::Arc::new(Profile::open(&person)))
@@ -1220,7 +1226,9 @@ impl Auth {
         // A shared device's person is only a label: profiles are picked on it.
         let person = if person.is_empty() || shared { name.clone() } else { person };
         // "mia" joins Mia's profile rather than starting an unrestricted one.
-        let person = if shared {
+        // An admin keeps the exact name: folding it into a member's would lift
+        // that member's profile.
+        let person = if shared || role == Role::Admin {
             person
         } else {
             let lower = person.to_lowercase();
@@ -1298,6 +1306,13 @@ async fn revoke(
     // nobody waits for it to go silent.
     state.control.forget(&id);
     auth.picks.lock().unwrap().remove(&id);
+    // Tablets that picked this person may have lost their pick with it.
+    let person = if removed.person.is_empty() { removed.name.clone() } else { removed.person.clone() };
+    if !removed.shared {
+        let tablets: Vec<String> =
+            auth.picks.lock().unwrap().iter().filter(|(_, p)| **p == person).map(|(id, _)| id.clone()).collect();
+        auth.rules_changed(&tablets);
+    }
     auth.revoked.send_modify(|n| *n += 1);
     let by = ctx.by();
     tracing::info!("auth: device {id} ({}) revoked by {by}", removed.name);
@@ -1400,12 +1415,17 @@ async fn save_profile(
     }
     let profile = profiles::cleaned(Profile { name: name.clone(), kind: body.kind, apps: body.apps, can: body.can });
     let renamed = name != person;
+    // Approving matches names ignoring case, so two may not differ only by it.
+    let lower = name.to_lowercase();
     {
         let mut devices = auth.devices.lock().unwrap();
         let mut stored = auth.profiles.lock().unwrap();
         let taken = (renamed || body.create)
-            && (stored.iter().any(|p| p.name == name)
-                || devices.iter().any(|d| !d.shared && (d.person == name || (d.person.is_empty() && d.name == name))));
+            && (stored.iter().any(|p| p.name.to_lowercase() == lower && (body.create || p.name != person))
+                || devices.iter().any(|d| {
+                    let who = if d.person.is_empty() { &d.name } else { &d.person };
+                    !d.shared && who.to_lowercase() == lower && (body.create || *who != person)
+                }));
         if taken {
             return Err(ApiError::new(409, format!("{name} already has a profile")));
         }

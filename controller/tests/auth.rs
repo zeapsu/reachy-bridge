@@ -1599,6 +1599,16 @@ async fn a_shared_tablet_picks_any_profile_but_an_admins() {
     // Handing it back ends Mia's control on it.
     assert_eq!(pick(Value::Null).await.status, StatusCode::OK);
     assert_eq!(h.view(LAN, &sam).await["holder"], Value::Null);
+    // A pick on someone who later becomes an admin hands the tablet back.
+    assert_eq!(pick(json!("Mia")).await.status, StatusCode::OK);
+    h.paired_as(
+        LAN,
+        &[("x-reachy-bridge-key", &key)],
+        json!({"name": "mias laptop", "person": "Mia", "role": "admin"}),
+    )
+    .await;
+    let status = h.status_of(LAN, &tablet).await;
+    assert_eq!((status["person"].clone(), status["profile"]["apps"].clone()), (Value::Null, json!([])));
     // Only a shared device picks.
     let r = h.call("POST", "/api/auth/pick", LAN, &[("cookie", &sam)], Some(json!({"person": "Mia"}))).await;
     assert_eq!(r.status, StatusCode::CONFLICT);
@@ -1643,8 +1653,13 @@ async fn adding_a_profile_never_overwrites_one() {
     assert_eq!(h.put_profile(&[("cookie", &admin)], "Sam", add("Sam")).await.status, StatusCode::CONFLICT);
     assert_eq!(h.put_profile(&[("cookie", &admin)], "Leo", add("Leo")).await.status, StatusCode::OK);
     assert_eq!(h.put_profile(&[("cookie", &admin)], "Leo", add("Leo")).await.status, StatusCode::CONFLICT);
-    // Editing it (no create) still works.
+    // Names that differ only in case would be one person to pairing.
+    assert_eq!(h.put_profile(&[("cookie", &admin)], "leo", add("leo")).await.status, StatusCode::CONFLICT);
+    let r = h.put_profile(&[("cookie", &admin)], "Mia", json!({"name": "LEO"})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    // Editing it (no create) still works, and so does changing its own case.
     assert_eq!(h.put_profile(&[("cookie", &admin)], "Leo", json!({"kind": "grown"})).await.status, StatusCode::OK);
+    assert_eq!(h.put_profile(&[("cookie", &admin)], "Leo", json!({"name": "LEO"})).await.status, StatusCode::OK);
     // A shared device needs an admin: none without admin mode.
     let h2 = harness(lan()).await;
     let (_, code, _) = h2.pair(LAN).await;
