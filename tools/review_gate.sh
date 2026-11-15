@@ -34,10 +34,12 @@ set -Eeuo pipefail
 
 # Login, sessions, pairing and setup and the guards and headers that apply
 # them, the app proxy, bind addresses and what's exposed, request signing,
-# app binding and the sim's loopback redirect, secrets (the HF token, sound
-# tokens), the installer, dependency manifests and locks, CI and release
-# workflows (update signing), the agent rules, and this gate.
-SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|control|sim|audio)|routes/(store|sounds))\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|features/(app_bind|sim_apps)(_shim)?)\.py|web/src/(api/(auth|hf|client|setup)|logic/(auth|setup))\.ts|web/src/components/(Login|Setup)\.tsx|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|(runtime/)?pyproject\.toml|uv\.lock|controller/Cargo\.(toml|lock)|web/(package\.json|bun\.lock)|\.github/.+|AGENTS\.md|CLAUDE\.md|tools/(test_)?review_gate\.sh)$'
+# app binding and the sim's loopback redirect, app URLs and ports behind the
+# proxy, secrets (the HF token and its scrubbing, sound tokens), the
+# installer, dependency manifests and locks, build scripts, toolchains and
+# the shipped webrtcsink build, CI and release workflows (update signing),
+# agent rules and agent config, and this gate.
+SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|control|sim|audio|logs|apps)|routes/(store|sounds))\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|features/((app_bind|sim_apps)(_shim)?|sim_sounds))\.py|web/src/(api/(auth|hf|client|setup)|logic/(auth|setup))\.ts|web/src/components/(Login|Setup)\.tsx|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|(runtime/)?pyproject\.toml|uv\.lock|controller/Cargo\.(toml|lock)|web/(package\.json|bun\.lock)|controller/build\.rs|web/vite\.config\.ts|mise\.toml|tools/(toolchain_versions\.py|build_webrtcsink_jetson\.sh)|\.github/.+|\.claude/.+|\.mcp\.json|AGENTS\.md|CLAUDE\.md|CONTRIBUTING\.md|tools/(test_)?review_gate\.sh)$'
 
 # Every page of a list endpoint, as one JSON array.
 list() { gh api --paginate "$1" | jq -s 'add // []'; }
@@ -49,7 +51,9 @@ if [[ $(jq -r .state <<<"$pr") != open ]]; then
 fi
 sha=$(jq -r .head.sha <<<"$pr")
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit for #$PR"; exit 1; }
+# The run's log says why it's pending; outside Actions, the PR.
 url=$(jq -r .html_url <<<"$pr")
+[[ -n ${GITHUB_RUN_ID:-} ]] && url="${GITHUB_SERVER_URL:-https://github.com}/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
 base=$(jq -r .base.ref <<<"$pr")
 default=$(jq -r .base.repo.default_branch <<<"$pr")
 if [[ $base != "$default" ]]; then
@@ -69,8 +73,10 @@ trap 'status error "Review gate failed; re-run the Review gate workflow" || true
 # Another open PR into the default branch with this head would share this
 # PR's status, whatever its own markers and labels say.
 shared=$(list "repos/$GH_REPO/commits/$sha/pulls")
-twins=$(jq -r --arg base "$default" --argjson n "$PR" \
-    '.[] | select(.state == "open" and .base.ref == $base and .number != $n) | "#\(.number)"' <<<"$shared")
+# The endpoint lists every PR that contains the commit; only heads share.
+twins=$(jq -r --arg base "$default" --arg sha "$sha" --argjson n "$PR" \
+    '.[] | select(.state == "open" and .base.ref == $base and .head.sha == $sha and .number != $n)
+    | "#\(.number)"' <<<"$shared")
 if [[ -n $twins ]]; then
     status pending "Head is also the head of $(tr '\n' ' ' <<<"$twins")- give each PR its own commit"
     exit 0
@@ -100,7 +106,7 @@ fi
 files=$(list "repos/$GH_REPO/pulls/$PR/files")
 # Both names of a renamed file.
 names=$(jq -r '.[] | .filename, (.previous_filename // empty)' <<<"$files")
-hits=$(grep -E "$SECURITY_PATHS" <<<"$names" || true)
+hits=$(grep -E "$SECURITY_PATHS" <<<"$names" || [[ $? == 1 ]])
 if [[ -n $hits ]]; then
     security=${security:+$security, }"paths"
     while read -r h; do echo "security path: $h"; done <<<"$hits"
@@ -126,6 +132,16 @@ missing=()
 for name in "${needed[@]}"; do
     grep -qxF "$name: clean @$sha" <<<"$markers" || missing+=("$name")
 done
+# Say why near misses don't count: other text, a short or other sha, an edit.
+if (( ${#missing[@]} )); then
+    jq -r --arg sha "$sha" '.[]
+        | select(.author_association == "OWNER" and (.body | test("(Review|Security review|Second review): clean @")))
+        | (.body | gsub("^\\s+|\\s+$"; "")) as $b
+        | select(($b | test("^(Review|Security review|Second review): clean @" + $sha + "$") | not) or .created_at != .updated_at)
+        | "not counted: comment \(.id) (\(if .created_at != .updated_at then "edited"
+            elif ($b | test("@" + $sha + "([^0-9a-f]|$)") | not) then "not the full head sha"
+            else "other text in the comment" end))"' <<<"$comments"
+fi
 
 join() { local s; s=$(printf '%s, ' "$@"); echo "${s%, }"; }
 note=${security:+ (security PR: $security)}

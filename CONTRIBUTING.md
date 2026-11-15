@@ -210,13 +210,18 @@ say-so.
    comment. Don't edit a marker comment; post a new one. The required `review` check
    (`tools/review_gate.sh`, #302) stays pending until the repo owner's account has
    posted them for the PR's current head, so a new push, including a merge of `main`,
-   needs fresh markers; and a head commit shared by two open PRs stays pending. Wait
-   for the check to pass (`gh pr checks <n> --watch`) before merging. A PR is
-   security-relevant when it has the `security` or `auth` label or changes a file in
-   the script's `SECURITY_PATHS`: login, sessions, pairing and setup and the guards and
+   needs fresh markers; and a head commit shared by two open PRs stays pending. Get the
+   head with `gh pr view <n> --json headRefOid -q .headRefOid`, and wait for the check
+   with `gh pr checks <n> --required --watch` before merging; when it stays pending, its
+   description (`gh pr checks <n> --json name,state,description`) and its run's log say
+   what's missing. The gate treats a PR as security-relevant when it has the `security`
+   or `auth` label or changes a file in the script's `SECURITY_PATHS`: login, sessions, pairing and setup and the guards and
    headers that apply them, the app proxy, bind addresses and what's exposed, request
    signing, app binding, secrets, the installer, dependency manifests and lock files,
-   everything under `.github/`, the agent rules and the gate itself. Dependabot's own
+   build scripts and toolchains, everything under `.github/`, the agent rules and
+   agent config, and the gate itself. Label a PR
+   `security` when it is security-relevant by the list in step 4 but touches none of
+   those files. Dependabot's own
    PRs pass without markers, whatever they change; the owner merges its major updates.
 6. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
    `main` directly. Only Dependabot's PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`

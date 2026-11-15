@@ -54,7 +54,7 @@ setup() {
     files web/src/App.tsx
     echo '[]' >"$FX/comments.json"
     echo '[]' >"$FX/commits.json"
-    echo '[{"number": 7, "state": "open", "base": {"ref": "main"}}]' >"$FX/shared.json"
+    jq -n --arg h "$HEAD" '[{number: 7, state: "open", base: {ref: "main"}, head: {sha: $h}}]' >"$FX/shared.json"
 }
 files() {
     printf '%s\n' "$@" | jq -R '{filename: .}' | jq -s . >"$FX/files.json"
@@ -143,7 +143,9 @@ for f in controller/src/auth.rs controller/src/profiles.rs controller/src/main.r
     runtime/src/reachy_bridge_runtime/audio_policy.py runtime/src/reachy_bridge_runtime/main.py \
     web/src/api/auth.ts deploy/reachy-bridge deploy/install.sh \
     deploy/systemd/reachy-bridge-controller.service .github/workflows/ci.yml \
-    .github/dependabot.yml tools/review_gate.sh tools/test_review_gate.sh \
+    .github/dependabot.yml CONTRIBUTING.md controller/src/logs.rs controller/src/apps.rs \
+    runtime/src/reachy_bridge_runtime/features/sim_sounds.py mise.toml tools/build_webrtcsink_jetson.sh \
+    controller/build.rs web/vite.config.ts .claude/settings.json .mcp.json tools/review_gate.sh tools/test_review_gate.sh \
     controller/src/sim.rs controller/src/setup.rs controller/src/app_proxy.rs controller/src/state.rs \
     controller/src/routes/store.rs controller/src/routes/sounds.rs \
     runtime/src/reachy_bridge_runtime/audio_gateway.py runtime/src/reachy_bridge_runtime/features/sim_apps.py \
@@ -204,9 +206,20 @@ if bash "$GATE" >"$FX/out" 2>&1 && [[ ! -e $FX/status.log ]]; then echo "ok: PR 
 else fail "PR into another branch: set a status or failed"; fi
 
 setup; comment OWNER "Review: clean @$HEAD"
-echo '[{"number": 7, "state": "open", "base": {"ref": "main"}}, {"number": 9, "state": "open", "base": {"ref": "main"}},
-       {"number": 4, "state": "closed", "base": {"ref": "main"}}, {"number": 5, "state": "open", "base": {"ref": "feature"}}]' >"$FX/shared.json"
+jq -n --arg h "$HEAD" --arg o "$OLD" '[{number: 7, state: "open", base: {ref: "main"}, head: {sha: $h}},
+    {number: 9, state: "open", base: {ref: "main"}, head: {sha: $h}}, {number: 4, state: "closed", base: {ref: "main"}, head: {sha: $h}},
+    {number: 5, state: "open", base: {ref: "feature"}, head: {sha: $h}}, {number: 8, state: "open", base: {ref: "main"}, head: {sha: $o}}]' >"$FX/shared.json"
 expect "head shared with another open PR into main" pending "Head is also the head of #9 -"
+
+setup; comment OWNER "Review: clean @$HEAD"
+jq -n --arg h "$HEAD" --arg o "$OLD" '[{number: 7, state: "open", base: {ref: "main"}, head: {sha: $h}},
+    {number: 8, state: "open", base: {ref: "main"}, head: {sha: $o}}]' >"$FX/shared.json"
+expect "a stacked PR that only contains the head doesn't block it" success
+
+setup; comment OWNER "Review: clean @${HEAD:0:7}"; comment OWNER "Review: clean @$HEAD\nnotes"
+expect "near misses: pending" pending
+if grep -q "not the full head sha" "$FX/out" && grep -q "other text in the comment" "$FX/out"; then echo "ok: near misses explained in the log"
+else fail "near misses not explained"; cat "$FX/out"; fi
 
 # A failing API call fails the run and replaces any earlier pass.
 setup; files controller/src/auth.rs; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-files"

@@ -49,6 +49,17 @@ jobs:
       pull-requests: read
       statuses: write
     steps:
+      # Pending first, so the head never sits with no status from this gate
+      # (which would leave a same-named check run from elsewhere to stand in
+      # for it) while the run below works, or if it dies before it posts.
+      - if: github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == github.event.repository.default_branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api -X POST "repos/$GH_REPO/statuses/$SHA" -f state=pending -f context=review \
+            -f description="Checking review markers" >/dev/null
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
