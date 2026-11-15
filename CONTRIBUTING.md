@@ -2,7 +2,7 @@
 
 How to set up, test and change the bridge, and how work is split so several people or
 agent sessions can work at once. For what the bridge is and how users install it, see
-the [README](README.md).
+the [README](README.md). Coding agents also follow [`AGENTS.md`](AGENTS.md).
 
 ## Setup
 
