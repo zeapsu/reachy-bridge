@@ -60,7 +60,7 @@ export interface PairedDevice {
   /** Who uses it; missing from controllers before #221. */
   person?: string;
   role?: Role;
-  /** A family tablet (#297). */
+  /** A shared tablet (#297). */
   shared?: boolean;
   /** This browser's own device. */
   current: boolean;

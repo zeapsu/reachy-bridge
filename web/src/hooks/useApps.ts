@@ -42,6 +42,8 @@ export interface AppsState {
   libraryHint: PanelMessage;
   poll: () => Promise<void>;
   loadFavorites: () => Promise<void>;
+  /** Load the acting profile's pins afresh (a shared tablet switched profile). */
+  reloadFavorites: () => Promise<void>;
   favoritesLoaded: () => boolean;
   toggleFavorite: (name: string) => Promise<void>;
   /** Starts or stops an app; starting one with a UI opens the app view. */
@@ -102,11 +104,15 @@ export function useApps(): AppsState {
     }
   }, []);
 
+  // Bumped when the acting profile changes, so an older answer is dropped.
+  const favoritesGen = useRef(0);
   const loadFavorites = useCallback(async () => {
     if (loadedRef.current || loadingRef.current) return;
     loadingRef.current = true;
+    const gen = favoritesGen.current;
     try {
       const payload = await apiJson<Favorites>(paths.appsFavorites);
+      if (gen !== favoritesGen.current) return;
       if (!payload || typeof payload !== "object" || !Array.isArray(payload.favorites)) {
         throw new Error("Favorites response was invalid");
       }
@@ -116,11 +122,21 @@ export function useApps(): AppsState {
     } catch (err) {
       // Leave `loaded` false so a later attempt (opening the library, a star
       // click) retries instead of PUTting defaults over real favorites.
+      if (gen !== favoritesGen.current) return;
       setLibraryHint({ text: errorText(err, "Favorites unavailable; showing defaults."), kind: "error" });
     } finally {
-      loadingRef.current = false;
+      if (gen === favoritesGen.current) loadingRef.current = false;
     }
   }, []);
+
+  /** Another profile acts now (a shared tablet's pick, #297): its own pins. */
+  const reloadFavorites = useCallback(async () => {
+    favoritesGen.current += 1;
+    loadedRef.current = false;
+    loadingRef.current = false;
+    writeFavorites([]);
+    await loadFavorites();
+  }, [loadFavorites]);
 
   const toggleFavorite = useCallback(
     async (name: string) => {
@@ -345,6 +361,7 @@ export function useApps(): AppsState {
     libraryHint,
     poll,
     loadFavorites,
+    reloadFavorites,
     favoritesLoaded: () => loadedRef.current,
     toggleFavorite,
     perform,

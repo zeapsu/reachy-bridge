@@ -107,7 +107,7 @@ interface Props {
   onRelease: () => void;
   /** A control action is running. */
   controlBusy: boolean;
-  /** Family mode (#297): this browser's profile, and its chip opens the profile sheet. */
+  /** Profiles (#297): this browser's profile, and its chip opens the profile sheet. */
   profile: ProfileView | null;
   onProfile: () => void;
   /** System is the admin's only. */

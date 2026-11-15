@@ -26,6 +26,8 @@ interface Props {
   pollPower: () => Promise<void>;
   /** Motor re-enable starts a backend return-home session (#67). */
   onReturningHome: () => void;
+  /** The profile can't drive, so motor modes are off for it too (#297). */
+  motorsLocked?: boolean;
 }
 
 type SliderId = "vol-spk" | "vol-mic";
@@ -274,7 +276,7 @@ export function ControlsPanel(props: Props) {
           reselect
           options={MOTOR_MODES.map(({ mode, label }) => ({ value: mode, label }))}
           value={robotControlMode === "enabled" || robotControlMode === "disabled" ? robotControlMode : null}
-          disabled={controlsDisabled}
+          disabled={controlsDisabled || props.motorsLocked}
           onChange={onMotor}
         />
         <div className="row">
@@ -285,7 +287,7 @@ export function ControlsPanel(props: Props) {
             role="switch"
             id="gravity"
             aria-checked={gravityChecked}
-            disabled={kin.gravityDisabled}
+            disabled={kin.gravityDisabled || props.motorsLocked}
             onClick={() => onGravity(!gravityChecked)}
           ></button>
         </div>

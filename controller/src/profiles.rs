@@ -13,7 +13,7 @@
 //! devices, the local key, and every request outside admin mode have
 //! [`Access::Full`].
 //!
-//! A shared device (a family tablet) belongs to nobody: whoever uses it picks
+//! A shared device (a shared tablet) belongs to nobody: whoever uses it picks
 //! a profile from a list that never offers a person with an admin device.
 //! Until someone picks, it can only read what the dashboard needs to draw.
 //!
@@ -69,12 +69,24 @@ impl Default for Can {
 }
 
 impl Can {
-    /// A profile saved with `kind`: a kid has Controls off.
-    pub fn with_kind(mut self, kind: Option<&str>) -> Self {
-        if kind == Some("kid") {
-            self.controls = false;
+    /// The switches an admin sent. A dashboard from before the Controls
+    /// switch sends a kind instead: "kid" means Controls off.
+    pub fn from_body(can: Value, kind: Option<&str>) -> Result<Self, String> {
+        let kid = match kind.map(str::to_lowercase).as_deref() {
+            None | Some("grown") => false,
+            Some("kid") => true,
+            Some(_) => return Err("kind is kid or grown".into()),
+        };
+        let sent_controls = can.get("controls").is_some();
+        let mut parsed: Self = if can.is_null() {
+            Self::default()
+        } else {
+            serde_json::from_value(can).map_err(|_| "can holds a switch that isn't on or off".to_string())?
+        };
+        if kid && !sent_controls {
+            parsed.controls = false;
         }
-        self
+        Ok(parsed)
     }
 
     const NOTHING: Self = Self { power: false, drive: false, voice: false, camera: false, controls: false };
@@ -82,7 +94,7 @@ impl Can {
 
 /// A stored profile, keyed by person name.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "Stored")]
+#[serde(from = "Stored", into = "Saved")]
 pub struct Profile {
     pub name: String,
     /// `None`: every installed app.
@@ -100,6 +112,24 @@ struct Stored {
     apps: Option<Vec<String>>,
     #[serde(default)]
     can: Can,
+}
+
+/// A profile as written. Controls off also says kind "kid", so a controller
+/// rolled back to before the switch still keeps it off.
+#[derive(Serialize)]
+struct Saved {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<&'static str>,
+    apps: Option<Vec<String>>,
+    can: Can,
+}
+
+impl From<Profile> for Saved {
+    fn from(profile: Profile) -> Self {
+        let kind = (!profile.can.controls).then_some("kid");
+        Self { name: profile.name, kind, apps: profile.apps, can: profile.can }
+    }
 }
 
 impl From<Stored> for Profile {
@@ -336,9 +366,16 @@ mod tests {
         // A kid saved before the Controls switch keeps Controls off.
         let p: Profile = serde_json::from_value(json!({"name": "Mia", "kind": "kid"})).unwrap();
         assert_eq!(p.can, Can { controls: false, ..Can::default() });
-        assert!(serde_json::to_value(&p).unwrap().get("kind").is_none());
-        // An old dashboard's PUT says the same with a kind.
-        assert!(!Can::default().with_kind(Some("kid")).controls);
-        assert!(Can::default().with_kind(Some("grown")).controls);
+        // It is written with that kind too, for a rolled-back controller.
+        assert_eq!(serde_json::to_value(&p).unwrap()["kind"], "kid");
+        assert!(serde_json::to_value(Profile::open("Sam")).unwrap().get("kind").is_none());
+        // An old dashboard's PUT says the same with a kind, unless the
+        // switch itself is sent; other kinds are refused.
+        assert!(!Can::from_body(json!({"power": true}), Some("kid")).unwrap().controls);
+        assert!(!Can::from_body(Value::Null, Some("Kid")).unwrap().controls);
+        assert!(Can::from_body(json!({"controls": true}), Some("kid")).unwrap().controls);
+        assert!(Can::from_body(json!({}), Some("grown")).unwrap().controls);
+        assert!(Can::from_body(json!({}), Some("teen")).is_err());
+        assert!(Can::from_body(json!({"power": "yes"}), None).is_err());
     }
 }

@@ -1692,3 +1692,66 @@ async fn a_new_device_joins_a_profile_whatever_the_case_and_never_goes_limp_with
     let limp = h.call("POST", "/api/motors/set_mode/disabled", "192.168.1.52:50000", &[("cookie", &phone)], None).await;
     assert_eq!(limp.status, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn a_tablet_whose_pick_is_gone_shows_the_picker_again() {
+    let (h, admin, _sam, _mia) = family_harness().await;
+    let tablet = h.paired_as(LAN, &[("cookie", &admin)], json!({"name": "tablet", "shared": true})).await;
+    let r = h.call("POST", "/api/auth/pick", LAN, &[("cookie", &tablet)], Some(json!({"person": "Sam"}))).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let devices =
+        h.call("GET", "/api/auth/devices", LOOPBACK, &[("cookie", &admin)], None).await.body["devices"].clone();
+    let sams =
+        devices.as_array().unwrap().iter().find(|d| d["person"] == "Sam").unwrap()["id"].as_str().unwrap().to_string();
+    let r = h.call("DELETE", &format!("/api/auth/devices/{sams}"), LOOPBACK, &[("cookie", &admin)], None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    // Sam is gone: the tablet names nobody, so it offers the picker.
+    let status = h.status_of(LAN, &tablet).await;
+    assert_eq!((status["person"].clone(), status["profile"]["name"].clone()), (Value::Null, Value::Null));
+}
+
+#[tokio::test]
+async fn names_never_differ_only_by_case_and_old_dashboards_still_save() {
+    let (h, admin, _sam, _mia) = family_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    // Mia has a device: "mia" would be her too, to pairing.
+    assert_eq!(h.put_profile(&as_admin, "mia", json!({"apps": []})).await.status, StatusCode::CONFLICT);
+    // A dashboard from before the Controls switch sends a kind.
+    assert_eq!(
+        h.put_profile(&as_admin, "Mia", json!({"kind": "kid", "can": {"power": true}})).await.status,
+        StatusCode::OK
+    );
+    let list = h.call("GET", "/api/auth/profiles", LOOPBACK, &as_admin, None).await.body["profiles"].clone();
+    let mia = list.as_array().unwrap().iter().find(|p| p["name"] == "Mia").unwrap().clone();
+    assert_eq!(mia["can"]["controls"], false);
+    assert_eq!(h.put_profile(&as_admin, "Mia", json!({"kind": "teen"})).await.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_browser_approved_for_a_profile_follows_its_rename_or_asks_again() {
+    let (h, admin, _sam, _mia) = family_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    let approve = |code: String, person: &'static str| {
+        h.call(
+            "POST",
+            "/api/auth/approve",
+            LOOPBACK,
+            &as_admin,
+            Some(json!({"code": code, "name": "phone", "person": person})),
+        )
+    };
+    // Approved for Mia, renamed before it logs in: it lands on the new name.
+    let (id, code, pair_cookie) = h.pair(LAN).await;
+    assert_eq!(approve(code, "Mia").await.status, StatusCode::OK);
+    assert_eq!(h.put_profile(&as_admin, "Mia", json!({"name": "Mia R", "apps": []})).await.status, StatusCode::OK);
+    let r = h.poll(&id, LAN, &pair_cookie).await;
+    assert_eq!(r.body["status"], "approved");
+    assert_eq!(h.status_of(LAN, &r.cookie("rb_device")).await["person"], "Mia R");
+    // Approved for Leo, who is then removed: it isn't let in with no profile.
+    assert_eq!(h.put_profile(&as_admin, "Leo", json!({"create": true, "apps": []})).await.status, StatusCode::OK);
+    let (id, code, pair_cookie) = h.pair(LAN2).await;
+    assert_eq!(approve(code, "Leo").await.status, StatusCode::OK);
+    let r = h.call("DELETE", "/api/auth/profiles/Leo", LOOPBACK, &as_admin, None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_ne!(h.poll(&id, LAN2, &pair_cookie).await.body["status"], "approved");
+}

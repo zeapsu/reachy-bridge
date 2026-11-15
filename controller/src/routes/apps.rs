@@ -59,9 +59,13 @@ fn load_favorites(dir: &Path, sim: bool, person: Option<&str>) -> Option<Vec<Str
     Some(favorites)
 }
 
+/// Everyone's pins share one file: its read-modify-writes take turns.
+static PINS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Write atomically: a temp file in the same directory, fsync, rename. A
 /// person's pins go under `people`; without one, the shared list.
 fn save_favorites(dir: &Path, sim: bool, person: Option<&str>, favorites: &[String]) -> std::io::Result<()> {
+    let _turn = PINS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     std::fs::create_dir_all(dir)?;
     let mut payload = read_favorites_file(dir, sim);
     match person {
@@ -89,6 +93,7 @@ fn write_favorites_file(dir: &Path, sim: bool, payload: &Value) -> std::io::Resu
 
 /// A profile was renamed (#297): its pins move with it, robot and sim.
 pub fn rename_pins(dir: &Path, from: &str, to: &str) {
+    let _turn = PINS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     for sim in [false, true] {
         let mut payload = read_favorites_file(dir, sim);
         let Some(people) = payload.get_mut("people").and_then(Value::as_object_mut) else {
@@ -161,7 +166,7 @@ fn refused(name: &str, error: impl Into<String>, status: &str) -> Json<Value> {
     Json(json!({"error": error.into(), "name": name, "status": status}))
 }
 
-/// Family mode (#297): an app outside the acting profile's list is refused.
+/// Profiles (#297): an app outside the acting profile's list is refused.
 fn app_allowed(ctx: Option<&Extension<AuthContext>>, name: &str) -> ApiResult<()> {
     match ctx {
         Some(Extension(ctx)) if !ctx.access.allows_app(name) => {

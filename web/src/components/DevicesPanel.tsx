@@ -19,7 +19,7 @@ export function DevicesPanel() {
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [person, setPerson] = useState("");
-  // A family tablet (#297): no person of its own, profiles are picked on it.
+  // A shared tablet (#297): no person of its own, profiles are picked on it.
   const [shared, setShared] = useState(false);
   const [hint, setHint] = useState<{ text: string; error: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
