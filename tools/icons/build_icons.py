@@ -4,10 +4,9 @@
 # ///
 """Build the dashboard's icons from one master image.
 
-`source-tile.png` is the generated tile artwork as delivered. This script
-fixes it (both eyes the same size: the right eye becomes a copy of the left,
-placed symmetrically about the head, and the bridge camera is re-centred),
-then exports every icon size from the fixed tile. It also writes
+`source-tile.png` is the generated tile artwork, used as is: the eyes are
+different sizes on purpose, like the robot's (a wide-angle camera and a
+smaller one). The script exports every icon size from it and also writes
 master-head.png, the head alone on transparency, kept as a reusable cut-out.
 
 Exports, into web/public/:
@@ -32,50 +31,9 @@ HERE = Path(__file__).resolve().parent
 PUBLIC = HERE.parents[1] / "web" / "public"
 
 # Geometry of source-tile.png (1254 x 1254), measured from the artwork.
-SHELL_CX = 620.0  # midpoint of the shell's left and right edges
-LEFT_EYE = (443.65, 770.3, 133.2)  # centre x, centre y, outer rim radius
-BRIDGE_CAMERA_X = 643  # the small camera between the eyes, before the fix
-BRIDGE_ROWS = slice(735, 806)
 NECK_TOP = 930  # below here the shell's outline is rebuilt (the neck joins it)
 FULL_BLEED = (72, 60, 1110)  # x, y, side of the square cut from the tile
 OUTLINE = (11, 15, 20)  # dashboard dark background (#0b0f14), as RGB
-
-
-def eyes_fixed(src: np.ndarray) -> np.ndarray:
-    """Return the tile with matching eyes and a centred bridge camera."""
-    im = src.astype(np.float32)
-    h, w = im.shape[:2]
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-
-    def disk(cx: float, cy: float, r: float, feather: float) -> np.ndarray:
-        return np.clip((r - np.hypot(xx - cx, yy - cy)) / feather + 0.5, 0, 1)[..., None]
-
-    def sample(mx: np.ndarray, my: np.ndarray) -> np.ndarray:
-        return cv2.remap(im, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-
-    out = im.copy()
-    # Bridge: repaint the band with a plain column, then put the camera back
-    # at the shell's centre line (the side dots no longer fit between the eyes).
-    plain = im[BRIDGE_ROWS, 616:620].mean(1, keepdims=True)
-    out[BRIDGE_ROWS, 574:668] = np.repeat(plain, 94, 1)
-    a = disk(SHELL_CX, 770, 20, 2)
-    out = out * (1 - a) + sample(xx + (BRIDGE_CAMERA_X - SHELL_CX), yy) * a
-
-    # Right eye: the left eye, shifted to the mirror position about the shell.
-    cx, cy, r = LEFT_EYE
-    c2 = 2 * SHELL_CX - cx
-    a = disk(c2, cy, r + 1.5, 1.5)
-    out = out * (1 - a) + sample(xx - (c2 - cx), yy) * a
-    # The left eye's right rim is where the bridge band meets it. On the copy,
-    # take that rim sector from the left eye's clean left rim, mirrored.
-    u, v = xx - c2, yy - cy
-    rr = np.hypot(u, v)
-    theta = np.degrees(np.arctan2(v, u))
-    wgt = (
-        np.clip((30 - np.abs(theta)) / 8, 0, 1) * np.clip((rr - (r - 20)) / 6, 0, 1) * np.clip((r + 2 - rr) / 1.5, 0, 1)
-    )[..., None]
-    out = out * (1 - wgt) + sample(cx - u, yy) * wgt
-    return out.clip(0, 255).astype(np.uint8)
 
 
 def head_mask(im: np.ndarray) -> np.ndarray:
@@ -194,7 +152,7 @@ def maskable(head: Image.Image, tile: np.ndarray, size: int) -> Image.Image:
 
 def main() -> None:
     src = cv2.imread(str(HERE / "source-tile.png"))
-    tile = eyes_fixed(src)
+    tile = src
     alpha = head_mask(tile)
     cut = rgba(tile, alpha)
     box = cut.getbbox()
