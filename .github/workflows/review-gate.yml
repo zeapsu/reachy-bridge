@@ -1,10 +1,10 @@
 name: Review gate
 # Sets the `review` commit status on a PR's head commit (#302): pending until
-# the repo owner comments a clean review marker naming that commit, plus the
-# security and second review markers on a security PR. main's ruleset
-# requires it, so the review record is checked however a PR is merged. The
-# rules are in tools/review_gate.sh; CONTRIBUTING.md ("Claiming work") says
-# what to post.
+# the repo owner's account comments a clean review marker naming that commit,
+# plus the security and second review markers on a security PR; `error` when
+# a run fails. main's ruleset requires it, so the review record is checked
+# however a PR is merged. The rules are in tools/review_gate.sh;
+# CONTRIBUTING.md ("Claiming work") says what to post.
 #
 # It runs when a PR's head or labels change, when a comment is posted, edited
 # or deleted, and on dispatch, which the Dependabot branch updater uses after
@@ -28,7 +28,10 @@ on:
 permissions:
   contents: read
 jobs:
-  review:
+  # Not named `review`: a check run with the required status's name would
+  # make the requirement ambiguous.
+  set-status:
+    name: set review status
     # Comments on issues aren't PRs. A dispatch runs main's copy only.
     if: >-
       github.repository == 'zeapsu/reachy-bridge' &&

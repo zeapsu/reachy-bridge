@@ -14,23 +14,25 @@ HEAD=0123456789abcdef0123456789abcdef01234567
 OLD=fedcba9876543210fedcba9876543210fedcba98
 
 mkdir -p "$ROOT/bin"
-# The stub serves $ROOT/fx/{pr,files,comments,commits}.json by endpoint and
-# logs a status POST as "<sha> <state> <description>".
+# The stub serves $ROOT/fx/{pr,files,comments,commits}.json by endpoint, fails
+# an endpoint when $ROOT/fx/fail-<name> exists, and logs a status POST as
+# "<sha> <state> <description>".
 cat >"$ROOT/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 args=("$@")
 for a in "${args[@]}"; do
     case $a in
         repos/*/statuses/*)
+            [[ -e $FX/fail-statuses ]] && exit 1
             sha=${a##*/} state= desc=
             for f in "${args[@]}"; do
                 case $f in state=*) state=${f#state=} ;; description=*) desc=${f#description=} ;; esac
             done
             echo "$sha $state $desc" >>"$FX/status.log"
             exit 0 ;;
-        repos/*/pulls/*/files) cat "$FX/files.json"; exit 0 ;;
-        repos/*/pulls/*/commits) cat "$FX/commits.json"; exit 0 ;;
-        repos/*/issues/*/comments) cat "$FX/comments.json"; exit 0 ;;
+        repos/*/pulls/*/files) [[ -e $FX/fail-files ]] && exit 1; cat "$FX/files.json"; exit 0 ;;
+        repos/*/pulls/*/commits) [[ -e $FX/fail-commits ]] && exit 1; cat "$FX/commits.json"; exit 0 ;;
+        repos/*/issues/*/comments) [[ -e $FX/fail-comments ]] && exit 1; cat "$FX/comments.json"; exit 0 ;;
         repos/*/pulls/*) cat "$FX/pr.json"; exit 0 ;;
     esac
 done
@@ -46,15 +48,19 @@ setup() {
     mkdir -p "$FX"
     jq -n --arg sha "$HEAD" --arg user "${1:-zeapsu}" --argjson labels "${2:-[]}" \
         '{state: "open", head: {sha: $sha}, html_url: "https://example.invalid/pr/7",
-          user: {login: $user}, labels: [$labels[] | {name: .}]}' >"$FX/pr.json"
+          user: {login: $user}, labels: [$labels[] | {name: .}], changed_files: 1}' >"$FX/pr.json"
     files web/src/App.tsx
     echo '[]' >"$FX/comments.json"
     echo '[]' >"$FX/commits.json"
 }
-files() { printf '%s\n' "$@" | jq -R '{filename: .}' | jq -s . >"$FX/files.json"; }
-# comment ASSOCIATION BODY: appends a comment (BODY may hold \n and \r).
+files() {
+    printf '%s\n' "$@" | jq -R '{filename: .}' | jq -s . >"$FX/files.json"
+    jq --argjson n $# '.changed_files = $n' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"
+}
+# comment ASSOCIATION BODY [EDITED]: appends a comment (BODY may hold \n and \r).
 comment() {
-    jq --arg a "$1" --arg b "$(printf '%b' "$2")" '. + [{author_association: $a, body: $b}]' \
+    jq --arg a "$1" --arg b "$(printf '%b' "$2")" --arg u "${3:-2026-01-01T00:00:00Z}" \
+        '. + [{author_association: $a, body: $b, created_at: "2026-01-01T00:00:00Z", updated_at: $u}]' \
         "$FX/comments.json" >"$FX/c" && mv "$FX/c" "$FX/comments.json"
 }
 # expect NAME STATE [TEXT]: the gate runs, sets STATE on HEAD, saying TEXT.
@@ -70,63 +76,88 @@ expect() {
 }
 fail() { echo "FAIL: $*"; fails=$((fails + 1)); }
 
-setup
-expect "no marker: pending" pending "Needs Review clean @0123456"
+# broken NAME: the gate exits non-zero and leaves an `error` status on HEAD
+# (when it got as far as knowing HEAD).
+broken() {
+    rm -f "$FX/status.log"
+    if bash "$GATE" >"$FX/out" 2>&1; then fail "$1: gate succeeded"; cat "$FX/out"; return; fi
+    local got
+    got=$(tail -n1 "$FX/status.log" 2>/dev/null || true)
+    if [[ $got == "$HEAD error"* ]]; then echo "ok: $1"; else fail "$1: last status '$got'"; cat "$FX/out"; fi
+}
 
-setup; comment OWNER "Review: clean @${HEAD:0:7}"
+setup
+expect "no marker: pending" pending "Needs Review clean"
+
+setup; comment OWNER "Review: clean @$HEAD"
 expect "owner's marker on the head" success "Review: clean at 0123456"
 
-setup; comment OWNER "Looks good.\r\nReview: clean @$HEAD\r\nThanks"
-expect "marker on its own line among others, CRLF" success
+setup; comment OWNER "Looks good.\r\nReview: clean @$HEAD  \r\nThanks"
+expect "marker on its own line among others, CRLF, trailing space" success
 
-setup; comment OWNER "Review: clean @${OLD:0:7}"
+setup; comment OWNER "Review: clean @$OLD"
 expect "marker on an older head" pending
 
-setup; comment OWNER "Review: clean @${HEAD:0:6}"
-expect "prefix shorter than 7" pending
+setup; comment OWNER "Review: clean @${HEAD:0:12}"
+expect "short sha isn't enough" pending
 
-setup; comment OWNER "Done. Review: clean @${HEAD:0:7}"
+setup; comment OWNER "Review: clean @$HEAD except one high finding"
+expect "marker with text after it" pending
+
+setup; comment OWNER "Done. Review: clean @$HEAD"
 expect "marker not at a line start" pending
 
-setup; comment OWNER "review: clean @${HEAD:0:7}"
+setup; comment OWNER "review: clean @$HEAD"
 expect "wrong case" pending
 
+setup; comment OWNER "Review: clean @$HEAD" 2026-01-02T00:00:00Z
+expect "edited comment doesn't count" pending
+
 for who in NONE CONTRIBUTOR FIRST_TIME_CONTRIBUTOR MEMBER COLLABORATOR; do
-    setup; comment "$who" "Review: clean @${HEAD:0:7}"
+    setup; comment "$who" "Review: clean @$HEAD"
     expect "marker from $who doesn't count" pending
 done
 
-setup "zeapsu" '["security"]'; comment OWNER "Review: clean @${HEAD:0:7}"
+setup; printf '[{"author_association":"NONE","body":"hi","created_at":"x","updated_at":"x"}][{"author_association":"OWNER","body":"Review: clean @%s","created_at":"x","updated_at":"x"}]' "$HEAD" >"$FX/comments.json"
+expect "marker on a second page" success
+
+setup "zeapsu" '["security"]'; comment OWNER "Review: clean @$HEAD"
 expect "security label needs both extra markers" pending "Needs Security review, Second review"
 
-setup "zeapsu" '["Auth"]'; comment OWNER "Review: clean @${HEAD:0:7}"
+setup "zeapsu" '["Auth"]'; comment OWNER "Review: clean @$HEAD"
 expect "auth label, any case" pending "security PR: label"
 
 for f in controller/src/auth.rs controller/src/profiles.rs controller/src/main.rs \
+    controller/src/lib.rs controller/src/control.rs controller/src/audio.rs \
     runtime/src/reachy_bridge_runtime/features/app_bind_shim.py \
-    runtime/src/reachy_bridge_runtime/audio_policy.py deploy/reachy-bridge \
+    runtime/src/reachy_bridge_runtime/audio_policy.py runtime/src/reachy_bridge_runtime/main.py \
+    web/src/api/auth.ts deploy/reachy-bridge deploy/install.sh \
     deploy/systemd/reachy-bridge-controller.service .github/workflows/ci.yml \
-    tools/review_gate.sh; do
-    setup; files web/src/App.tsx "$f"; comment OWNER "Review: clean @${HEAD:0:7}"
+    .github/dependabot.yml tools/review_gate.sh tools/test_review_gate.sh; do
+    setup; files web/src/App.tsx "$f"; comment OWNER "Review: clean @$HEAD"
     expect "security path $f" pending "security PR: paths"
 done
 
 setup; files controller/src/routes/power.rs runtime/src/reachy_bridge_runtime/audio_tee.py \
-    deploy/install.sh tools/review_gate.sh.bak .github/dependabot.yml
-comment OWNER "Review: clean @${HEAD:0:7}"
+    web/src/api/power.ts tools/review_gate.sh.bak deploy/systemd/README.md
+comment OWNER "Review: clean @$HEAD"
 expect "near-miss paths aren't security paths" success
 
-setup; jq '[{filename: "controller/src/login.rs", previous_filename: "controller/src/auth.rs"}]' -n >"$FX/files.json"
-comment OWNER "Review: clean @${HEAD:0:7}"
+setup; jq -n '[{filename: "controller/src/login.rs", previous_filename: "controller/src/auth.rs"}]' >"$FX/files.json"
+comment OWNER "Review: clean @$HEAD"
 expect "renamed away from a security path" pending "security PR: paths"
 
+setup; jq '.changed_files = 3001' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"
+comment OWNER "Review: clean @$HEAD"
+expect "more files than the listing shows" pending "unlisted files"
+
 setup "zeapsu" '["security"]'; files controller/src/auth.rs
-comment OWNER "Review: clean @${HEAD:0:7}\nSecurity review: clean @${HEAD:0:7}"
+comment OWNER "Review: clean @$HEAD\nSecurity review: clean @$HEAD"
 comment OWNER "Second review: clean @$HEAD"
 expect "all three markers" success "Review, Security review, Second review: clean at 0123456 (security PR: label, paths)"
 
 setup "zeapsu"; files controller/src/auth.rs
-comment OWNER "Review: clean @${HEAD:0:7}\nSecurity review: clean @${HEAD:0:7}\nSecond review: clean @${OLD:0:7}"
+comment OWNER "Review: clean @$HEAD\nSecurity review: clean @$HEAD\nSecond review: clean @$OLD"
 expect "second review of an older head" pending "Needs Second review"
 
 setup "dependabot[bot]"
@@ -146,13 +177,23 @@ expect "workflow commit that isn't a merge needs review" pending
 setup "dependabot-impostor"
 expect "only Dependabot itself skips review" pending
 
+# A failing API call fails the run and replaces any earlier pass.
+setup; files controller/src/auth.rs; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-files"
+broken "files listing fails: error, not a one-marker pass"
+setup; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-comments"
+broken "comments listing fails: error"
+setup "dependabot[bot]"; touch "$FX/fail-commits"
+broken "Dependabot commits listing fails: error"
+
 setup; jq '.state = "closed"' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"
 rm -f "$FX/status.log"
 if bash "$GATE" >"$FX/out" 2>&1 && [[ ! -e $FX/status.log ]]; then echo "ok: closed PR: no status"
 else fail "closed PR: set a status or failed"; fi
 
-if PR="7; true" bash "$GATE" >"$FX/out" 2>&1; then fail "non-numeric PR accepted"
-else echo "ok: non-numeric PR refused"; fi
+for bad in "7; true" 07 0 ""; do
+    if PR=$bad bash "$GATE" >"$FX/out" 2>&1; then fail "PR '$bad' accepted"
+    else echo "ok: PR '$bad' refused"; fi
+done
 
 echo
 if ((fails)); then echo "$fails failed"; exit 1; fi
