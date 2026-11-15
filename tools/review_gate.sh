@@ -7,9 +7,9 @@
 #
 #   GH_REPO=owner/name PR=<number> bash tools/review_gate.sh
 #
-# Markers are whole lines in PR comments (not review bodies), as
-# CONTRIBUTING.md ("Claiming work") describes, with the full 40-digit sha of
-# the head commit:
+# Each marker is a PR comment of its own (not a review body) that is only the
+# marker line, as CONTRIBUTING.md ("Claiming work") describes, with the full
+# 40-digit sha of the head commit:
 #   Review: clean @<sha>                 every PR
 #   Security review: clean @<sha>        security PRs: the `security` or
 #   Second review: clean @<sha>          `auth` label, or a SECURITY_PATHS file
@@ -20,18 +20,24 @@
 # branch updater, pass without markers, as their auto-merge workflow already
 # judges them by their commits.
 #
+# A commit status belongs to the commit, not the PR, so only PRs into the
+# default branch post one, and a head shared by more than one open PR into it
+# stays pending.
+#
 # What it proves: a marker naming the head exists. It can't prove a review
 # ran, and anything that can run a workflow with write access can post this
 # status itself.
-set -euo pipefail
+set -Eeuo pipefail
 
 : "${GH_REPO:?set GH_REPO}" "${PR:?set PR}"
 [[ $PR =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a PR number: $PR"; exit 1; }
 
-# Login, sessions and pairing and their guards, the app proxy, bind addresses
-# and what's exposed, request signing, app binding, the installer, the
-# HF token client, CI and release workflows (update signing), and this gate.
-SECURITY_PATHS='^(controller/src/(auth|profiles|setup|app_proxy|main|lib|control|sim|audio)\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|features/app_bind(_shim)?)\.py|web/src/(api/auth|logic/auth|api/hf)\.ts|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|\.github/.+|tools/(test_)?review_gate\.sh)$'
+# Login, sessions, pairing and setup and the guards and headers that apply
+# them, the app proxy, bind addresses and what's exposed, request signing,
+# app binding and the sim's loopback redirect, secrets (the HF token, sound
+# tokens), the installer, dependency manifests and locks, CI and release
+# workflows (update signing), the agent rules, and this gate.
+SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|control|sim|audio)|routes/(store|sounds))\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|features/(app_bind|sim_apps)(_shim)?)\.py|web/src/(api/(auth|hf|client|setup)|logic/(auth|setup))\.ts|web/src/components/(Login|Setup)\.tsx|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|(runtime/)?pyproject\.toml|uv\.lock|controller/Cargo\.(toml|lock)|web/(package\.json|bun\.lock)|\.github/.+|AGENTS\.md|CLAUDE\.md|tools/(test_)?review_gate\.sh)$'
 
 # Every page of a list endpoint, as one JSON array.
 list() { gh api --paginate "$1" | jq -s 'add // []'; }
@@ -44,6 +50,12 @@ fi
 sha=$(jq -r .head.sha <<<"$pr")
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit for #$PR"; exit 1; }
 url=$(jq -r .html_url <<<"$pr")
+base=$(jq -r .base.ref <<<"$pr")
+default=$(jq -r .base.repo.default_branch <<<"$pr")
+if [[ $base != "$default" ]]; then
+    echo "PR #$PR targets $base, not $default; its head's status is left to PRs into $default."
+    exit 0
+fi
 
 status() {
     echo "review: $1 at ${sha:0:7}: $2"
@@ -53,6 +65,16 @@ status() {
 # A run that fails from here on replaces any earlier success on this head,
 # so a lost marker or a new label can't leave a stale pass behind.
 trap 'status error "Review gate failed; re-run the Review gate workflow" || true' ERR
+
+# Another open PR into the default branch with this head would share this
+# PR's status, whatever its own markers and labels say.
+shared=$(list "repos/$GH_REPO/commits/$sha/pulls")
+twins=$(jq -r --arg base "$default" --argjson n "$PR" \
+    '.[] | select(.state == "open" and .base.ref == $base and .number != $n) | "#\(.number)"' <<<"$shared")
+if [[ -n $twins ]]; then
+    status pending "Head is also the head of $(tr '\n' ' ' <<<"$twins")- give each PR its own commit"
+    exit 0
+fi
 
 if [[ $(jq -r .user.login <<<"$pr") == "dependabot[bot]" ]]; then
     # As in dependabot-auto-merge.yml: made on GitHub (committer web-flow,
@@ -77,25 +99,32 @@ if jq -e '.labels[].name | ascii_downcase | select(. == "security" or . == "auth
 fi
 files=$(list "repos/$GH_REPO/pulls/$PR/files")
 # Both names of a renamed file.
-hits=$(jq -r '.[] | .filename, (.previous_filename // empty)' <<<"$files" | grep -E "$SECURITY_PATHS" || true)
+names=$(jq -r '.[] | .filename, (.previous_filename // empty)' <<<"$files")
+hits=$(grep -E "$SECURITY_PATHS" <<<"$names" || true)
 if [[ -n $hits ]]; then
     security=${security:+$security, }"paths"
     while read -r h; do echo "security path: $h"; done <<<"$hits"
 fi
 # The files listing stops at 3000; treat what it can't show as security.
-if (( $(jq '.changed_files // 0' <<<"$pr") > $(jq length <<<"$files") )); then
+changed=$(jq '.changed_files // 0' <<<"$pr")
+listed=$(jq length <<<"$files")
+if (( changed > listed )); then
     security=${security:+$security, }"unlisted files"
 fi
 [[ -n $security ]] && needed+=("Security review" "Second review")
 
-# Marker lines from the owner's unedited comments; tr drops CRLF line ends.
+# The owner's unedited comments that are a marker for this head and nothing
+# else, so a quoted template or a comment listing every marker counts for
+# nothing. One per line in `markers`.
 comments=$(list "repos/$GH_REPO/issues/$PR/comments")
-markers=$(jq -r '.[] | select(.author_association == "OWNER" and .created_at == .updated_at) | .body' <<<"$comments" |
-    tr -d '\r')
+markers=$(jq -r --arg sha "$sha" '.[]
+    | select(.author_association == "OWNER" and .created_at == .updated_at)
+    | .body | gsub("^\\s+|\\s+$"; "")
+    | select(test("^(Review|Security review|Second review): clean @" + $sha + "$"))' <<<"$comments")
 
 missing=()
 for name in "${needed[@]}"; do
-    grep -Eqx "$name: clean @${sha}[[:space:]]*" <<<"$markers" || missing+=("$name")
+    grep -qxF "$name: clean @$sha" <<<"$markers" || missing+=("$name")
 done
 
 join() { local s; s=$(printf '%s, ' "$@"); echo "${s%, }"; }

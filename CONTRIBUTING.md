@@ -198,28 +198,26 @@ say-so.
    see what's taken.
 3. Before asking for review, merge the current `main` into your branch and rerun the
    checks.
-4. Merge once every gate passes: CI green with the current `main` merged in, and a
+4. Merge only once every gate passes: CI green with the current `main` merged in, and a
    separate read-only review (a reviewer with fresh context, given the diff) with no
    unresolved correctness findings. Security-relevant PRs (login, sessions, headers,
    anything exposed beyond `127.0.0.1`, secrets, update signing) also need a dedicated
    security review and a second independent reviewer, both clean.
-5. Record each clean review in its own PR comment (not a review body), as a line that
-   is only the marker and the full 40-digit sha of the head commit the reviewer was
+5. Record each clean review as a PR comment of its own (not a review body) that holds
+   only the marker and the full 40-digit sha of the head commit the reviewer was
    given: `Review: clean @<sha>`, and for a security-relevant PR also
-   `Security review: clean @<sha>` and `Second review: clean @<sha>`. Don't edit a
-   marker comment; post a new one. The required `review` check
+   `Security review: clean @<sha>` and `Second review: clean @<sha>`, each in its own
+   comment. Don't edit a marker comment; post a new one. The required `review` check
    (`tools/review_gate.sh`, #302) stays pending until the repo owner's account has
    posted them for the PR's current head, so a new push, including a merge of `main`,
-   needs fresh markers. Wait for the check to pass (`gh pr checks <n> --watch`) before
-   merging. It treats a PR as security-relevant when it has the `security` or `auth`
-   label or changes a path in the script's `SECURITY_PATHS`: login, sessions and
-   pairing and the guards that apply them (`auth.rs`, `profiles.rs`, `setup.rs`,
-   `control.rs`, `sim.rs`, `lib.rs`, the web auth client, `deploy/reachy-bridge`), the
-   app proxy, bind addresses and what's exposed (`main.rs`, the runtime's `main.py`,
-   the audio gateway, the systemd units), request signing (`audio_policy.py`,
-   `audio.rs`), app binding, the installer and uninstaller, the HF token client,
-   everything under `.github/`, and the gate itself. Dependabot's own PRs pass without
-   markers, whatever they change; the owner merges its major updates.
+   needs fresh markers; and a head commit shared by two open PRs stays pending. Wait
+   for the check to pass (`gh pr checks <n> --watch`) before merging. A PR is
+   security-relevant when it has the `security` or `auth` label or changes a file in
+   the script's `SECURITY_PATHS`: login, sessions, pairing and setup and the guards and
+   headers that apply them, the app proxy, bind addresses and what's exposed, request
+   signing, app binding, secrets, the installer, dependency manifests and lock files,
+   everything under `.github/`, the agent rules and the gate itself. Dependabot's own
+   PRs pass without markers, whatever they change; the owner merges its major updates.
 6. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
    `main` directly. Only Dependabot's PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
    again.

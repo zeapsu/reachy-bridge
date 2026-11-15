@@ -14,7 +14,7 @@ HEAD=0123456789abcdef0123456789abcdef01234567
 OLD=fedcba9876543210fedcba9876543210fedcba98
 
 mkdir -p "$ROOT/bin"
-# The stub serves $ROOT/fx/{pr,files,comments,commits}.json by endpoint, fails
+# The stub serves $ROOT/fx/{pr,files,comments,commits,shared}.json by endpoint, fails
 # an endpoint when $ROOT/fx/fail-<name> exists, and logs a status POST as
 # "<sha> <state> <description>".
 cat >"$ROOT/bin/gh" <<'EOF'
@@ -30,6 +30,7 @@ for a in "${args[@]}"; do
             done
             echo "$sha $state $desc" >>"$FX/status.log"
             exit 0 ;;
+        repos/*/commits/*/pulls) [[ -e $FX/fail-shared ]] && exit 1; cat "$FX/shared.json"; exit 0 ;;
         repos/*/pulls/*/files) [[ -e $FX/fail-files ]] && exit 1; cat "$FX/files.json"; exit 0 ;;
         repos/*/pulls/*/commits) [[ -e $FX/fail-commits ]] && exit 1; cat "$FX/commits.json"; exit 0 ;;
         repos/*/issues/*/comments) [[ -e $FX/fail-comments ]] && exit 1; cat "$FX/comments.json"; exit 0 ;;
@@ -48,10 +49,12 @@ setup() {
     mkdir -p "$FX"
     jq -n --arg sha "$HEAD" --arg user "${1:-zeapsu}" --argjson labels "${2:-[]}" \
         '{state: "open", head: {sha: $sha}, html_url: "https://example.invalid/pr/7",
-          user: {login: $user}, labels: [$labels[] | {name: .}], changed_files: 1}' >"$FX/pr.json"
+          user: {login: $user}, labels: [$labels[] | {name: .}], changed_files: 1,
+          base: {ref: "main", repo: {default_branch: "main"}}}' >"$FX/pr.json"
     files web/src/App.tsx
     echo '[]' >"$FX/comments.json"
     echo '[]' >"$FX/commits.json"
+    echo '[{"number": 7, "state": "open", "base": {"ref": "main"}}]' >"$FX/shared.json"
 }
 files() {
     printf '%s\n' "$@" | jq -R '{filename: .}' | jq -s . >"$FX/files.json"
@@ -70,7 +73,8 @@ expect() {
     if ! bash "$GATE" >"$FX/out" 2>&1; then fail "$name: gate failed"; cat "$FX/out"; return; fi
     local got
     got=$(cat "$FX/status.log" 2>/dev/null || true)
-    if [[ $got != "$HEAD $state"* ]]; then fail "$name: want $state, got '$got'"; cat "$FX/out"
+    if [[ $(grep -c . <<<"$got") != 1 ]]; then fail "$name: want one status, got '$got'"; cat "$FX/out"
+    elif [[ $got != "$HEAD $state"* ]]; then fail "$name: want $state, got '$got'"; cat "$FX/out"
     elif [[ -n $text && $got != *"$text"* ]]; then fail "$name: '$got' doesn't say '$text'"
     else echo "ok: $name"; fi
 }
@@ -92,8 +96,14 @@ expect "no marker: pending" pending "Needs Review clean"
 setup; comment OWNER "Review: clean @$HEAD"
 expect "owner's marker on the head" success "Review: clean at 0123456"
 
-setup; comment OWNER "Looks good.\r\nReview: clean @$HEAD  \r\nThanks"
-expect "marker on its own line among others, CRLF, trailing space" success
+setup; comment OWNER "\r\nReview: clean @$HEAD  \r\n"
+expect "marker alone with CRLF and spaces around it" success
+
+setup; comment OWNER "Looks good.\nReview: clean @$HEAD"
+expect "marker with other lines in the comment" pending
+
+setup; comment OWNER "Not clean yet. Once fixed, post:\n\`\`\`\nReview: clean @$HEAD\n\`\`\`"
+expect "quoted marker template" pending
 
 setup; comment OWNER "Review: clean @$OLD"
 expect "marker on an older head" pending
@@ -133,7 +143,12 @@ for f in controller/src/auth.rs controller/src/profiles.rs controller/src/main.r
     runtime/src/reachy_bridge_runtime/audio_policy.py runtime/src/reachy_bridge_runtime/main.py \
     web/src/api/auth.ts deploy/reachy-bridge deploy/install.sh \
     deploy/systemd/reachy-bridge-controller.service .github/workflows/ci.yml \
-    .github/dependabot.yml tools/review_gate.sh tools/test_review_gate.sh; do
+    .github/dependabot.yml tools/review_gate.sh tools/test_review_gate.sh \
+    controller/src/sim.rs controller/src/setup.rs controller/src/app_proxy.rs controller/src/state.rs \
+    controller/src/routes/store.rs controller/src/routes/sounds.rs \
+    runtime/src/reachy_bridge_runtime/audio_gateway.py runtime/src/reachy_bridge_runtime/features/sim_apps.py \
+    web/src/logic/auth.ts web/src/api/hf.ts web/src/api/client.ts web/src/components/Login.tsx \
+    deploy/uninstall.sh controller/Cargo.lock runtime/pyproject.toml uv.lock web/bun.lock AGENTS.md; do
     setup; files web/src/App.tsx "$f"; comment OWNER "Review: clean @$HEAD"
     expect "security path $f" pending "security PR: paths"
 done
@@ -152,12 +167,17 @@ comment OWNER "Review: clean @$HEAD"
 expect "more files than the listing shows" pending "unlisted files"
 
 setup "zeapsu" '["security"]'; files controller/src/auth.rs
-comment OWNER "Review: clean @$HEAD\nSecurity review: clean @$HEAD"
+comment OWNER "Review: clean @$HEAD\nSecurity review: clean @$HEAD\nSecond review: clean @$HEAD"
+expect "all three markers in one comment" pending
+
+setup "zeapsu" '["security"]'; files controller/src/auth.rs
+comment OWNER "Review: clean @$HEAD"; comment OWNER "Security review: clean @$HEAD"
 comment OWNER "Second review: clean @$HEAD"
 expect "all three markers" success "Review, Security review, Second review: clean at 0123456 (security PR: label, paths)"
 
 setup "zeapsu"; files controller/src/auth.rs
-comment OWNER "Review: clean @$HEAD\nSecurity review: clean @$HEAD\nSecond review: clean @$OLD"
+comment OWNER "Review: clean @$HEAD"; comment OWNER "Security review: clean @$HEAD"
+comment OWNER "Second review: clean @$OLD"
 expect "second review of an older head" pending "Needs Second review"
 
 setup "dependabot[bot]"
@@ -177,6 +197,17 @@ expect "workflow commit that isn't a merge needs review" pending
 setup "dependabot-impostor"
 expect "only Dependabot itself skips review" pending
 
+setup; comment OWNER "Review: clean @$HEAD"
+jq '.base.ref = "feature"' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"
+rm -f "$FX/status.log"
+if bash "$GATE" >"$FX/out" 2>&1 && [[ ! -e $FX/status.log ]]; then echo "ok: PR into another branch: no status"
+else fail "PR into another branch: set a status or failed"; fi
+
+setup; comment OWNER "Review: clean @$HEAD"
+echo '[{"number": 7, "state": "open", "base": {"ref": "main"}}, {"number": 9, "state": "open", "base": {"ref": "main"}},
+       {"number": 4, "state": "closed", "base": {"ref": "main"}}, {"number": 5, "state": "open", "base": {"ref": "feature"}}]' >"$FX/shared.json"
+expect "head shared with another open PR into main" pending "Head is also the head of #9 -"
+
 # A failing API call fails the run and replaces any earlier pass.
 setup; files controller/src/auth.rs; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-files"
 broken "files listing fails: error, not a one-marker pass"
@@ -184,6 +215,12 @@ setup; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-comments"
 broken "comments listing fails: error"
 setup "dependabot[bot]"; touch "$FX/fail-commits"
 broken "Dependabot commits listing fails: error"
+setup; touch "$FX/fail-shared"
+broken "shared-head listing fails: error"
+setup; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-statuses"
+rm -f "$FX/status.log"
+if bash "$GATE" >"$FX/out" 2>&1; then fail "status POST fails: gate succeeded"
+else echo "ok: status POST fails: run fails"; fi
 
 setup; jq '.state = "closed"' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"
 rm -f "$FX/status.log"

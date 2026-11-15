@@ -17,7 +17,8 @@ name: Review gate
 # reads the PR, its files and comments through the API.
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, labeled, unlabeled]
+    # edited: a new base changes which files and PRs count.
+    types: [opened, reopened, synchronize, labeled, unlabeled, edited]
   issue_comment:
     types: [created, edited, deleted]
   workflow_dispatch:
