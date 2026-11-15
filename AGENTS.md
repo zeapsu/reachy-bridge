@@ -44,7 +44,8 @@ Spaces app.
   proxy). App UIs are proxied on :7863.
 - The daemon's own web dashboard is deprecated upstream; don't depend on it.
 - Apps API: `/api/apps/*` (install via job id, start/stop, update, `custom_app_url` gives each
-  app's own UI port, e.g. :8042; see `docs/daemon-contract.md`). Only one app runs at a time. Starting an app hands off to that app's own UI.
+  app's own UI port, e.g. :8042; see `docs/daemon-contract.md`). Only one app runs at a time.
+  Starting an app hands off to that app's own UI.
 
 ## Robot host rules
 These hold on any machine with the robot attached.
@@ -152,8 +153,8 @@ contributors stop at a ready PR with their review results in it.
    file, `CLAUDE.md` or `CONTRIBUTING.md`): additionally a dedicated security review *and* a
    second independent reviewer, both clean. The `review` check also treats a PR as
    security-relevant when it is labeled `security` or `auth` or changes a path in
-   `SECURITY_PATHS` in `tools/review_gate.sh`, the authoritative path list. A PR that is security-relevant by the
-   list above but touches no `SECURITY_PATHS` file must get the `security` label, or the check
+   `SECURITY_PATHS` in `tools/review_gate.sh`, the authoritative path list. A PR that is
+   security-relevant by the list above but touches no `SECURITY_PATHS` file must get the `security` label, or the check
    asks for one review only. Note "security-relevant, merged" in the owner's summary.
 4. Record each clean review in its own PR conversation comment from the owner's GitHub account,
    naming the full 40-character sha of the head commit the reviewer was given
