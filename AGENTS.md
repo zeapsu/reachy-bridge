@@ -25,7 +25,7 @@ Spaces app.
   `runtime/pyproject.toml` sets a floor and `uv.lock` holds the tested version. SDK updates go
   through #155 (daily upstream watch, playbook `docs/update-reachy-mini.md`). Upstream turns on
   PostHog telemetry by default; the bridge sets `REACHY_MINI_TELEMETRY=0` in the daemon and sim
-  units, `tools/sim/run.py` and `sim_daemon.py`. Keep it off. Started with
+  units, `tools/sim/run.py` and `tools/sim/sim_daemon.py`. Keep it off. Started with
   `--desktop-app-daemon --headless --no-autostart --no-wake-up-on-start`, bound to
   `127.0.0.1:8000`. `--desktop-app-daemon` makes it install community apps into a separate
   `apps_venv` next to the daemon venv, outside anything `uv sync` manages.
@@ -87,9 +87,10 @@ These hold on any machine with the robot attached.
   `GET /api/daemon/status`.
 
 ## Testing
-- Rust controller: `cargo test` and `cargo clippy --all-targets -- -D warnings` in
-  `controller/`. Web: `bun install --frozen-lockfile`, `bun run typecheck`, `bun test`, `bun run build` in `web/` (build the UI before
-  a release build; the binary embeds `web/dist`).
+- Rust controller: `cargo fmt --check`, `cargo test` and
+  `cargo clippy --locked --all-targets -- -D warnings` in `controller/`.
+- Web: `bun install --frozen-lockfile`, `bun run typecheck`, `bun test`, `bun run build` in
+  `web/` (build the UI before a release build; the binary embeds `web/dist`).
 - Python: `uv run pytest`, `uv run ruff check runtime tools`, `uv run ruff format --check`, and
   `uv run reachy-bridge-runtime --check` for the upstream seam.
 - Shell: `shellcheck` on the scripts in `deploy/` and `tools/`, `bash tools/test_cli.sh` and
@@ -143,9 +144,9 @@ contributors stop at a ready PR with their review results in it.
 3. **Security-relevant PRs** (login, sessions, pairing, headers, CORS/framing, the app proxy,
    anything exposed beyond `127.0.0.1`, secrets, update signing, workflows, systemd units, the
    `reachy-bridge` command, the installer and uninstaller, audio request signing, and this
-   file, `CLAUDE.md` or the merge rules in `CONTRIBUTING.md`): additionally a dedicated
-   security review *and* a second independent reviewer, both clean. The `review` check also treats a PR as security-relevant
-   when it is labeled `security` or `auth` or changes a path in `SECURITY_PATHS` in
+   file, `CLAUDE.md` or `CONTRIBUTING.md`): additionally a dedicated security review *and* a
+   second independent reviewer, both clean. The `review` check also treats a PR as
+   security-relevant when it is labeled `security` or `auth` or changes a path in `SECURITY_PATHS` in
    `tools/review_gate.sh`, the authoritative path list. A PR that is security-relevant by the
    list above but touches no `SECURITY_PATHS` file must get the `security` label, or the check
    asks for one review only. Note "security-relevant, merged" in the owner's summary.
@@ -157,11 +158,13 @@ contributors stop at a ready PR with their review results in it.
    else in the comment: `Review: clean @<sha>`, plus `Security review: clean @<sha>` and
    `Second review: clean @<sha>` for security-relevant PRs. Edited comments and review bodies
    don't count; post a new comment instead. Any new push, including a merge of `main`, needs
-   fresh markers. Before posting, check `gh api user -q .login` is the owner's
-   account; if it isn't, stop and tell the owner. The required `review` status check (#302)
-   stays pending until the markers are there for the PR's current head; a missing marker is a
-   skipped review, not a formality. Wait for it to pass
-   (`gh pr checks <n> --required --watch`) before merging.
+   fresh markers. Before posting, check that `gh api user -q .login` matches
+   `gh repo view --json owner -q .owner.login`; if it doesn't, stop and tell the owner. The
+   `review` status check (#302) stays pending until the markers are there for the PR's current
+   head; a missing marker is a skipped review, not a formality. Before merging, wait with
+   `gh pr checks <n> --watch` and confirm the `review` row passed, whether or not the ruleset
+   lists it as required yet. CONTRIBUTING.md ("Claiming work") covers its edge cases: a head
+   commit shared by two open PRs stays pending, and Dependabot's own PRs pass without markers.
 5. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`). Never squash or
    rebase, never push directly to `main`, never rewrite pushed history. Only Dependabot's patch
    and minor PRs squash, through their own auto-merge; majors wait for the owner.
