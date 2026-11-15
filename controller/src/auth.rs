@@ -151,7 +151,8 @@ struct DevicesFile {
     admin_mode: bool,
     devices: Vec<Device>,
     /// What each person may do (#297); people without one may do everything.
-    /// A damaged entry is skipped, not the whole file.
+    /// A damaged entry locks its person (or is skipped if it names nobody),
+    /// rather than failing the whole file.
     #[serde(default, deserialize_with = "lenient_profiles")]
     profiles: Vec<Profile>,
 }
@@ -160,11 +161,17 @@ fn lenient_profiles<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
     let values = Vec::<Value>::deserialize(deserializer)?;
     Ok(values
         .into_iter()
-        .filter_map(|v| match serde_json::from_value::<Profile>(v) {
+        .filter_map(|v| match serde_json::from_value::<Profile>(v.clone()) {
             Ok(p) => Some(p),
+            // A damaged entry that names someone fails closed: that person
+            // gets nothing rather than everything.
             Err(error) => {
-                tracing::error!("auth: skipped a damaged profile in {DEVICES_FILE} ({error})");
-                None
+                let name = v.get("name").and_then(Value::as_str).map(Profile::locked);
+                tracing::error!(
+                    "auth: a damaged profile in {DEVICES_FILE} ({error}); locked: {:?}",
+                    name.as_ref().map(|p| &p.name)
+                );
+                name
             }
         })
         .collect())
@@ -1389,6 +1396,9 @@ struct ProfileBody {
     apps: Option<Vec<String>>,
     #[serde(default)]
     can: profiles::Can,
+    /// Sent by dashboards from before the Controls switch: "kid" means off.
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 /// Create, change or rename a profile: an admin only.
@@ -1411,7 +1421,11 @@ async fn save_profile(
     if auth.is_admin_person(&person) || auth.is_admin_person(&name) {
         return Err(ApiError::new(409, "an admin's profile always has everything"));
     }
-    let profile = profiles::cleaned(Profile { name: name.clone(), apps: body.apps, can: body.can });
+    let profile = profiles::cleaned(Profile {
+        name: name.clone(),
+        apps: body.apps,
+        can: body.can.with_kind(body.kind.as_deref()),
+    });
     let renamed = name != person;
     // Approving matches names ignoring case, so two may not differ only by it.
     let lower = name.to_lowercase();
@@ -1630,6 +1644,20 @@ mod tests {
         assert!(mentions_admin(b"{\"admin_mode\": false, \"devices\": [{\"role\": \"admin\", \"x"));
         assert!(!mentions_admin(b"{\"admin_mode\": false, \"devices\": [{\"role\": \"member\", \"x"));
         assert!(!mentions_admin(b"{not json"));
+    }
+
+    #[test]
+    fn a_damaged_profile_locks_its_person() {
+        let file: DevicesFile = serde_json::from_value(json!({
+            "devices": [],
+            "profiles": [{"name": "Mia", "kind": "Kid"}, {"name": "Leo", "kind": null}, {"apps": 3}, {"name": "Sam", "kind": "kid"}],
+        }))
+        .unwrap();
+        let names: Vec<&str> = file.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Mia", "Leo", "Sam"]);
+        assert_eq!(file.profiles[0], Profile::locked("Mia"));
+        assert_eq!(file.profiles[1], Profile::locked("Leo"));
+        assert!(!file.profiles[2].can.controls && file.profiles[2].can.power);
     }
 
     #[test]

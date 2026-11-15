@@ -1,4 +1,4 @@
-// Family mode (#297): what the dashboard shows, dims and hides for the
+// Profiles (#297): what the dashboard shows, dims and hides for the
 // acting profile. The controller enforces all of it; this mirrors it.
 
 import type { Can, ProfileView } from "./auth.ts";

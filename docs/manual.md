@@ -183,8 +183,8 @@ code, so only the command on the robot can approve it.
 **Removing a browser.** Revoke it under Devices, or run `reachy-bridge devices revoke <n>`. A browser
 unused for 30 days is logged out.
 
-**Shared browsers.** Turn on Shared when approving a tablet that several people use. It belongs to nobody: whoever
-picks it up chooses their profile (see below).
+**Shared browsers.** Turn on Shared when approving a tablet that several people use. It belongs to
+nobody: whoever picks it up chooses their profile (see below).
 
 ## Profiles
 
@@ -204,8 +204,9 @@ appearance and to log this browser out.
   make the robot go limp.
 
 People approved before profiles existed have everything allowed, so nothing changes for them except
-System. A new profile starts with no apps, power and driving on, and Talk, camera and Controls off. Changes apply within seconds. That profile's open camera, voice or live views reconnect
-under the new rules; nobody else's do. Each profile keeps its own pinned apps. The admin's profile always has
+System. A new profile starts with no apps, power and driving on, and Talk, camera and Controls off.
+Changes apply within seconds. That profile's open camera, voice or live views reconnect under the
+new rules; nobody else's do. Each profile keeps its own pinned apps. The admin's profile always has
 everything, and can't be restricted.
 
 **Adding someone.** Add a profile, then approve their browser with their name as the person

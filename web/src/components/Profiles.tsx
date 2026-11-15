@@ -196,7 +196,7 @@ export function ProfileSheet({
             <Avatar name={profile.name} size={44} />
             <span className="profile-sheet-name">
               {profile.name ?? "Shared"}
-              <span className="profile-sheet-kind">{profile.admin ? "Admin" : appsText(profile.apps)}</span>
+              <span className="profile-sheet-sub">{profile.admin ? "Admin" : appsText(profile.apps)}</span>
             </span>
             {profile.shared ? (
               <button className="btn press" type="button" onClick={onSwitch}>
@@ -495,7 +495,7 @@ export function ProfilesPanel({ installed }: { installed: InstalledApp[] }) {
             <Avatar name={p.name} size={40} />
             <span className="profiles-name">{p.name}</span>
             <span className="profiles-meta">
-              {p.admin ? <span className="profile-kind kind-admin">Admin</span> : null}
+              {p.admin ? <span className="profile-tag">Admin</span> : null}
               {[...(p.devices ?? []).map(deviceName), appsText(p.admin ? null : p.apps)].join(" · ")}
             </span>
             {p.admin ? null : (

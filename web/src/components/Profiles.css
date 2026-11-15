@@ -44,7 +44,7 @@
 .profile-sheet-stack { width: min(560px, 100%); display: grid; gap: 16px; }
 .profile-sheet-head { gap: 12px; }
 .profile-sheet-name { display: grid; margin-right: auto; font-weight: 600; font-size: 17px; }
-.profile-sheet-kind { font-size: 13px; font-weight: 500; color: var(--ink-3); }
+.profile-sheet-sub { font-size: 13px; font-weight: 500; color: var(--ink-3); }
 
 .picker-card { width: min(560px, 100%); align-items: center; padding: 28px 20px 32px; gap: 24px; }
 .picker-brand { font-size: 24px; }
@@ -72,8 +72,7 @@
 .profiles-name { grid-area: name; font-weight: 600; overflow-wrap: anywhere; }
 .profiles-meta { grid-area: meta; font-size: 13px; color: var(--ink-3); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .profiles-list .btn { grid-area: action; }
-.profile-kind { padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--well); color: var(--ink-2); }
-.profile-kind.kind-admin { color: var(--accent); }
+.profile-tag { padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--well); color: var(--accent); }
 
 .profile-edit-head { display: flex; gap: 14px; align-items: center; }
 .profile-edit-head .field { flex: 1; font-size: 17px; font-weight: 600; }

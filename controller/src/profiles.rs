@@ -1,4 +1,4 @@
-//! Family mode (#297): what a paired person may do in admin mode.
+//! Profiles (#297): what a paired person may do in admin mode.
 //!
 //! A profile is a person (the `person` every paired device has, #221) plus
 //! what the admin allows them: the apps they see and start (all, or a list),
@@ -8,9 +8,10 @@
 //! logs, the microphone meter, the sim switch) is the admin's only, for
 //! every profile.
 //!
-//! A person without a stored profile has everything allowed, so devices paired before #297 keep working as they did, minus
-//! System. Admin devices, the local key, and every request outside admin
-//! mode have [`Access::Full`].
+//! A person without a stored profile has everything allowed, so devices
+//! paired before #297 keep working as they did, minus System. Admin
+//! devices, the local key, and every request outside admin mode have
+//! [`Access::Full`].
 //!
 //! A shared device (a family tablet) belongs to nobody: whoever uses it picks
 //! a profile from a list that never offers a person with an admin device.
@@ -68,6 +69,14 @@ impl Default for Can {
 }
 
 impl Can {
+    /// A profile saved with `kind`: a kid has Controls off.
+    pub fn with_kind(mut self, kind: Option<&str>) -> Self {
+        if kind == Some("kid") {
+            self.controls = false;
+        }
+        self
+    }
+
     const NOTHING: Self = Self { power: false, drive: false, voice: false, camera: false, controls: false };
 }
 
@@ -104,6 +113,12 @@ impl From<Stored> for Profile {
 }
 
 impl Profile {
+    /// A saved profile that couldn't be read: nothing allowed until the
+    /// admin saves it again (#297).
+    pub fn locked(name: &str) -> Self {
+        Self { name: name.to_string(), apps: Some(Vec::new()), can: Can::NOTHING }
+    }
+
     /// A person nobody has restricted: everything allowed.
     pub fn open(name: &str) -> Self {
         Self { name: name.to_string(), apps: None, can: Can::default() }
@@ -322,5 +337,8 @@ mod tests {
         let p: Profile = serde_json::from_value(json!({"name": "Mia", "kind": "kid"})).unwrap();
         assert_eq!(p.can, Can { controls: false, ..Can::default() });
         assert!(serde_json::to_value(&p).unwrap().get("kind").is_none());
+        // An old dashboard's PUT says the same with a kind.
+        assert!(!Can::default().with_kind(Some("kid")).controls);
+        assert!(Can::default().with_kind(Some("grown")).controls);
     }
 }
