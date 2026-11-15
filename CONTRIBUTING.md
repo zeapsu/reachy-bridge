@@ -47,7 +47,7 @@ CI runs these on every PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPac
 |---|---|
 | python | `uv run pytest`, `uv run ruff check runtime tools`, `uv run reachy-bridge-runtime --check` |
 | rust-web | `cargo test` and `cargo clippy --all-targets` in `controller/`; `bun run typecheck`, `bun test`, `bun run build` in `web/` |
-| shell | `shellcheck` on the scripts in `deploy/` and `tools/`; `bash tools/test_uninstall.sh` and `bash tools/test_cli.sh` (the `reachy-bridge` command's robot-off gate, sim mode, deploy and rollback) |
+| shell | `shellcheck` on the scripts in `deploy/` and `tools/`; `bash tools/test_uninstall.sh`, `bash tools/test_cli.sh` (the `reachy-bridge` command's robot-off gate, sim mode, deploy and rollback) and `bash tools/test_review_gate.sh` (the review check) |
 | sim | `uv run python tools/sim/run.py`: the controller against a sim daemon (see [`tools/sim/README.md`](tools/sim/README.md)) |
 | browser | `uv run python tools/sim/run.py --audio -- bash -c 'cd web && bunx playwright test'`: the dashboard in Chromium against the sim stack, at desktop and phone sizes, and the voice pane's audio routing over WebRTC with a test tone per source (`--audio`; needs gstreamer1.0-plugins-bad and gstreamer1.0-nice, and an address on the tailnet or in `AUDIO_GATEWAY_NETS`) (not required yet) |
 | install | `deploy/install.sh` on a fresh runner with a systemd user manager, checked by `tools/check_install.sh`; run twice, then `reachy-bridge uninstall --yes` and `check_install.sh --gone` (not required yet) |
@@ -202,8 +202,19 @@ say-so.
    separate read-only review (a reviewer with fresh context, given the diff) with no
    unresolved correctness findings. Security-relevant PRs (login, sessions, headers,
    anything exposed beyond `127.0.0.1`, secrets, update signing) also need a dedicated
-   security review and a second independent reviewer, both clean. Merge with a merge
-   commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
+   security review and a second independent reviewer, both clean.
+5. Record each clean review in its own PR comment, as a line naming the head commit the
+   reviewer was given: `Review: clean @<sha>`, and for a security-relevant PR also
+   `Security review: clean @<sha>` and `Second review: clean @<sha>` (7 to 40 hex
+   digits). The required `review` check (`tools/review_gate.sh`, #302) stays pending
+   until the repo owner's account has posted them for the PR's current head, so a new
+   push, including a merge of `main`, needs fresh markers. It treats a PR as
+   security-relevant when it has the `security` or `auth` label or changes one of
+   the paths in the script's `SECURITY_PATHS`: login, sessions and pairing
+   (`auth.rs`, `profiles.rs`, `setup.rs`, `deploy/reachy-bridge`), the app proxy, bind
+   addresses (`main.rs`, the systemd units), request signing, app binding, and the
+   workflows. Dependabot's own PRs pass without markers.
+6. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
    `main` directly. Only Dependabot's PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
    again.
 
