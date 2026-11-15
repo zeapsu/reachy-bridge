@@ -84,5 +84,8 @@ jobs:
               continue
             fi
             gh workflow run ci.yml --ref "$branch"
+            # The review status (#302) for the new head; the script lets
+            # Dependabot's own commits and this merge through.
+            gh workflow run review-gate.yml -f pr="$number"
             exit 0
           done 3< behind.tsv
