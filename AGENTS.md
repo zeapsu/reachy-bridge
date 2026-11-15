@@ -154,8 +154,9 @@ contributors stop at a ready PR with their review results in it.
    second independent reviewer, both clean. The `review` check also treats a PR as
    security-relevant when it is labeled `security` or `auth` or changes a path in
    `SECURITY_PATHS` in `tools/review_gate.sh`, the authoritative path list. A PR that is
-   security-relevant by the list above but touches no `SECURITY_PATHS` file must get the `security` label, or the check
-   asks for one review only. Note "security-relevant, merged" in the owner's summary.
+   security-relevant by the list above but touches no `SECURITY_PATHS` file must get the
+   `security` label, or the check asks for one review only. Note "security-relevant, merged"
+   in the owner's summary.
 4. Record each clean review in its own PR conversation comment from the owner's GitHub account,
    naming the full 40-character sha of the head commit the reviewer was given
    (`gh pr view <n> --json headRefOid -q .headRefOid`). The merging agent posts it after the
