@@ -93,7 +93,7 @@ These hold on any machine with the robot attached.
 - Python: `uv run pytest`, `uv run ruff check runtime tools`, `uv run ruff format --check`, and
   `uv run reachy-bridge-runtime --check` for the upstream seam.
 - Shell: `shellcheck` on the scripts in `deploy/` and `tools/`, `bash tools/test_cli.sh` and
-  `bash tools/test_uninstall.sh` (plus `bash tools/test_review_gate.sh` once #303 lands).
+  `bash tools/test_uninstall.sh`, `bash tools/test_review_gate.sh`.
 - Sim: `uv run python tools/sim/run.py` runs the controller against a sim daemon (see
   `tools/sim/README.md`). Run it before every hardware QA hand-off.
 - Verify UI changes with headless Chromium (a scratch profile) against the sim stack, not by
@@ -160,7 +160,7 @@ contributors stop at a ready PR with their review results in it.
    fresh markers. Before posting, check `gh api user -q .login` is the owner's
    account; if it isn't, stop and tell the owner. The required `review` status check (#302)
    stays pending until the markers are there for the PR's current head; a missing marker is a
-   skipped review, not a formality. Wait for it to pass (`gh pr checks <n> --watch`) before
+   skipped review, not a formality. Wait for it to pass (`gh pr checks <n> --required --watch`) before
    merging.
 5. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`). Never squash or
    rebase, never push directly to `main`, never rewrite pushed history. Only Dependabot's patch
