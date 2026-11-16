@@ -6,8 +6,8 @@ file adds how agents work here and the rules they must not skip.
 
 This file is public. Operator-specific details (SSH targets, host names, addresses, local
 paths, personal tooling) go in a gitignored `CLAUDE.local.md` next to it, which Claude Code
-loads on its own; other agents should read it too when it exists. Never copy private values into tracked files, issues, PRs or commit
-messages.
+loads on its own; other agents should read it too when it exists. Never copy private values
+into tracked files, issues, PRs or commit messages.
 
 ## Product
 reachy-bridge runs a **Reachy Mini Lite** from a **headless Linux edge device**: the upstream
@@ -204,7 +204,8 @@ Merging never relaxes the robot host and hardware safety rules above.
 rc or `main` commit it appeared in. Fix forward on `main` (or open a revert PR through the same
 gates) and cut a new rc after QA. With the owner's go-ahead, roll
 the robot host back with `reachy-bridge deploy <last good tag>` with the robot off; it
-reinstalls the previous version if the new one doesn't come up healthy. Never force-push or delete tags.
+reinstalls the previous version if the new one doesn't come up healthy. Never force-push or
+delete tags.
 
 ## Parallel sessions (lanes)
 Lanes, claiming and shared-file rules are in CONTRIBUTING.md.
