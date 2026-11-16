@@ -68,8 +68,8 @@ These hold on any machine with the robot attached.
 
 ## Hardware safety
 - Waking the robot, stopping it with the sleep move, starting an app, an expression, or a
-  `goto` moves the physical robot. Treat any power change as motion and coordinate it with the
-  owner. The agent verifies state transitions; the owner judges
+  `goto` moves the physical robot. Coordinate any of these with the owner, and treat any power
+  change as motion too. The agent verifies state transitions; the owner judges
   motion and audio.
 - Only one actuating surface at a time: one app, expressions serialized, apps and expressions
   mutually blocking, graceful return-home after motor re-enable. Don't weaken these guards.
@@ -175,7 +175,8 @@ contributors stop at a ready PR with their review results in it.
    head; a missing marker is a skipped review, not a formality. Before merging, wait with
    `gh pr checks <n> --watch` and confirm the `review` row passed, whether or not the ruleset
    lists it as required yet. CONTRIBUTING.md ("Claiming work") covers its edge cases: a head
-   commit shared by two open PRs stays pending, and Dependabot's own PRs pass without markers.
+   commit shared by two open PRs stays pending, and Dependabot PRs whose commits are all Dependabot's (or the updater's merge of `main`)
+   pass without markers; any other commit on them needs markers.
 5. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`). Never squash or
    rebase, never push directly to `main`, never rewrite pushed history. Only Dependabot's patch
    and minor PRs squash, through their own auto-merge; majors wait for the owner.
