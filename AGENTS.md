@@ -54,8 +54,8 @@ These hold on any machine with the robot attached.
   `off`); `deploy` also needs no app running. They refuse otherwise. `reachy-bridge restart`
   and `start` accept `--force`; never use it.
 - **One lane on the robot at a time.** Only one session installs, restarts or stops the
-  daemon, or runs hardware QA at a time. Ask the owner first, and tell other lanes when you take the robot host
-  and when you hand it back.
+  daemon, or runs hardware QA at a time. Ask the owner first, and tell other lanes when you
+  take the robot host and when you hand it back.
 - **Tailscale Serve:** the root HTTPS mapping may belong to another service. Never run
   `tailscale serve reset` and never touch the root mapping. The bridge uses its own ports (the
   dashboard on HTTPS :10000, the running app's UI on :8043). Never serve the signalling (:8443)
