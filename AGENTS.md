@@ -203,8 +203,8 @@ Merging never relaxes the robot host and hardware safety rules above.
 **Regressions and rollback:** file each late find as an issue labeled `regression` naming the
 rc or `main` commit it appeared in. Fix forward on `main` (or open a revert PR through the same
 gates) and cut a new rc after QA. With the owner's go-ahead, roll
-the robot host back with `reachy-bridge deploy <last good tag>` with the robot off; it reinstalls the previous
-version if the new one doesn't come up healthy. Never force-push or delete tags.
+the robot host back with `reachy-bridge deploy <last good tag>` with the robot off; it
+reinstalls the previous version if the new one doesn't come up healthy. Never force-push or delete tags.
 
 ## Parallel sessions (lanes)
 Lanes, claiming and shared-file rules are in CONTRIBUTING.md.
