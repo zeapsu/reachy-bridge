@@ -1,0 +1,49 @@
+name: Hardware QA label
+# A PR that changes what the robot does or how the bridge runs on it gets
+# "needs hardware QA" (#306): motion, power and torque, return-home and the
+# one-actuator guards, the daemon wrapper and its features, platform
+# adapters, the installer, units, CLI and udev rules, and the Python
+# dependencies the robot runs. The label stays on after merge until the
+# owner has QA'd the change on the robot and removes it. With none left on
+# merged PRs (and no open `regression` issue), the agent tags the next rc
+# (AGENTS.md, "Channels"). Audio code has its own label (audio-label.yml).
+#
+# While a PR is open, a push that takes those changes out again takes the
+# label off. Merged and closed PRs are never touched.
+#
+# pull_request_target runs this file as it is on main, and it checks nothing
+# out: it only reads the PR's file list and sets the label.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+permissions:
+  contents: read
+env:
+  NEEDS: "needs hardware QA"
+jobs:
+  label:
+    if: github.repository == 'zeapsu/reachy-bridge'
+    concurrency:
+      group: hardware-qa-label-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          robot='^(controller/src/((control|daemon|expressions|apps|host)\.rs|routes/(power|drive|controls|expressions|apps)\.rs)|runtime/src/reachy_bridge_runtime/(main|upstream|features/[a-z_]+|platforms/[a-z_]+)\.py|web/src/logic/(drive|power|moves|pose|control|controls|expressions)\.ts|deploy/.+|tools/udev/.+|(runtime/)?pyproject\.toml|uv\.lock)$'
+          # Both names of a renamed file.
+          files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
+          if ! grep -E "$robot" <<<"$files"; then
+            echo "Nothing the robot runs changed."
+            gh api -X DELETE "repos/$GH_REPO/issues/$PR/labels/$(jq -rn --arg l "$NEEDS" '$l|@uri')" >/dev/null 2>&1 || true
+            exit 0
+          fi
+          gh label create "$NEEDS" --color B60205 --description "Changes robot-side code; the owner removes this after QA on the robot" 2>/dev/null || true
+          gh api -X POST "repos/$GH_REPO/issues/$PR/labels" -f "labels[]=$NEEDS" >/dev/null

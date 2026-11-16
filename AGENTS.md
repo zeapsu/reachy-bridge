@@ -176,26 +176,32 @@ contributors stop at a ready PR with their review results in it.
    `gh pr checks <n> --watch` and confirm the `review` row passed, whether or not the ruleset
    lists it as required yet. CONTRIBUTING.md ("Claiming work") covers its edge cases: a head
    commit shared by two open PRs stays pending, and Dependabot PRs whose commits are all
-   Dependabot's (or the updater's merge of `main`) pass without markers; any other commit on
-   them needs markers.
+   Dependabot's (or the updater's merge of `main`) pass without markers when every update is
+   patch or minor and nothing under `.github/` changes; a major or workflow update needs one
+   `Review` marker, and any other commit on them needs the full set.
 5. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`). Never squash or
    rebase, never push directly to `main`, never rewrite pushed history. Only Dependabot's patch
-   and minor PRs squash, through their own auto-merge; majors wait for the owner. Python
-   dependency updates still get hardware QA after they land.
+   and minor PRs squash, through their own auto-merge. A Dependabot major or workflow update
+   merges like any other PR once it has its `Review` marker. Python dependency updates still
+   get hardware QA after they land.
 6. After merging, tell the owner in one short note what to QA (what changed, what to try, what
-   could look wrong). Flag robot-safety changes (motion limits, power/torque, return-home,
-   actuating-surface guards, daemon binding, `deploy/install.sh`, systemd units) as "needs
-   hardware QA".
+   could look wrong). Robot-side changes (motion, power/torque, return-home, the
+   actuating-surface guards, the daemon wrapper and its features, platform adapters, deploy,
+   units, udev rules, Python dependencies) get the `needs hardware QA` label by path
+   (`.github/workflows/hardware-qa-label.yml`, #306). Add it by hand to any other PR the owner
+   should check on the robot. Never remove it: the owner does, after QA.
 
 Merging never relaxes the robot host and hardware safety rules above.
 
 **Channels (light mode until the public release):**
 - **Pre-nightly = `main`.** The robot host tracks `main` for the owner's QA. The agent deploys
   it, with the robot off, when the owner says to deploy.
-- **Rollback points = `vX.Y.Z-rcN` tags.** After the owner QAs a batch on `main` and says it's
-  good, and everything flagged "needs hardware QA" in it has been QA'd, the agent tags the next
-  rc on that commit. Pushing a tag runs `release.yml`, which publishes a prerelease with
-  generated notes unless `docs/releases/<tag>.md` exists. Cloud sessions can't push tags.
+- **Rollback points = `vX.Y.Z-rcN` tags.** When no merged PR still has `needs hardware QA`
+  (`gh pr list --state merged --label "needs hardware QA"` is empty), no `regression` issue is
+  open, and `main` has moved since the last rc, the agent tags the next rc on `main`'s head
+  and tells the owner. Check this after each merge and whenever the owner clears labels.
+  Pushing a tag runs `release.yml`, which publishes a prerelease with generated notes unless
+  `docs/releases/<tag>.md` exists. Cloud sessions can't push tags.
 - **At the public release** the full flow returns: nightly = rc with hand-written notes in
   `docs/releases/<tag>.md`; stable = `vX.Y.Z` after 7 days with no open `regression` issue,
   proposed by the agent, go from the owner.
