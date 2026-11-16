@@ -102,7 +102,8 @@ These hold on any machine with the robot attached.
 - Python: `uv run pytest`, `uv run ruff check runtime tools`, `uv run ruff format --check`, and
   `uv run reachy-bridge-runtime --check` for the upstream seam.
 - Shell: `shellcheck` on the scripts in `deploy/` and `tools/`, `bash tools/test_cli.sh` and
-  `bash tools/test_uninstall.sh` and `bash tools/test_review_gate.sh`.
+  `bash tools/test_uninstall.sh`, `bash tools/test_review_gate.sh` and
+  `bash tools/test_catchup_check.sh`.
 - Sim: `uv run python tools/sim/run.py` runs the release controller binary against a sim
   daemon (see `tools/sim/README.md`). Build first (`bun run build` in `web/`, then
   `cargo build --release --locked` in `controller/`) so it doesn't test a stale binary. Run it
@@ -169,21 +170,12 @@ contributors stop at a ready PR with their review results in it.
    else in the comment: `Review: clean @<sha>`, plus `Security review: clean @<sha>` and
    `Second review: clean @<sha>` for security-relevant PRs. Edited comments and review bodies
    don't count; post a new comment instead. Any new push, including a merge of `main`, needs
-   fresh markers. The one exception is a clean catch-up with `main`: the agent may post the
-   same markers again for the new head, without new reviews, only when every check below
-   passes. Run `git fetch origin` first (full history, not a shallow clone). R is the sha
-   named in the PR's existing markers, N the new head.
-   - `git rev-list --parents -n1 N` shows exactly two parents, R first; call the second M.
-   - `git merge-base --is-ancestor M origin/main` succeeds, so M is really on `main`.
-   - `git merge-tree --write-tree R M` exits 0 and prints only a tree id equal to
-     `git rev-parse N^{tree}`, so git made the merge with no conflicts and no hand edits.
-   - `git diff --no-renames --name-only R N` (what came from `main`) and
-     `git diff --no-renames --name-only M...R` (the PR's own changes) share no file, and for
-     a security-relevant PR the first list has no `SECURITY_PATHS` file.
-   - R has every marker the `review` check now asks for at N; the exception never adds a
-     marker no reviewer gave.
-   The re-posted markers then cover the clean merge of the reviewed commit. If any check
-   fails, the reviews run again on N. CI tests the merged commit either way.
+   fresh markers. The one exception is a clean catch-up with `main`:
+   `bash tools/catchup_check.sh <n>` checks that the PR's head only merges a commit of `main`
+   into the reviewed commit, with no conflicts or hand edits and no file changed on both
+   sides, and lists the reviewed commit's markers; `--post` re-posts exactly those for the new
+   head. When it fails, the reviews run again on the new head. CI tests the merged commit
+   either way.
    Before posting any marker, check that `gh api user -q .login` matches
    `gh repo view --json owner -q .owner.login`; if it doesn't, stop and tell the owner. The
    `review` status check (#302) stays pending until the markers are there for the PR's current

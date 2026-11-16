@@ -215,8 +215,8 @@ say-so.
    comment. Don't edit a marker comment; post a new one. The required `review` check
    (`tools/review_gate.sh`, #302) stays pending until the repo owner's account has
    posted them for the PR's current head, so a new push, including a merge of `main`,
-   needs fresh markers (AGENTS.md gate 4 lists the checks under which a clean
-   catch-up with `main` reuses the earlier reviews); and a head commit shared by two open PRs stays pending. Get the
+   needs fresh markers, unless `tools/catchup_check.sh` finds it a clean catch-up
+   with `main` (AGENTS.md, gate 4); and a head commit shared by two open PRs stays pending. Get the
    head with `gh pr view <n> --json headRefOid -q .headRefOid`, and wait for the check
    with `gh pr checks <n> --required --watch` before merging; when it stays pending, its
    description (`gh pr checks <n> --json name,state,description`) and its run's log say
