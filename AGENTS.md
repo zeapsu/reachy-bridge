@@ -169,16 +169,23 @@ contributors stop at a ready PR with their review results in it.
    else in the comment: `Review: clean @<sha>`, plus `Security review: clean @<sha>` and
    `Second review: clean @<sha>` for security-relevant PRs. Edited comments and review bodies
    don't count; post a new comment instead. Any new push, including a merge of `main`, needs
-   fresh markers. After a catch-up with `main`, the agent may post the same markers for the
-   new head without a new review only when all of these hold: the only commit after the
-   reviewed one is that merge; git made it with no conflicts and no hand edits
-   (`git merge-tree --write-tree <reviewed sha> <main sha it merged>` prints the new head's
-   tree, `git rev-parse <new sha>^{tree}`); and the files it brought in from `main`
-   (`git diff --name-only <reviewed sha> <new sha>`) share none with the PR's own changes
-   (`git diff --name-only <main sha it merged>...<reviewed sha>`). Otherwise the reviews run
-   again on the new head. CI tests the merged commit either way. Before posting, check that
-   `gh api user -q .login` matches `gh repo view --json owner -q .owner.login`; if it doesn't,
-   stop and tell the owner. The
+   fresh markers. The one exception is a clean catch-up with `main`: the agent may post the
+   same markers again for the new head, without new reviews, only when every check below
+   passes. Run `git fetch origin` first (full history, not a shallow clone). R is the sha
+   named in the PR's existing markers, N the new head.
+   - `git rev-list --parents -n1 N` shows exactly two parents, R first; call the second M.
+   - `git merge-base --is-ancestor M origin/main` succeeds, so M is really on `main`.
+   - `git merge-tree --write-tree R M` exits 0 and prints only a tree id equal to
+     `git rev-parse N^{tree}`, so git made the merge with no conflicts and no hand edits.
+   - `git diff --no-renames --name-only R N` (what came from `main`) and
+     `git diff --no-renames --name-only M...R` (the PR's own changes) share no file, and for
+     a security-relevant PR the first list has no `SECURITY_PATHS` file.
+   - R has every marker the `review` check now asks for at N; the exception never adds a
+     marker no reviewer gave.
+   The re-posted markers then cover the clean merge of the reviewed commit. If any check
+   fails, the reviews run again on N. CI tests the merged commit either way.
+   Before posting any marker, check that `gh api user -q .login` matches
+   `gh repo view --json owner -q .owner.login`; if it doesn't, stop and tell the owner. The
    `review` status check (#302) stays pending until the markers are there for the PR's current
    head; a missing marker is a skipped review, not a formality. Before merging, wait with
    `gh pr checks <n> --watch` and confirm the `review` row passed, whether or not the ruleset
