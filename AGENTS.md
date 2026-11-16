@@ -169,8 +169,16 @@ contributors stop at a ready PR with their review results in it.
    else in the comment: `Review: clean @<sha>`, plus `Security review: clean @<sha>` and
    `Second review: clean @<sha>` for security-relevant PRs. Edited comments and review bodies
    don't count; post a new comment instead. Any new push, including a merge of `main`, needs
-   fresh markers. Before posting, check that `gh api user -q .login` matches
-   `gh repo view --json owner -q .owner.login`; if it doesn't, stop and tell the owner. The
+   fresh markers. After a catch-up with `main`, the agent may post the same markers for the
+   new head without a new review only when all of these hold: the only commit after the
+   reviewed one is that merge; git made it with no conflicts and no hand edits
+   (`git merge-tree --write-tree <reviewed sha> <main sha it merged>` prints the new head's
+   tree, `git rev-parse <new sha>^{tree}`); and the files it brought in from `main`
+   (`git diff --name-only <reviewed sha> <new sha>`) share none with the PR's own changes
+   (`git diff --name-only <main sha it merged>...<reviewed sha>`). Otherwise the reviews run
+   again on the new head. CI tests the merged commit either way. Before posting, check that
+   `gh api user -q .login` matches `gh repo view --json owner -q .owner.login`; if it doesn't,
+   stop and tell the owner. The
    `review` status check (#302) stays pending until the markers are there for the PR's current
    head; a missing marker is a skipped review, not a formality. Before merging, wait with
    `gh pr checks <n> --watch` and confirm the `review` row passed, whether or not the ruleset
