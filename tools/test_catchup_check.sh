@@ -89,7 +89,7 @@ expect() { # name status pattern [args...]
     fi
 }
 
-catchup() { git checkout -q pr && git merge -q --no-edit main && git checkout -q main; }
+catchup() { git checkout -q pr && git merge -q --no-edit main >/dev/null && git checkout -q main; }
 
 n=0
 setup; commit b.txt b2 main-b; catchup; publish
@@ -137,7 +137,7 @@ git mv b.txt c.txt; git commit -qm rename; git mv a.txt a2.txt; git commit -qm r
 git checkout -q pr; git merge -q --no-edit main 2>/dev/null || true
 if git diff --name-only --diff-filter=U | grep -q .; then git merge --abort; fi
 git checkout -q main; publish; comments "OWNER|no|Review: clean @$R"
-expect "rename of a PR file is not clean" 1 "not a clean catch-up"
+expect "rename of a PR file is not clean" 1 "main changed files the PR changes too"
 
 # A hand edit folded into the merge.
 setup; commit b.txt b2 main-b
@@ -175,6 +175,34 @@ setup; commit b.txt b2 main-b; catchup; publish
 jq '.state = "closed"' "$FX/pr.json" >"$FX/x" && mv "$FX/x" "$FX/pr.json"
 comments "OWNER|no|Review: clean @$R"
 expect "closed PR" 1 "is not open"
+
+# A name git still quotes (a tab in it) can't be matched against the paths.
+setup; mkdir -p .github; commit $'.github/a\tb.yml' x main-odd; catchup; publish
+comments "OWNER|no|Review: clean @$R" "OWNER|no|Security review: clean @$R" "OWNER|no|Second review: clean @$R"
+expect "unusual file name" 1 "quotes or control characters"
+
+# A Security review marker without a Review one isn't enough.
+setup; commit b.txt b2 main-b; catchup; publish
+comments "OWNER|no|Security review: clean @$R"
+expect "security marker alone" 1 "no owner Review marker"
+
+# Three parents.
+setup; commit b.txt b2 main-b; git checkout -qb side main~1; commit s.txt s side; git checkout -q pr
+git merge -q --no-edit main side >/dev/null; git checkout -q main; publish
+comments "OWNER|no|Review: clean @$R"
+expect "octopus merge" 1 "is not a merge of two commits"
+
+# A PR into another branch.
+setup; commit b.txt b2 main-b; catchup; publish
+jq '.base.ref = "release"' "$FX/pr.json" >"$FX/x" && mv "$FX/x" "$FX/pr.json"
+comments "OWNER|no|Review: clean @$R"
+expect "base isn't the default branch" 1 "doesn't target main"
+
+# The API's head isn't what the fetch got.
+setup; commit b.txt b2 main-b; catchup; publish
+jq --arg s "$R" '.head.sha = $s' "$FX/pr.json" >"$FX/x" && mv "$FX/x" "$FX/pr.json"
+comments "OWNER|no|Review: clean @$R"
+expect "head moved" 1 "isn't the PR's head"
 
 (( fails == 0 )) || { echo "$fails failed"; exit 1; }
 echo "all passed"

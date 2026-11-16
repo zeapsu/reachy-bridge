@@ -18,6 +18,7 @@
 #   counts them (the owner's account, unedited, nothing else in the comment);
 #   if R also has a `Security review` marker, nothing that came from main is
 #   in the gate's SECURITY_PATHS.
+# R is whatever N's first parent is; only its markers matter.
 # --post then posts each of R's markers for N and nothing else, so it never
 # adds a marker no reviewer gave; the review gate decides whether they are
 # enough for N. Files that don't overlap can still interact; CI tests N.
@@ -53,7 +54,7 @@ N=$(jq -r .head.sha <<<"$pr")
 
 # Straight from the repo, not from whatever `origin` or a local main is.
 remote=${CATCHUP_REMOTE:-https://github.com/$repo.git}
-git fetch -q --no-tags "$remote" "+refs/heads/$default:refs/catchup/main" "+refs/pull/$PR/head:refs/catchup/head"
+GIT_TERMINAL_PROMPT=0 git fetch -q --no-tags "$remote" "+refs/heads/$default:refs/catchup/main" "+refs/pull/$PR/head:refs/catchup/head"
 [[ $(git rev-parse refs/catchup/head) == "$N" ]] || fail "the fetched head isn't the PR's head ${N:0:7}; try again"
 
 read -r -a parents <<<"$(git rev-list --parents -n1 "$N")"
@@ -63,11 +64,17 @@ R=${parents[1]} M=${parents[2]}
 grep -qx "$M" <<<"$(git rev-list --first-parent refs/catchup/main)" \
     || fail "${N:0:7} merged ${M:0:7}, which is not on $default (or the PR's commit isn't the first parent)"
 
-merged=$(git merge-tree --write-tree "$R" "$M") || fail "merging ${R:0:7} and ${M:0:7} has conflicts"
+rc=0
+merged=$(git merge-tree --write-tree "$R" "$M") || rc=$?
+(( rc != 1 )) || fail "merging ${R:0:7} and ${M:0:7} has conflicts"
+(( rc == 0 )) || { echo "git merge-tree failed ($rc); it needs git 2.38 or newer" >&2; exit 2; }
 [[ $merged == "$(git rev-parse "$N^{tree}")" ]] || fail "${N:0:7} differs from git's own merge (hand edits or another merge strategy)"
 
-from_main=$(g diff --no-renames --name-only "$R" "$N")
-own=$(g diff --no-renames --name-only "$M" "$N")
+# Git quotes names with unusual bytes ("a\303\251"), which the path patterns
+# can't match; such a name isn't a clean catch-up.
+from_main=$(g -c core.quotePath=false diff --no-renames --name-only "$R" "$N")
+own=$(g -c core.quotePath=false diff --no-renames --name-only "$M" "$N")
+if grep -q '^"' <<<"$from_main"$'\n'"$own"; then fail "a changed file name has quotes or control characters"; fi
 both=$(comm -12 <(sort <<<"$from_main") <(sort <<<"$own") | sed '/^$/d')
 [[ -z $both ]] || fail "main changed files the PR changes too: $(tr '\n' ' ' <<<"$both")"
 
