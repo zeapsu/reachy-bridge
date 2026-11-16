@@ -105,8 +105,9 @@ Changes to motion, power and torque, return-home, the one-actuator-at-a-time gua
 binding, `deploy/install.sh` or the units need hardware QA by the owner. A PR that
 changes robot-side code gets the `needs hardware QA` label from
 `.github/workflows/hardware-qa-label.yml` (#306), by path; it stays on after merge until
-the owner has QA'd the change on the robot and removes it. Don't weaken those guards. Camera and audio come from the daemon's shared media; never open a second
-capture of the same device.
+the owner has QA'd the change on the robot and removes it. Don't weaken those guards.
+Camera and audio come from the daemon's shared media; never open a second capture of the
+same device.
 
 ## Adding a platform adapter
 
@@ -226,8 +227,9 @@ say-so.
    agent config, and the gate itself. Label a PR
    `security` when it is security-relevant by the list in step 4 but touches none of
    those files. Dependabot's own patch and minor PRs that change nothing under
-   `.github/` pass without markers; its major and workflow updates need one `Review`
-   marker (only the `security` label asks for more).
+   `.github/` pass without markers; its major, unclassified and workflow updates need one
+   `Review` marker (only the `security` or `auth` label asks for more). Bring those up to
+   date with `@dependabot rebase`, not "Update branch".
 6. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
    `main` directly. Only Dependabot's PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
    again.

@@ -18,8 +18,9 @@
 # agents act as, so OWNER means "posted with the owner's credentials".
 # Dependabot PRs whose every commit is Dependabot's, or a merge of main by the
 # branch updater, pass without markers when every update is a patch or minor
-# one and nothing under .github/ changes, as their auto-merge workflow judges
-# them; other Dependabot PRs (majors, workflow bumps) need one Review marker.
+# one, nothing under .github/ changes and no security label is set, as their
+# auto-merge workflow judges them; other Dependabot PRs (majors, unclassified
+# updates, workflow bumps) need one Review marker.
 #
 # A commit status belongs to the commit, not the PR, so only PRs into the
 # default branch post one, and a head shared by more than one open PR into it
@@ -98,18 +99,33 @@ if [[ $(jq -r .user.login <<<"$pr") == "dependabot[bot]" ]]; then
                  or (.author.login == "github-actions[bot]" and (.parents | length) > 1))) | not)
         | .sha' <<<"$commits")
     if [[ -z $others ]]; then
-        # The update list Dependabot writes in its commit message: every
-        # dependency needs a patch or minor update-type line.
-        msgs=$(jq -r '.[] | select(.author.login == "dependabot[bot]") | .commit.message' <<<"$commits")
-        deps=$(grep -c '^- dependency-name: ' <<<"$msgs" || [[ $? == 1 ]])
-        small=$(grep -cE '^  update-type: version-update:semver-(patch|minor)$' <<<"$msgs" || [[ $? == 1 ]])
+        # The update list Dependabot writes in its one commit's message, the
+        # YAML between "updated-dependencies:" and "...": every entry needs
+        # its own patch or minor update-type line, and nothing else counts.
+        msgs=$(jq -r '[.[] | select(.author.login == "dependabot[bot]")]
+            | if length == 1 then .[0].commit.message else "" end' <<<"$commits")
+        small=$(awk '
+            /^updated-dependencies:$/ { inblock = 1; next }
+            inblock && /^\.\.\.$/ { inblock = 0 }
+            !inblock { next }
+            /^- dependency-name: / { n++; open = 1; next }
+            /^  update-type: / {
+                if (open && $0 ~ /^  update-type: version-update:semver-(patch|minor)$/) ok++
+                else bad = 1
+                open = 0
+            }
+            END { print (n > 0 && ok == n && !bad) ? "yes" : "no" }' <<<"$msgs")
         workflows=$(grep -E '^\.github/' <<<"$names" || [[ $? == 1 ]])
-        if (( deps > 0 && deps == small )) && [[ -z $workflows ]]; then
+        labelled=$(jq -r '[.labels[].name | ascii_downcase | select(. == "security" or . == "auth")] | length' <<<"$pr")
+        unlisted=$(( $(jq '.changed_files // 0' <<<"$pr") > $(jq length <<<"$files") ))
+        if [[ $small == yes && -z $workflows && $labelled == 0 && $unlisted == 0 ]]; then
             status success "Dependabot patch or minor update; no review marker needed"
             exit 0
         fi
         dependabot=${workflows:+changes .github/}
-        dependabot=${dependabot:-major or unclassified update}
+        (( unlisted )) && dependabot="more files than the listing shows"
+        [[ $small == yes ]] || dependabot="major or unclassified update"
+        dependabot=${dependabot:-security label}
         echo "Dependabot $dependabot: needs a Review marker"
     else
         echo "Commits from someone other than Dependabot: $others"

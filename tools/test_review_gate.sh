@@ -217,6 +217,21 @@ setup "dependabot[bot]"; files uv.lock; bump patch
 jq '.[0].commit.message |= sub("\\.\\.\\."; "- dependency-name: dep-x\n  dependency-version: 2.0.0\n...")' "$FX/commits.json" >"$FX/c" && mv "$FX/c" "$FX/commits.json"
 expect "a dependency with no update type of its own needs a Review marker" pending
 
+setup "dependabot[bot]"; files uv.lock; bump major
+jq '.[0].commit.message |= "  update-type: version-update:semver-patch\n" + .' "$FX/commits.json" >"$FX/c" && mv "$FX/c" "$FX/commits.json"
+expect "an update-type line outside the update list doesn't count" pending "major or unclassified"
+
+setup "dependabot[bot]"; files uv.lock; bump patch
+jq '[.[0], (.[0] | .sha = "a3" | .commit.message = "x\n---\nupdated-dependencies:\n- dependency-name: y\n  update-type: version-update:semver-patch\n...")] + .[1:]' "$FX/commits.json" >"$FX/c" && mv "$FX/c" "$FX/commits.json"
+expect "two Dependabot commits need a Review marker" pending
+
+setup "dependabot[bot]" '["security"]'; files uv.lock; bump patch
+expect "a Dependabot patch with the security label needs all three" pending "Needs Review, Security review, Second review"
+
+setup "dependabot[bot]"; files uv.lock; bump patch
+jq '.changed_files = 3001' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"
+expect "a Dependabot PR with unlisted files needs a Review marker" pending "more files than the listing shows"
+
 setup "dependabot[bot]"
 jq -n '[{sha: "a1", committer: {login: "web-flow"}, commit: {verification: {verified: true}}, author: {login: "dependabot[bot]"}, parents: [1]},
         {sha: "b2", committer: {login: "zeapsu"}, commit: {verification: {verified: false}}, author: {login: "zeapsu"}, parents: [1]}]' >"$FX/commits.json"
