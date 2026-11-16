@@ -65,7 +65,9 @@ for f in catchup_check.sh review_gate.sh; do
 done
 
 # Markers given while the PR targeted another branch reviewed a different diff.
-if gh api --paginate "repos/$repo/issues/$PR/timeline" | jq -s 'add // [] | any(.event == "base_ref_changed")' | grep -qx true; then
+# (Read into a variable so a failed call stops the script instead of passing.)
+timeline=$(gh api --paginate "repos/$repo/issues/$PR/timeline" | jq -s 'add // []')
+if jq -e 'any(.[]; .event | IN("base_ref_changed", "automatic_base_change_succeeded"))' <<<"$timeline" >/dev/null; then
     fail "#$PR's base branch was changed; its earlier reviews may not cover what it now merges"
 fi
 

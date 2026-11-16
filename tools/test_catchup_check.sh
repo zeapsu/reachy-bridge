@@ -21,7 +21,9 @@ case "$*" in
     "api user -q .login") echo "${LOGIN:-owner}" ;;
     "api repos/owner/repo/pulls/1") cat "$FX/pr.json" ;;
     "api --paginate repos/owner/repo/issues/1/comments") cat "$FX/comments.json" ;;
-    "api --paginate repos/owner/repo/issues/1/timeline") cat "$FX/timeline.json" 2>/dev/null || echo '[]' ;;
+    "api --paginate repos/owner/repo/issues/1/timeline")
+        [[ -e $FX/fail-timeline ]] && { echo '[]'; exit 1; }
+        cat "$FX/timeline.json" 2>/dev/null || echo '[]' ;;
     "api -X POST repos/owner/repo/issues/1/comments -f body="*) all="$*"; echo "${all#*body=}" >>"$FX/posted.log" ;;
     *) echo "stub gh: unexpected call: $*" >&2; exit 1 ;;
 esac
@@ -139,8 +141,7 @@ expect "same file on both sides" 1 "main changed files the PR changes too: a.txt
 setup
 git checkout -q pr; commit a.txt a-pr pr-a; R=$(git rev-parse HEAD); git checkout -q main
 git mv b.txt c.txt; git commit -qm rename; git mv a.txt a2.txt; git commit -qm rename-a
-git checkout -q pr; git merge -q --no-edit main 2>/dev/null || true
-if git diff --name-only --diff-filter=U | grep -q .; then git merge --abort; fi
+git checkout -q pr; git merge -q --no-edit main >/dev/null 2>&1
 git checkout -q main; publish; comments "OWNER|no|Review: clean @$R"
 expect "rename of a PR file is not clean" 1 "main changed files the PR changes too"
 
@@ -214,11 +215,19 @@ setup; commit b.txt b2 main-b; catchup; publish
 echo '[{"event": "base_ref_changed"}]' >"$FX/timeline.json"
 comments "OWNER|no|Review: clean @$R"
 expect "retargeted PR" 1 "base branch was changed"
+echo '[{"event": "automatic_base_change_succeeded"}]' >"$FX/timeline.json"
+expect "automatically retargeted PR" 1 "base branch was changed"
+echo '[{"event": "base_ref_changed"}]' >"$FX/timeline.json"; touch "$FX/fail-timeline"
+expect "timeline call fails" 1 ""
+rm "$FX/fail-timeline" "$FX/timeline.json"
 
 # A copy of the script that isn't main's.
 setup; commit b.txt b2 main-b; echo '# changed' >>tools/catchup_check.sh; git commit -qam tool-change; catchup; publish
 comments "OWNER|no|Review: clean @$R"
 expect "script differs from main's" 2 "differs from main's"
+setup; commit b.txt b2 main-b; echo '# changed' >>tools/review_gate.sh; git commit -qam gate-change; catchup; publish
+comments "OWNER|no|Review: clean @$R"
+expect "gate differs from main's" 2 "review_gate.sh differs"
 
 (( fails == 0 )) || { echo "$fails failed"; exit 1; }
 echo "all passed"
