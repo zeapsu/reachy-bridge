@@ -175,8 +175,9 @@ contributors stop at a ready PR with their review results in it.
    head; a missing marker is a skipped review, not a formality. Before merging, wait with
    `gh pr checks <n> --watch` and confirm the `review` row passed, whether or not the ruleset
    lists it as required yet. CONTRIBUTING.md ("Claiming work") covers its edge cases: a head
-   commit shared by two open PRs stays pending, and Dependabot PRs whose commits are all Dependabot's (or the updater's merge of `main`)
-   pass without markers; any other commit on them needs markers.
+   commit shared by two open PRs stays pending, and Dependabot PRs whose commits are all
+   Dependabot's (or the updater's merge of `main`) pass without markers; any other commit on
+   them needs markers.
 5. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`). Never squash or
    rebase, never push directly to `main`, never rewrite pushed history. Only Dependabot's patch
    and minor PRs squash, through their own auto-merge; majors wait for the owner.
