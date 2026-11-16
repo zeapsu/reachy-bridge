@@ -21,6 +21,7 @@ case "$*" in
     "api user -q .login") echo "${LOGIN:-owner}" ;;
     "api repos/owner/repo/pulls/1") cat "$FX/pr.json" ;;
     "api --paginate repos/owner/repo/issues/1/comments") cat "$FX/comments.json" ;;
+    "api repos/owner/repo/branches/main -q .commit.sha") cat "$FX/main.sha" ;;
     "api --paginate repos/owner/repo/issues/1/timeline")
         [[ -e $FX/fail-timeline ]] && { echo '[]'; exit 1; }
         cat "$FX/timeline.json" 2>/dev/null || echo '[]' ;;
@@ -69,6 +70,7 @@ setup() {
 publish() {
     N=$(git rev-parse pr)
     git push -q -f origin main "pr:refs/pull/1/head"
+    git rev-parse main >"$FX/main.sha"
     jq -n --arg sha "$N" '{state: "open", base: {ref: "main", repo: {default_branch: "main"}}, head: {sha: $sha}}' >"$FX/pr.json"
 }
 
@@ -250,6 +252,21 @@ setup; commit b.txt b2 main-b; catchup; publish
 echo '[1]' >"$FX/timeline.json"
 comments "OWNER|no|Review: clean @$R"
 expect "unreadable timeline" 2 "can't read"
+
+# A local merge driver that keeps the PR's side: merge-tree agrees with N and
+# no file looks changed on both sides, but N would undo main's change.
+setup; commit b.txt b2 main-b
+git checkout -q pr; commit b.txt b-pr pr-b; R=$(git rev-parse HEAD); git checkout -q main
+git config merge.keep.driver true; echo 'b.txt merge=keep' >.git/info/attributes
+catchup; publish
+comments "OWNER|no|Review: clean @$R"
+expect "local merge driver" 1 "isn't exactly what"
+
+# A main that isn't GitHub's.
+setup; commit b.txt b2 main-b; catchup; publish
+git rev-parse main~1 >"$FX/main.sha"
+comments "OWNER|no|Review: clean @$R"
+expect "fetched main isn't GitHub's" 1 "isn't GitHub's main"
 
 (( fails == 0 )) || { echo "$fails failed"; exit 1; }
 echo "all passed"

@@ -172,12 +172,14 @@ contributors stop at a ready PR with their review results in it.
    don't count; post a new comment instead. Any new push, including a merge of `main`, needs
    fresh markers. The one exception is a clean catch-up with `main`:
    `bash tools/catchup_check.sh <n>`, run from a checkout of current `main` (never the PR's
-   branch), checks that the PR's head only merges a commit of `main` into its first parent,
-   the reviewed commit, with no conflicts or hand edits, no file changed on both sides, no
-   change of base branch, and for a security PR no `SECURITY_PATHS` file from `main`, and
-   lists the reviewed commit's markers; `--post` re-posts exactly those for the new head.
-   Nothing happens until it is run. When it fails, the reviews run again on the new head. CI
-   tests the merged commit either way.
+   branch), checks that the PR's head N only merges a commit of `main` into its first parent
+   R, the reviewed commit: one merge base on `main`'s first-parent history, no conflicts or
+   hand edits, no file changed on both sides, N's change against `main` exactly R's reviewed
+   change, no change of base branch, and, when R has a `Security review` marker, no
+   `SECURITY_PATHS` file from `main`. It lists R's markers; `--post` re-posts exactly those for
+   N. Nothing happens until it is run. When it fails, the reviews run again on N. CI tests the
+   merged commit either way. The check relies on `main` taking only merge and squash merges
+   (the ruleset), never fast-forwards.
    Before posting any marker, check that `gh api user -q .login` matches
    `gh repo view --json owner -q .owner.login`; if it doesn't, stop and tell the owner. The
    `review` status check (#302) stays pending until the markers are there for the PR's current

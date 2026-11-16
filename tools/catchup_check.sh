@@ -16,6 +16,9 @@
 #   PR's or main's;
 # - R and M have one merge base, on main's first-parent history: the base
 #   R's reviewer diffed against;
+# - N's diff against M equals R's diff against that base (paths, modes and
+#   blobs), so nothing in N's change is unreviewed;
+# - the fetched main is GitHub's main;
 # - the PR's base branch was never changed (timeline and issue events);
 # - this script and review_gate.sh are main's own copies;
 # - R has an owner `Review: clean @R` marker, counted as the review gate
@@ -44,6 +47,8 @@ security_paths=$(sed -n "s/^SECURITY_PATHS='\(.*\)'\$/\1/p" "$here/review_gate.s
 [[ -n $security_paths ]] || { echo "can't read SECURITY_PATHS from review_gate.sh" >&2; exit 2; }
 
 cd "$(git rev-parse --show-toplevel)"
+# No local replace refs rewriting history.
+export GIT_NO_REPLACE_OBJECTS=1
 g() { git -c diff.relative=false "$@"; }
 [[ $(git rev-parse --is-shallow-repository) == false ]] \
     || { echo "shallow clone: run git fetch --unshallow first" >&2; exit 2; }
@@ -60,6 +65,8 @@ N=$(jq -r .head.sha <<<"$pr")
 remote=${CATCHUP_REMOTE:-https://github.com/$repo.git}
 GIT_TERMINAL_PROMPT=0 git fetch -q --no-tags "$remote" "+refs/heads/$default:refs/catchup/main" "+refs/pull/$PR/head:refs/catchup/head"
 [[ $(git rev-parse refs/catchup/head) == "$N" ]] || fail "the fetched head isn't the PR's head ${N:0:7}; try again"
+api_main=$(gh api "repos/$repo/branches/$default" -q .commit.sha)
+[[ $(git rev-parse refs/catchup/main) == "$api_main" ]] || fail "the fetched $default isn't GitHub's $default; try again"
 
 # This script and the gate's path list must be main's: a PR's or a stale copy
 # could post anything with the owner's credentials. Run it from current main.
@@ -108,6 +115,13 @@ own=$(g -c core.quotePath=false diff --no-renames --name-only "$M" "$N")
 if grep -q '^"' <<<"$from_main"$'\n'"$own"; then fail "a changed file name has quotes or control characters"; fi
 both=$(comm -12 <(sort <<<"$from_main") <(sort <<<"$own") | sed '/^$/d')
 [[ -z $both ]] || fail "main changed files the PR changes too: $(tr '\n' ' ' <<<"$both")"
+
+# The invariant itself, whatever the merge machinery or local settings did:
+# N's change against M is exactly R's reviewed change against its base (same
+# paths, modes and blobs).
+raw() { g diff --raw --no-abbrev --no-renames --ignore-submodules=none "$@"; }
+[[ $(raw "$base" "$R") == "$(raw "$M" "$N")" ]] \
+    || fail "${N:0:7}'s change against $default isn't exactly what ${R:0:7}'s reviewers saw"
 
 comments=$(gh api --paginate "repos/$repo/issues/$PR/comments" | jq -s 'add // []')
 markers=$(jq -r --arg sha "$R" '.[]
