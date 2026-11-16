@@ -182,10 +182,55 @@ comment OWNER "Review: clean @$HEAD"; comment OWNER "Security review: clean @$HE
 comment OWNER "Second review: clean @$OLD"
 expect "second review of an older head" pending "Needs Second review"
 
-setup "dependabot[bot]"
-jq -n '[{sha: "a1", committer: {login: "web-flow"}, commit: {verification: {verified: true}}, author: {login: "dependabot[bot]"}, parents: [1]},
-        {sha: "a2", committer: {login: "web-flow"}, commit: {verification: {verified: true}}, author: {login: "github-actions[bot]"}, parents: [1, 2]}]' >"$FX/commits.json"
-expect "Dependabot's own commits pass" success "Dependabot update"
+# bump TYPE... : Dependabot's commit, one dependency per update type given,
+# plus the updater's merge of main.
+bump() {
+    local msg="Bump things"$'\n\n---\nupdated-dependencies:\n' t
+    for t in "$@"; do
+        msg+="- dependency-name: dep-$t"$'\n'"  dependency-version: 1.0.0"$'\n'"  update-type: version-update:semver-$t"$'\n'
+    done
+    msg+=$'...\n\nSigned-off-by: dependabot[bot] <support@github.com>'
+    jq -n --arg m "$msg" '[{sha: "a1", committer: {login: "web-flow"}, commit: {verification: {verified: true}, message: $m}, author: {login: "dependabot[bot]"}, parents: [1]},
+        {sha: "a2", committer: {login: "web-flow"}, commit: {verification: {verified: true}, message: "Merge main"}, author: {login: "github-actions[bot]"}, parents: [1, 2]}]' >"$FX/commits.json"
+}
+
+setup "dependabot[bot]"; files uv.lock; bump patch minor
+expect "Dependabot patch and minor updates pass" success "Dependabot patch or minor update"
+
+setup "dependabot[bot]"; files uv.lock; bump minor major
+expect "Dependabot major update needs a Review marker" pending "Needs Review clean @<full head sha> (Dependabot: major or unclassified update)"
+
+setup "dependabot[bot]"; files uv.lock; bump major; comment OWNER "Review: clean @$HEAD"
+expect "Dependabot major with a Review marker passes, security paths aside" success
+
+setup "dependabot[bot]" '["security"]'; files uv.lock; bump major; comment OWNER "Review: clean @$HEAD"
+expect "Dependabot major with the security label needs all three" pending "Needs Security review, Second review"
+
+setup "dependabot[bot]"; files .github/workflows/ci.yml; bump patch
+expect "Dependabot workflow bump needs a Review marker" pending "(Dependabot: changes .github/)"
+
+setup "dependabot[bot]"; files uv.lock
+jq -n '[{sha: "a1", committer: {login: "web-flow"}, commit: {verification: {verified: true}, message: "Bump things"}, author: {login: "dependabot[bot]"}, parents: [1]}]' >"$FX/commits.json"
+expect "Dependabot update with no update list needs a Review marker" pending "major or unclassified"
+
+setup "dependabot[bot]"; files uv.lock; bump patch
+jq '.[0].commit.message |= sub("\\.\\.\\."; "- dependency-name: dep-x\n  dependency-version: 2.0.0\n...")' "$FX/commits.json" >"$FX/c" && mv "$FX/c" "$FX/commits.json"
+expect "a dependency with no update type of its own needs a Review marker" pending
+
+setup "dependabot[bot]"; files uv.lock; bump major
+jq '.[0].commit.message |= "  update-type: version-update:semver-patch\n" + .' "$FX/commits.json" >"$FX/c" && mv "$FX/c" "$FX/commits.json"
+expect "an update-type line outside the update list doesn't count" pending "major or unclassified"
+
+setup "dependabot[bot]"; files uv.lock; bump patch
+jq '[.[0], (.[0] | .sha = "a3" | .commit.message = "x\n---\nupdated-dependencies:\n- dependency-name: y\n  update-type: version-update:semver-patch\n...")] + .[1:]' "$FX/commits.json" >"$FX/c" && mv "$FX/c" "$FX/commits.json"
+expect "two Dependabot commits need a Review marker" pending
+
+setup "dependabot[bot]" '["security"]'; files uv.lock; bump patch
+expect "a Dependabot patch with the security label needs all three" pending "Needs Review, Security review, Second review"
+
+setup "dependabot[bot]"; files uv.lock; bump patch
+jq '.changed_files = 3001' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"
+expect "a Dependabot PR with unlisted files needs a Review marker" pending "more files than the listing shows"
 
 setup "dependabot[bot]"
 jq -n '[{sha: "a1", committer: {login: "web-flow"}, commit: {verification: {verified: true}}, author: {login: "dependabot[bot]"}, parents: [1]},

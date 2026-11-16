@@ -93,17 +93,21 @@ holds the tested version. The upstream watch workflow opens a PR when Pollen rel
 new one (#155); a new daemon version needs hardware QA before it merges.
 Dependabot (`.github/dependabot.yml`) proposes everything else once a week, grouped per
 ecosystem. Patch and minor updates merge on their own once CI passes, and a workflow keeps
-them up to date with `main` until they do; a major bump waits for the owner. Python
-updates run on the robot, so they get hardware QA after merge too.
+them up to date with `main` until they do; a major bump, or one that changes
+`.github/`, needs a review first (see "Claiming work"). Python updates run on the robot,
+so they get hardware QA after merge too.
 
 ## Robot safety
 
 Starting the daemon's backend, an app, an expression or a move moves the real robot.
 Changes to motion, power and torque, return-home, the one-actuator-at-a-time guards
 (one app, expressions serialized, apps and expressions mutually exclusive), the daemon's
-binding, `deploy/install.sh` or the units need hardware QA by the owner. Don't weaken
-those guards. Camera and audio come from the daemon's shared media; never open a second
-capture of the same device.
+binding, `deploy/install.sh` or the units need hardware QA by the owner. A PR that
+changes robot-side code gets the `needs hardware QA` label from
+`.github/workflows/hardware-qa-label.yml` (#306), by path; it stays on after merge until
+the owner has QA'd the change on the robot and removes it. Don't weaken those guards.
+Camera and audio come from the daemon's shared media; never open a second capture of the
+same device.
 
 ## Adding a platform adapter
 
@@ -126,7 +130,8 @@ A board becomes `tested` once someone runs it with the robot and owns keeping it
 Work goes epic → milestone → issue. The epic (#111) lists the milestones; each milestone's
 description holds its scope and order, and each issue its acceptance criteria. Labels include
 `epic`, `bug`, `enhancement`, `documentation`, `security`, `upstream-break` (opened by the
-upstream watch), and `regression` for anything found in hardware QA or soak. Branches are `feat/`, `fix/`, `docs/` or `chore/` plus the issue
+upstream watch), `needs hardware QA` (set by path, removed by the owner after QA on the
+robot), and `regression` for anything found in hardware QA or soak. Branches are `feat/`, `fix/`, `docs/` or `chore/` plus the issue
 number. Related issues go in one PR, each with its own commit and its own `Closes #N`.
 Commits have a short subject and a body that says what changed and why.
 
@@ -221,10 +226,13 @@ say-so.
    build scripts and toolchains, everything under `.github/`, the agent rules and
    agent config, and the gate itself. Label a PR
    `security` when it is security-relevant by the list in step 4 but touches none of
-   those files. Dependabot's own
-   PRs pass without markers, whatever they change; the owner merges its major updates.
+   those files. Dependabot's own patch and minor PRs that change nothing under
+   `.github/` pass without markers; its major, unclassified and workflow updates need one
+   `Review` marker (only the `security` or `auth` label asks for more). Bring those up to
+   date before their reviews with `@dependabot rebase` (or `@dependabot recreate` once the
+   branch updater has pushed to them), not "Update branch".
 6. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
-   `main` directly. Only Dependabot's PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
+   `main` directly. Only Dependabot's patch and minor PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
    again.
 
 ## Shared files

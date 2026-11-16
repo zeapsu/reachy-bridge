@@ -17,8 +17,10 @@
 # OWNER); anyone can comment on a public repo. That account is also the one
 # agents act as, so OWNER means "posted with the owner's credentials".
 # Dependabot PRs whose every commit is Dependabot's, or a merge of main by the
-# branch updater, pass without markers, as their auto-merge workflow already
-# judges them by their commits.
+# branch updater, pass without markers when every update is a patch or minor
+# one, nothing under .github/ changes and no security label is set, as their
+# auto-merge workflow judges them; other Dependabot PRs (majors, unclassified
+# updates, workflow bumps) need one Review marker.
 #
 # A commit status belongs to the commit, not the PR, so only PRs into the
 # default branch post one, and a head shared by more than one open PR into it
@@ -82,6 +84,11 @@ if [[ -n $twins ]]; then
     exit 0
 fi
 
+files=$(list "repos/$GH_REPO/pulls/$PR/files")
+# Both names of a renamed file.
+names=$(jq -r '.[] | .filename, (.previous_filename // empty)' <<<"$files")
+
+dependabot=
 if [[ $(jq -r .user.login <<<"$pr") == "dependabot[bot]" ]]; then
     # As in dependabot-auto-merge.yml: made on GitHub (committer web-flow,
     # signed by GitHub), by Dependabot or as the updater's merge of main.
@@ -92,10 +99,37 @@ if [[ $(jq -r .user.login <<<"$pr") == "dependabot[bot]" ]]; then
                  or (.author.login == "github-actions[bot]" and (.parents | length) > 1))) | not)
         | .sha' <<<"$commits")
     if [[ -z $others ]]; then
-        status success "Dependabot update; no review marker needed"
-        exit 0
+        # The update list Dependabot writes in its one commit's message, the
+        # YAML between "updated-dependencies:" and "...": every entry needs
+        # its own patch or minor update-type line, and nothing else counts.
+        msgs=$(jq -r '[.[] | select(.author.login == "dependabot[bot]")]
+            | if length == 1 then .[0].commit.message else "" end' <<<"$commits")
+        small=$(awk '
+            /^updated-dependencies:$/ { inblock = 1; next }
+            inblock && /^\.\.\.$/ { inblock = 0 }
+            !inblock { next }
+            /^- dependency-name: / { n++; open = 1; next }
+            /^  update-type: / {
+                if (open && $0 ~ /^  update-type: version-update:semver-(patch|minor)$/) ok++
+                else bad = 1
+                open = 0
+            }
+            END { print (n > 0 && ok == n && !bad) ? "yes" : "no" }' <<<"$msgs")
+        workflows=$(grep -E '^\.github/' <<<"$names" || [[ $? == 1 ]])
+        labelled=$(jq -r '[.labels[].name | ascii_downcase | select(. == "security" or . == "auth")] | length' <<<"$pr")
+        unlisted=$(( $(jq '.changed_files // 0' <<<"$pr") > $(jq length <<<"$files") ))
+        if [[ $small == yes && -z $workflows && $labelled == 0 && $unlisted == 0 ]]; then
+            status success "Dependabot patch or minor update; no review marker needed"
+            exit 0
+        fi
+        dependabot=${workflows:+changes .github/}
+        (( unlisted )) && dependabot="more files than the listing shows"
+        [[ $small == yes ]] || dependabot="major or unclassified update"
+        dependabot=${dependabot:-security label}
+        echo "Dependabot $dependabot: needs a Review marker"
+    else
+        echo "Commits from someone other than Dependabot: $others"
     fi
-    echo "Commits from someone other than Dependabot: $others"
 fi
 
 needed=(Review)
@@ -103,19 +137,20 @@ security=
 if jq -e '.labels[].name | ascii_downcase | select(. == "security" or . == "auth")' <<<"$pr" >/dev/null; then
     security="label"
 fi
-files=$(list "repos/$GH_REPO/pulls/$PR/files")
-# Both names of a renamed file.
-names=$(jq -r '.[] | .filename, (.previous_filename // empty)' <<<"$files")
-hits=$(grep -E "$SECURITY_PATHS" <<<"$names" || [[ $? == 1 ]])
-if [[ -n $hits ]]; then
-    security=${security:+$security, }"paths"
-    while read -r h; do echo "security path: $h"; done <<<"$hits"
-fi
-# The files listing stops at 3000; treat what it can't show as security.
-changed=$(jq '.changed_files // 0' <<<"$pr")
-listed=$(jq length <<<"$files")
-if (( changed > listed )); then
-    security=${security:+$security, }"unlisted files"
+# A Dependabot-only PR is judged by the label alone: its paths are always
+# manifests, locks or workflows, and one review covers the update.
+if [[ -z $dependabot ]]; then
+    hits=$(grep -E "$SECURITY_PATHS" <<<"$names" || [[ $? == 1 ]])
+    if [[ -n $hits ]]; then
+        security=${security:+$security, }"paths"
+        while read -r h; do echo "security path: $h"; done <<<"$hits"
+    fi
+    # The files listing stops at 3000; treat what it can't show as security.
+    changed=$(jq '.changed_files // 0' <<<"$pr")
+    listed=$(jq length <<<"$files")
+    if (( changed > listed )); then
+        security=${security:+$security, }"unlisted files"
+    fi
 fi
 [[ -n $security ]] && needed+=("Security review" "Second review")
 
@@ -144,7 +179,7 @@ if (( ${#missing[@]} )); then
 fi
 
 join() { local s; s=$(printf '%s, ' "$@"); echo "${s%, }"; }
-note=${security:+ (security PR: $security)}
+note=${security:+ (security PR: $security)}${dependabot:+ (Dependabot: $dependabot)}
 if (( ${#missing[@]} == 0 )); then
     status success "$(join "${needed[@]}"): clean at ${sha:0:7}$note"
 else
