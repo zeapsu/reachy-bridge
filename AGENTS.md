@@ -102,7 +102,8 @@ These hold on any machine with the robot attached.
 - Python: `uv run pytest`, `uv run ruff check runtime tools`, `uv run ruff format --check`, and
   `uv run reachy-bridge-runtime --check` for the upstream seam.
 - Shell: `shellcheck` on the scripts in `deploy/` and `tools/`, `bash tools/test_cli.sh` and
-  `bash tools/test_uninstall.sh` and `bash tools/test_review_gate.sh`.
+  `bash tools/test_uninstall.sh`, `bash tools/test_review_gate.sh` and
+  `bash tools/test_catchup_check.sh`.
 - Sim: `uv run python tools/sim/run.py` runs the release controller binary against a sim
   daemon (see `tools/sim/README.md`). Build first (`bun run build` in `web/`, then
   `cargo build --release --locked` in `controller/`) so it doesn't test a stale binary. Run it
@@ -169,7 +170,17 @@ contributors stop at a ready PR with their review results in it.
    else in the comment: `Review: clean @<sha>`, plus `Security review: clean @<sha>` and
    `Second review: clean @<sha>` for security-relevant PRs. Edited comments and review bodies
    don't count; post a new comment instead. Any new push, including a merge of `main`, needs
-   fresh markers. Before posting, check that `gh api user -q .login` matches
+   fresh markers. The one exception is a clean catch-up with `main`:
+   `bash tools/catchup_check.sh <n>`, run from a checkout of current `main` (never the PR's
+   branch), checks that the PR's head N only merges a commit of `main` into its first parent
+   R, the reviewed commit: one merge base on `main`'s first-parent history, no conflicts or
+   hand edits, no file changed on both sides, N's change against `main` exactly R's reviewed
+   change, no change of base branch, and, when R has a `Security review` marker, no
+   `SECURITY_PATHS` file from `main`. It lists R's markers; `--post` re-posts exactly those for
+   N. Nothing happens until it is run. When it fails, the reviews run again on N. CI tests the
+   merged commit either way. The check relies on `main` taking only merge and squash merges
+   (the ruleset), never fast-forwards.
+   Before posting any marker, check that `gh api user -q .login` matches
    `gh repo view --json owner -q .owner.login`; if it doesn't, stop and tell the owner. The
    `review` status check (#302) stays pending until the markers are there for the PR's current
    head; a missing marker is a skipped review, not a formality. Before merging, wait with
