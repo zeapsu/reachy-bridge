@@ -6,7 +6,7 @@ file adds how agents work here and the rules they must not skip.
 
 This file is public. Operator-specific details (SSH targets, host names, addresses, local
 paths, personal tooling) go in a gitignored `CLAUDE.local.md` next to it, which Claude Code
-loads on its own. Never copy private values into tracked files, issues, PRs or commit
+loads on its own; other agents should read it too when it exists. Never copy private values into tracked files, issues, PRs or commit
 messages.
 
 ## Product
@@ -61,9 +61,9 @@ These hold on any machine with the robot attached.
   dashboard on HTTPS :10000, the running app's UI on :8043). Never serve the signalling (:8443)
   or app UI ports on their own port numbers: tailscaled then holds `<tailnet IP>:<port>`, and a
   runtime that binds those ports on all interfaces fails at power-on (#158). Agents don't
-  change `tailscale serve`; the owner runs `reachy-bridge serve` (it asks for sudo) for new
-  mappings.
-- Manage the services with `reachy-bridge {status,start,stop,restart,logs,serve}` (installed in
+  change `tailscale serve`; the owner runs `reachy-bridge serve` (it may need sudo) for new
+  mappings. Agents may run only `reachy-bridge serve status`, which is read-only.
+- Manage the services with `reachy-bridge {status,start,stop,restart,logs}` (installed in
   `~/.local/bin`, which a non-interactive SSH shell doesn't have on `PATH`).
 
 ## Hardware safety
