@@ -11,8 +11,9 @@ name: Hardware QA label
 # agent tags the next rc (AGENTS.md, "Channels"). Audio code also has its own
 # device-test label (audio-label.yml).
 #
-# PRs opened or pushed with the workflow token (the upstream watch's lock
-# bumps) start no workflows, so the agent labels those by hand.
+# PRs opened with the workflow token start no workflows; the upstream watch
+# labels its own lock bumps when it opens them. The label job isn't a
+# required check: if it fails, label the PR by hand.
 #
 # pull_request_target runs this file as it is on main, and it checks nothing
 # out: it only reads the PR's file list and sets the label.

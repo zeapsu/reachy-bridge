@@ -229,9 +229,10 @@ say-so.
    those files. Dependabot's own patch and minor PRs that change nothing under
    `.github/` pass without markers; its major, unclassified and workflow updates need one
    `Review` marker (only the `security` or `auth` label asks for more). Bring those up to
-   date with `@dependabot rebase`, not "Update branch".
+   date before their reviews with `@dependabot rebase` (or `@dependabot recreate` once the
+   branch updater has pushed to them), not "Update branch".
 6. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
-   `main` directly. Only Dependabot's PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
+   `main` directly. Only Dependabot's patch and minor PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
    again.
 
 ## Shared files

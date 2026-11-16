@@ -179,20 +179,21 @@ contributors stop at a ready PR with their review results in it.
    Dependabot's (or the updater's merge of `main`) pass without markers when every update is
    patch or minor, nothing under `.github/` changes and there's no `security`/`auth` label; a
    major, unclassified or workflow update needs one `Review` marker, and any other commit on
-   them needs the full set. Bring such a PR up to date with `@dependabot rebase`, never
-   "Update branch", which adds a commit of yours.
+   them needs the full set. Bring such a PR up to date before its reviews, with
+   `@dependabot rebase` (or `@dependabot recreate` once the branch updater has pushed to it),
+   never "Update branch", which adds a commit of yours.
 5. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`). Never squash or
    rebase, never push directly to `main`, never rewrite pushed history. Only Dependabot's patch
-   and minor PRs squash, through their own auto-merge, which stays off for majors and workflow
-   updates; those merge like any other PR once they have their `Review` marker. Python dependency updates still
+   and minor PRs squash, through their own auto-merge, which stays off for majors and
+   workflow updates; those merge like any other PR once they have their `Review` marker. Python dependency updates still
    get hardware QA after they land.
 6. After merging, tell the owner in one short note what to QA (what changed, what to try, what
    could look wrong). Robot-side changes (motion, power/torque, return-home, the
    actuating-surface guards, the daemon wrapper and its features, platform adapters, deploy,
    units, udev rules, Python dependencies) get the `needs hardware QA` label by path
    (`.github/workflows/hardware-qa-label.yml`, #306). Add it by hand to any other PR the owner
-   should check on the robot, and to the upstream watch's lock bumps, which the workflow can't
-   see. Never remove it: the owner does, after QA.
+   should check on the robot, or that the label job missed. Never remove it: the owner does,
+   after QA.
 
 Merging never relaxes the robot host and hardware safety rules above.
 
@@ -202,8 +203,9 @@ Merging never relaxes the robot host and hardware safety rules above.
 - **Rollback points = `vX.Y.Z-rcN` tags.** Note `main`'s head first. If no merged PR into
   `main` still has `needs hardware QA`
   (`gh pr list --state merged --base main --label "needs hardware QA"` is empty), no
-  `regression` issue is open, and at least one PR merged since the last rc had the label, the
-  agent tags the next rc on the head it noted and tells the owner. Check this after each merge
+  `regression` issue is open, and robot-side code changed since the last rc
+  (`git diff --name-only <last rc> <head>` touches the label workflow's paths), the agent tags
+  the next rc on the head it noted and tells the owner. Check this after each merge
   and whenever the owner clears labels. The label started with #306, so the first rc after it
   also needs the owner's explicit go: everything merged before it was never labeled.
   Pushing a tag runs `release.yml`, which publishes a prerelease with generated notes unless
