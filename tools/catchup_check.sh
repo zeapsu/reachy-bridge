@@ -57,6 +57,18 @@ remote=${CATCHUP_REMOTE:-https://github.com/$repo.git}
 GIT_TERMINAL_PROMPT=0 git fetch -q --no-tags "$remote" "+refs/heads/$default:refs/catchup/main" "+refs/pull/$PR/head:refs/catchup/head"
 [[ $(git rev-parse refs/catchup/head) == "$N" ]] || fail "the fetched head isn't the PR's head ${N:0:7}; try again"
 
+# This script and the gate's path list must be main's: a PR's or a stale copy
+# could post anything with the owner's credentials. Run it from current main.
+for f in catchup_check.sh review_gate.sh; do
+    [[ $(git hash-object "$here/$f") == "$(git rev-parse -q --verify "refs/catchup/main:tools/$f" || true)" ]] \
+        || { echo "tools/$f differs from $default's; run this from a checkout of current $default" >&2; exit 2; }
+done
+
+# Markers given while the PR targeted another branch reviewed a different diff.
+if gh api --paginate "repos/$repo/issues/$PR/timeline" | jq -s 'add // [] | any(.event == "base_ref_changed")' | grep -qx true; then
+    fail "#$PR's base branch was changed; its earlier reviews may not cover what it now merges"
+fi
+
 read -r -a parents <<<"$(git rev-list --parents -n1 "$N")"
 (( ${#parents[@]} == 3 )) || fail "${N:0:7} is not a merge of two commits"
 R=${parents[1]} M=${parents[2]}

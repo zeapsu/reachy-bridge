@@ -6,7 +6,8 @@
 #   bash tools/test_catchup_check.sh
 set -euo pipefail
 
-CHECK=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/catchup_check.sh
+TOOLS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+CHECK=$TOOLS/catchup_check.sh
 ROOT=$(mktemp -d)
 trap 'rm -rf "$ROOT"' EXIT
 fails=0
@@ -20,6 +21,7 @@ case "$*" in
     "api user -q .login") echo "${LOGIN:-owner}" ;;
     "api repos/owner/repo/pulls/1") cat "$FX/pr.json" ;;
     "api --paginate repos/owner/repo/issues/1/comments") cat "$FX/comments.json" ;;
+    "api --paginate repos/owner/repo/issues/1/timeline") cat "$FX/timeline.json" 2>/dev/null || echo '[]' ;;
     "api -X POST repos/owner/repo/issues/1/comments -f body="*) all="$*"; echo "${all#*body=}" >>"$FX/posted.log" ;;
     *) echo "stub gh: unexpected call: $*" >&2; exit 1 ;;
 esac
@@ -46,6 +48,9 @@ setup() {
     commit a.txt a1 base
     commit b.txt b1 base-b
     commit AGENTS.md rules base-rules
+    mkdir -p tools
+    cp "$TOOLS/catchup_check.sh" "$TOOLS/review_gate.sh" tools/
+    git add tools; git commit -qm tools
     git remote add origin "$d/remote.git"
     git push -q origin main
     git checkout -qb pr
@@ -203,6 +208,17 @@ setup; commit b.txt b2 main-b; catchup; publish
 jq --arg s "$R" '.head.sha = $s' "$FX/pr.json" >"$FX/x" && mv "$FX/x" "$FX/pr.json"
 comments "OWNER|no|Review: clean @$R"
 expect "head moved" 1 "isn't the PR's head"
+
+# Reviews given against another base.
+setup; commit b.txt b2 main-b; catchup; publish
+echo '[{"event": "base_ref_changed"}]' >"$FX/timeline.json"
+comments "OWNER|no|Review: clean @$R"
+expect "retargeted PR" 1 "base branch was changed"
+
+# A copy of the script that isn't main's.
+setup; commit b.txt b2 main-b; echo '# changed' >>tools/catchup_check.sh; git commit -qam tool-change; catchup; publish
+comments "OWNER|no|Review: clean @$R"
+expect "script differs from main's" 2 "differs from main's"
 
 (( fails == 0 )) || { echo "$fails failed"; exit 1; }
 echo "all passed"
