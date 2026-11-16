@@ -53,8 +53,8 @@ These hold on any machine with the robot attached.
   or a daemon restart only with the robot confirmed off (`reachy-bridge robot-power` prints
   `off`); `deploy` also needs no app running. They refuse otherwise. `reachy-bridge restart`
   and `start` accept `--force`; never use it.
-- **One lane on the robot at a time.** Only one session installs, restarts the daemon or runs
-  hardware QA at a time. Ask the owner first, and tell other lanes when you take the robot host
+- **One lane on the robot at a time.** Only one session installs, restarts or stops the
+  daemon, or runs hardware QA at a time. Ask the owner first, and tell other lanes when you take the robot host
   and when you hand it back.
 - **Tailscale Serve:** the root HTTPS mapping may belong to another service. Never run
   `tailscale serve reset` and never touch the root mapping. The bridge uses its own ports (the
@@ -76,6 +76,8 @@ These hold on any machine with the robot attached.
 - Camera and audio come from daemon-owned shared media; never open a competing capture device.
 - Never bind the daemon to `0.0.0.0`; it has no authentication. Only the controller is exposed.
 - Stop the robot with SIGINT (the service's `KillSignal`) so it sleeps and releases torque.
+  Stopping the daemon (`reachy-bridge stop`) with the robot on runs that sleep move, so it is
+  motion too.
 - Drain subprocess stdout/stderr continuously into bounded storage; never leave an unread
   `PIPE`.
 
@@ -101,8 +103,10 @@ These hold on any machine with the robot attached.
   `uv run reachy-bridge-runtime --check` for the upstream seam.
 - Shell: `shellcheck` on the scripts in `deploy/` and `tools/`, `bash tools/test_cli.sh` and
   `bash tools/test_uninstall.sh` and `bash tools/test_review_gate.sh`.
-- Sim: `uv run python tools/sim/run.py` runs the controller against a sim daemon (see
-  `tools/sim/README.md`). Run it before every hardware QA hand-off.
+- Sim: `uv run python tools/sim/run.py` runs the release controller binary against a sim
+  daemon (see `tools/sim/README.md`). Build first (`bun run build` in `web/`, then
+  `cargo build --release --locked` in `controller/`) so it doesn't test a stale binary. Run it
+  before every hardware QA hand-off.
 - Verify UI changes with headless Chromium (a scratch profile) against the sim stack, not by
   screenshotting the owner's browser.
 
