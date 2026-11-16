@@ -65,9 +65,12 @@ for f in catchup_check.sh review_gate.sh; do
 done
 
 # Markers given while the PR targeted another branch reviewed a different diff.
-# (Read into a variable so a failed call stops the script instead of passing.)
+# GitHub lists a manual change in the timeline and an automatic one (a stacked
+# PR whose base was merged) in the issue events, so read both. (Into
+# variables, so a failed call stops the script instead of passing.)
 timeline=$(gh api --paginate "repos/$repo/issues/$PR/timeline" | jq -s 'add // []')
-if jq -e 'any(.[]; .event | IN("base_ref_changed", "automatic_base_change_succeeded"))' <<<"$timeline" >/dev/null; then
+events=$(gh api --paginate "repos/$repo/issues/$PR/events" | jq -s 'add // []')
+if jq -e -s 'add | any(.[]; (.event // "") | test("^(base_ref_changed|automatic_base_change_)"))' <<<"$timeline$events" >/dev/null; then
     fail "#$PR's base branch was changed; its earlier reviews may not cover what it now merges"
 fi
 

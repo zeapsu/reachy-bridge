@@ -24,6 +24,9 @@ case "$*" in
     "api --paginate repos/owner/repo/issues/1/timeline")
         [[ -e $FX/fail-timeline ]] && { echo '[]'; exit 1; }
         cat "$FX/timeline.json" 2>/dev/null || echo '[]' ;;
+    "api --paginate repos/owner/repo/issues/1/events")
+        [[ -e $FX/fail-events ]] && { echo '[]'; exit 1; }
+        cat "$FX/events.json" 2>/dev/null || echo '[]' ;;
     "api -X POST repos/owner/repo/issues/1/comments -f body="*) all="$*"; echo "${all#*body=}" >>"$FX/posted.log" ;;
     *) echo "stub gh: unexpected call: $*" >&2; exit 1 ;;
 esac
@@ -215,8 +218,11 @@ setup; commit b.txt b2 main-b; catchup; publish
 echo '[{"event": "base_ref_changed"}]' >"$FX/timeline.json"
 comments "OWNER|no|Review: clean @$R"
 expect "retargeted PR" 1 "base branch was changed"
-echo '[{"event": "automatic_base_change_succeeded"}]' >"$FX/timeline.json"
+rm "$FX/timeline.json"; echo '[{"event": "automatic_base_change_succeeded"}]' >"$FX/events.json"
 expect "automatically retargeted PR" 1 "base branch was changed"
+touch "$FX/fail-events"; rm "$FX/events.json"
+expect "events call fails" 1 ""
+rm "$FX/fail-events"
 echo '[{"event": "base_ref_changed"}]' >"$FX/timeline.json"; touch "$FX/fail-timeline"
 expect "timeline call fails" 1 ""
 rm "$FX/fail-timeline" "$FX/timeline.json"
