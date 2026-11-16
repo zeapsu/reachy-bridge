@@ -26,9 +26,8 @@ env/
 *.local.sh
 !.env.example
 
-# --- Operator-local robot access instructions ---
-/AGENTS.md
-/CLAUDE.md
+# --- Operator-local agent instructions (AGENTS.md and CLAUDE.md are public) ---
+CLAUDE.local.md
 
 # --- Model / data caches ---
 .cache/
