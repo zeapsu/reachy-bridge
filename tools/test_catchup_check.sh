@@ -235,5 +235,21 @@ setup; commit b.txt b2 main-b; echo '# changed' >>tools/review_gate.sh; git comm
 comments "OWNER|no|Review: clean @$R"
 expect "gate differs from main's" 2 "review_gate.sh differs"
 
+# A merge base that moved: the PR branched from another PR's fix, undid it,
+# and that PR then landed by a merge commit. Merging main is clean and the
+# files don't overlap, yet the head would undo main's fix unreviewed.
+setup
+git checkout -qb fix main; commit a.txt fixed fix; git checkout -q pr; git merge -q --no-edit fix >/dev/null
+commit a.txt a1 undo-fix; R=$(git rev-parse HEAD); git checkout -q main
+git merge -q --no-ff --no-edit fix >/dev/null; catchup; publish
+comments "OWNER|no|Review: clean @$R"
+expect "moved merge base" 1 "don't share one merge base"
+
+# Malformed timeline data stops the check instead of passing it.
+setup; commit b.txt b2 main-b; catchup; publish
+echo '[1]' >"$FX/timeline.json"
+comments "OWNER|no|Review: clean @$R"
+expect "unreadable timeline" 2 "can't read"
+
 (( fails == 0 )) || { echo "$fails failed"; exit 1; }
 echo "all passed"

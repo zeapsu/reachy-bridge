@@ -14,6 +14,10 @@
 # - no file differs both between R and N (came from main) and between M and N
 #   (the PR's own changes), so every file in N is byte for byte the reviewed
 #   PR's or main's;
+# - R and M have one merge base, on main's first-parent history: the base
+#   R's reviewer diffed against;
+# - the PR's base branch was never changed (timeline and issue events);
+# - this script and review_gate.sh are main's own copies;
 # - R has an owner `Review: clean @R` marker, counted as the review gate
 #   counts them (the owner's account, unedited, nothing else in the comment);
 #   if R also has a `Security review` marker, nothing that came from main is
@@ -70,9 +74,10 @@ done
 # variables, so a failed call stops the script instead of passing.)
 timeline=$(gh api --paginate "repos/$repo/issues/$PR/timeline" | jq -s 'add // []')
 events=$(gh api --paginate "repos/$repo/issues/$PR/events" | jq -s 'add // []')
-if jq -e -s 'add | any(.[]; (.event // "") | test("^(base_ref_changed|automatic_base_change_)"))' <<<"$timeline$events" >/dev/null; then
-    fail "#$PR's base branch was changed; its earlier reviews may not cover what it now merges"
-fi
+rc=0
+jq -e -s 'add | any(.[]; (.event // "") | strings | test("^(base_ref_changed|automatic_base_change_)"))' <<<"$timeline$events" >/dev/null || rc=$?
+(( rc != 0 )) || fail "#$PR's base branch was changed; its earlier reviews may not cover what it now merges"
+(( rc == 1 )) || { echo "can't read #$PR's timeline (jq exit $rc)" >&2; exit 2; }
 
 read -r -a parents <<<"$(git rev-list --parents -n1 "$N")"
 (( ${#parents[@]} == 3 )) || fail "${N:0:7} is not a merge of two commits"
@@ -80,6 +85,15 @@ R=${parents[1]} M=${parents[2]}
 # (A here-string, not a pipe: grep -q would end rev-list early under pipefail.)
 grep -qx "$M" <<<"$(git rev-list --first-parent refs/catchup/main)" \
     || fail "${N:0:7} merged ${M:0:7}, which is not on $default (or the PR's commit isn't the first parent)"
+
+# The reviewer of R saw its diff from where it left main's first-parent
+# history; the merge must use that same base. A base that moved (main took in
+# a commit from R's own history by a merge) or several bases would let N
+# differ from main in ways no reviewer saw.
+base=$(git merge-base --all "$R" "$M")
+if ! [[ $base =~ ^[0-9a-f]{40}$ ]] || ! grep -qx "$base" <<<"$(git rev-list --first-parent refs/catchup/main)"; then
+    fail "${R:0:7} and ${M:0:7} don't share one merge base on $default's first-parent history"
+fi
 
 rc=0
 merged=$(git merge-tree --write-tree "$R" "$M") || rc=$?
