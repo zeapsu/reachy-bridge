@@ -189,3 +189,22 @@ def test_main_sees_lines_a_gitattributes_marks_binary(tmp_path, monkeypatch, cap
     monkeypatch.chdir(tmp_path)
     assert checklist.main(["--base", "main", "--file", "list.md"]) == 0
     assert "[ports]" in capsys.readouterr().out
+
+
+def test_main_survives_binary_files_in_the_diff(tmp_path, monkeypatch, capsys):
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "list.md").write_text(ITEMS)
+    git("add", ".")
+    git("commit", "-qm", "base")
+    git("checkout", "-qb", "change")
+    (tmp_path / "icon.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\xff\xfe0.0.0.0")
+    git("add", "icon.png")
+    git("commit", "-qm", "icon")
+    monkeypatch.chdir(tmp_path)
+    assert checklist.main(["--base", "main", "--file", "list.md"]) == 0
+    assert "checklist items match" in capsys.readouterr().out
