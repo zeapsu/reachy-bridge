@@ -94,22 +94,41 @@ These hold on any machine with the robot attached.
   Both query parameters are required (`docs/daemon-contract.md`). State:
   `GET /api/daemon/status`.
 
-## Testing
-- Rust controller: `cargo fmt --check`, `cargo test` and
-  `cargo clippy --locked --all-targets -- -D warnings` in `controller/`.
-- Web: `bun install --frozen-lockfile`, `bun run typecheck`, `bun test`, `bun run build` in
-  `web/` (build the UI before a release build; the binary embeds `web/dist`).
-- Python: `uv run pytest`, `uv run ruff check runtime tools`, `uv run ruff format --check`, and
-  `uv run reachy-bridge-runtime --check` for the upstream seam.
-- Shell: `shellcheck` on the scripts in `deploy/` and `tools/`, `bash tools/test_cli.sh` and
-  `bash tools/test_uninstall.sh`, `bash tools/test_review_gate.sh` and
-  `bash tools/test_catchup_check.sh`.
-- Sim: `uv run python tools/sim/run.py` runs the release controller binary against a sim
-  daemon (see `tools/sim/README.md`). Build first (`bun run build` in `web/`, then
-  `cargo build --release --locked` in `controller/`) so it doesn't test a stale binary. Run it
-  before every hardware QA hand-off.
-- Verify UI changes with headless Chromium (a scratch profile) against the sim stack, not by
-  screenshotting the owner's browser.
+## Verification
+How a change is checked before it is pushed, reviewed and merged. The commands per area are
+in CONTRIBUTING.md ("Tests").
+- **Before every commit**, run the verify skill (`.claude/skills/verify/SKILL.md`): build what
+  changed, run the sim stack (`tools/sim/run.py`), drive the part you touched (the matching
+  browser test, `--check`, `test_cli.sh`), and end the commit body with a `Verified:` line
+  (`Verified: none (docs only)` when nothing ran). Run the sim before every hardware QA
+  hand-off. Verify UI changes with headless Chromium (a scratch profile) against the sim
+  stack, not by screenshotting the owner's browser.
+- **Before pushing or opening a PR**, `bash tools/precheck.sh` runs the cheap checks (format,
+  lint, types, unit tests) for the areas the branch changed. A hook in `.claude/settings.json`
+  runs it on `git push` and `gh pr create`; `REACHY_PRECHECK_MODE` sets it to `observe` (log
+  to `.git/precheck.log`), `enforce` (block) or `off`.
+- **Reviewers** work from [`REVIEW.md`](REVIEW.md) and the matching items of
+  [`docs/reliability-checklist.md`](docs/reliability-checklist.md)
+  (`uv run python tools/checklist.py`), both read from `main`, never from the PR's branch.
+- **Three rounds, then ask.** If a check still fails after three fix rounds, stop and ask the
+  owner, with what you tried and the output.
+- **Flaky tests:** never skip one, add a sleep or a retry, or raise a timeout to get it green.
+  Fix the cause, or delete the test with the reason in the commit.
+- **Tests:** a browser test (`web/e2e/`) for anything a person does in the dashboard, a sim
+  check (`tools/sim/smoke.py`) for controller and daemon behaviour, unit tests for logic.
+  Prefer property tests for invariants (one driver, one actuating surface) and a differential
+  run for rewrites and `reachy-mini` bumps.
+
+## Rules upkeep
+Rule files only help while they stay short and true.
+- Turn a repeated miss into a check: when the same kind of miss shows up in two PRs (or one
+  cost a hardware QA round) and it can be spotted from a diff, add an item to
+  `docs/reliability-checklist.md` with its trigger, check and source; when a script or test
+  can catch it, write that instead.
+- Prune at each rc tag: the agent proposes, in the PR or issue that goes with the tag,
+  removing checklist items that haven't triggered since the last two rc tags, rules now
+  enforced by a check, and text in this file, `REVIEW.md` and CONTRIBUTING.md that repeats
+  another file.
 
 ## Dashboard UI
 - Show state through the UI, not sentences: dim what's unavailable, offer the obvious next
@@ -150,49 +169,27 @@ contributors stop at a ready PR with their review results in it.
 **Merge gates (the agent merges only when every one passes):**
 1. CI green (the required jobs are python, rust-web, shell and sim) with current `main` merged
    into the branch, and the `review` status green (gate 4).
-2. A separate read-only reviewer (fresh context, given the diff, not your conclusions) reports
-   no unresolved correctness findings. Fix or answer every finding first.
-3. **Security-relevant PRs** (login, sessions, pairing, headers, CORS/framing, the app proxy,
-   anything exposed beyond `127.0.0.1`, secrets, update signing, workflows, systemd units, the
-   `reachy-bridge` command, the installer and uninstaller, audio request signing, and this
-   file, `CLAUDE.md` or `CONTRIBUTING.md`): additionally a dedicated security review *and* a
-   second independent reviewer, both clean. The `review` check also treats a PR as
-   security-relevant when it is labeled `security` or `auth` or changes a path in
-   `SECURITY_PATHS` in `tools/review_gate.sh`, the authoritative path list. A PR that is
-   security-relevant by the list above but touches no `SECURITY_PATHS` file must get the
-   `security` label, or the check asks for one review only. Note "security-relevant, merged"
-   in the owner's summary.
-4. Record each clean review in its own PR conversation comment from the owner's GitHub account,
-   naming the full 40-character sha of the head commit the reviewer was given
-   (`gh pr view <n> --json headRefOid -q .headRefOid`). The merging agent posts it after the
-   reviewer reports clean on that commit, for example
-   `gh pr comment <n> --body 'Review: clean @<full sha>'`. One marker per comment, with nothing
-   else in the comment: `Review: clean @<sha>`, plus `Security review: clean @<sha>` and
-   `Second review: clean @<sha>` for security-relevant PRs. Edited comments and review bodies
-   don't count; post a new comment instead. Any new push, including a merge of `main`, needs
-   fresh markers. The one exception is a clean catch-up with `main`:
-   `bash tools/catchup_check.sh <n>`, run from a checkout of current `main` (never the PR's
-   branch), checks that the PR's head N only merges a commit of `main` into its first parent
-   R, the reviewed commit: one merge base on `main`'s first-parent history, no conflicts or
-   hand edits, no file changed on both sides, N's change against `main` exactly R's reviewed
-   change, no change of base branch, and, when R has a `Security review` marker, no
-   `SECURITY_PATHS` file from `main`. It lists R's markers; `--post` re-posts exactly those for
-   N. Nothing happens until it is run. When it fails, the reviews run again on N. CI tests the
-   merged commit either way. The check relies on `main` taking only merge and squash merges
-   (the ruleset), never fast-forwards.
-   Before posting any marker, check that `gh api user -q .login` matches
-   `gh repo view --json owner -q .owner.login`; if it doesn't, stop and tell the owner. The
-   `review` status check (#302) stays pending until the markers are there for the PR's current
-   head; a missing marker is a skipped review, not a formality. Before merging, wait with
-   `gh pr checks <n> --watch` and confirm the `review` row passed, whether or not the ruleset
-   lists it as required yet. CONTRIBUTING.md ("Claiming work") covers its edge cases: a head
-   commit shared by two open PRs stays pending, and Dependabot PRs whose commits are all
-   Dependabot's (or the updater's merge of `main`) pass without markers when every update is
-   patch or minor, nothing under `.github/` changes and there's no `security`/`auth` label; a
-   major, unclassified or workflow update needs one `Review` marker, and any other commit on
-   them needs the full set. Bring such a PR up to date before its reviews, with
-   `@dependabot rebase` (or `@dependabot recreate` once the branch updater has pushed to it),
-   never "Update branch", which adds a commit of yours.
+2. A separate read-only reviewer (fresh context, given the diff and the head sha, not your
+   conclusions) reports no unresolved Important findings. Give it `REVIEW.md` and the
+   `tools/checklist.py` output, both read from `main`. Fix or answer every finding first; a
+   later round gets the earlier rounds' findings and answers.
+3. **Security-relevant PRs** (the list in `REVIEW.md`, "Security-relevant PRs";
+   `SECURITY_PATHS` in `tools/review_gate.sh` is the authoritative path list): additionally a
+   dedicated security review *and* a second independent reviewer, both clean. A PR that is
+   security-relevant by that list but touches no `SECURITY_PATHS` file gets the `security`
+   label. Note "security-relevant, merged" in the owner's summary.
+4. Record each clean review as its own PR comment from the owner's GitHub account, naming the
+   full sha of the head commit the reviewer was given: `Review: clean @<sha>`, plus
+   `Security review: clean @<sha>` and `Second review: clean @<sha>` for security-relevant
+   PRs. Before posting, check that `gh api user -q .login` matches
+   `gh repo view --json owner -q .owner.login`; if not, stop and tell the owner. Any new push,
+   including a merge of `main`, needs fresh markers, except a clean catch-up with `main`
+   checked by `bash tools/catchup_check.sh <n>` from a checkout of current `main`. The
+   `review` status check (#302) stays pending until the markers are there for the current
+   head; a missing marker is a skipped review, not a formality. Wait with
+   `gh pr checks <n> --watch` and confirm the `review` row passed before merging. The marker
+   format, the catch-up check and the Dependabot cases are in CONTRIBUTING.md ("Claiming
+   work"); follow them exactly.
 5. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`). Never squash or
    rebase, never push directly to `main`, never rewrite pushed history. Only Dependabot's patch
    and minor PRs squash, through their own auto-merge, which stays off for majors and

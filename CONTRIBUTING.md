@@ -47,10 +47,18 @@ CI runs these on every PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPac
 |---|---|
 | python | `uv run pytest`, `uv run ruff check runtime tools`, `uv run reachy-bridge-runtime --check` |
 | rust-web | `cargo test` and `cargo clippy --all-targets` in `controller/`; `bun run typecheck`, `bun test`, `bun run build` in `web/` |
-| shell | `shellcheck` on the scripts in `deploy/` and `tools/`; `bash tools/test_uninstall.sh`, `bash tools/test_cli.sh` (the `reachy-bridge` command's robot-off gate, sim mode, deploy and rollback) and `bash tools/test_review_gate.sh` (the review check) |
+| shell | `shellcheck` on the scripts in `deploy/` and `tools/`; `bash tools/test_uninstall.sh`, `bash tools/test_cli.sh` (the `reachy-bridge` command's robot-off gate, sim mode, deploy and rollback) and `bash tools/test_review_gate.sh` (the review check), `bash tools/test_catchup_check.sh` and `bash tools/test_precheck.sh` |
 | sim | `uv run python tools/sim/run.py`: the controller against a sim daemon (see [`tools/sim/README.md`](tools/sim/README.md)) |
 | browser | `uv run python tools/sim/run.py --audio -- bash -c 'cd web && bunx playwright test'`: the dashboard in Chromium against the sim stack, at desktop and phone sizes, and the voice pane's audio routing over WebRTC with a test tone per source (`--audio`; needs gstreamer1.0-plugins-bad and gstreamer1.0-nice, and an address on the tailnet or in `AUDIO_GATEWAY_NETS`) (not required yet) |
 | install | `deploy/install.sh` on a fresh runner with a systemd user manager, checked by `tools/check_install.sh`; run twice, then `reachy-bridge uninstall --yes` and `check_install.sh --gone` (not required yet) |
+
+Before you push, `bash tools/precheck.sh` runs the format, lint, type and unit checks for
+the areas your branch changed (`--all` for every area); Claude Code sessions run it from a
+hook (AGENTS.md, "Verification"). Before each commit, check the change running against the
+sim stack: `.claude/skills/verify/SKILL.md` says how, area by area. Reviewers work from
+[`REVIEW.md`](REVIEW.md) and the items of
+[`docs/reliability-checklist.md`](docs/reliability-checklist.md) that match the diff
+(`uv run python tools/checklist.py`), both read from `main`.
 
 Run the sim tests before asking for hardware QA. The python and rust-web jobs report line
 coverage in their job summaries (pytest-cov, `bun test --coverage`, cargo-llvm-cov); it's
@@ -215,9 +223,10 @@ say-so.
    comment. Don't edit a marker comment; post a new one. The required `review` check
    (`tools/review_gate.sh`, #302) stays pending until the repo owner's account has
    posted them for the PR's current head, so a new push, including a merge of `main`,
-   needs fresh markers (after a clean catch-up with `main`,
-   `tools/catchup_check.sh <n> --post` re-posts them; AGENTS.md, gate 4); and a head
-   commit shared by two open PRs stays pending. Get the
+   needs fresh markers (except after a clean catch-up with `main`, step 6); and a head
+   commit shared by two open PRs stays pending. Post markers only from the owner's
+   account: check that `gh api user -q .login` matches
+   `gh repo view --json owner -q .owner.login` first. Get the
    head with `gh pr view <n> --json headRefOid -q .headRefOid`, and wait for the check
    with `gh pr checks <n> --required --watch` before merging; when it stays pending, its
    description (`gh pr checks <n> --json name,state,description`) and its run's log say
@@ -232,8 +241,18 @@ say-so.
    `.github/` pass without markers; its major, unclassified and workflow updates need one
    `Review` marker (only the `security` or `auth` label asks for more). Bring those up to
    date before their reviews with `@dependabot rebase` (or `@dependabot recreate` once the
-   branch updater has pushed to them), not "Update branch".
-6. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
+   branch updater has pushed to them), not "Update branch", which adds a commit of yours;
+   any other commit on a Dependabot PR needs the full set of markers.
+6. A clean catch-up with `main` keeps the earlier reviews. `bash tools/catchup_check.sh <n>`,
+   run from a checkout of current `main` (never the PR's branch), checks that the PR's head N
+   only merges a commit of `main` into its first parent R, the reviewed commit: one merge
+   base on `main`'s first-parent history, no conflicts or hand edits, no file changed on both
+   sides, N's change against `main` exactly R's reviewed change, no change of base branch,
+   and, when R has a `Security review` marker, no `SECURITY_PATHS` file from `main`. It lists
+   R's markers; `--post` re-posts exactly those for N. Nothing happens until it is run. When
+   it fails, the reviews run again on N. CI tests the merged commit either way. The check
+   relies on `main` taking only merge and squash merges (the ruleset), never fast-forwards.
+7. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
    `main` directly. Only Dependabot's patch and minor PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
    again.
 
