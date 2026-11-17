@@ -189,7 +189,8 @@ contributors stop at a ready PR with their review results in it.
 4. Record each clean review as its own PR comment from the owner's GitHub account, naming the
    full sha of the head commit the reviewer was given: `Review: clean @<sha>`, plus
    `Security review: clean @<sha>` and `Second review: clean @<sha>` for security-relevant
-   PRs. Before posting, check that `gh api user -q .login` matches
+   PRs (a cloud session's required Claude Code footer below the marker is fine; the
+   exact format is in CONTRIBUTING.md). Before posting, check that `gh api user -q .login` matches
    `gh repo view --json owner -q .owner.login`; if not, stop and tell the owner. Any new push,
    including a merge of `main`, needs fresh markers, except a clean catch-up with `main`
    checked by `bash tools/catchup_check.sh <n>` from a checkout of current `main`. The
