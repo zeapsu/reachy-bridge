@@ -173,10 +173,11 @@ contributors stop at a ready PR with their review results in it.
 **Merge gates (the agent merges only when every one passes):**
 1. CI green (the required jobs are python, rust-web, shell and sim) with current `main` merged
    into the branch, and the `review` status green (gate 4).
-2. A separate read-only reviewer (fresh context, given the diff and the head sha, not your
-   conclusions) reports no unresolved Important findings. Give it `REVIEW.md` and the
-   checklist output, both from `main` (the commands under "Verification"). Fix or answer every finding first; a
-   later round gets the earlier rounds' findings and answers.
+2. A separate read-only reviewer (fresh context, given the diff, made with `git diff --text`,
+   and the head sha, not your conclusions) reports no unresolved Important findings. Give it
+   `REVIEW.md` and the checklist output, both from `main` (the commands under
+   "Verification"). Fix or answer every finding first; a later round gets the earlier rounds'
+   findings and answers.
 3. **Security-relevant PRs** (login, sessions, pairing, headers, CORS/framing, the app proxy,
    anything exposed beyond `127.0.0.1`, secrets, update signing, workflows, systemd units, the
    `reachy-bridge` command, the installer and uninstaller, audio request signing, the agent
@@ -188,7 +189,8 @@ contributors stop at a ready PR with their review results in it.
 4. Record each clean review as its own PR comment from the owner's GitHub account, naming the
    full sha of the head commit the reviewer was given: `Review: clean @<sha>`, plus
    `Security review: clean @<sha>` and `Second review: clean @<sha>` for security-relevant
-   PRs. Before posting, check that `gh api user -q .login` matches
+   PRs (a cloud session's required Claude Code footer below the marker is fine; the
+   exact format is in CONTRIBUTING.md). Before posting, check that `gh api user -q .login` matches
    `gh repo view --json owner -q .owner.login`; if not, stop and tell the owner. Any new push,
    including a merge of `main`, needs fresh markers, except a clean catch-up with `main`
    checked by `bash tools/catchup_check.sh <n>` from a checkout of current `main`. The

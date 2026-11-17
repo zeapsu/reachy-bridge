@@ -1253,7 +1253,14 @@ async fn voice_goes_with_the_robot() {
         })
         .await
         .unwrap_or_else(|_| panic!("the session outlived power {power}"));
-        assert_eq!(h.call("GET", "/api/audio", LOOPBACK, &[], None).await.body["session"], Value::Null);
+        // The controller forgets it once the gateway's delete returns (#315).
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while h.call("GET", "/api/audio", LOOPBACK, &[], None).await.body["session"] != Value::Null {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the controller still lists the session after power {power}"));
     }
 }
 
@@ -1311,7 +1318,14 @@ async fn only_the_holder_listens_and_talks_and_loses_it_with_control() {
     })
     .await
     .expect("Sam's session wasn't closed");
-    assert_eq!(h.call("GET", "/api/audio", LAN, &[("cookie", &sam)], None).await.body["session"], Value::Null);
+    // The controller forgets it once the gateway's delete returns (#315).
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while h.call("GET", "/api/audio", LAN, &[("cookie", &sam)], None).await.body["session"] != Value::Null {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the controller still lists Sam's session");
 }
 
 #[tokio::test]
