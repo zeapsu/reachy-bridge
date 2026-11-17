@@ -1,0 +1,19 @@
+{
+  "env": {
+    "REACHY_PRECHECK_MODE": "observe"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/tools/precheck.sh\" --hook",
+            "timeout": 900
+          }
+        ]
+      }
+    ]
+  }
+}
