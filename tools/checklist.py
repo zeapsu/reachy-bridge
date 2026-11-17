@@ -134,6 +134,7 @@ def match(items: list[Item], paths: list[str], lines: list[tuple[str, str]]) -> 
 
 def git(*args: str) -> str:
     # quotePath off: non-ASCII paths come through as they are, not quoted and escaped.
+    # (main() passes --text to diff so a .gitattributes `-diff` can't hide lines.)
     return subprocess.run(
         ["git", "-c", "core.quotePath=false", *args], check=True, capture_output=True, text=True
     ).stdout
@@ -179,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         base = git("merge-base", args.base, "HEAD").strip()
-        diff = git("diff", "--no-color", "--no-ext-diff", "--no-renames", "-U0", base)
+        diff = git("diff", "--no-color", "--no-ext-diff", "--no-renames", "--text", "-U0", base)
         untracked = [p for p in git("ls-files", "--others", "--exclude-standard", "-z").split("\0") if p]
         paths = {p for p in git("diff", "--name-only", "--no-renames", "-z", base).split("\0") if p}
     except subprocess.CalledProcessError as e:

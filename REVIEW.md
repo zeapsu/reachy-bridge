@@ -18,7 +18,9 @@ security-relevant (they are in `SECURITY_PATHS`), and is still judged by the ver
 ## How to review
 
 - You get the diff and the head commit's sha, not the author's conclusions. Review that
-  commit; a push during the review makes the result stale.
+  commit; a push during the review makes the result stale. Make or check diffs with
+  `git diff --text` (`-a`): a `.gitattributes` in the PR can otherwise turn changed lines
+  into "Binary files differ".
 - Run the checklist items that match the diff (main's `tools/checklist.py` prints them,
   usually a handful). For each, say whether its check holds.
 - Tag each finding **Important** (a bug, a broken rule, a missing check from the

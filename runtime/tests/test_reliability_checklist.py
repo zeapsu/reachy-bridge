@@ -170,3 +170,22 @@ def test_main_resolves_file_from_the_current_directory_and_runs_isolated_from_th
     )
     assert run.returncode == 0, run.stderr
     assert "ports: Ports" in run.stdout
+
+
+def test_main_sees_lines_a_gitattributes_marks_binary(tmp_path, monkeypatch, capsys):
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "list.md").write_text(ITEMS)
+    (tmp_path / "main.rs").write_text("fn main() {}\n")
+    git("add", ".")
+    git("commit", "-qm", "base")
+    git("checkout", "-qb", "change")
+    (tmp_path / ".gitattributes").write_text("*.rs -diff\n")
+    (tmp_path / "main.rs").write_text('fn main() { let a = "0.0.0.0:1"; }\n')
+    monkeypatch.chdir(tmp_path)
+    assert checklist.main(["--base", "main", "--file", "list.md"]) == 0
+    assert "[ports]" in capsys.readouterr().out

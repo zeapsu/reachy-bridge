@@ -173,10 +173,11 @@ contributors stop at a ready PR with their review results in it.
 **Merge gates (the agent merges only when every one passes):**
 1. CI green (the required jobs are python, rust-web, shell and sim) with current `main` merged
    into the branch, and the `review` status green (gate 4).
-2. A separate read-only reviewer (fresh context, given the diff and the head sha, not your
-   conclusions) reports no unresolved Important findings. Give it `REVIEW.md` and the
-   checklist output, both from `main` (the commands under "Verification"). Fix or answer every finding first; a
-   later round gets the earlier rounds' findings and answers.
+2. A separate read-only reviewer (fresh context, given the diff, made with `git diff --text`,
+   and the head sha, not your conclusions) reports no unresolved Important findings. Give it
+   `REVIEW.md` and the checklist output, both from `main` (the commands under
+   "Verification"). Fix or answer every finding first; a later round gets the earlier rounds'
+   findings and answers.
 3. **Security-relevant PRs** (login, sessions, pairing, headers, CORS/framing, the app proxy,
    anything exposed beyond `127.0.0.1`, secrets, update signing, workflows, systemd units, the
    `reachy-bridge` command, the installer and uninstaller, audio request signing, the agent

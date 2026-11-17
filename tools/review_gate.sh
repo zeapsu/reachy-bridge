@@ -40,10 +40,10 @@ set -Eeuo pipefail
 # proxy, secrets (the HF token and its scrubbing, sound tokens), the
 # installer, dependency manifests and locks, build scripts, toolchains and
 # the shipped webrtcsink build, CI and release workflows (update signing),
-# agent rules (at any depth), agent config and .gitignore (what of it is
-# tracked), the review focus and reliability checklist (reviewers read them
+# agent rules and agent config (at any depth), .gitignore (what of it is
+# tracked), .gitattributes (it can hide lines from diffs), the review focus and reliability checklist (reviewers read them
 # from main), and this gate, its catch-up check and the local precheck hook.
-SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|control|sim|audio|logs|apps)|routes/(store|sounds))\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|features/((app_bind|sim_apps)(_shim)?|sim_sounds))\.py|web/src/(api/(auth|hf|client|setup)|logic/(auth|setup))\.ts|web/src/components/(Login|Setup)\.tsx|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|(runtime/)?pyproject\.toml|uv\.lock|controller/Cargo\.(toml|lock)|web/(package\.json|bun\.lock)|controller/build\.rs|web/vite\.config\.ts|mise\.toml|tools/(toolchain_versions\.py|build_webrtcsink_jetson\.sh)|\.github/.+|\.claude/.+|\.mcp\.json|\.gitignore|(.+/)?(AGENTS|CLAUDE)\.md|CONTRIBUTING\.md|REVIEW\.md|docs/reliability-checklist\.md|tools/checklist\.py|tools/(test_)?(review_gate|catchup_check|precheck)\.sh)$'
+SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|control|sim|audio|logs|apps)|routes/(store|sounds))\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|features/((app_bind|sim_apps)(_shim)?|sim_sounds))\.py|web/src/(api/(auth|hf|client|setup)|logic/(auth|setup))\.ts|web/src/components/(Login|Setup)\.tsx|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|(runtime/)?pyproject\.toml|uv\.lock|controller/Cargo\.(toml|lock)|web/(package\.json|bun\.lock)|controller/build\.rs|web/vite\.config\.ts|mise\.toml|tools/(toolchain_versions\.py|build_webrtcsink_jetson\.sh)|\.github/.+|(.+/)?\.claude/.+|(.+/)?\.mcp\.json|\.gitignore|(.+/)?\.gitattributes|(.+/)?(AGENTS|CLAUDE)\.md|CONTRIBUTING\.md|REVIEW\.md|docs/reliability-checklist\.md|tools/checklist\.py|tools/(test_)?(review_gate|catchup_check|precheck)\.sh)$'
 
 # Every page of a list endpoint, as one JSON array.
 list() { gh api --paginate "$1" | jq -s 'add // []'; }
