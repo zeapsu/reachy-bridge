@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checks whether a PR's newest commit is a clean catch-up with main that can
 # reuse the review markers of the commit before it, and with --post re-posts
-# those markers for the new head (AGENTS.md, gate 4).
+# those markers for the new head (CONTRIBUTING.md, "Claiming work", step 6).
 #
 #   bash tools/catchup_check.sh <pr> [--post]
 #
