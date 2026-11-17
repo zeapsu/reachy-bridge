@@ -1,11 +1,12 @@
 """Print the reliability checklist items whose triggers match a diff.
 
 Reads docs/reliability-checklist.md from the base (origin/main by default), not from the
-working tree, so a change can't edit the items it is judged by, and matches each item's
+working tree, and matches each item's
 Paths and Diff regexes against the changes since the merge base with that base, including
-uncommitted and untracked files. See REVIEW.md.
+uncommitted and untracked files. Reviewers run main's copy of this script too, so a change
+can't edit what judges it (REVIEW.md):
 
-    uv run python tools/checklist.py                  # against origin/main
+    git show origin/main:tools/checklist.py | uv run python -     # against origin/main
     uv run python tools/checklist.py --base main
     uv run python tools/checklist.py --file docs/reliability-checklist.md   # the local copy
     uv run python tools/checklist.py --list           # every item, no diff
@@ -14,6 +15,7 @@ uncommitted and untracked files. See REVIEW.md.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -21,7 +23,7 @@ from dataclasses import dataclass, field
 
 CHECKLIST = "docs/reliability-checklist.md"
 # Changed lines in these files don't trigger items: editing the list isn't a reason to run it all.
-NO_DIFF_MATCH = {CHECKLIST, "REVIEW.md"}
+NO_DIFF_MATCH = {CHECKLIST, "REVIEW.md", "runtime/tests/test_reliability_checklist.py"}
 FIELD = re.compile(r"^- \*\*(Paths|Diff|Check|From):\*\* (.*)$")
 CODE = re.compile(r"^`(.+)`\s*$")
 
@@ -104,9 +106,9 @@ def changed_lines(diff: str) -> list[tuple[str, str]]:
             in_hunk = False
             path = ""
         elif not in_hunk and line.startswith("--- a/"):
-            path = line[6:]
+            path = line[6:].rstrip("\t")
         elif not in_hunk and line.startswith("+++ b/"):
-            path = line[6:]
+            path = line[6:].rstrip("\t")
         elif line.startswith("@@"):
             in_hunk = True
         elif in_hunk and line.startswith(("+", "-")) and path:
@@ -131,7 +133,10 @@ def match(items: list[Item], paths: list[str], lines: list[tuple[str, str]]) -> 
 
 
 def git(*args: str) -> str:
-    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+    # quotePath off: non-ASCII paths come through as they are, not quoted and escaped.
+    return subprocess.run(
+        ["git", "-c", "core.quotePath=false", *args], check=True, capture_output=True, text=True
+    ).stdout
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -141,6 +146,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--list", action="store_true", help="print every item and exit")
     args = parser.parse_args(argv)
 
+    try:
+        os.chdir(git("rev-parse", "--show-toplevel").strip())
+    except (OSError, subprocess.CalledProcessError):
+        print("error: not in a git checkout", file=sys.stderr)
+        return 2
     if args.file:
         with open(args.file, encoding="utf-8") as f:
             text = f.read()
@@ -161,11 +171,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{item.id}: {item.title}")
         return 0
 
-    base = git("merge-base", args.base, "HEAD").strip()
-    diff = git("diff", "--no-color", "--no-ext-diff", "-U0", base)
-    untracked = git("ls-files", "--others", "--exclude-standard", "-z").split("\0")
-    untracked = [p for p in untracked if p]
-    paths = {p for p in git("diff", "--name-only", "--no-renames", "-z", base).split("\0") if p}
+    try:
+        base = git("merge-base", args.base, "HEAD").strip()
+        diff = git("diff", "--no-color", "--no-ext-diff", "--no-renames", "-U0", base)
+        untracked = [p for p in git("ls-files", "--others", "--exclude-standard", "-z").split("\0") if p]
+        paths = {p for p in git("diff", "--name-only", "--no-renames", "-z", base).split("\0") if p}
+    except subprocess.CalledProcessError as e:
+        print(f"error: can't diff against {args.base}: {e.stderr.strip()}", file=sys.stderr)
+        return 2
     paths |= set(untracked)
     lines = changed_lines(diff)
     # Untracked files are all added lines.

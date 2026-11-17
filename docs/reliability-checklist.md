@@ -2,10 +2,11 @@
 
 One item per thing that has gone wrong, or nearly, in this repo. Each item has a trigger
 readable from a diff, a check, and where it came from. Nobody runs the whole list:
-`uv run python tools/checklist.py` reads the diff against `origin/main` and prints only the
-items whose triggers match, and the reviewer checks those (see [`REVIEW.md`](../REVIEW.md)).
-The script reads this file from `origin/main`, so a PR can't change the items it is judged
-by.
+`git show origin/main:tools/checklist.py | uv run python -` reads the diff against
+`origin/main` and prints only the items whose triggers match, and the reviewer checks those
+(see [`REVIEW.md`](../REVIEW.md)). Both the script and this file come from `origin/main`, so a
+PR can't change the items it is judged by; `--file docs/reliability-checklist.md` tries a
+local edit of the list.
 
 ## Format
 
@@ -20,7 +21,7 @@ by.
 An item matches when any changed path matches **Paths** or any changed line matches
 **Diff**; either may be left out. Regexes are Python's, searched (not anchored unless they
 say `^`). Changed lines in `REVIEW.md` and this file don't count, so editing the list
-doesn't trigger every item.
+or its tests doesn't trigger every item.
 
 Add an item when the same kind of miss shows up in two PRs, or one miss cost a hardware
 QA round, and it can be spotted from a diff. Remove an item when a test or a check in CI
@@ -46,7 +47,7 @@ proposes removals when it tags an rc (AGENTS.md, "Rules upkeep").
 - **From:** #146 (robot slot), #245, #251, #254
 
 ### bind-port: Listening ports, binds and what's exposed
-- **Diff:** `0\.0\.0\.0|\bbind\(|--host\b|SocketAddr|:8443\b|:7863\b|:804[0-9]\b|tailscale serve`
+- **Diff:** `0\.0\.0\.0|\[::\]|INADDR_ANY|--host\b|bind_addr|listen_addr|:8443\b|:7863\b|:804[0-9]\b|tailscale serve`
 - **Check:** the daemon binds `127.0.0.1` only; anything on all interfaces sits behind the
   login; app UIs go through the logged-in proxy; nothing serves the signalling (:8443) or
   app ports through `tailscale serve` on their own port numbers.
@@ -118,13 +119,13 @@ proposes removals when it tags an rc (AGENTS.md, "Rules upkeep").
 - **From:** the 2026-11-02 copy pass (direction B), #285, #286, #287
 
 ### private-values: No private values in tracked files
-- **Diff:** `\b100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b|\.ts\.net\b|/Users/[A-Za-z]|\b192\.168\.\d+\.\d+\b`
+- **Diff:** `\b100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b|\.ts\.net\b|/Users/[A-Za-z]|\b192\.168\.\d+\.\d+\b|/home/[a-z][a-z0-9_-]*/`
 - **Check:** no tailnet addresses or names, LAN addresses, SSH targets or home paths. Those
   go in a gitignored `CLAUDE.local.md` or the environment.
 - **From:** AGENTS.md (this repo is public)
 
 ### review-gate: The checks that judge PRs
-- **Paths:** `^(tools/(test_)?(review_gate|catchup_check)\.sh|tools/checklist\.py|\.github/workflows/review-gate\.yml|REVIEW\.md|docs/reliability-checklist\.md|\.claude/.+)$`
+- **Paths:** `^(tools/(test_)?(review_gate|catchup_check|precheck)\.sh|tools/checklist\.py|runtime/tests/test_reliability_checklist\.py|\.github/workflows/review-gate\.yml|REVIEW\.md|docs/reliability-checklist\.md|(.+/)?(AGENTS|CLAUDE)\.md|CONTRIBUTING\.md|\.gitignore|\.claude/.+)$`
 - **Check:** the change can't relax the checks that judge it (they run from `main`); every
   path that judges PRs is still in `SECURITY_PATHS`; the gate's tests cover the change.
 - **From:** #302, #303, #309

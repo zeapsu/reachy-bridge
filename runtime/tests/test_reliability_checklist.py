@@ -134,3 +134,16 @@ def test_main_fails_without_a_checklist_on_the_base(tmp_path, monkeypatch, capsy
     monkeypatch.chdir(tmp_path)
     assert checklist.main(["--base", "main"]) == 2
     assert "no docs/reliability-checklist.md" in capsys.readouterr().err
+
+
+def test_changed_lines_strips_the_tab_git_adds_after_a_path_with_spaces():
+    diff = "diff --git a/a b.txt b/a b.txt\n--- a/a b.txt\t\n+++ b/a b.txt\t\n@@ -0,0 +1 @@\n+x\n"
+    assert checklist.changed_lines(diff) == [("a b.txt", "x")]
+
+
+def test_main_reports_a_base_it_cannot_diff_against(tmp_path, monkeypatch, capsys):
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    (tmp_path / "list.md").write_text(ITEMS)
+    monkeypatch.chdir(tmp_path)
+    assert checklist.main(["--base", "nope", "--file", "list.md"]) == 2
+    assert "can't diff against nope" in capsys.readouterr().err

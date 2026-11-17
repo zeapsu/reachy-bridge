@@ -151,14 +151,15 @@ for f in controller/src/auth.rs controller/src/profiles.rs controller/src/main.r
     runtime/src/reachy_bridge_runtime/audio_gateway.py runtime/src/reachy_bridge_runtime/features/sim_apps.py \
     web/src/logic/auth.ts web/src/api/hf.ts web/src/api/client.ts web/src/components/Login.tsx \
     deploy/uninstall.sh controller/Cargo.lock runtime/pyproject.toml uv.lock web/bun.lock AGENTS.md \
-    REVIEW.md docs/reliability-checklist.md tools/checklist.py tools/precheck.sh tools/test_precheck.sh; do
+    REVIEW.md docs/reliability-checklist.md tools/checklist.py tools/precheck.sh tools/test_precheck.sh \
+    .gitignore web/CLAUDE.md controller/src/AGENTS.md; do
     setup; files web/src/App.tsx "$f"; comment OWNER "Review: clean @$HEAD"
     expect "security path $f" pending "security PR: paths"
 done
 
 setup; files controller/src/routes/power.rs runtime/src/reachy_bridge_runtime/audio_tee.py \
     web/src/api/power.ts tools/review_gate.sh.bak deploy/systemd/README.md \
-    docs/REVIEW.md docs/reliability-checklist.md.bak
+    docs/REVIEW.md docs/reliability-checklist.md.bak web/.gitignore docs/AGENTS.md.txt
 comment OWNER "Review: clean @$HEAD"
 expect "near-miss paths aren't security paths" success
 

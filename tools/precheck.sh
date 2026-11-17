@@ -9,7 +9,11 @@
 #   bash tools/precheck.sh --hook     # as a Claude Code PreToolUse hook
 #
 # As a hook (.claude/settings.json) it reads the tool call from stdin and runs
-# only for `git push` and `gh pr create`. REACHY_PRECHECK_MODE picks what a
+# only for `git push` and `gh pr create`. The hook runs main's copy of this
+# script (git show origin/main:tools/precheck.sh), and only for commands that
+# mention a push or a PR, so checking out a branch never runs the branch's
+# copy. It does run the checked-out branch's tests on a push: never push from
+# a checkout of an outside PR (AGENTS.md, "Untrusted input"). REACHY_PRECHECK_MODE picks what a
 # failure does:
 #   observe (default)  log it to .git/precheck.log and let the call through
 #   enforce            block the call (exit 2) and say what failed; after two
@@ -53,8 +57,12 @@ run() { if command -v mise >/dev/null; then mise exec -- "$@"; else "$@"; fi; }
 if ((all)); then
     changed=$(git ls-files)
 else
-    mb=$(git merge-base "$base" HEAD 2>/dev/null) || { echo "precheck: can't find $base; run git fetch origin main" >&2; exit 0; }
-    changed=$( { git diff --name-only "$mb"; git ls-files --others --exclude-standard; } | sort -u)
+    if ! mb=$(git merge-base "$base" HEAD 2>/dev/null); then
+        echo "precheck: can't find $base; run git fetch origin main" >&2
+        ((hook)) && exit 0
+        exit 1
+    fi
+    changed=$( { git diff --name-only --no-renames "$mb"; git ls-files --others --exclude-standard; } | sort -u)
 fi
 has() { grep -Eq "$1" <<<"$changed"; }
 
@@ -93,10 +101,15 @@ if has '^(deploy/|tools/.*\.sh$)'; then
     has '^deploy/' && step "test_uninstall" bash tools/test_uninstall.sh
     has '^tools/(test_)?review_gate\.sh$' && step "test_review_gate" bash tools/test_review_gate.sh
     has '^tools/(test_)?catchup_check\.sh$' && step "test_catchup_check" bash tools/test_catchup_check.sh
+    has '^tools/(test_)?precheck\.sh$' && step "test_precheck" bash tools/test_precheck.sh
 fi
 
+gitdir=$(git rev-parse --git-dir)
+counter="$gitdir/precheck-blocks-$(tr -cd "A-Za-z0-9_-" <<<"${session:-none}")"
 if ((${#failed[@]} == 0)); then
     echo "precheck: passed" >&2
+    # A pass starts the session's block count again.
+    ((hook)) && rm -f "$counter"
     exit 0
 fi
 summary="precheck failed: ${failed[*]}"
@@ -105,10 +118,8 @@ if ! ((hook)); then
     exit 1
 fi
 
-gitdir=$(git rev-parse --git-dir)
 echo "$(date -u +%FT%TZ) mode=$mode session=${session:-?} head=$(git rev-parse --short HEAD) $summary" >>"$gitdir/precheck.log"
 [[ $mode == enforce ]] || exit 0
-counter="$gitdir/precheck-blocks-$(tr -cd "A-Za-z0-9_-" <<<"${session:-none}")"
 blocks=$(cat "$counter" 2>/dev/null || echo 0)
 if ((blocks >= 2)); then
     echo "precheck: letting this through after two blocks; say in the PR what still fails and why" >&2

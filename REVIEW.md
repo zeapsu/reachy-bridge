@@ -7,7 +7,8 @@ change can't edit the checks that judge it:
 ```bash
 git fetch origin main
 git show origin/main:REVIEW.md
-uv run python tools/checklist.py            # matching checklist items, read from origin/main
+# main's checklist script, which reads main's checklist, run on this checkout's diff:
+git show origin/main:tools/checklist.py | uv run python -
 ```
 
 A PR that changes this file, `docs/reliability-checklist.md` or `tools/checklist.py` is
@@ -18,8 +19,8 @@ security-relevant (they are in `SECURITY_PATHS`), and is still judged by the ver
 
 - You get the diff and the head commit's sha, not the author's conclusions. Review that
   commit; a push during the review makes the result stale.
-- Run the checklist items that match the diff (`tools/checklist.py` prints them, usually a
-  handful). For each, say whether its check holds.
+- Run the checklist items that match the diff (main's `tools/checklist.py` prints them,
+  usually a handful). For each, say whether its check holds.
 - Tag each finding **Important** (a bug, a broken rule, a missing check from the
   checklist), **Nit** (style, wording, small cleanups) or **Pre-existing** (true before this
   PR). Only Important findings block a merge; Pre-existing ones are not held against the
