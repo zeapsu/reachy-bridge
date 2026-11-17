@@ -6,7 +6,7 @@ Paths and Diff regexes against the changes since the merge base with that base, 
 uncommitted and untracked files. Reviewers run main's copy of this script too, so a change
 can't edit what judges it (REVIEW.md):
 
-    git show origin/main:tools/checklist.py | uv run python -     # against origin/main
+    git show origin/main:tools/checklist.py | python3 -I -     # against origin/main
     uv run python tools/checklist.py --base main
     uv run python tools/checklist.py --file docs/reliability-checklist.md   # the local copy
     uv run python tools/checklist.py --list           # every item, no diff
@@ -145,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--file", help="read the checklist from this file instead of the base")
     parser.add_argument("--list", action="store_true", help="print every item and exit")
     args = parser.parse_args(argv)
+    if args.file:
+        args.file = os.path.abspath(args.file)  # before moving to the repo root
 
     try:
         os.chdir(git("rev-parse", "--show-toplevel").strip())
@@ -152,8 +154,12 @@ def main(argv: list[str] | None = None) -> int:
         print("error: not in a git checkout", file=sys.stderr)
         return 2
     if args.file:
-        with open(args.file, encoding="utf-8") as f:
-            text = f.read()
+        try:
+            with open(args.file, encoding="utf-8") as f:
+                text = f.read()
+        except OSError as e:
+            print(f"error: can't read {args.file}: {e.strerror}", file=sys.stderr)
+            return 2
     else:
         try:
             text = git("show", f"{args.base}:{CHECKLIST}")

@@ -2,7 +2,7 @@
 
 One item per thing that has gone wrong, or nearly, in this repo. Each item has a trigger
 readable from a diff, a check, and where it came from. Nobody runs the whole list:
-`git show origin/main:tools/checklist.py | uv run python -` reads the diff against
+`git show origin/main:tools/checklist.py | python3 -I -` reads the diff against
 `origin/main` and prints only the items whose triggers match, and the reviewer checks those
 (see [`REVIEW.md`](../REVIEW.md)). Both the script and this file come from `origin/main`, so a
 PR can't change the items it is judged by; `--file docs/reliability-checklist.md` tries a

@@ -58,7 +58,7 @@ hook (AGENTS.md, "Verification"). Before each commit, check the change running a
 sim stack: `.claude/skills/verify/SKILL.md` says how, area by area. Reviewers work from
 [`REVIEW.md`](REVIEW.md) and the items of
 [`docs/reliability-checklist.md`](docs/reliability-checklist.md) that match the diff
-(`git show origin/main:tools/checklist.py | uv run python -`), both read from `main`.
+(`git show origin/main:tools/checklist.py | python3 -I -`), both read from `main`.
 
 Run the sim tests before asking for hardware QA. The python and rust-web jobs report line
 coverage in their job summaries (pytest-cov, `bun test --coverage`, cargo-llvm-cov); it's
@@ -228,7 +228,7 @@ say-so.
    account: check that `gh api user -q .login` matches
    `gh repo view --json owner -q .owner.login` first. Get the
    head with `gh pr view <n> --json headRefOid -q .headRefOid`, and wait for the check
-   with `gh pr checks <n> --required --watch` before merging; when it stays pending, its
+   with `gh pr checks <n> --watch` before merging, and confirm the `review` row passed; when it stays pending, its
    description (`gh pr checks <n> --json name,state,description`) and its run's log say
    what's missing. The gate treats a PR as security-relevant when it has the `security`
    or `auth` label or changes a file in the script's `SECURITY_PATHS`: login, sessions, pairing and setup and the guards and

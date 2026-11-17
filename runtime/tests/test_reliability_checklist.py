@@ -147,3 +147,26 @@ def test_main_reports_a_base_it_cannot_diff_against(tmp_path, monkeypatch, capsy
     monkeypatch.chdir(tmp_path)
     assert checklist.main(["--base", "nope", "--file", "list.md"]) == 2
     assert "can't diff against nope" in capsys.readouterr().err
+
+
+def test_main_resolves_file_from_the_current_directory_and_runs_isolated_from_the_checkout(tmp_path, monkeypatch):
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "list.md").write_text(ITEMS)
+    monkeypatch.chdir(tmp_path / "sub")
+    assert checklist.main(["--file", "list.md", "--list"]) == 0
+    # As reviewers run it: a planted module in the checkout must not be imported.
+    (tmp_path / "argparse.py").write_text("raise SystemExit('shadowed')\n")
+    script = (ROOT / "tools" / "checklist.py").read_text()
+    run = subprocess.run(
+        [sys.executable, "-I", "-", "--file", "sub/list.md", "--list"],
+        input=script,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 0, run.stderr
+    assert "ports: Ports" in run.stdout

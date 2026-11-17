@@ -12,10 +12,10 @@
 # only for `git push` and `gh pr create`. The hook runs main's copy of this
 # script (git show origin/main:tools/precheck.sh), and only for commands that
 # mention a push or a PR, so checking out a branch never runs the branch's
-# copy. It does run the checked-out branch's tests on a push: never push from
-# a checkout of an outside PR (AGENTS.md, "Untrusted input"). REACHY_PRECHECK_MODE picks what a
+# copy. It does run the checked-out branch's tests on a push: never push or
+# open a PR from a checkout of an outside PR (AGENTS.md, "Untrusted input"). REACHY_PRECHECK_MODE picks what a
 # failure does:
-#   observe (default)  log it to .git/precheck.log and let the call through
+#   observe (default)  log it to precheck.log in the git dir and let the call through
 #   enforce            block the call (exit 2) and say what failed; after two
 #                      blocks in one session the next call goes through, so a
 #                      session can't get stuck

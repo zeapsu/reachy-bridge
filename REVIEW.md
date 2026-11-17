@@ -8,7 +8,7 @@ change can't edit the checks that judge it:
 git fetch origin main
 git show origin/main:REVIEW.md
 # main's checklist script, which reads main's checklist, run on this checkout's diff:
-git show origin/main:tools/checklist.py | uv run python -
+git show origin/main:tools/checklist.py | python3 -I -
 ```
 
 A PR that changes this file, `docs/reliability-checklist.md` or `tools/checklist.py` is
