@@ -184,7 +184,20 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         base = git("merge-base", args.base, "HEAD").strip()
-        diff = git("diff", "--no-color", "--no-ext-diff", "--no-renames", "--text", "--no-textconv", "-U0", base)
+        # Explicit prefixes: changed_lines() expects a/ and b/, which a user's
+        # diff.mnemonicPrefix or diff.noprefix setting would otherwise change.
+        diff = git(
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-renames",
+            "--text",
+            "--no-textconv",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "-U0",
+            base,
+        )
         untracked = [p for p in git("ls-files", "--others", "--exclude-standard", "-z").split("\0") if p]
         paths = {p for p in git("diff", "--name-only", "--no-renames", "-z", base).split("\0") if p}
     except subprocess.CalledProcessError as e:
