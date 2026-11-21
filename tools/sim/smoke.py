@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import threading
 import time
 
 import httpx
@@ -124,6 +125,67 @@ def crash_to_sleep() -> None:
     check("[bug 2] controller reports asleep after crash", ctrl_status() == "asleep", ctrl_status())
 
 
+def idle_reset_pending() -> bool | None:
+    r = d.get("/api/bridge/idle-reset")
+    return r.json().get("pending") if r.status_code == 200 else None
+
+
+class Sampler:
+    """Daemon (state, motor mode) every 100 ms while an action runs, to see
+    the order things happened in."""
+
+    def __init__(self) -> None:
+        self.states: list[tuple[str, str | None]] = []
+        self._done = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        sampler = httpx.Client(base_url=DAEMON, timeout=5)
+        while not self._done.is_set():
+            try:
+                s = sampler.get("/api/daemon/status").json()
+                self.states.append((s.get("state"), (s.get("backend_status") or {}).get("motor_control_mode")))
+            except httpx.HTTPError:
+                pass
+            time.sleep(0.1)
+
+    def __enter__(self) -> Sampler:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._done.set()
+        self._thread.join(5)
+
+    def changes(self) -> str:
+        """The samples with repeats dropped."""
+        return " -> ".join(
+            f"{state}/{mode}"
+            for i, (state, mode) in enumerate(self.states)
+            if i == 0 or self.states[i - 1] != (state, mode)
+        )
+
+    def asleep_before(self, until) -> bool:
+        """The robot was asleep (running, disabled) before ``until`` held."""
+        for state in self.states:
+            if until(state):
+                return False
+            if state == ASLEEP:
+                return True
+        return False
+
+
+def crash_and_catch_idle_reset() -> bool:
+    """Start the crash app and return once it has exited, with the daemon's
+    idle reset under way (#292)."""
+    stop_any_app()
+    c.post(f"/api/apps/start/{CRASH_APP}")
+    crashed = wait(lambda: app_state() == "error", 60, step=0.1)
+    pending = idle_reset_pending()
+    check("[#292] idle reset reported pending right after a crash", crashed and pending is True, f"pending={pending}")
+    return crashed and pending is True
+
+
 started = time.monotonic()
 
 # --- reset to a known state: robot off ---------------------------------
@@ -203,6 +265,34 @@ c.post("/api/daemon/start")
 ok = wait(lambda: daemon_state() == AWAKE, 30)
 check("[bug 1] power on from asleep -> motors enabled", ok, str(daemon_state()))
 check("controller reports running after wake", ctrl_status() == "running", ctrl_status())
+
+# 11. [#292] power off while the daemon puts the robot to sleep after a
+# crash: the controller waits for the sleep move, then powers off from asleep,
+# instead of cutting the move short (1.14.0: daemon "error", head mid-pose).
+if crash_and_catch_idle_reset():
+    with Sampler() as s:
+        c.post("/api/daemon/stop")
+        wait(lambda: daemon_state()[0] in ("stopped", "error"), 40)
+    check(
+        "[#292] power off waits for the idle reset: asleep before stopping",
+        s.asleep_before(lambda st: st[0] != "running"),
+        s.changes(),
+    )
+    check("[#292] power off after the idle reset ends stopped", daemon_state()[0] == "stopped", str(daemon_state()))
+
+# 12. [#292] starting an app while the daemon puts the robot to sleep after a
+# crash: the controller lets the sleep move finish before it clears the crashed
+# app and wakes the robot (1.14.0: torque cut wherever the head stopped).
+if crash_and_catch_idle_reset():
+    with Sampler() as s:
+        r = c.post(f"/api/apps/start/{APP}").json()
+        ok = wait(lambda: app_state() == "running", 60)
+    check("[#292] app start after a crash runs", ok and r.get("status") == "loading", str(r))
+    check(
+        "[#292] app start waits for the idle reset: asleep before waking",
+        s.asleep_before(lambda st: False) and s.states[-1] == AWAKE,
+        s.changes(),
+    )
 
 # --- leave the sim off -------------------------------------------------
 stop_any_app()

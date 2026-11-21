@@ -34,6 +34,14 @@ pub struct Fake {
     pub calls: Vec<String>,
     /// The Hugging Face user the fake daemon is logged in as.
     pub hf_user: Option<String>,
+    /// Reads of `bridge/idle-reset` that still answer pending (#292). The
+    /// last one ends the reset: the motors go `disabled` (asleep) and
+    /// `idle-reset done` is recorded.
+    pub idle_reset_polls: u32,
+    /// Every read of `bridge/idle-reset`.
+    pub idle_reset_reads: u32,
+    /// A runtime without the idle reset route answers 404.
+    pub idle_reset_missing: bool,
 }
 
 pub type FakeState = Arc<Mutex<Fake>>;
@@ -129,6 +137,25 @@ pub async fn fake_daemon(fake: FakeState) -> String {
             get(|State(f): State<FakeState>| async move {
                 record(&f, "state-ws");
                 StatusCode::SERVICE_UNAVAILABLE
+            }),
+        )
+        .route(
+            "/api/bridge/idle-reset",
+            get(|State(fake): State<FakeState>| async move {
+                let mut f = fake.lock().unwrap();
+                f.idle_reset_reads += 1;
+                if f.idle_reset_missing {
+                    return (StatusCode::NOT_FOUND, Json(json!({"detail": "Not Found"})));
+                }
+                let pending = f.idle_reset_polls > 0;
+                if pending {
+                    f.idle_reset_polls -= 1;
+                    if f.idle_reset_polls == 0 {
+                        f.motors = Some("disabled".into());
+                        f.calls.push("idle-reset done".into());
+                    }
+                }
+                (StatusCode::OK, Json(json!({"pending": pending})))
             }),
         )
         .route("/api/daemon/start", post(start))

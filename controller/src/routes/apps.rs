@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::apps::APP_CONTROL_TIMEOUT;
 use crate::auth::AuthContext;
 use crate::error::{ApiError, ApiResult};
-use crate::routes::power::ensure_awake;
+use crate::routes::power::{ensure_awake, settle_idle_reset};
 use crate::state::Shared;
 
 pub const MAX_FAVORITES: usize = 3;
@@ -162,6 +162,9 @@ async fn put_favorites(
     Ok(Json(json!({"favorites": favorites})))
 }
 
+/// Refused while the daemon's idle reset is still putting the robot to sleep.
+const GOING_TO_SLEEP: &str = "Robot is going to sleep; try again shortly";
+
 fn refused(name: &str, error: impl Into<String>, status: &str) -> Json<Value> {
     Json(json!({"error": error.into(), "name": name, "status": status}))
 }
@@ -198,11 +201,22 @@ async fn start(
         if state.player.active() {
             return Ok(refused(&name, "Robot busy", "refused"));
         }
+        // After an app exits on its own the daemon puts the robot to sleep;
+        // clearing the app or waking the robot during that would stop the
+        // sleep move part-way (#292).
+        if !settle_idle_reset(&state).await {
+            return Ok(refused(&name, GOING_TO_SLEEP, "refused"));
+        }
         // The daemon keeps a crashed app in its slot (state "error") and
         // refuses every start until it is cleared.
         let current = state.apps.current().await.ok().flatten();
         if current.as_ref().and_then(|c| c.get("state")).and_then(Value::as_str) == Some("error") {
             let _ = daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await;
+            // reachy-mini 1.14.0 falls back to an idle reset when the clear's
+            // return home fails.
+            if !settle_idle_reset(&state).await {
+                return Ok(refused(&name, GOING_TO_SLEEP, "refused"));
+            }
         }
         ensure_awake(&state).await?;
         daemon.post_slow(&format!("apps/start-app/{name}"), APP_CONTROL_TIMEOUT).await
@@ -233,7 +247,17 @@ async fn stop(
             app_allowed(ctx.as_ref(), &running)?;
         }
     }
-    match state.daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await {
+    let stopped = {
+        // Under the power lock, so a stop can't interleave with a power off or
+        // an app start; and after any idle reset, which clearing a crashed
+        // app would cut short (#292).
+        let _power = state.power_lock.lock().await;
+        if !settle_idle_reset(&state).await {
+            return Ok(refused(&name, GOING_TO_SLEEP, "refused"));
+        }
+        state.daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await
+    };
+    match stopped {
         Ok(_) => {}
         Err(crate::daemon::DaemonError::Unavailable) => return Err(ApiError::unavailable()),
         Err(crate::daemon::DaemonError::Refused { .. }) => {

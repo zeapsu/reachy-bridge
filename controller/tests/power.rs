@@ -124,3 +124,108 @@ async fn a_return_home_posted_during_power_off_is_stopped() {
     );
     assert!(h.fake.lock().unwrap().running_moves.is_empty());
 }
+
+// --- The daemon's idle reset (#292) ---------------------------------------
+// After an app exits on its own (or a remote session drops), the daemon
+// puts the robot to sleep a moment later. A power off during it must wait,
+// then power off from asleep, not cut the sleep move short.
+
+#[tokio::test]
+async fn power_off_after_an_app_exits_on_its_own_waits_for_the_idle_reset() {
+    for app_state in ["error", "done"] {
+        let h = harness(|f| {
+            f.state = "running".into();
+            f.motors = Some("enabled".into());
+            f.app = Some(json!({"info": {"name": "reachy_mini_radio"}, "state": app_state}));
+            f.idle_reset_polls = 3;
+        })
+        .await;
+        let (status, body) = h.call("POST", "/api/daemon/stop", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        // No stop-current-app (the app isn't active), no stop mid-reset, and
+        // the robot is asleep by then, so no second sleep move.
+        assert_eq!(h.calls(), vec!["idle-reset done", "stop sleep=false"], "{app_state}");
+        assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 4);
+    }
+}
+
+#[tokio::test]
+async fn power_off_after_a_remote_session_drop_waits_for_the_idle_reset() {
+    // No app at all: only the runtime's route shows the reset.
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("gravity_compensation".into());
+        f.idle_reset_polls = 2;
+    })
+    .await;
+    h.call("POST", "/api/daemon/stop", None).await;
+    assert_eq!(h.calls(), vec!["idle-reset done", "stop sleep=false"]);
+}
+
+#[tokio::test]
+async fn power_off_without_an_idle_reset_reads_once_and_does_not_wait() {
+    // Asleep already.
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("disabled".into());
+    })
+    .await;
+    let started = std::time::Instant::now();
+    h.call("POST", "/api/daemon/stop", None).await;
+    assert_eq!(h.calls(), vec!["stop sleep=false"]);
+    assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 1);
+    assert!(started.elapsed() < Duration::from_millis(200), "{:?}", started.elapsed());
+
+    // A requested stop of a running app: keep-awake skips the reset.
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.app = Some(json!({"info": {"name": "reachy_mini_radio"}, "state": "running"}));
+    })
+    .await;
+    h.call("POST", "/api/daemon/stop", None).await;
+    assert_eq!(h.calls(), vec!["stop-app", "stop sleep=true"]);
+    assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 1);
+}
+
+#[tokio::test]
+async fn power_off_waits_for_an_idle_reset_its_own_app_stop_falls_back_to() {
+    // reachy-mini 1.14.0: a stop whose return home fails requests the reset.
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.app = Some(json!({"info": {"name": "reachy_mini_radio"}, "state": "running"}));
+        f.idle_reset_polls = 2;
+    })
+    .await;
+    h.call("POST", "/api/daemon/stop", None).await;
+    assert_eq!(h.calls(), vec!["stop-app", "idle-reset done", "stop sleep=false"]);
+}
+
+#[tokio::test]
+async fn power_off_goes_ahead_when_the_idle_reset_never_ends() {
+    let mut h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.idle_reset_polls = u32::MAX;
+    })
+    .await;
+    Arc::get_mut(&mut h.state).unwrap().idle_reset_timeout = Duration::from_millis(600);
+    let started = std::time::Instant::now();
+    let (status, _) = h.call("POST", "/api/daemon/stop", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(started.elapsed() >= Duration::from_millis(500), "{:?}", started.elapsed());
+    assert_eq!(h.calls(), vec!["stop sleep=true"]);
+}
+
+#[tokio::test]
+async fn power_off_without_the_idle_reset_route_works_as_before() {
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.idle_reset_missing = true;
+    })
+    .await;
+    h.call("POST", "/api/daemon/stop", None).await;
+    assert_eq!(h.calls(), vec!["stop sleep=true"]);
+}

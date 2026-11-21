@@ -27,6 +27,9 @@ const MOVES_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 /// The sleep move takes about 5 s, then the daemon tears the backend down.
 pub const POWER_OFF_TIMEOUT: Duration = Duration::from_secs(40);
 const WAKE_TIMEOUT: Duration = Duration::from_secs(20);
+/// The idle reset waits 1.5 s (15 s after a remote hand-off), then takes about
+/// 5-8 s to put the robot to sleep (daemon-contract.md, "Idle reset").
+pub const IDLE_RESET_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn router() -> Router<Shared> {
     Router::new()
@@ -49,6 +52,27 @@ where
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     false
+}
+
+/// Wait for the daemon's idle reset to finish; false if it is still pending
+/// after `idle_reset_timeout`. Call with `power_lock` held.
+///
+/// When an app exits on its own or a remote session drops, the daemon puts
+/// the robot to sleep a moment later. `daemon/stop` and `stop-current-app` stop
+/// that sleep move part-way: the head can stay mid-pose, or drop when the
+/// sleep move's torque cut lands where it stopped, and on reachy-mini 1.14.0
+/// the stop fails on the move guard and leaves the daemon in `error` (#292).
+/// With no reset pending (a requested stop, an asleep robot) this is one
+/// read and no wait. An unreadable daemon isn't waited for: the next call
+/// reports it.
+pub async fn settle_idle_reset(state: &Shared) -> bool {
+    let daemon = &state.daemon;
+    let settled = || async { daemon.idle_reset_pending().await != Some(true) };
+    if settled().await {
+        return true;
+    }
+    tracing::info!("waiting for the daemon's idle reset to put the robot to sleep");
+    wait_until(state.idle_reset_timeout, settled).await
 }
 
 /// Make sure the robot is on, the motors enabled and the wake-up move done.
@@ -120,6 +144,13 @@ pub async fn power_off_locked(state: &Shared) -> ApiResult<Value> {
     // An expression (or its return home) still playing would run interleaved
     // with the sleep move.
     state.player.halt(MOVES_STOP_TIMEOUT).await;
+    // An app that exited on its own (or a dropped remote session) leaves the
+    // daemon putting the robot to sleep; let it finish, then power off from
+    // asleep. Past the timeout something is stuck, and powering off is still
+    // what was asked for.
+    if !settle_idle_reset(state).await {
+        tracing::warn!("idle reset still running after {:?}; powering off anyway", state.idle_reset_timeout);
+    }
     // Already asleep: skip the sleep move. It re-enables the motors and lifts
     // the head first, so the robot would seem to wake before sleeping.
     let asleep = daemon.status().await.is_some_and(|s| robot_state(&s) == "asleep");
