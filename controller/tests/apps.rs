@@ -151,6 +151,41 @@ async fn app_stop_with_full_access_goes_ahead_when_the_app_cant_be_read() {
 }
 
 #[tokio::test]
+async fn app_start_is_refused_when_an_app_started_during_the_wait() {
+    // A remote session starts an app, which cancels the idle reset: the
+    // crashed app is gone, and the robot mustn't be woken under the new one.
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.app = Some(json!({"info": {"name": "hello_world"}, "state": "error", "error": "boom"}));
+        f.idle_reset_polls = 2;
+        f.app_after_idle_reset = Some(json!({"info": {"name": "remote_app"}, "state": "starting"}));
+    })
+    .await;
+    let (_, body) = h.call("POST", "/api/apps/start/reachy_mini_radio", None).await;
+    assert_eq!(body["status"], "refused");
+    assert_eq!(body["error"], "An app is already running");
+    assert_eq!(h.calls(), vec!["idle-reset done"]);
+}
+
+#[tokio::test]
+async fn app_stop_with_nothing_to_clear_does_not_wait() {
+    // No app, or one that ended cleanly: the daemon stops nothing.
+    for app in [None, Some(json!({"info": {"name": "hello_world"}, "state": "done"}))] {
+        let mut h = harness(|f| {
+            f.state = "running".into();
+            f.motors = Some("enabled".into());
+            f.app = app;
+            f.idle_reset_polls = u32::MAX;
+        })
+        .await;
+        Arc::get_mut(&mut h.state).unwrap().idle_reset_timeout = Duration::from_secs(60);
+        h.call("POST", "/api/apps/stop/hello_world", None).await;
+        assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 0);
+    }
+}
+
+#[tokio::test]
 async fn app_stop_takes_the_power_lock() {
     let h = harness(|f| {
         f.state = "running".into();

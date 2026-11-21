@@ -221,6 +221,9 @@ async fn start(
             return Ok(refused(&name, "Robot busy", "refused"));
         }
         let current = state.apps.current().await.ok().flatten();
+        if crate::apps::is_active(current.as_ref()) {
+            return Ok(refused(&name, "An app is already running", "refused"));
+        }
         // The daemon keeps a crashed app in its slot (state "error") and
         // refuses every start until it is cleared.
         if current.as_ref().and_then(|c| c.get("state")).and_then(Value::as_str) == Some("error") {
@@ -257,22 +260,29 @@ async fn stop(
         // Under the power lock, so a stop can't interleave with a power off or
         // an app start, and the app checked is the one stopped.
         let _power = state.power_lock.lock().await;
+        let mut current = state.apps.current().await;
+        // Only clearing a crashed app can cut short the idle reset its exit
+        // started (#292): a running app holds the robot, and with no app or
+        // a `done` one the daemon stops nothing. An unreadable app may be
+        // the crashed one. After a wait, read the app again: it is the one
+        // checked and stopped.
+        let crashed = current
+            .as_ref()
+            .map_or(true, |c| c.as_ref().and_then(|c| c.get("state")).and_then(Value::as_str) == Some("error"));
+        if crashed {
+            if !settle_idle_reset(&state).await {
+                return Ok(refused(&name, GOING_TO_SLEEP, "refused"));
+            }
+            current = state.apps.current().await;
+        }
         // Full access stops whatever runs, so an unreadable app is no reason
         // to refuse; a profile needs the app's name.
-        let current = state.apps.current().await;
         if ctx.as_ref().is_some_and(|Extension(c)| !matches!(c.access, crate::profiles::Access::Full)) {
             let current = current.as_ref().map_err(|_| ApiError::unavailable())?;
             let running = current.as_ref().and_then(|c| c.get("info")?.get("name")?.as_str().map(str::to_string));
             if let Some(running) = running {
                 app_allowed(ctx.as_ref(), &running)?;
             }
-        }
-        // Clearing an app that exited on its own would cut short the idle
-        // reset its exit started (#292). A running app holds the robot, so
-        // no reset is pending then: stop it at once.
-        let active = current.as_ref().is_ok_and(|c| crate::apps::is_active(c.as_ref()));
-        if !active && !settle_idle_reset(&state).await {
-            return Ok(refused(&name, GOING_TO_SLEEP, "refused"));
         }
         state.daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await
     };

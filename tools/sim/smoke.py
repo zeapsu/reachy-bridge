@@ -156,7 +156,7 @@ class Sampler:
                 r = sampler.get("/api/bridge/idle-reset")
                 pending = r.json().get("pending") if r.status_code == 200 else None
                 self.samples.append((daemon, app, pending))
-            except (httpx.HTTPError, ValueError) as error:
+            except Exception as error:  # noqa: BLE001 - any odd body skips one sample
                 # A non-JSON body (a teardown error page) skips one sample;
                 # it mustn't end the thread and quietly weaken the check.
                 self.errors.append(repr(error))

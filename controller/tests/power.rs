@@ -145,7 +145,9 @@ async fn power_off_after_an_app_exits_on_its_own_waits_for_the_idle_reset() {
         // No stop-current-app (the app isn't active), no stop mid-reset, and
         // the robot is asleep by then, so no second sleep move.
         assert_eq!(h.calls(), vec!["idle-reset done", "stop sleep=false"], "{app_state}");
-        assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 4);
+        // Three pending, the one that ends it, and the check after the
+        // (skipped) app stop.
+        assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 5);
     }
 }
 
@@ -163,7 +165,7 @@ async fn power_off_after_a_remote_session_drop_waits_for_the_idle_reset() {
 }
 
 #[tokio::test]
-async fn power_off_without_an_idle_reset_reads_once_and_does_not_wait() {
+async fn power_off_without_an_idle_reset_does_not_wait() {
     // Asleep already.
     let h = harness(|f| {
         f.state = "running".into();
@@ -172,7 +174,8 @@ async fn power_off_without_an_idle_reset_reads_once_and_does_not_wait() {
     .await;
     h.call("POST", "/api/daemon/stop", None).await;
     assert_eq!(h.calls(), vec!["stop sleep=false"]);
-    assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 1);
+    // One check before the app stop, one after.
+    assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 2);
 
     // A requested stop of a running app: keep-awake skips the reset.
     let h = harness(|f| {
@@ -183,7 +186,7 @@ async fn power_off_without_an_idle_reset_reads_once_and_does_not_wait() {
     .await;
     h.call("POST", "/api/daemon/stop", None).await;
     assert_eq!(h.calls(), vec!["stop-app", "stop sleep=true"]);
-    assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 1);
+    assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 2);
 }
 
 #[tokio::test]
@@ -193,7 +196,7 @@ async fn power_off_waits_for_an_idle_reset_its_own_app_stop_falls_back_to() {
         f.state = "running".into();
         f.motors = Some("enabled".into());
         f.app = Some(json!({"info": {"name": "reachy_mini_radio"}, "state": "running"}));
-        f.idle_reset_polls = 2;
+        f.idle_reset_after_stop = 2;
     })
     .await;
     h.call("POST", "/api/daemon/stop", None).await;
@@ -240,4 +243,20 @@ async fn an_error_from_the_idle_reset_route_reads_as_pending() {
     // It waited (and polled) until the timeout, then powered off.
     assert!(h.fake.lock().unwrap().idle_reset_reads > 1);
     assert_eq!(h.calls(), vec!["stop sleep=true"]);
+}
+
+#[tokio::test]
+async fn power_off_waits_before_stopping_an_app_it_cant_read() {
+    // An unreadable app is stopped as if running; that stop must not land
+    // on the sleep move of a crashed app's idle reset.
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.app = Some(json!({"info": {"name": "reachy_mini_radio"}, "state": "error"}));
+        f.app_status_fails = true;
+        f.idle_reset_polls = 2;
+    })
+    .await;
+    h.call("POST", "/api/daemon/stop", None).await;
+    assert_eq!(h.calls(), vec!["idle-reset done", "stop-app", "stop sleep=false"]);
 }

@@ -46,6 +46,12 @@ pub struct Fake {
     pub idle_reset_status: u16,
     /// `apps/current-app-status` answers 500.
     pub app_status_fails: bool,
+    /// `stop-current-app` starts an idle reset this many reads long
+    /// (reachy-mini 1.14.0's fallback when the return home fails).
+    pub idle_reset_after_stop: u32,
+    /// The app in the slot once the idle reset ends (a remote session
+    /// started one meanwhile).
+    pub app_after_idle_reset: Option<Value>,
 }
 
 pub type FakeState = Arc<Mutex<Fake>>;
@@ -160,6 +166,9 @@ pub async fn fake_daemon(fake: FakeState) -> String {
                     if f.idle_reset_polls == 0 {
                         f.motors = Some("disabled".into());
                         f.calls.push("idle-reset done".into());
+                        if let Some(app) = f.app_after_idle_reset.take() {
+                            f.app = Some(app);
+                        }
                     }
                 }
                 (StatusCode::OK, Json(json!({"pending": pending})))
@@ -276,6 +285,7 @@ pub async fn fake_daemon(fake: FakeState) -> String {
                     return (StatusCode::BAD_REQUEST, Json(json!({"detail": "No app is currently running"})));
                 }
                 f.app = None;
+                f.idle_reset_polls = f.idle_reset_after_stop;
                 (StatusCode::OK, Json(json!({"ok": true})))
             }),
         )
