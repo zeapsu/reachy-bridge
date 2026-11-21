@@ -246,7 +246,11 @@ Source: `request_idle_reset` and `_async_idle_reset` in
   where `request_idle_reset` schedules it with `call_soon_threadsafe` in the
   same step that marks the app `done` or `error`, so a read after the
   controller sees the exit can't miss a reset about to start. No backend or
-  no loop: `false`. A loop that doesn't answer within 1 s: `true`.
+  no loop: `false`. A loop that doesn't answer within 0.5 s: `true`, so a
+  wedged backend loop holds power off for the full timeout and refuses app
+  starts until the daemon restarts. A runtime whose `idle_reset` feature was
+  skipped (a `--check` mismatch) answers 404, which the controller reads as
+  nothing pending: the protection is then off.
 
 ## Apps
 

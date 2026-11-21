@@ -44,6 +44,8 @@ pub struct Fake {
     pub idle_reset_missing: bool,
     /// An error status for every read of the route (0: answer normally).
     pub idle_reset_status: u16,
+    /// `apps/current-app-status` answers 500.
+    pub app_status_fails: bool,
 }
 
 pub type FakeState = Arc<Mutex<Fake>>;
@@ -248,7 +250,13 @@ pub async fn fake_daemon(fake: FakeState) -> String {
         )
         .route(
             "/api/apps/current-app-status",
-            get(|State(f): State<FakeState>| async move { Json(f.lock().unwrap().app.clone().unwrap_or(Value::Null)) }),
+            get(|State(f): State<FakeState>| async move {
+                let f = f.lock().unwrap();
+                if f.app_status_fails {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": "boom"})));
+                }
+                (StatusCode::OK, Json(f.app.clone().unwrap_or(Value::Null)))
+            }),
         )
         .route(
             "/api/apps/list-available/installed",

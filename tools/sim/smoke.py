@@ -138,11 +138,15 @@ class Sampler:
 
     def __init__(self) -> None:
         self.samples: list[tuple[tuple[str, str | None], str | None, bool | None]] = []
+        self.errors: list[str] = []
         self._done = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def _run(self) -> None:
-        sampler = httpx.Client(base_url=DAEMON, timeout=5)
+        with httpx.Client(base_url=DAEMON, timeout=5) as sampler:
+            self._sample(sampler)
+
+    def _sample(self, sampler: httpx.Client) -> None:
         while not self._done.is_set():
             try:
                 s = sampler.get("/api/daemon/status").json()
@@ -152,8 +156,10 @@ class Sampler:
                 r = sampler.get("/api/bridge/idle-reset")
                 pending = r.json().get("pending") if r.status_code == 200 else None
                 self.samples.append((daemon, app, pending))
-            except httpx.HTTPError:
-                pass
+            except (httpx.HTTPError, ValueError) as error:
+                # A non-JSON body (a teardown error page) skips one sample;
+                # it mustn't end the thread and quietly weaken the check.
+                self.errors.append(repr(error))
             time.sleep(0.1)
 
     def __enter__(self) -> Sampler:
@@ -174,7 +180,8 @@ class Sampler:
     def changes(self) -> str:
         """The samples with repeats dropped."""
         out = [f"{d[0]}/{d[1]} app={a} pending={p}" for d, a, p in self.samples]
-        return " -> ".join(x for i, x in enumerate(out) if i == 0 or out[i - 1] != x)
+        changes = " -> ".join(x for i, x in enumerate(out) if i == 0 or out[i - 1] != x)
+        return changes + (f" (skipped samples: {self.errors})" if self.errors else "")
 
 
 def crash_and_catch_idle_reset() -> bool:

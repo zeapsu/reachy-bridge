@@ -32,7 +32,8 @@ logger = logging.getLogger(__name__)
 
 FEATURE = "idle_reset"
 # Answer "pending" rather than guess when the backend loop doesn't answer.
-READ_TIMEOUT_S = 1.0
+# Well under the controller's 2 s daemon timeout, so a slow read still answers.
+READ_TIMEOUT_S = 0.5
 
 
 async def pending(backend: Any) -> bool:
@@ -51,7 +52,7 @@ async def pending(backend: Any) -> bool:
         return await asyncio.wait_for(asyncio.wrap_future(future), READ_TIMEOUT_S)
     except TimeoutError:
         # The controller polls while it waits: one line per read, no trace.
-        logger.warning("Backend loop busy for %.0f s; reporting the idle reset pending", READ_TIMEOUT_S)
+        logger.warning("Backend loop busy for %.1f s; reporting the idle reset pending", READ_TIMEOUT_S)
         return True
     except Exception:
         logger.warning("Could not read the idle reset state; reporting it pending", exc_info=True)

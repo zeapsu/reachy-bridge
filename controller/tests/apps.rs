@@ -120,6 +120,37 @@ async fn app_stop_of_a_running_app_does_not_wait() {
 }
 
 #[tokio::test]
+async fn app_start_while_an_app_runs_is_refused_before_anything_moves() {
+    let h = harness(|f| {
+        f.state = "stopped".into();
+        f.app = Some(json!({"info": {"name": "hello_world"}, "state": "running"}));
+    })
+    .await;
+    let (_, body) = h.call("POST", "/api/apps/start/reachy_mini_radio", None).await;
+    assert_eq!(body["status"], "refused");
+    assert_eq!(body["error"], "An app is already running");
+    assert!(h.calls().is_empty(), "{:?}", h.calls());
+    assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 0);
+}
+
+#[tokio::test]
+async fn app_stop_with_full_access_goes_ahead_when_the_app_cant_be_read() {
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.app = Some(json!({"info": {"name": "hello_world"}, "state": "running"}));
+        f.app_status_fails = true;
+    })
+    .await;
+    let (status, body) = h.call("POST", "/api/apps/stop/hello_world", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "stopping");
+    // Unknown app state: it checked for an idle reset, then stopped.
+    assert_eq!(h.calls(), vec!["stop-app"]);
+    assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 1);
+}
+
+#[tokio::test]
 async fn app_stop_takes_the_power_lock() {
     let h = harness(|f| {
         f.state = "running".into();
