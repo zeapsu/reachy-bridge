@@ -309,10 +309,12 @@ REQUIREMENTS: tuple[Requirement, ...] = (
     ),
     Requirement(
         "speaker_wobble",
-        "a sleep stops the wobble, and the backend keeps its media server",
+        "a sleep or an app stop's return home stops the wobble, and the backend keeps its media server",
         lambda: (
+            _coroutine(_BACKEND, "Backend.reset_to_init")(),
             _source_mentions(_BACKEND, "Backend.goto_sleep", "_quiesce_aim_sources")(),
-            _source_mentions(_BACKEND, "Backend.reset_to_sleep", "_quiesce_aim_sources")(),
+            _source_mentions(_BACKEND, "Backend.reset_to_sleep", "reset_to_init", "goto_sleep")(),
+            _source_mentions(_BACKEND, "Backend.reset_to_init", "_quiesce_aim_sources")(),
             _source_mentions(_BACKEND, "Backend._quiesce_aim_sources", "_media_server", "disable_wobbling")(),
         ),
     ),
@@ -634,6 +636,8 @@ def wrap_wobbling(
     _wrap(Backend, "process_command", process_command)
     _wrap(Backend, "goto_sleep", sleep)
     _wrap(Backend, "reset_to_sleep", sleep)
+    # An app stop returns home through it; inside reset_to_sleep it nests.
+    _wrap(Backend, "reset_to_init", sleep)
     _wrap(Backend, "_quiesce_aim_sources", quiesce)
 
 
