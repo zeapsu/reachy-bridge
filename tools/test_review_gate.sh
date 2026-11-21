@@ -204,7 +204,8 @@ for f in controller/src/auth.rs controller/src/profiles.rs controller/src/main.r
     controller/src/routes/logs.rs Claude.local.md .Claude/settings.local.json web/Agents.md .Cursor/rules/x.mdc \
     Gemini.md .Github/workflows/x.yml .agents/skills/x/SKILL.md .junie/guidelines.md .kiro/steering/x.md \
     .opencode/agent/x.md opencode.json web/opencode.jsonc $'uv.loc\xe2\x84\xaa' $'.cur\xc5\xbfor/rules/x.mdc' \
-    $'controller/src/pro\xef\xac\x81les.rs' $'docs/caf\xc3\xa9.md' $'.\xe2\x84\xaairo/steering/x.md'; do
+    $'controller/src/pro\xef\xac\x81les.rs' $'docs/caf\xc3\xa9.md' $'.\xe2\x84\xaairo/steering/x.md' .cursor .codex .agents .github web/.claude \
+    .Kiro; do
     setup; files web/src/App.tsx "$f"; comment OWNER "Review: clean @$HEAD"
     expect "security path $f" pending "security PR: paths"
 done
@@ -216,6 +217,11 @@ setup; files controller/src/routes/powers.rs runtime/src/reachy_bridge_runtime/a
     runtime/src/reachy_bridge_runtime/upstream_notes.py controller/src/hosts.rs docs/gitmodules.md
 comment OWNER "Review: clean @$HEAD"
 expect "near-miss paths aren't security paths" success
+
+# A newline can't split a name into lines that each look harmless.
+setup; jq -n --arg f $'x\n/.claude/settings.json' '[{filename: "web/src/App.tsx"}, {filename: $f}]' >"$FX/files.json"
+comment OWNER "Review: clean @$HEAD"
+expect "a newline in a file name" pending "security PR: paths"
 
 setup; jq -n '[{filename: "controller/src/login.rs", previous_filename: "controller/src/auth.rs"}]' >"$FX/files.json"
 comment OWNER "Review: clean @$HEAD"

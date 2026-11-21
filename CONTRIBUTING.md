@@ -241,7 +241,9 @@ say-so.
    daemon shim and the apps venv sync, secrets, the installer and udev rules, dependency manifests and lock files,
    build scripts and toolchains, everything under `.github/`, `.gitmodules`, the agent
    rules and every coding agent's config (`CLAUDE.local.md`, `GEMINI.md`, `.cursor/`,
-   `.codex/` and the like), and the gate itself. Label a PR
+   `.codex/` and the like, by their bare names too, so a symlink can't stand in), and
+   the gate itself; a file name with any character outside printable ASCII counts as
+   well, since macOS folds Unicode case (a Kelvin sign is a K). Label a PR
    `security` when it is security-relevant by REVIEW.md's list but touches none of
    those files. Dependabot PRs whose commits are all Dependabot's (or the branch
    updater's merge of `main`) pass without markers when every update is patch or minor,
@@ -258,7 +260,8 @@ say-so.
    sides, N's change against `main` exactly R's reviewed change, no change of base branch,
    and, when R has a `Security review` marker, no `SECURITY_PATHS` file from `main`. It lists
    R's markers; `--post` re-posts exactly those for N. Nothing happens until it is run. When
-   it fails, the reviews run again on N. CI tests the merged commit either way. The check
+   it fails, the reviews run again on N. It refuses file names git quotes or that hold
+   non-ASCII characters. CI tests the merged commit either way. The check
    relies on `main` taking only merge and squash merges (the ruleset): no fast-forwards
    and no merge queue.
 7. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to

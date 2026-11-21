@@ -126,8 +126,8 @@ merged=$(git merge-tree --write-tree "$R" "$M") || rc=$?
 (( rc == 0 )) || { echo "git merge-tree failed ($rc); it needs git 2.38 or newer" >&2; exit 2; }
 [[ $merged == "$(git rev-parse "$N^{tree}")" ]] || fail "${N:0:7} differs from git's own merge (hand edits or another merge strategy)"
 
-# Git quotes names with unusual bytes ("a\303\251"), which the path patterns
-# can't match; such a name isn't a clean catch-up.
+# Git quotes names with control characters, `"` or `\` ("a\tb"), which the
+# path patterns can't match; such a name isn't a clean catch-up.
 from_main=$(g -c core.quotePath=false diff --no-renames --name-only "$R" "$N")
 own=$(g -c core.quotePath=false diff --no-renames --name-only "$M" "$N")
 # Nor is a name outside printable ASCII: macOS folds Unicode case (a Kelvin
