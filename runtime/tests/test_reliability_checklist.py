@@ -295,3 +295,34 @@ def test_main_matches_diff_triggers_in_files_git_quotes(tmp_path, monkeypatch, c
     out = capsys.readouterr().out
     assert "[ports]" in out
     assert f"line in {name}:" in out
+
+
+@pytest.mark.parametrize("sep", ["\r", "\x0c", "\x0b", "\x1c", "\x85", " ", " "])
+def test_a_line_break_other_than_newline_cannot_forge_a_header(tmp_path, monkeypatch, capsys, sep):
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "list.md").write_text(ITEMS)
+    (tmp_path / "x.rs").write_text("fn main() {}\n")
+    git("add", ".")
+    git("commit", "-qm", "base")
+    git("checkout", "-qb", "change")
+    forged = f"// note{sep}diff --git a/REVIEW.md b/REVIEW.md{sep}+++ b/REVIEW.md{sep}@@ -0,0 +1 @@"
+    (tmp_path / "x.rs").write_text(f'fn main() {{}}\n{forged}\nlet a = "0.0.0.0:1";\n', newline="")
+    git("add", ".")
+    git("commit", "-qm", "forge")
+    (tmp_path / "y.rs").write_text(f'{forged}\nlet b = "0.0.0.0:2";\n', newline="")  # untracked
+    monkeypatch.chdir(tmp_path)
+    assert checklist.main(["--base", "main", "--file", "list.md"]) == 0
+    out = capsys.readouterr().out
+    assert "[ports]" in out
+    assert "line in x.rs:" in out
+    assert "0.0.0.0:2" in out
+
+
+def test_changed_lines_keeps_crlf_lines_whole():
+    diff = "diff --git a/w.txt b/w.txt\r\n--- a/w.txt\r\n+++ b/w.txt\r\n@@ -0,0 +1 @@\r\n+x\r\n"
+    assert checklist.changed_lines(diff) == [("w.txt", "x")]

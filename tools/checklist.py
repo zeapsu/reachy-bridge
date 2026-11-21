@@ -149,7 +149,11 @@ def changed_lines(diff: str) -> list[tuple[str, str]]:
     out = []
     path = ""
     in_hunk = False
-    for line in diff.splitlines():
+    # Only "\n" ends a diff line; splitlines() would also split on \r, \f,
+    # \x1c-\x1e, \x85, U+2028 and U+2029 inside a changed line, which could
+    # forge a `diff --git` header and file the rest under another path.
+    for line in diff.split("\n"):
+        line = line.removesuffix("\r")
         if line.startswith("diff --git "):
             in_hunk = False
             path = ""
@@ -184,13 +188,12 @@ def match(items: list[Item], paths: list[str], lines: list[tuple[str, str]]) -> 
 def git(*args: str) -> str:
     # quotePath off: non-ASCII paths come through as they are, not quoted and escaped.
     # (main() passes --text to diff so a .gitattributes `-diff` can't hide lines.)
+    # Bytes, decoded here: text mode would turn a lone \r into a newline.
     return subprocess.run(
         ["git", "-c", "core.quotePath=false", *args],
         check=True,
         capture_output=True,
-        encoding="utf-8",
-        errors="replace",  # --text puts binary files' raw bytes in the diff
-    ).stdout
+    ).stdout.decode("utf-8", "replace")  # --text puts binary files' raw bytes in the diff
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -250,15 +253,15 @@ def main(argv: list[str] | None = None) -> int:
         untracked = [p for p in git("ls-files", "--others", "--exclude-standard", "-z").split("\0") if p]
         paths = {p for p in git("diff", "--name-only", "--no-renames", "-z", base).split("\0") if p}
     except subprocess.CalledProcessError as e:
-        print(f"error: can't diff against {args.base}: {e.stderr.strip()}", file=sys.stderr)
+        print(f"error: can't diff against {args.base}: {e.stderr.decode('utf-8', 'replace').strip()}", file=sys.stderr)
         return 2
     paths |= set(untracked)
     lines = changed_lines(diff)
     # Untracked files are all added lines.
     for path in untracked:
         try:
-            with open(path, encoding="utf-8") as f:
-                lines += [(path, line) for line in f.read().splitlines()]
+            with open(path, encoding="utf-8", newline="") as f:
+                lines += [(path, line.removesuffix("\r")) for line in f.read().split("\n")]
         except (OSError, UnicodeDecodeError):
             pass
 
