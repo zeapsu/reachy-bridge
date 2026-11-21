@@ -533,8 +533,9 @@ def sync_torque_mode(backend: Any) -> bool:
     """Set the motor mode to ``enabled`` when torque is on but the mode says
     ``disabled``; True if it did.
 
-    The app manager's return home after a stop turns torque on with
-    ``enable_motors()``, which leaves ``motor_control_mode`` as it was. Only the
+    Up to 1.13.0 the app manager's return home after a stop turned torque on
+    with ``enable_motors()``, which left ``motor_control_mode`` as it was; since
+    1.14.0 it goes through ``reset_to_init()``, which sets the mode. Only the
     real robot backend tracks torque; the simulators report a mode that is
     always right.
     """
