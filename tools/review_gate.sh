@@ -59,9 +59,12 @@ set -Eeuo pipefail
 # diffs), the review focus and reliability checklist (reviewers read them
 # from main), and this gate, its catch-up check and the local precheck hook.
 # Directories match by their bare name as well, so a symlink called `.cursor`
-# can't stand in for one. Besides this list, any file name with a character
-# outside printable ASCII counts (see below).
-SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|control|sim|audio|logs|apps|host)|routes/(store|sounds|apps|power|logs))\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|upstream|features/((app_bind|sim_apps)(_shim)?|sim_sounds|apps_venv_sync))\.py|web/src/(api/(auth|hf|client|setup)|logic/(auth|setup))\.ts|web/src/components/(Login|Setup)\.tsx|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|(runtime/)?pyproject\.toml|uv\.lock|controller/Cargo\.(toml|lock)|web/(package\.json|bun\.lock)|controller/build\.rs|web/vite\.config\.ts|mise\.toml|tools/(toolchain_versions\.py|build_webrtcsink_jetson\.sh)|tools/udev/[^/]+\.rules|\.gitmodules|\.github(/.+)?|(.+/)?\.(claude|codex|agents|cursor|gemini|windsurf|clinerules|continue|roo|junie|kiro|opencode)(/.+)?|(.+/)?(\.(mcp\.json|cursorrules|windsurfrules|clinerules|aider\.conf\.yml)|opencode\.jsonc?)|\.gitignore|(.+/)?\.gitattributes|(.+/)?(AGENTS(\.override)?|CLAUDE(\.local)?|GEMINI)\.md|CONTRIBUTING\.md|REVIEW\.md|docs/reliability-checklist\.md|tools/checklist\.py|tools/(test_)?(review_gate|catchup_check|precheck)\.sh)$'
+# can't stand in for one; so do the parent directories of the fixed paths
+# above (`Web` on macOS is web/, and a symlink there would swap in another
+# web/package.json). A real directory never appears in a PR's file list, so
+# only a file or symlink in its place matches. Besides this list, any file
+# name with a character outside printable ASCII counts (see below).
+SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|control|sim|audio|logs|apps|host)|routes/(store|sounds|apps|power|logs))\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|upstream|features/((app_bind|sim_apps)(_shim)?|sim_sounds|apps_venv_sync))\.py|web/src/(api/(auth|hf|client|setup)|logic/(auth|setup))\.ts|web/src/components/(Login|Setup)\.tsx|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|(runtime/)?pyproject\.toml|uv\.lock|controller/Cargo\.(toml|lock)|web/(package\.json|bun\.lock)|controller/build\.rs|web/vite\.config\.ts|mise\.toml|tools/(toolchain_versions\.py|build_webrtcsink_jetson\.sh)|tools/udev/[^/]+\.rules|\.gitmodules|\.github(/.+)?|(.+/)?\.(claude|codex|agents|cursor|gemini|windsurf|clinerules|continue|roo|junie|kiro|opencode)(/.+)?|(.+/)?(\.(mcp\.json|cursorrules|windsurfrules|clinerules|aider\.conf\.yml)|opencode\.jsonc?)|\.gitignore|(.+/)?\.gitattributes|(.+/)?(AGENTS(\.override)?|CLAUDE(\.local)?|GEMINI)\.md|CONTRIBUTING\.md|REVIEW\.md|docs/reliability-checklist\.md|tools/checklist\.py|tools/(test_)?(review_gate|catchup_check|precheck)\.sh|controller(/src(/routes)?)?|runtime(/src(/reachy_bridge_runtime(/features)?)?)?|web(/src(/(api|logic|components))?)?|deploy(/systemd)?|tools(/udev)?|docs)$'
 
 # Every page of a list endpoint, as one JSON array.
 list() { gh api --paginate "$1" | jq -s 'add // []'; }
@@ -190,12 +193,12 @@ fi
 # manifests, locks or workflows, and one review covers the update.
 if [[ -z $dependabot ]]; then
     # Ignoring case: on a case-insensitive checkout (macOS) `.Claude/` or
-    # `Claude.local.md` is the file the list names. And any name with a byte
-    # outside printable ASCII counts too: APFS folds Unicode (a Kelvin sign
-    # is a K, so `uv.loc\u212A` is uv.lock there), which no pattern keeps up with.
+    # `Claude.local.md` is the file the list names.
     hits=$(LC_ALL=C grep -iE "$SECURITY_PATHS" <<<"$names" || [[ $? == 1 ]])
-    # Checked per name in jq, before a newline in a name could split it into
-    # harmless-looking lines; logged JSON-quoted.
+    # And any name with a character outside printable ASCII: APFS folds
+    # Unicode (a Kelvin sign is a K, so `uv.loc\u212A` is uv.lock there),
+    # which no pattern keeps up with. Checked per name in jq, before a newline
+    # in a name could split it into harmless-looking lines; logged JSON-quoted.
     odd=$(jq -r '.[] | .filename, (.previous_filename // empty) | select(test("[^ -~]")) | @json' <<<"$files")
     hits=$(printf '%s\n%s\n' "$hits" "$odd" | sed '/^$/d')
     if [[ -n $hits ]]; then

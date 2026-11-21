@@ -205,7 +205,8 @@ for f in controller/src/auth.rs controller/src/profiles.rs controller/src/main.r
     Gemini.md .Github/workflows/x.yml .agents/skills/x/SKILL.md .junie/guidelines.md .kiro/steering/x.md \
     .opencode/agent/x.md opencode.json web/opencode.jsonc $'uv.loc\xe2\x84\xaa' $'.cur\xc5\xbfor/rules/x.mdc' \
     $'controller/src/pro\xef\xac\x81les.rs' $'docs/caf\xc3\xa9.md' $'.\xe2\x84\xaairo/steering/x.md' .cursor .codex .agents .github web/.claude \
-    .Kiro; do
+    .Kiro Docs Web Controller web/src/Logic deploy/Systemd Tools tools/Udev controller/src/Routes \
+    runtime runtime/src/Reachy_bridge_runtime/Features; do
     setup; files web/src/App.tsx "$f"; comment OWNER "Review: clean @$HEAD"
     expect "security path $f" pending "security PR: paths"
 done
@@ -214,7 +215,8 @@ setup; files controller/src/routes/powers.rs runtime/src/reachy_bridge_runtime/a
     web/src/api/power.ts tools/review_gate.sh.bak deploy/systemd/README.md \
     docs/REVIEW.md docs/reliability-checklist.md.bak web/.gitignore docs/AGENTS.md.txt docs/claude/notes.md web/mcp.json \
     docs/CLAUDE.local.md.txt docs/cursor/notes.md tools/udev/README.md tools/udev/sub/x.rules \
-    runtime/src/reachy_bridge_runtime/upstream_notes.py controller/src/hosts.rs docs/gitmodules.md
+    runtime/src/reachy_bridge_runtime/upstream_notes.py controller/src/hosts.rs docs/gitmodules.md \
+    webx docs2 tools/udevx controllers web/srcx
 comment OWNER "Review: clean @$HEAD"
 expect "near-miss paths aren't security paths" success
 

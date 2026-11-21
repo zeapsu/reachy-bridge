@@ -241,7 +241,8 @@ say-so.
    daemon shim and the apps venv sync, secrets, the installer and udev rules, dependency manifests and lock files,
    build scripts and toolchains, everything under `.github/`, `.gitmodules`, the agent
    rules and every coding agent's config (`CLAUDE.local.md`, `GEMINI.md`, `.cursor/`,
-   `.codex/` and the like, by their bare names too, so a symlink can't stand in), and
+   `.codex/` and the like, by their bare names too, as are the parent directories of the
+   listed files, so a symlink can't stand in), and
    the gate itself; a file name with any character outside printable ASCII counts as
    well, since macOS folds Unicode case (a Kelvin sign is a K). Label a PR
    `security` when it is security-relevant by REVIEW.md's list but touches none of
