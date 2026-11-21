@@ -231,6 +231,26 @@ Source: `request_idle_reset` and `_async_idle_reset` in
   (`runtime/.../features/keep_awake.py`) detaches the trigger during
   `stop-current-app`. A requested stop then leaves the robot awake at the
   home pose; crashes and remote drops still put it to sleep.
+- **Not waited for by either stop path.** `daemon/stop?goto_sleep=true` and
+  `stop-current-app` don't cancel or wait for a running idle reset. On 1.13.0
+  they run a competing move (`stop-current-app`'s return home, or a second
+  `reset_to_sleep`) and `daemon/stop` then tears the backend down under the
+  reset. On 1.14.0 they stop its move part-way: the head can stay mid-pose,
+  or drop when the sleep move's torque cut lands where it stopped, and the
+  stop fails on the move guard with the daemon in `error` (#292). No upstream
+  endpoint shows the reset (`is_move_running` reaches only WebRTC clients,
+  and `move/running` lists only REST moves).
+- **Bridge route (`features/idle_reset.py`, #292):** `GET
+  /api/bridge/idle-reset` answers `{"pending": true}` from the reset's grace
+  period until it ends. It reads `_idle_reset_task` on the backend's loop,
+  where `request_idle_reset` schedules it with `call_soon_threadsafe` in the
+  same step that marks the app `done` or `error`, so a read after the
+  controller sees the exit can't miss a reset about to start. No backend or
+  no loop: `false`. A loop that doesn't answer within 0.5 s: `true`, so a
+  wedged backend loop holds power off for the full timeout and refuses app
+  starts until the daemon restarts. A runtime whose `idle_reset` feature was
+  skipped (a `--check` mismatch) answers 404, which the controller reads as
+  nothing pending: the protection is then off.
 
 ## Apps
 
@@ -343,3 +363,17 @@ These follow from the sections above. The first four are the bugs found in
    while the daemon stays `running`.
 7. Don't send expressions, gotos or manual control while an app is running:
    the slot lock doesn't stop them.
+8. Before `daemon/stop` or `stop-current-app`, and before waking the robot
+   for an app, wait until `bridge/idle-reset` reports no reset pending (up to
+   30 s, which covers the 15 s hand-off grace), then read the robot state
+   again: an asleep robot gets `goto_sleep=false` (rule 5). Power off goes
+   ahead after the timeout; app start and stop are refused. With no reset
+   pending (a requested stop, a robot already asleep) each check is one
+   read. Power off stops a `starting` or `running` app at once (it holds
+   the robot, so no reset is pending, whatever the route says), checks
+   before stopping an app it can't read (stopped as if running), and checks
+   again after the stop (1.14.0's fallback) unless the first wait timed out,
+   so a stuck reset costs one timeout. An app
+   stop waits only for an `error` app or one it can't read: a running app
+   holds the robot, and with no app or a `done` one the daemon stops
+   nothing. After any wait, read the app again before acting on it.

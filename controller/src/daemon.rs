@@ -130,6 +130,20 @@ impl Daemon {
         Some(moves.iter().filter_map(|m| m.get("uuid").and_then(Value::as_str).map(str::to_string)).collect())
     }
 
+    /// Whether the daemon's idle reset (the sleep after an app exits on its
+    /// own or a remote session drops) is waiting out its grace or moving, from
+    /// the runtime's `GET /api/bridge/idle-reset` (#292). `None` when the
+    /// daemon can't be read. A daemon without the route has nothing to report
+    /// (`false`); an error answer, or one without `pending`, reads as pending.
+    pub async fn idle_reset_pending(&self) -> Option<bool> {
+        match self.get("bridge/idle-reset").await {
+            Ok(body) => Some(body.get("pending").and_then(Value::as_bool).unwrap_or(true)),
+            Err(DaemonError::Refused { status: 404, .. }) => Some(false),
+            Err(DaemonError::Refused { .. }) => Some(true),
+            Err(DaemonError::Unavailable) => None,
+        }
+    }
+
     pub fn ws_url(&self, path: &str) -> String {
         let base = self.base_url().replacen("http://", "ws://", 1).replacen("https://", "wss://", 1);
         format!("{base}/api/{}", path.trim_start_matches('/'))

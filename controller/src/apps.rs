@@ -32,7 +32,8 @@ pub struct DaemonApps {
     tracked: Mutex<Tracked>,
 }
 
-fn is_active(current: Option<&Value>) -> bool {
+/// The daemon's app is `starting` or `running` (it holds the robot).
+pub fn is_active(current: Option<&Value>) -> bool {
     matches!(state_of(current), Some("starting" | "running"))
 }
 

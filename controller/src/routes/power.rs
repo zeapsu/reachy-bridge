@@ -27,6 +27,9 @@ const MOVES_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 /// The sleep move takes about 5 s, then the daemon tears the backend down.
 pub const POWER_OFF_TIMEOUT: Duration = Duration::from_secs(40);
 const WAKE_TIMEOUT: Duration = Duration::from_secs(20);
+/// The idle reset waits 1.5 s (15 s after a remote hand-off), then takes about
+/// 5-8 s to put the robot to sleep (daemon-contract.md, "Idle reset").
+pub const IDLE_RESET_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn router() -> Router<Shared> {
     Router::new()
@@ -49,6 +52,27 @@ where
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     false
+}
+
+/// Wait for the daemon's idle reset to finish; false if it is still pending
+/// after `idle_reset_timeout`. Call with `power_lock` held.
+///
+/// When an app exits on its own or a remote session drops, the daemon puts
+/// the robot to sleep a moment later. `daemon/stop` and `stop-current-app` stop
+/// that sleep move part-way: the head can stay mid-pose, or drop when the
+/// sleep move's torque cut lands where it stopped, and on reachy-mini 1.14.0
+/// the stop fails on the move guard and leaves the daemon in `error` (#292).
+/// With no reset pending (a requested stop, an asleep robot) this is one
+/// read and no wait. A daemon that can't be read at first isn't waited for:
+/// the next call reports it. Once a reset is seen, only a read saying it has
+/// ended stops the wait, so a slow read mid-reset doesn't cut it short.
+pub async fn settle_idle_reset(state: &Shared) -> bool {
+    let daemon = &state.daemon;
+    if daemon.idle_reset_pending().await != Some(true) {
+        return true;
+    }
+    tracing::info!("waiting for the daemon's idle reset to put the robot to sleep");
+    wait_until(state.idle_reset_timeout, || async { daemon.idle_reset_pending().await == Some(false) }).await
 }
 
 /// Make sure the robot is on, the motors enabled and the wake-up move done.
@@ -114,12 +138,31 @@ pub async fn power_off_locked(state: &Shared) -> ApiResult<Value> {
     let daemon = &state.daemon;
     // No drive targets during the sleep move.
     state.player.abort_drive();
-    if state.apps.refresh_active().await {
+    // An app that exited on its own (or a dropped remote session) leaves the
+    // daemon putting the robot to sleep; let it finish, then power off from
+    // asleep. A running app holds the robot, so no reset is pending: stop it
+    // at once, whatever the route says. An app that can't be read is stopped
+    // as if running, so wait first then, as for no app or one that ended:
+    // that stop would cut a crashed app's sleep move short (#292). Past the
+    // timeout something is stuck, and powering off is still what was asked;
+    // don't wait a second time then.
+    let current = state.apps.current().await;
+    let running = current.as_ref().is_ok_and(|c| crate::apps::is_active(c.as_ref()));
+    let mut settled = running || settle_idle_reset(state).await;
+    if running || current.is_err() {
         let _ = daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await;
     }
     // An expression (or its return home) still playing would run interleaved
     // with the sleep move.
     state.player.halt(MOVES_STOP_TIMEOUT).await;
+    // reachy-mini 1.14.0 falls back to an idle reset when an app stop's
+    // return home fails.
+    if settled {
+        settled = settle_idle_reset(state).await;
+    }
+    if !settled {
+        tracing::warn!("idle reset still running after {:?}; powering off anyway", state.idle_reset_timeout);
+    }
     // Already asleep: skip the sleep move. It re-enables the motors and lifts
     // the head first, so the robot would seem to wake before sleeping.
     let asleep = daemon.status().await.is_some_and(|s| robot_state(&s) == "asleep");

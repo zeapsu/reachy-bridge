@@ -22,6 +22,7 @@ import sys
 from reachy_bridge_runtime import platforms, upstream
 from reachy_bridge_runtime.features import (
     app_bind,
+    idle_reset,
     keep_awake,
     kinematics,
     media,
@@ -38,6 +39,7 @@ logger = logging.getLogger("reachy_bridge_runtime")
 # installer is registered before the daemon builds its app.
 FEATURES = {
     app_bind.FEATURE: app_bind.apply,
+    idle_reset.FEATURE: idle_reset.apply,
     keep_awake.FEATURE: keep_awake.apply,
     kinematics.FEATURE: kinematics.apply,
     media_return.FEATURE: media_return.apply,
@@ -48,13 +50,15 @@ FEATURES = {
     wobble.FEATURE: wobble.apply,
 }
 # On every platform; the rest only where the platform adapter enables them.
-CORE_FEATURES = frozenset({app_bind.FEATURE, keep_awake.FEATURE, kinematics.FEATURE, media_return.FEATURE})
+CORE_FEATURES = frozenset(
+    {app_bind.FEATURE, idle_reset.FEATURE, keep_awake.FEATURE, kinematics.FEATURE, media_return.FEATURE}
+)
 # Features whose mismatch or failure stops startup, like a daemon mismatch:
 # without them the daemon would run apps open on the LAN (#186), or a sim
 # daemon's apps would drive the real robot (#218).
 FATAL_FEATURES = frozenset({app_bind.FEATURE, sim_apps.FEATURE})
 # Features that add routes to the daemon app, so need the "routes" hooks.
-ROUTE_FEATURES = frozenset({kinematics.FEATURE, "audio_levels", "camera", sim_sounds.FEATURE})
+ROUTE_FEATURES = frozenset({idle_reset.FEATURE, kinematics.FEATURE, "audio_levels", "camera", sim_sounds.FEATURE})
 # Features that read the daemon's media; off under --no-media.
 MEDIA_FEATURES = frozenset({"audio_levels", "camera", wobble.FEATURE})
 
