@@ -14,7 +14,7 @@ HEAD=0123456789abcdef0123456789abcdef01234567
 OLD=fedcba9876543210fedcba9876543210fedcba98
 
 mkdir -p "$ROOT/bin"
-# The stub serves $ROOT/fx/{pr,files,comments,commits,shared}.json by endpoint
+# The stub serves $ROOT/fx/{pr,files,comments,commits,shared,timeline,events}.json by endpoint
 # (pr-<n>.json for PR n when it exists), fails an endpoint when
 # $ROOT/fx/fail-<name> exists (fail-statuses-<k>: only the next k status
 # POSTs), and logs a status POST as "<sha> <state> <description>".
@@ -39,6 +39,8 @@ for a in "${args[@]}"; do
         repos/*/pulls/*/files) [[ -e $FX/fail-files ]] && exit 1; cat "$FX/files.json"; exit 0 ;;
         repos/*/pulls/*/commits) [[ -e $FX/fail-commits ]] && exit 1; cat "$FX/commits.json"; exit 0 ;;
         repos/*/issues/*/comments) [[ -e $FX/fail-comments ]] && exit 1; cat "$FX/comments.json"; exit 0 ;;
+        repos/*/issues/*/timeline) [[ -e $FX/fail-timeline ]] && exit 1; cat "$FX/timeline.json" 2>/dev/null || echo '[]'; exit 0 ;;
+        repos/*/issues/*/events) [[ -e $FX/fail-events ]] && exit 1; cat "$FX/events.json" 2>/dev/null || echo '[]'; exit 0 ;;
         repos/*/pulls/*) n=${a##*/}; if [[ -e $FX/pr-$n.json ]]; then cat "$FX/pr-$n.json"; else cat "$FX/pr.json"; fi; exit 0 ;;
     esac
 done
@@ -318,6 +320,23 @@ expect "near misses: pending" pending
 if grep -q "(another commit)" "$FX/out" && grep -q "other text in the comment" "$FX/out"; then echo "ok: near misses explained in the log"
 else fail "near misses not explained"; cat "$FX/out"; fi
 
+# A PR whose base changed: only markers posted after the change count (#310).
+setup; comment OWNER "Review: clean @$HEAD"
+echo '[{"event": "commented"}, {"event": "base_ref_changed", "created_at": "2026-01-01T00:00:00Z"}]' >"$FX/timeline.json"
+expect "marker from before a base change" pending "Needs Review"
+if grep -q "posted before the base branch changed" "$FX/out"; then echo "ok: base change explained in the log"
+else fail "base change not explained"; cat "$FX/out"; fi
+echo '[{"event": "base_ref_changed", "created_at": "2025-12-31T00:00:00Z"}]' >"$FX/timeline.json"
+expect "marker from after a base change" success
+rm "$FX/timeline.json"
+echo '[{"event": "automatic_base_change_succeeded", "created_at": "2026-01-02T00:00:00Z"}]' >"$FX/events.json"
+expect "marker from before an automatic base change" pending "Needs Review"
+rm "$FX/events.json"
+# The retarget's own run, before the timeline shows the change.
+jq '.updated_at = "2026-01-01T00:00:05Z"' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"
+BASE_CHANGED=feature expect "retarget run: markers from before the PR's last update" pending "Needs Review"
+expect "the same markers on a later run once nothing says the base changed" success
+
 # A failing API call fails the run and replaces any earlier pass.
 setup; files controller/src/auth.rs; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-files"
 broken "files listing fails: error, not a one-marker pass"
@@ -327,6 +346,14 @@ setup "dependabot[bot]"; touch "$FX/fail-commits"
 broken "Dependabot commits listing fails: error"
 setup; touch "$FX/fail-shared"
 broken "shared-head listing fails: error"
+setup; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-timeline"
+broken "timeline listing fails: error"
+setup; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-events"
+broken "events listing fails: error"
+setup; comment OWNER "Review: clean @$HEAD"; echo '[1]' >"$FX/timeline.json"
+broken "malformed timeline: error"
+setup; comment OWNER "Review: clean @$HEAD"; echo '[{"event": "base_ref_changed"}]' >"$FX/timeline.json"
+broken "base change with no time: error"
 setup; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-statuses"
 rm -f "$FX/status.log"
 if bash "$GATE" >"$FX/out" 2>&1; then fail "status POST fails: gate succeeded"
@@ -357,7 +384,7 @@ expect "closing a PR re-checks the open PR with the same head" success
 jq '.base.ref = "feature" | .state = "open"' "$FX/pr.json" >"$FX/pr-7.json"
 jq -n --arg h "$HEAD" '[{number: 7, state: "open", base: {ref: "feature"}, head: {sha: $h}},
     {number: 9, state: "open", base: {ref: "main"}, head: {sha: $h}}]' >"$FX/shared.json"
-expect "retargeting a PR away from main re-checks the PR with the same head" success
+BASE_CHANGED=main expect "retargeting a PR away from main re-checks the PR with the same head" success
 jq '.state = "closed"' "$FX/pr.json" >"$FX/pr-7.json"
 cp "$FX/pr-7.json" "$FX/pr-9.json"
 jq -n --arg h "$HEAD" '[{number: 7, state: "closed", base: {ref: "main"}, head: {sha: $h}},

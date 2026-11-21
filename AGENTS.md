@@ -193,7 +193,8 @@ contributors stop at a ready PR with their review results in it.
    exact format is in CONTRIBUTING.md). Before posting, check that `gh api user -q .login` matches
    `gh repo view --json owner -q .owner.login`; if not, stop and tell the owner. Any new push,
    including a merge of `main`, needs fresh markers, except a clean catch-up with `main`
-   checked by `bash tools/catchup_check.sh <n>` from a checkout of current `main`. The
+   checked by `bash tools/catchup_check.sh <n>` from a checkout of current `main` (it relies
+   on `main` taking no fast-forwards and no merge queue; keep it that way). The
    `review` status check (#302) stays pending until the markers are there for the current
    head; a missing marker is a skipped review, not a formality. Wait with
    `gh pr checks <n> --watch` and confirm the `review` row passed before merging. The marker

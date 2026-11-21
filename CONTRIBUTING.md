@@ -225,8 +225,10 @@ say-so.
    below the marker). Don't edit a marker comment; post a new one. The required `review` check
    (`tools/review_gate.sh`, #302) stays pending until the repo owner's account has
    posted them for the PR's current head, so a new push, including a merge of `main`,
-   needs fresh markers (except after a clean catch-up with `main`, step 6); and a head
-   commit shared by two open PRs stays pending. Post markers only from the owner's
+   needs fresh markers (except after a clean catch-up with `main`, checked with
+   `bash tools/catchup_check.sh <n>` from a checkout of current `main`, step 6); so does a
+   PR whose base branch changed, since markers from before the change reviewed another
+   diff; and a head commit shared by two open PRs stays pending. Post markers only from the owner's
    account: check that `gh api user -q .login` matches
    `gh repo view --json owner -q .owner.login` first. Get the
    head with `gh pr view <n> --json headRefOid -q .headRefOid`, and wait for the check
@@ -257,7 +259,8 @@ say-so.
    and, when R has a `Security review` marker, no `SECURITY_PATHS` file from `main`. It lists
    R's markers; `--post` re-posts exactly those for N. Nothing happens until it is run. When
    it fails, the reviews run again on N. CI tests the merged commit either way. The check
-   relies on `main` taking only merge and squash merges (the ruleset), never fast-forwards.
+   relies on `main` taking only merge and squash merges (the ruleset): no fast-forwards
+   and no merge queue.
 7. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
    `main` directly. Only Dependabot's patch and minor PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
    again.

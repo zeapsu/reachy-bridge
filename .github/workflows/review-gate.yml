@@ -76,4 +76,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
+          # Set on the run a retarget starts (an `edited` event with a new base).
+          BASE_CHANGED: ${{ github.event.changes.base.ref.from }}
         run: bash tools/review_gate.sh
