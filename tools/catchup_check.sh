@@ -12,8 +12,9 @@
 # - git merges R and M with no conflicts into exactly N's tree, so the merge
 #   has no hand edits;
 # - no file differs both between R and N (came from main) and between M and N
-#   (the PR's own changes), so every file in N is byte for byte the reviewed
-#   PR's or main's;
+#   (the PR's own changes), names compared ignoring case (they collide on a
+#   case-insensitive checkout), so every file in N is byte for byte the
+#   reviewed PR's or main's;
 # - R and M have one merge base, on main's first-parent history: the base
 #   R's reviewer diffed against;
 # - N's diff against M equals R's diff against that base (paths, modes and
@@ -30,6 +31,13 @@
 # --post then posts each of R's markers for N and nothing else, so it never
 # adds a marker no reviewer gave; the review gate decides whether they are
 # enough for N. Files that don't overlap can still interact; CI tests N.
+# A --post that fails partway says which markers it posted; the gate stays
+# pending until the rest are there.
+#
+# It needs a full clone and git 2.38 or newer (merge-tree --write-tree), and
+# relies on main taking only merge and squash merges: no fast-forwards and no
+# merge queue, which could put a commit on main's first-parent history that
+# the PR's reviewers never diffed against.
 #
 # Overrides for tests: GH_REPO (owner/name) and CATCHUP_REMOTE (a git URL).
 set -euo pipefail
@@ -53,6 +61,11 @@ export GIT_NO_REPLACE_OBJECTS=1
 g() { git -c diff.relative=false "$@"; }
 [[ $(git rev-parse --is-shallow-repository) == false ]] \
     || { echo "shallow clone: run git fetch --unshallow first" >&2; exit 2; }
+if ! [[ $(git version) =~ ^git\ version\ ([0-9]+)\.([0-9]+) ]] \
+    || (( BASH_REMATCH[1] < 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] < 38) )); then
+    echo "needs git 2.38 or newer (merge-tree --write-tree); this is $(git version)" >&2
+    exit 2
+fi
 
 repo=${GH_REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}
 pr=$(gh api "repos/$repo/pulls/$PR")
@@ -87,19 +100,23 @@ jq -e -s 'add | any(.[]; (.event // "") | strings | test("^(base_ref_changed|aut
 (( rc != 0 )) || fail "#$PR's base branch was changed; its earlier reviews may not cover what it now merges"
 (( rc == 1 )) || { echo "can't read #$PR's timeline (jq exit $rc)" >&2; exit 2; }
 
-read -r -a parents <<<"$(git rev-list --parents -n1 "$N")"
+# (Each listing into a variable, so a failed git call stops here with its
+# own message instead of reading as an empty answer.)
+line=$(git rev-list --parents -n1 "$N") || fail "can't read ${N:0:7}'s parents"
+read -r -a parents <<<"$line"
 (( ${#parents[@]} == 3 )) || fail "${N:0:7} is not a merge of two commits"
 R=${parents[1]} M=${parents[2]}
-# (A here-string, not a pipe: grep -q would end rev-list early under pipefail.)
-grep -qx "$M" <<<"$(git rev-list --first-parent refs/catchup/main)" \
+spine=$(git rev-list --first-parent refs/catchup/main) || fail "can't list $default's first-parent history"
+# (A here-string, not a pipe: grep -q would end the listing early under pipefail.)
+grep -qx "$M" <<<"$spine" \
     || fail "${N:0:7} merged ${M:0:7}, which is not on $default (or the PR's commit isn't the first parent)"
 
 # The reviewer of R saw its diff from where it left main's first-parent
 # history; the merge must use that same base. A base that moved (main took in
 # a commit from R's own history by a merge) or several bases would let N
 # differ from main in ways no reviewer saw.
-base=$(git merge-base --all "$R" "$M")
-if ! [[ $base =~ ^[0-9a-f]{40}$ ]] || ! grep -qx "$base" <<<"$(git rev-list --first-parent refs/catchup/main)"; then
+base=$(git merge-base --all "$R" "$M") || fail "${R:0:7} and ${M:0:7} have no merge base"
+if ! [[ $base =~ ^[0-9a-f]{40}$ ]] || ! grep -qx "$base" <<<"$spine"; then
     fail "${R:0:7} and ${M:0:7} don't share one merge base on $default's first-parent history"
 fi
 
@@ -109,19 +126,29 @@ merged=$(git merge-tree --write-tree "$R" "$M") || rc=$?
 (( rc == 0 )) || { echo "git merge-tree failed ($rc); it needs git 2.38 or newer" >&2; exit 2; }
 [[ $merged == "$(git rev-parse "$N^{tree}")" ]] || fail "${N:0:7} differs from git's own merge (hand edits or another merge strategy)"
 
-# Git quotes names with unusual bytes ("a\303\251"), which the path patterns
-# can't match; such a name isn't a clean catch-up.
+# Git quotes names with control characters, `"` or `\` ("a\tb"), which the
+# path patterns can't match; such a name isn't a clean catch-up.
 from_main=$(g -c core.quotePath=false diff --no-renames --name-only "$R" "$N")
 own=$(g -c core.quotePath=false diff --no-renames --name-only "$M" "$N")
-if grep -q '^"' <<<"$from_main"$'\n'"$own"; then fail "a changed file name has quotes or control characters"; fi
-both=$(comm -12 <(sort <<<"$from_main") <(sort <<<"$own") | sed '/^$/d')
-[[ -z $both ]] || fail "main changed files the PR changes too: $(tr '\n' ' ' <<<"$both")"
+# Nor is a name outside printable ASCII: macOS folds Unicode case (a Kelvin
+# sign is a K), so it can be a security path or collide with another name.
+if LC_ALL=C grep -qE '^"|[^ -~]' <<<"$from_main"$'\n'"$own"; then
+    fail "a changed file name has quotes, control characters or non-ASCII characters"
+fi
+# Ignoring case: README and readme are one file on a case-insensitive checkout.
+lower() { tr '[:upper:]' '[:lower:]' <<<"$1" | LC_ALL=C sort -u; }
+both=$(LC_ALL=C comm -12 <(lower "$from_main") <(lower "$own") | sed '/^$/d')
+[[ -z $both ]] || fail "main changed files the PR changes too: $(tr '\n' ' ' <<<"$both")(names in lower case)"
 
 # The invariant itself, whatever the merge machinery or local settings did:
 # N's change against M is exactly R's reviewed change against its base (same
 # paths, modes and blobs).
+# (Into variables first: a failed diff then stops the script, where inside
+# [[ ]] two empty outputs would compare equal.)
 raw() { g diff --raw --no-abbrev --no-renames --ignore-submodules=none "$@"; }
-[[ $(raw "$base" "$R") == "$(raw "$M" "$N")" ]] \
+reviewed=$(raw "$base" "$R")
+now=$(raw "$M" "$N")
+[[ $reviewed == "$now" ]] \
     || fail "${N:0:7}'s change against $default isn't exactly what ${R:0:7}'s reviewers saw"
 
 comments=$(gh api --paginate "repos/$repo/issues/$PR/comments" | jq -s 'add // []')
@@ -135,7 +162,7 @@ markers=$(jq -r --arg sha "$R" --arg footer "$FOOTER" '.[]
     | sub(" clean @.*"; "")' <<<"$comments" | sort -u)
 grep -qx 'Review:' <<<"$markers" || fail "${R:0:7} has no owner Review marker to reuse"
 if grep -qx 'Security review:' <<<"$markers"; then
-    hits=$(grep -E "$security_paths" <<<"$from_main" || [[ $? == 1 ]])
+    hits=$(LC_ALL=C grep -iE "$security_paths" <<<"$from_main" || [[ $? == 1 ]])  # any case, as the gate
     [[ -z $hits ]] || fail "security PR, and main brought in security paths: $(tr '\n' ' ' <<<"$hits")"
 fi
 
@@ -146,6 +173,10 @@ echo "markers on ${R:0:7}: $(tr '\n' ' ' <<<"$markers")"
 owner=${repo%%/*}
 [[ $(gh api user -q .login) == "$owner" ]] || { echo "not posting: gh isn't logged in as $owner" >&2; exit 2; }
 while read -r name; do
-    gh api -X POST "repos/$repo/issues/$PR/comments" -f body="$name clean @$N" >/dev/null
+    if ! gh api -X POST "repos/$repo/issues/$PR/comments" -f body="$name clean @$N" >/dev/null; then
+        echo "posting $name clean @$N failed; the markers above were posted, the rest weren't." >&2
+        echo "The review gate stays pending until all are there: run --post again or post the rest by hand." >&2
+        exit 2
+    fi
     echo "posted: $name clean @$N"
 done <<<"$markers"

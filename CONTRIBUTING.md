@@ -225,8 +225,10 @@ say-so.
    below the marker). Don't edit a marker comment; post a new one. The required `review` check
    (`tools/review_gate.sh`, #302) stays pending until the repo owner's account has
    posted them for the PR's current head, so a new push, including a merge of `main`,
-   needs fresh markers (except after a clean catch-up with `main`, step 6); and a head
-   commit shared by two open PRs stays pending. Post markers only from the owner's
+   needs fresh markers (except after a clean catch-up with `main`, checked with
+   `bash tools/catchup_check.sh <n>` from a checkout of current `main`, step 6); so does a
+   PR whose base branch changed, since markers from before the change reviewed another
+   diff; and a head commit shared by two open PRs stays pending. Post markers only from the owner's
    account: check that `gh api user -q .login` matches
    `gh repo view --json owner -q .owner.login` first. Get the
    head with `gh pr view <n> --json headRefOid -q .headRefOid`, and wait for the check
@@ -235,9 +237,14 @@ say-so.
    what's missing. The gate treats a PR as security-relevant when it has the `security`
    or `auth` label or changes a file in the script's `SECURITY_PATHS`: login, sessions, pairing and setup and the guards and
    headers that apply them, the app proxy, bind addresses and what's exposed, request
-   signing, app binding, secrets, the installer, dependency manifests and lock files,
-   build scripts and toolchains, everything under `.github/`, the agent rules and
-   agent config, and the gate itself. Label a PR
+   signing, app binding, the host checks, the power, apps and logs routes, the upstream
+   daemon shim and the apps venv sync, secrets, the installer and udev rules, dependency manifests and lock files,
+   build scripts and toolchains, everything under `.github/`, `.gitmodules`, the agent
+   rules and every coding agent's config (`CLAUDE.local.md`, `GEMINI.md`, `.cursor/`,
+   `.codex/` and the like, by their bare names too, as are the parent directories of the
+   listed files, so a symlink can't stand in), and
+   the gate itself; a file name with any character outside printable ASCII counts as
+   well, since macOS folds Unicode case (a Kelvin sign is a K). Label a PR
    `security` when it is security-relevant by REVIEW.md's list but touches none of
    those files. Dependabot PRs whose commits are all Dependabot's (or the branch
    updater's merge of `main`) pass without markers when every update is patch or minor,
@@ -254,8 +261,10 @@ say-so.
    sides, N's change against `main` exactly R's reviewed change, no change of base branch,
    and, when R has a `Security review` marker, no `SECURITY_PATHS` file from `main`. It lists
    R's markers; `--post` re-posts exactly those for N. Nothing happens until it is run. When
-   it fails, the reviews run again on N. CI tests the merged commit either way. The check
-   relies on `main` taking only merge and squash merges (the ruleset), never fast-forwards.
+   it fails, the reviews run again on N. It refuses file names git quotes or that hold
+   non-ASCII characters. CI tests the merged commit either way. The check
+   relies on `main` taking only merge and squash merges (the ruleset): no fast-forwards
+   and no merge queue.
 7. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
    `main` directly. Only Dependabot's patch and minor PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
    again.

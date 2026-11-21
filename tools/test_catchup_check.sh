@@ -28,7 +28,11 @@ case "$*" in
     "api --paginate repos/owner/repo/issues/1/events")
         [[ -e $FX/fail-events ]] && { echo '[]'; exit 1; }
         cat "$FX/events.json" 2>/dev/null || echo '[]' ;;
-    "api -X POST repos/owner/repo/issues/1/comments -f body="*) all="$*"; echo "${all#*body=}" >>"$FX/posted.log" ;;
+    "api -X POST repos/owner/repo/issues/1/comments -f body="*)
+        # fail-post-<k>: the k-th post fails.
+        k=$(( $(cat "$FX/posted.log" 2>/dev/null | wc -l) + 1 ))
+        [[ -e $FX/fail-post-$k ]] && exit 1
+        all="$*"; echo "${all#*body=}" >>"$FX/posted.log" ;;
     *) echo "stub gh: unexpected call: $*" >&2; exit 1 ;;
 esac
 EOF
@@ -130,6 +134,10 @@ expect "security PR, security path from main" 1 "security paths: AGENTS.md"
 comments "OWNER|no|Review: clean @$R"
 expect "non-security PR, security path from main" 0 "clean catch-up"
 
+setup; commit Claude.local.md hooks main-local-rules; catchup; publish
+comments "OWNER|no|Review: clean @$R" "OWNER|no|Security review: clean @$R" "OWNER|no|Second review: clean @$R"
+expect "security path from main in another case" 1 "security paths: Claude.local.md"
+
 setup; commit b.txt b2 main-b; catchup; publish
 comments "CONTRIBUTOR|no|Review: clean @$R"
 expect "a contributor's marker doesn't count" 1 "no owner Review marker"
@@ -198,7 +206,12 @@ expect "closed PR" 1 "is not open"
 # A name git still quotes (a tab in it) can't be matched against the paths.
 setup; mkdir -p .github; commit $'.github/a\tb.yml' x main-odd; catchup; publish
 comments "OWNER|no|Review: clean @$R" "OWNER|no|Security review: clean @$R" "OWNER|no|Second review: clean @$R"
-expect "unusual file name" 1 "quotes or control characters"
+expect "unusual file name" 1 "quotes, control characters"
+
+# A non-ASCII name: on macOS a Kelvin sign is a K, so this is uv.lock.
+setup; commit $'uv.loc\xe2\x84\xaa' x main-kelvin; catchup; publish
+comments "OWNER|no|Review: clean @$R"
+expect "non-ASCII file name" 1 "non-ASCII characters"
 
 # A Security review marker without a Review one isn't enough.
 setup; commit b.txt b2 main-b; catchup; publish
@@ -275,6 +288,64 @@ setup; commit b.txt b2 main-b; catchup; publish
 git rev-parse main~1 >"$FX/main.sha"
 comments "OWNER|no|Review: clean @$R"
 expect "fetched main isn't GitHub's" 1 "isn't GitHub's main"
+
+# Fail-closed paths (#310).
+
+# A shallow clone can't see the history the check walks.
+setup; commit b.txt b2 main-b; catchup; publish
+comments "OWNER|no|Review: clean @$R"
+git clone -q --depth 1 --branch main "file://$CATCHUP_REMOTE" "$ROOT/shallow$n"
+cd "$ROOT/shallow$n"
+expect "shallow clone" 2 "shallow clone"
+
+# git older than 2.38 has no merge-tree --write-tree.
+mkdir -p "$ROOT/oldgit"
+real_git=$(command -v git)
+cat >"$ROOT/oldgit/git" <<EOF
+#!/usr/bin/env bash
+[[ \$1 == version ]] && { echo "git version 2.37.1"; exit 0; }
+exec "$real_git" "\$@"
+EOF
+chmod +x "$ROOT/oldgit/git"
+setup; commit b.txt b2 main-b; catchup; publish
+comments "OWNER|no|Review: clean @$R"
+PATH="$ROOT/oldgit:$PATH" expect "git older than 2.38" 2 "needs git 2.38"
+
+# A --post that fails partway says what it posted and fails.
+setup; commit b.txt b2 main-b; catchup; publish
+comments "OWNER|no|Review: clean @$R" "OWNER|no|Security review: clean @$R" "OWNER|no|Second review: clean @$R"
+touch "$FX/fail-post-2"
+expect "--post failing partway" 2 "the rest weren't" --post
+(( $(wc -l <"$FX/posted.log") == 1 )) || { echo "FAIL partial --post: posted $(wc -l <"$FX/posted.log")"; fails=$((fails + 1)); }
+
+# Chained catch-ups: N2 merges main again into N1, whose markers were
+# re-posted. N1's markers count; R's alone don't.
+setup; commit b.txt b2 main-b; catchup; publish
+N1=$N
+commit a.txt a2 main-a; catchup; publish
+comments "OWNER|no|Review: clean @$N1"
+expect "chained catch-up reuses N1's markers" 0 "into reviewed ${N1:0:7}"
+comments "OWNER|no|Review: clean @$R"
+expect "chained catch-up: R's markers aren't N1's" 1 "no owner Review marker"
+
+# Names that differ only in case are one file on a case-insensitive checkout.
+# Built with plumbing, so it works on such a file system too.
+setup
+blob=$(echo other | git hash-object -w --stdin)
+GIT_INDEX_FILE=$FX/index git read-tree main
+GIT_INDEX_FILE=$FX/index git update-index --add --cacheinfo "100644,$blob,PR.txt"
+git update-ref refs/heads/main "$(git commit-tree "$(GIT_INDEX_FILE=$FX/index git write-tree)" -p main -m case)"
+git update-ref refs/heads/pr "$(git commit-tree "$(git merge-tree --write-tree pr main)" -p pr -p main -m catchup)"
+publish; comments "OWNER|no|Review: clean @$R"
+expect "case-colliding file names" 1 "main changed files the PR changes too: pr.txt"
+
+# Histories with no merge base.
+setup
+git checkout -q --orphan lone; git rm -rqf .; commit z.txt z lone-root
+R=$(git rev-parse HEAD); git branch -qf pr lone; git checkout -q pr
+git merge -q --no-edit --allow-unrelated-histories main >/dev/null; git checkout -q main
+publish; comments "OWNER|no|Review: clean @$R"
+expect "no merge base" 1 "have no merge base"
 
 (( fails == 0 )) || { echo "$fails failed"; exit 1; }
 echo "all passed"
