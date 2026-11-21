@@ -38,14 +38,18 @@ set -Eeuo pipefail
 # Login, sessions, pairing and setup and the guards and headers that apply
 # them, the app proxy, bind addresses and what's exposed, request signing,
 # app binding and the sim's loopback redirect, app URLs and ports behind the
-# proxy, secrets (the HF token and its scrubbing, sound tokens), the
+# proxy, the host checks, the power, apps and logs routes, the upstream
+# daemon shim and the apps venv sync, the udev rules (installed as root),
+# secrets (the HF token and its scrubbing, sound tokens), the
 # installer, dependency manifests and locks, build scripts, toolchains and
 # the shipped webrtcsink build, CI and release workflows (update signing),
-# agent rules and agent config (at any depth), .gitignore (what of it is
-# tracked), .gitattributes (it can hide lines from diffs), the review focus
-# and reliability checklist (reviewers read them from main), and this gate,
-# its catch-up check and the local precheck hook.
-SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|control|sim|audio|logs|apps)|routes/(store|sounds))\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|features/((app_bind|sim_apps)(_shim)?|sim_sounds))\.py|web/src/(api/(auth|hf|client|setup)|logic/(auth|setup))\.ts|web/src/components/(Login|Setup)\.tsx|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|(runtime/)?pyproject\.toml|uv\.lock|controller/Cargo\.(toml|lock)|web/(package\.json|bun\.lock)|controller/build\.rs|web/vite\.config\.ts|mise\.toml|tools/(toolchain_versions\.py|build_webrtcsink_jetson\.sh)|\.github/.+|(.+/)?\.claude/.+|(.+/)?\.mcp\.json|\.gitignore|(.+/)?\.gitattributes|(.+/)?(AGENTS|CLAUDE)\.md|CONTRIBUTING\.md|REVIEW\.md|docs/reliability-checklist\.md|tools/checklist\.py|tools/(test_)?(review_gate|catchup_check|precheck)\.sh)$'
+# agent rules and agent config for every coding agent (Claude, Codex,
+# Cursor, Gemini and the like, at any depth, CLAUDE.local.md included even
+# though it's gitignored), .gitmodules (what a checkout pulls in),
+# .gitignore (what of it is tracked), .gitattributes (it can hide lines from
+# diffs), the review focus and reliability checklist (reviewers read them
+# from main), and this gate, its catch-up check and the local precheck hook.
+SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|control|sim|audio|logs|apps|host)|routes/(store|sounds|apps|power|logs))\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|upstream|features/((app_bind|sim_apps)(_shim)?|sim_sounds|apps_venv_sync))\.py|web/src/(api/(auth|hf|client|setup)|logic/(auth|setup))\.ts|web/src/components/(Login|Setup)\.tsx|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|(runtime/)?pyproject\.toml|uv\.lock|controller/Cargo\.(toml|lock)|web/(package\.json|bun\.lock)|controller/build\.rs|web/vite\.config\.ts|mise\.toml|tools/(toolchain_versions\.py|build_webrtcsink_jetson\.sh)|tools/udev/[^/]+\.rules|\.gitmodules|\.github/.+|(.+/)?\.(claude|codex|cursor|gemini|windsurf|clinerules|continue|roo)/.+|(.+/)?\.(mcp\.json|cursorrules|windsurfrules|clinerules|aider\.conf\.yml)|\.gitignore|(.+/)?\.gitattributes|(.+/)?(AGENTS(\.override)?|CLAUDE(\.local)?|GEMINI)\.md|CONTRIBUTING\.md|REVIEW\.md|docs/reliability-checklist\.md|tools/checklist\.py|tools/(test_)?(review_gate|catchup_check|precheck)\.sh)$'
 
 # Every page of a list endpoint, as one JSON array.
 list() { gh api --paginate "$1" | jq -s 'add // []'; }

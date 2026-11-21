@@ -188,14 +188,22 @@ for f in controller/src/auth.rs controller/src/profiles.rs controller/src/main.r
     deploy/uninstall.sh controller/Cargo.lock runtime/pyproject.toml uv.lock web/bun.lock AGENTS.md \
     REVIEW.md docs/reliability-checklist.md tools/checklist.py tools/precheck.sh tools/test_precheck.sh \
     .gitignore web/CLAUDE.md controller/src/AGENTS.md web/.claude/skills/x/SKILL.md runtime/.mcp.json \
-    .gitattributes controller/.gitattributes; do
+    .gitattributes controller/.gitattributes CLAUDE.local.md web/CLAUDE.local.md GEMINI.md AGENTS.override.md \
+    .cursor/rules/x.mdc .cursorrules .codex/config.toml .gemini/settings.json .windsurf/rules/x.md \
+    .windsurfrules .clinerules .clinerules/x.md .continue/config.yaml .roo/rules/x.md .aider.conf.yml \
+    web/.cursor/rules/x.mdc .gitmodules tools/udev/99-reachy-mini-doa.rules tools/udev/new.rules \
+    runtime/src/reachy_bridge_runtime/features/apps_venv_sync.py runtime/src/reachy_bridge_runtime/upstream.py \
+    controller/src/host.rs controller/src/routes/apps.rs controller/src/routes/power.rs \
+    controller/src/routes/logs.rs; do
     setup; files web/src/App.tsx "$f"; comment OWNER "Review: clean @$HEAD"
     expect "security path $f" pending "security PR: paths"
 done
 
-setup; files controller/src/routes/power.rs runtime/src/reachy_bridge_runtime/audio_tee.py \
+setup; files controller/src/routes/powers.rs runtime/src/reachy_bridge_runtime/audio_tee.py \
     web/src/api/power.ts tools/review_gate.sh.bak deploy/systemd/README.md \
-    docs/REVIEW.md docs/reliability-checklist.md.bak web/.gitignore docs/AGENTS.md.txt docs/claude/notes.md web/mcp.json
+    docs/REVIEW.md docs/reliability-checklist.md.bak web/.gitignore docs/AGENTS.md.txt docs/claude/notes.md web/mcp.json \
+    docs/CLAUDE.local.md.txt docs/cursor/notes.md tools/udev/README.md tools/udev/sub/x.rules \
+    runtime/src/reachy_bridge_runtime/upstream_notes.py controller/src/hosts.rs docs/gitmodules.md
 comment OWNER "Review: clean @$HEAD"
 expect "near-miss paths aren't security paths" success
 
