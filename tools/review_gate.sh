@@ -25,7 +25,12 @@
 #
 # A commit status belongs to the commit, not the PR, so only PRs into the
 # default branch post one, and a head shared by more than one open PR into it
-# stays pending.
+# stays pending. When one of them closes, its run re-checks the others.
+#
+# A failed status POST is retried; if GitHub keeps refusing it, the run
+# fails, and the `error` it then tries to post may be refused too, leaving
+# the head's earlier status in place (a commit status can only be replaced
+# by another POST). Re-run the workflow once the API answers again.
 #
 # What it proves: a marker naming the head exists. It can't prove a review
 # ran, and anything that can run a workflow with write access can post this
@@ -53,28 +58,55 @@ SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|
 
 # Every page of a list endpoint, as one JSON array.
 list() { gh api --paginate "$1" | jq -s 'add // []'; }
+# Open PRs into the default branch, other than this one, whose head is $sha.
+# (The endpoint lists every PR that contains the commit; only heads share.)
+twins() {
+    jq -r --arg base "$default" --arg sha "$sha" --argjson n "$PR" \
+        '.[] | select(.state == "open" and .base.ref == $base and .head.sha == $sha and .number != $n)
+        | .number' <<<"$1"
+}
+
+# An open PR into the default branch sharing this head was held pending
+# while this PR was open into it too (a fork PR can reuse an owner PR's
+# head). Closing or retargeting this one runs no gate for it, so check it
+# here. Once: the re-check doesn't recurse.
+recheck_twins() {
+    [[ -z ${REVIEW_GATE_RECHECK:-} && $sha =~ ^[0-9a-f]{40}$ ]] || return 0
+    local n
+    for n in $(twins "$(list "repos/$GH_REPO/commits/$sha/pulls")"); do
+        echo "Re-checking #$n, which has the same head"
+        PR=$n REVIEW_GATE_RECHECK=1 bash "${BASH_SOURCE[0]}"
+    done
+}
 
 pr=$(gh api "repos/$GH_REPO/pulls/$PR")
+sha=$(jq -r .head.sha <<<"$pr")
+default=$(jq -r .base.repo.default_branch <<<"$pr")
 if [[ $(jq -r .state <<<"$pr") != open ]]; then
-    echo "PR #$PR is not open; nothing to do."
+    echo "PR #$PR is not open; nothing to do for it."
+    recheck_twins
     exit 0
 fi
-sha=$(jq -r .head.sha <<<"$pr")
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit for #$PR"; exit 1; }
 # The run's log says why it's pending; outside Actions, the PR.
 url=$(jq -r .html_url <<<"$pr")
 [[ -n ${GITHUB_RUN_ID:-} ]] && url="${GITHUB_SERVER_URL:-https://github.com}/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
 base=$(jq -r .base.ref <<<"$pr")
-default=$(jq -r .base.repo.default_branch <<<"$pr")
 if [[ $base != "$default" ]]; then
     echo "PR #$PR targets $base, not $default; its head's status is left to PRs into $default."
+    recheck_twins
     exit 0
 fi
 
 status() {
     echo "review: $1 at ${sha:0:7}: $2"
-    gh api -X POST "repos/$GH_REPO/statuses/$sha" -f state="$1" -f context=review \
-        -f description="${2:0:140}" -f target_url="$url" >/dev/null
+    local try
+    for try in 1 2 3; do
+        gh api -X POST "repos/$GH_REPO/statuses/$sha" -f state="$1" -f context=review \
+            -f description="${2:0:140}" -f target_url="$url" >/dev/null && return 0
+        (( try < 3 )) && sleep "${REVIEW_GATE_RETRY_DELAY:-5}"
+    done
+    return 1
 }
 # A run that fails from here on replaces any earlier success on this head,
 # so a lost marker or a new label can't leave a stale pass behind.
@@ -82,13 +114,9 @@ trap 'status error "Review gate failed; re-run the Review gate workflow" || true
 
 # Another open PR into the default branch with this head would share this
 # PR's status, whatever its own markers and labels say.
-shared=$(list "repos/$GH_REPO/commits/$sha/pulls")
-# The endpoint lists every PR that contains the commit; only heads share.
-twins=$(jq -r --arg base "$default" --arg sha "$sha" --argjson n "$PR" \
-    '.[] | select(.state == "open" and .base.ref == $base and .head.sha == $sha and .number != $n)
-    | "#\(.number)"' <<<"$shared")
-if [[ -n $twins ]]; then
-    status pending "Head is also the head of $(tr '\n' ' ' <<<"$twins")- give each PR its own commit"
+shared=$(twins "$(list "repos/$GH_REPO/commits/$sha/pulls")")
+if [[ -n $shared ]]; then
+    status pending "Head is also the head of #${shared//$'\n'/ #} - give each PR its own commit"
     exit 0
 fi
 
@@ -151,7 +179,9 @@ if [[ -z $dependabot ]]; then
     hits=$(grep -E "$SECURITY_PATHS" <<<"$names" || [[ $? == 1 ]])
     if [[ -n $hits ]]; then
         security=${security:+$security, }"paths"
-        while read -r h; do echo "security path: $h"; done <<<"$hits"
+        # File names are the PR author's: no control characters (a CR could
+        # rewrite the log line) reach the log.
+        while read -r h; do echo "security path: ${h//[[:cntrl:]]/}"; done <<<"$hits"
     fi
     # The files listing stops at 3000; treat what it can't show as security.
     changed=$(jq '.changed_files // 0' <<<"$pr")
@@ -180,14 +210,14 @@ missing=()
 for name in "${needed[@]}"; do
     grep -qxF "$name: clean @$sha" <<<"$markers" || missing+=("$name")
 done
-# Say why near misses don't count: other text, a short or other sha, an edit.
+# Say why near misses don't count: other text, another commit, an edit.
 if (( ${#missing[@]} )); then
     jq -r --arg sha "$sha" --arg footer "$FOOTER" "$body"'.[]
         | select(.author_association == "OWNER" and (.body | test("(Review|Security review|Second review): clean @")))
         | body as $b
         | select(($b | test("^(Review|Security review|Second review): clean @" + $sha + "$") | not) or .created_at != .updated_at)
         | "not counted: comment \(.id) (\(if .created_at != .updated_at then "edited"
-            elif ($b | test("@" + $sha + "([^0-9a-f]|$)") | not) then "not the full head sha"
+            elif ($b | test("@" + $sha + "([^0-9a-f]|$)") | not) then "another commit"
             else "other text in the comment" end))"' <<<"$comments"
 fi
 

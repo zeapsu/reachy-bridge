@@ -14,9 +14,10 @@ HEAD=0123456789abcdef0123456789abcdef01234567
 OLD=fedcba9876543210fedcba9876543210fedcba98
 
 mkdir -p "$ROOT/bin"
-# The stub serves $ROOT/fx/{pr,files,comments,commits,shared}.json by endpoint, fails
-# an endpoint when $ROOT/fx/fail-<name> exists, and logs a status POST as
-# "<sha> <state> <description>".
+# The stub serves $ROOT/fx/{pr,files,comments,commits,shared}.json by endpoint
+# (pr-<n>.json for PR n when it exists), fails an endpoint when
+# $ROOT/fx/fail-<name> exists (fail-statuses-<k>: only the next k status
+# POSTs), and logs a status POST as "<sha> <state> <description>".
 cat >"$ROOT/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 args=("$@")
@@ -24,6 +25,10 @@ for a in "${args[@]}"; do
     case $a in
         repos/*/statuses/*)
             [[ -e $FX/fail-statuses ]] && exit 1
+            for f in "$FX"/fail-statuses-*; do
+                [[ -e $f ]] || continue
+                k=${f##*-}; rm "$f"; ((k > 1)) && touch "$FX/fail-statuses-$((k - 1))"; exit 1
+            done
             sha=${a##*/} state= desc=
             for f in "${args[@]}"; do
                 case $f in state=*) state=${f#state=} ;; description=*) desc=${f#description=} ;; esac
@@ -34,14 +39,14 @@ for a in "${args[@]}"; do
         repos/*/pulls/*/files) [[ -e $FX/fail-files ]] && exit 1; cat "$FX/files.json"; exit 0 ;;
         repos/*/pulls/*/commits) [[ -e $FX/fail-commits ]] && exit 1; cat "$FX/commits.json"; exit 0 ;;
         repos/*/issues/*/comments) [[ -e $FX/fail-comments ]] && exit 1; cat "$FX/comments.json"; exit 0 ;;
-        repos/*/pulls/*) cat "$FX/pr.json"; exit 0 ;;
+        repos/*/pulls/*) n=${a##*/}; if [[ -e $FX/pr-$n.json ]]; then cat "$FX/pr-$n.json"; else cat "$FX/pr.json"; fi; exit 0 ;;
     esac
 done
 echo "stub gh: unexpected call: $*" >&2
 exit 1
 EOF
 chmod +x "$ROOT/bin/gh"
-export PATH="$ROOT/bin:$PATH" FX="$ROOT/fx" GH_REPO=owner/repo PR=7
+export PATH="$ROOT/bin:$PATH" FX="$ROOT/fx" GH_REPO=owner/repo PR=7 REVIEW_GATE_RETRY_DELAY=0
 
 # setup [author] [labels-json]: a fresh open PR by `author` with a plain file.
 setup() {
@@ -310,7 +315,7 @@ expect "a stacked PR that only contains the head doesn't block it" success
 
 setup; comment OWNER "Review: clean @${HEAD:0:7}"; comment OWNER "Review: clean @$HEAD\nnotes"
 expect "near misses: pending" pending
-if grep -q "not the full head sha" "$FX/out" && grep -q "other text in the comment" "$FX/out"; then echo "ok: near misses explained in the log"
+if grep -q "(another commit)" "$FX/out" && grep -q "other text in the comment" "$FX/out"; then echo "ok: near misses explained in the log"
 else fail "near misses not explained"; cat "$FX/out"; fi
 
 # A failing API call fails the run and replaces any earlier pass.
@@ -327,10 +332,40 @@ rm -f "$FX/status.log"
 if bash "$GATE" >"$FX/out" 2>&1; then fail "status POST fails: gate succeeded"
 else echo "ok: status POST fails: run fails"; fi
 
+setup; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-statuses-2"
+expect "status POST fails twice, then lands" success
+
+setup; files web/src/App.tsx $'.github/x\r\e[2K::warning::spoofed'
+comment OWNER "Review: clean @$HEAD"
+expect "control characters in a file name" pending
+if grep -q $'[\r\e]' "$FX/out"; then fail "control characters reached the log"; cat -v "$FX/out"
+else echo "ok: no control characters in the log"; fi
+
 setup; jq '.state = "closed"' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"
 rm -f "$FX/status.log"
 if bash "$GATE" >"$FX/out" 2>&1 && [[ ! -e $FX/status.log ]]; then echo "ok: closed PR: no status"
 else fail "closed PR: set a status or failed"; fi
+
+# A closed fork PR (#7 here) that shared the head of open PR #9 re-checks #9,
+# which then passes on its own markers; the re-check doesn't recurse.
+setup; comment OWNER "Review: clean @$HEAD"
+jq '.state = "closed"' "$FX/pr.json" >"$FX/pr-7.json"
+jq '.state = "open"' "$FX/pr.json" >"$FX/pr-9.json"
+jq -n --arg h "$HEAD" '[{number: 7, state: "closed", base: {ref: "main"}, head: {sha: $h}},
+    {number: 9, state: "open", base: {ref: "main"}, head: {sha: $h}}]' >"$FX/shared.json"
+expect "closing a PR re-checks the open PR with the same head" success
+jq '.base.ref = "feature" | .state = "open"' "$FX/pr.json" >"$FX/pr-7.json"
+jq -n --arg h "$HEAD" '[{number: 7, state: "open", base: {ref: "feature"}, head: {sha: $h}},
+    {number: 9, state: "open", base: {ref: "main"}, head: {sha: $h}}]' >"$FX/shared.json"
+expect "retargeting a PR away from main re-checks the PR with the same head" success
+jq '.state = "closed"' "$FX/pr.json" >"$FX/pr-7.json"
+cp "$FX/pr-7.json" "$FX/pr-9.json"
+jq -n --arg h "$HEAD" '[{number: 7, state: "closed", base: {ref: "main"}, head: {sha: $h}},
+    {number: 9, state: "open", base: {ref: "main"}, head: {sha: $h}}]' >"$FX/shared.json"
+rm -f "$FX/status.log"
+if bash "$GATE" >"$FX/out" 2>&1 && [[ ! -e $FX/status.log ]] && [[ $(grep -c "Re-checking" "$FX/out") == 1 ]]; then
+    echo "ok: a re-check doesn't recurse"
+else fail "a re-check recursed or failed"; cat "$FX/out"; fi
 
 for bad in "7; true" 07 0 ""; do
     if PR=$bad bash "$GATE" >"$FX/out" 2>&1; then fail "PR '$bad' accepted"
