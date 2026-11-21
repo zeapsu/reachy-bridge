@@ -40,6 +40,8 @@ pub struct Fake {
     pub idle_reset_polls: u32,
     /// Every read of `bridge/idle-reset`.
     pub idle_reset_reads: u32,
+    /// `idle_reset_reads` when `stop-current-app` was last called.
+    pub reads_at_app_stop: Option<u32>,
     /// A runtime without the idle reset route answers 404.
     pub idle_reset_missing: bool,
     /// An error status for every read of the route (0: answer normally).
@@ -281,11 +283,17 @@ pub async fn fake_daemon(fake: FakeState) -> String {
             post(|State(f): State<FakeState>| async move {
                 record(&f, "stop-app");
                 let mut f = f.lock().unwrap();
-                if f.app.is_none() {
+                f.reads_at_app_stop = Some(f.idle_reset_reads);
+                // Upstream refuses with no app, or one that is done or stopping.
+                let state = f.app.as_ref().and_then(|a| a["state"].as_str().map(str::to_string));
+                if f.app.is_none() || matches!(state.as_deref(), Some("done" | "stopping")) {
                     return (StatusCode::BAD_REQUEST, Json(json!({"detail": "No app is currently running"})));
                 }
                 f.app = None;
-                f.idle_reset_polls = f.idle_reset_after_stop;
+                // Neither stop path cancels a reset already running.
+                if f.idle_reset_after_stop > 0 {
+                    f.idle_reset_polls = f.idle_reset_after_stop;
+                }
                 (StatusCode::OK, Json(json!({"ok": true})))
             }),
         )

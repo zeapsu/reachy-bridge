@@ -140,17 +140,16 @@ pub async fn power_off_locked(state: &Shared) -> ApiResult<Value> {
     state.player.abort_drive();
     // An app that exited on its own (or a dropped remote session) leaves the
     // daemon putting the robot to sleep; let it finish, then power off from
-    // asleep. Before the app stop too: an app whose state can't be read is
-    // stopped as if running, and that stop would cut the sleep move short.
-    // With an app running no reset is pending, so this is one read. Past the
-    // timeout something is stuck, and powering off is still what was asked.
-    let settle = || async {
-        if !settle_idle_reset(state).await {
-            tracing::warn!("idle reset still running after {:?}; powering off anyway", state.idle_reset_timeout);
-        }
-    };
-    settle().await;
-    if state.apps.refresh_active().await {
+    // asleep. A running app holds the robot, so no reset is pending: stop it
+    // at once, whatever the route says. An app that can't be read is stopped
+    // as if running, so wait first then, as for no app or one that ended:
+    // that stop would cut a crashed app's sleep move short (#292). Past the
+    // timeout something is stuck, and powering off is still what was asked;
+    // don't wait a second time then.
+    let current = state.apps.current().await;
+    let running = current.as_ref().is_ok_and(|c| crate::apps::is_active(c.as_ref()));
+    let mut settled = running || settle_idle_reset(state).await;
+    if running || current.is_err() {
         let _ = daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await;
     }
     // An expression (or its return home) still playing would run interleaved
@@ -158,7 +157,12 @@ pub async fn power_off_locked(state: &Shared) -> ApiResult<Value> {
     state.player.halt(MOVES_STOP_TIMEOUT).await;
     // reachy-mini 1.14.0 falls back to an idle reset when an app stop's
     // return home fails.
-    settle().await;
+    if settled {
+        settled = settle_idle_reset(state).await;
+    }
+    if !settled {
+        tracing::warn!("idle reset still running after {:?}; powering off anyway", state.idle_reset_timeout);
+    }
     // Already asleep: skip the sleep move. It re-enables the motors and lifts
     // the head first, so the robot would seem to wake before sleeping.
     let asleep = daemon.status().await.is_some_and(|s| robot_state(&s) == "asleep");

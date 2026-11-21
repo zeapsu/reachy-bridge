@@ -369,8 +369,11 @@ These follow from the sections above. The first four are the bugs found in
    again: an asleep robot gets `goto_sleep=false` (rule 5). Power off goes
    ahead after the timeout; app start and stop are refused. With no reset
    pending (a requested stop, a robot already asleep) each check is one
-   read. Power off checks before its own app stop (an app it can't read is
-   stopped as if running) and again after it (1.14.0's fallback). An app
+   read. Power off stops a `starting` or `running` app at once (it holds
+   the robot, so no reset is pending, whatever the route says), checks
+   before stopping an app it can't read (stopped as if running), and checks
+   again after the stop (1.14.0's fallback) unless the first wait timed out,
+   so a stuck reset costs one timeout. An app
    stop waits only for an `error` app or one it can't read: a running app
    holds the robot, and with no app or a `done` one the daemon stops
    nothing. After any wait, read the app again before acting on it.

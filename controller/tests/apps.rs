@@ -112,7 +112,7 @@ async fn app_stop_of_a_running_app_does_not_wait() {
         f.idle_reset_polls = u32::MAX;
     })
     .await;
-    Arc::get_mut(&mut h.state).unwrap().idle_reset_timeout = Duration::from_secs(60);
+    Arc::get_mut(&mut h.state).unwrap().idle_reset_timeout = Duration::from_millis(300);
     let (_, body) = h.call("POST", "/api/apps/stop/hello_world", None).await;
     assert_eq!(body["status"], "stopping");
     assert_eq!(h.calls(), vec!["stop-app"]);
@@ -179,10 +179,28 @@ async fn app_stop_with_nothing_to_clear_does_not_wait() {
             f.idle_reset_polls = u32::MAX;
         })
         .await;
-        Arc::get_mut(&mut h.state).unwrap().idle_reset_timeout = Duration::from_secs(60);
+        Arc::get_mut(&mut h.state).unwrap().idle_reset_timeout = Duration::from_millis(300);
         h.call("POST", "/api/apps/stop/hello_world", None).await;
         assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 0);
     }
+}
+
+#[tokio::test]
+async fn app_start_waits_for_an_idle_reset_its_clear_falls_back_to() {
+    // reachy-mini 1.14.0: clearing a crashed app whose return home fails
+    // requests the idle reset; the start waits for it before waking.
+    let h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.app = Some(json!({"info": {"name": "hello_world"}, "state": "error", "error": "boom"}));
+        f.idle_reset_after_stop = 2;
+    })
+    .await;
+    h.call("POST", "/api/apps/start/reachy_mini_radio", None).await;
+    assert_eq!(
+        h.calls(),
+        vec!["stop-app", "idle-reset done", "set_mode enabled", "wake_up", "start-app reachy_mini_radio"]
+    );
 }
 
 #[tokio::test]

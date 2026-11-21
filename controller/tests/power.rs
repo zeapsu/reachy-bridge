@@ -174,7 +174,7 @@ async fn power_off_without_an_idle_reset_does_not_wait() {
     .await;
     h.call("POST", "/api/daemon/stop", None).await;
     assert_eq!(h.calls(), vec!["stop sleep=false"]);
-    // One check before the app stop, one after.
+    // No app: one check before the (skipped) app stop, one after.
     assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 2);
 
     // A requested stop of a running app: keep-awake skips the reset.
@@ -186,7 +186,9 @@ async fn power_off_without_an_idle_reset_does_not_wait() {
     .await;
     h.call("POST", "/api/daemon/stop", None).await;
     assert_eq!(h.calls(), vec!["stop-app", "stop sleep=true"]);
-    assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 2);
+    // Stopped before any check; one check after.
+    assert_eq!(h.fake.lock().unwrap().reads_at_app_stop, Some(0));
+    assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 1);
 }
 
 #[tokio::test]
@@ -259,4 +261,42 @@ async fn power_off_waits_before_stopping_an_app_it_cant_read() {
     .await;
     h.call("POST", "/api/daemon/stop", None).await;
     assert_eq!(h.calls(), vec!["idle-reset done", "stop-app", "stop sleep=false"]);
+}
+
+#[tokio::test]
+async fn power_off_stops_a_running_app_at_once_even_when_the_route_reads_pending() {
+    // A route stuck on pending (a busy backend loop, an error) mustn't leave
+    // a running app moving the robot while power off waits.
+    let mut h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.app = Some(json!({"info": {"name": "reachy_mini_radio"}, "state": "running"}));
+        f.idle_reset_status = 500;
+    })
+    .await;
+    Arc::get_mut(&mut h.state).unwrap().idle_reset_timeout = Duration::from_millis(600);
+    h.call("POST", "/api/daemon/stop", None).await;
+    assert_eq!(h.calls(), vec!["stop-app", "stop sleep=true"]);
+    // The app was stopped before the route was read at all.
+    assert_eq!(h.fake.lock().unwrap().reads_at_app_stop, Some(0));
+}
+
+#[tokio::test]
+async fn power_off_waits_once_for_a_stuck_idle_reset() {
+    let mut h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.app = Some(json!({"info": {"name": "reachy_mini_radio"}, "state": "error"}));
+        f.app_status_fails = true;
+        f.idle_reset_polls = u32::MAX;
+    })
+    .await;
+    Arc::get_mut(&mut h.state).unwrap().idle_reset_timeout = Duration::from_millis(400);
+    h.call("POST", "/api/daemon/stop", None).await;
+    assert_eq!(h.calls(), vec!["stop-app", "stop sleep=true"]);
+    // One wait: the first read and at most two polls (at 0 and 250 ms of a
+    // 400 ms timeout). A second wait would add at least two more reads.
+    let f = h.fake.lock().unwrap();
+    assert!(f.idle_reset_reads <= 3, "{} reads", f.idle_reset_reads);
+    assert_eq!(f.reads_at_app_stop, Some(f.idle_reset_reads));
 }

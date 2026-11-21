@@ -233,6 +233,13 @@ async fn start(
             if !settle_idle_reset(&state).await {
                 return Ok(refused(&name, GOING_TO_SLEEP, "refused"));
             }
+            // As after the first wait.
+            if state.player.active() {
+                return Ok(refused(&name, "Robot busy", "refused"));
+            }
+            if crate::apps::is_active(state.apps.current().await.ok().flatten().as_ref()) {
+                return Ok(refused(&name, "An app is already running", "refused"));
+            }
         }
         ensure_awake(&state).await?;
         daemon.post_slow(&format!("apps/start-app/{name}"), APP_CONTROL_TIMEOUT).await
