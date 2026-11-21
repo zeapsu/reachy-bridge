@@ -260,9 +260,9 @@ def main(argv: list[str] | None = None) -> int:
     # Untracked files are all added lines.
     for path in untracked:
         try:
-            with open(path, encoding="utf-8", newline="") as f:
+            with open(path, encoding="utf-8", errors="replace", newline="") as f:
                 lines += [(path, line.removesuffix("\r")) for line in f.read().split("\n")]
-        except (OSError, UnicodeDecodeError):
+        except OSError:
             pass
 
     hits = match(items, sorted(paths), lines)

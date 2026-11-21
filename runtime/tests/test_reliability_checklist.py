@@ -326,3 +326,19 @@ def test_a_line_break_other_than_newline_cannot_forge_a_header(tmp_path, monkeyp
 def test_changed_lines_keeps_crlf_lines_whole():
     diff = "diff --git a/w.txt b/w.txt\r\n--- a/w.txt\r\n+++ b/w.txt\r\n@@ -0,0 +1 @@\r\n+x\r\n"
     assert checklist.changed_lines(diff) == [("w.txt", "x")]
+
+
+def test_main_reads_untracked_files_that_are_not_utf8(tmp_path, monkeypatch, capsys):
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "list.md").write_text(ITEMS)
+    git("add", ".")
+    git("commit", "-qm", "base")
+    (tmp_path / "x.rs").write_bytes(b'// \xff\nlet a = "0.0.0.0:1";\n')
+    monkeypatch.chdir(tmp_path)
+    assert checklist.main(["--base", "main", "--file", "list.md"]) == 0
+    assert "[ports]" in capsys.readouterr().out
