@@ -237,8 +237,8 @@ say-so.
    what's missing. The gate treats a PR as security-relevant when it has the `security`
    or `auth` label or changes a file in the script's `SECURITY_PATHS`: login, sessions, pairing and setup and the guards and
    headers that apply them, the app proxy, bind addresses and what's exposed, request
-   signing, app binding, the power, apps and logs routes, the upstream daemon shim,
-   secrets, the installer and udev rules, dependency manifests and lock files,
+   signing, app binding, the host checks, the power, apps and logs routes, the upstream
+   daemon shim and the apps venv sync, secrets, the installer and udev rules, dependency manifests and lock files,
    build scripts and toolchains, everything under `.github/`, `.gitmodules`, the agent
    rules and every coding agent's config (`CLAUDE.local.md`, `GEMINI.md`, `.cursor/`,
    `.codex/` and the like), and the gate itself. Label a PR

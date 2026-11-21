@@ -26,7 +26,10 @@
 #
 # A commit status belongs to the commit, not the PR, so only PRs into the
 # default branch post one, and a head shared by more than one open PR into it
-# stays pending. When one of them closes, its run re-checks the others.
+# stays pending. When one of them closes, its run re-checks the others. That
+# re-check runs in the closed PR's concurrency group, not the other PR's, so
+# a marker deleted in the same few seconds can lose to it; re-run the
+# workflow for that PR if its status looks stale.
 #
 # A failed status POST is retried; if GitHub keeps refusing it, the run
 # fails, and the `error` it then tries to post may be refused too, leaving
@@ -73,8 +76,12 @@ twins() {
 # here. Once: the re-check doesn't recurse.
 recheck_twins() {
     [[ -z ${REVIEW_GATE_RECHECK:-} && $sha =~ ^[0-9a-f]{40}$ ]] || return 0
-    local n
-    for n in $(twins "$(list "repos/$GH_REPO/commits/$sha/pulls")"); do
+    # (Listings into variables, so a failed call fails the run instead of
+    # reading as "no other PR".)
+    local n prs open
+    prs=$(list "repos/$GH_REPO/commits/$sha/pulls")
+    open=$(twins "$prs")
+    for n in $open; do
         echo "Re-checking #$n, which has the same head"
         # BASE_CHANGED is this PR's event, not the other PR's.
         PR=$n REVIEW_GATE_RECHECK=1 BASE_CHANGED='' bash "${BASH_SOURCE[0]}"
@@ -116,7 +123,8 @@ trap 'status error "Review gate failed; re-run the Review gate workflow" || true
 
 # Another open PR into the default branch with this head would share this
 # PR's status, whatever its own markers and labels say.
-shared=$(twins "$(list "repos/$GH_REPO/commits/$sha/pulls")")
+prs=$(list "repos/$GH_REPO/commits/$sha/pulls")
+shared=$(twins "$prs")
 if [[ -n $shared ]]; then
     status pending "Head is also the head of #${shared//$'\n'/ #} - give each PR its own commit"
     exit 0

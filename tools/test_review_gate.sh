@@ -375,6 +375,10 @@ rm -f "$FX/status.log"
 if bash "$GATE" >"$FX/out" 2>&1 && [[ ! -e $FX/status.log ]]; then echo "ok: closed PR: no status"
 else fail "closed PR: set a status or failed"; fi
 
+setup; jq '.state = "closed"' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"; touch "$FX/fail-shared"
+if bash "$GATE" >"$FX/out" 2>&1; then fail "closed PR, shared-head listing fails: gate succeeded"
+else echo "ok: closed PR, shared-head listing fails: run fails"; fi
+
 # A closed fork PR (#7 here) that shared the head of open PR #9 re-checks #9,
 # which then passes on its own markers; the re-check doesn't recurse.
 setup; comment OWNER "Review: clean @$HEAD"
