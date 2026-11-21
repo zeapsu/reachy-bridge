@@ -28,7 +28,13 @@ env:
   NEEDS: "needs hardware QA"
 jobs:
   label:
-    if: github.repository == 'zeapsu/reachy-bridge' && github.event.pull_request.base.ref == github.event.repository.default_branch
+    # Open PRs only, and `edited` only for a new base: editing a merged PR's
+    # title must not put back a label the owner removed after QA.
+    if: >-
+      github.repository == 'zeapsu/reachy-bridge' &&
+      github.event.pull_request.state == 'open' &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      (github.event.action != 'edited' || github.event.changes.base.ref.from != '')
     concurrency:
       group: hardware-qa-label-${{ github.event.pull_request.number }}
       cancel-in-progress: false
@@ -49,9 +55,12 @@ jobs:
           simonly='^(runtime/src/reachy_bridge_runtime/features/sim_[a-z_]+\.py|deploy/systemd/reachy-bridge-sim\.service)$'
           # Both names of a renamed file.
           files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
-          if ! grep -E "$robot" <<<"$files" | grep -vE "$simonly"; then
+          hits=$(grep -E "$robot" <<<"$files" | grep -vE "$simonly" || true)
+          if [[ -z $hits ]]; then
             echo "Nothing the robot runs changed."
             exit 0
           fi
+          # File names are the PR author's: no control characters reach the log.
+          tr -d '\000-\011\013-\037\177' <<<"$hits"
           gh label create "$NEEDS" --color B60205 --description "Changes robot-side code; the owner removes this after QA on the robot" 2>/dev/null || true
           gh api -X POST "repos/$GH_REPO/issues/$PR/labels" -f "labels[]=$NEEDS" >/dev/null
