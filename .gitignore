@@ -26,9 +26,8 @@ env/
 *.local.sh
 !.env.example
 
-# --- Operator-local robot access instructions ---
-/AGENTS.md
-/CLAUDE.md
+# --- Operator-local agent instructions (AGENTS.md and CLAUDE.md are public) ---
+CLAUDE.local.md
 
 # --- Model / data caches ---
 .cache/
@@ -49,7 +48,10 @@ Thumbs.db
 /reachy_mini_conversation_app/
 
 # --- Agent scratch / local QA artifacts (not committed) ---
-/.claude/
+# .claude/ is local except the shared settings (the precheck hook) and skills.
+/.claude/*
+!/.claude/settings.json
+!/.claude/skills/
 /.superpowers/
 /.playwright-mcp/
 /.reachy-logs/

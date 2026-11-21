@@ -9,6 +9,7 @@ pub mod error;
 pub mod expressions;
 pub mod host;
 pub mod logs;
+pub mod profiles;
 pub mod routes;
 pub mod setup;
 pub mod sim;

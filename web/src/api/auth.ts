@@ -7,4 +7,8 @@ export const authPaths = {
   authApprove: "/api/auth/approve",
   authDevices: "/api/auth/devices",
   authDevice: (id: string) => `/api/auth/devices/${encodeURIComponent(id)}`,
+  // Profiles (#297).
+  authProfiles: "/api/auth/profiles",
+  authProfile: (name: string) => `/api/auth/profiles/${encodeURIComponent(name)}`,
+  authPick: "/api/auth/pick",
 } as const;

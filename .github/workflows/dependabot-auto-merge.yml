@@ -1,20 +1,27 @@
 name: Dependabot auto-merge
 # Patch and minor updates from Dependabot merge on their own once the
-# required checks (python, rust-web, sim, shell) pass; GitHub's auto-merge
-# waits for them. Anything else (a major bump, a group that contains one, an
-# update Dependabot can't classify, or a commit someone else pushed onto the
-# branch) stays open for the owner. Python updates run on the robot, so they
+# required checks pass (python, rust-web, sim, shell, and `review` once the
+# ruleset requires it); GitHub's auto-merge waits for them. Anything else (a
+# major bump, a group that contains one, an update Dependabot can't
+# classify, a change under .github/, a `security` or `auth` label, or a
+# commit someone else pushed onto the branch) needs review markers first
+# (tools/review_gate.sh, #306), so auto-merge stays off: the branch updater
+# would otherwise keep merging main into it, and each new head voids the
+# markers. It runs again when labels change. Python updates run on the robot, so they
 # still get hardware QA after they land on main.
 #
-# Dependabot PRs squash: one commit per update on main, without the merges of
-# main the branch updater adds. Everything else merges with a merge commit.
+# The PRs this merges squash: one commit per update on main, without the
+# merges of main the branch updater adds. Everything else, including the
+# Dependabot PRs it leaves for review, merges with a merge commit.
 #
 # pull_request_target runs this file as it is on main, so a PR that bumps
 # fetch-metadata can't change how its own PR is judged. It checks nothing out.
 #
 # Needs the repository settings "Allow auto-merge" and "Allow squash merging",
 # and squash among the allowed merge methods of the main ruleset.
-on: pull_request_target
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 permissions:
   contents: read
 # One run per PR at a time, in event order, so a run for someone else's push
@@ -45,6 +52,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           DEPS: ${{ steps.metadata.outputs.updated-dependencies-json }}
           TYPE: ${{ steps.metadata.outputs.update-type }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels) }}
         run: |
           safe=$(jq 'length > 0 and all(.[]; .updateType == "version-update:semver-patch" or .updateType == "version-update:semver-minor")' <<< "${DEPS:-[]}")
           # Made on GitHub (committer web-flow, signed by GitHub), so it wasn't
@@ -52,10 +60,17 @@ jobs:
           others=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/commits" \
             --jq '.[] | select((.committer.login == "web-flow" and .commit.verification.verified == true and (.author.login == "dependabot[bot]" or (.author.login == "github-actions[bot]" and (.parents | length) > 1))) | not) | .sha') ||
             others="(couldn't list the commits)"
-          if [[ "$safe" == true && -z "$others" ]]; then
+          # Workflow bumps need a review (#306); a failed listing counts as one.
+          workflows=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files" \
+            --jq '.[] | .filename, (.previous_filename // empty) | select(startswith(".github/"))') ||
+            workflows="(couldn't list the files)"
+          # A security or auth label asks for the full set of reviews.
+          flagged=$(jq -r '[.[].name | ascii_downcase | select(. == "security" or . == "auth")] | join(", ")' <<< "${LABELS:-[]}") ||
+            flagged="(couldn't read the labels)"
+          if [[ "$safe" == true && -z "$others" && -z "$workflows" && -z "$flagged" ]]; then
             echo merge=true >> "$GITHUB_OUTPUT"
           else
-            echo "Leaving it for review: update type '${TYPE:-unknown}'${others:+, commits from someone else: $others}."
+            echo "Leaving it for review: update type '${TYPE:-unknown}'${others:+, commits from someone else: $others}${workflows:+, changes $(tr '\n' ' ' <<< "$workflows")}${flagged:+, label $flagged}."
             echo merge=false >> "$GITHUB_OUTPUT"
           fi
       - name: Turn on auto-merge

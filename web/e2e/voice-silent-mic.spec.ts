@@ -2,9 +2,9 @@ import { expect, test, type Page } from "@playwright/test";
 import { silentMicFile } from "./audio.ts";
 import { open, setPower } from "./helpers.ts";
 
-// Talk with a mic that sends only silence (a dead or wrong input):
-// the Voice pane offers the browser's other inputs. Its own file, because the
-// fake mic is a browser launch option.
+// Talk with a mic that sends only silence (a dead or muted input): the
+// Voice pane flags the mic row, and another input can be picked. Its own
+// file, because the fake mic is a browser launch option.
 
 test.skip(!process.env.SIM_AUDIO, "needs the audio gateway (tools/sim/run.py --audio)");
 
@@ -34,11 +34,12 @@ test.afterEach(async ({ page }) => {
   await setPower(page, false).catch(() => {});
 });
 
-test("a silent mic gets the other inputs offered, and switching keeps the session", async ({ page }) => {
+test("a silent mic is flagged, and switching inputs keeps the session", async ({ page }) => {
   await talk(page).click();
   await page.locator("#voice-start").click();
   await expect(page.locator("#voice-panel .chip")).toHaveText("live", { timeout: 30_000 });
-  await expect(picker(page)).toBeVisible({ timeout: 10_000 });
+  await expect(picker(page)).toBeVisible();
+  await expect(page.locator(".mic-row.silent")).toBeVisible({ timeout: 10_000 });
   const values = await picker(page)
     .locator("option")
     .evaluateAll((options) => options.map((o) => (o as HTMLOptionElement).value));
@@ -48,7 +49,8 @@ test("a silent mic gets the other inputs offered, and switching keeps the sessio
   const before = await session(page);
   await picker(page).selectOption(other as string);
   await expect(picker(page)).toHaveValue(other as string);
-  // Still silent, so the picker stays; same session, still live.
+  // Still silent, so still flagged; same session, still live.
+  await expect(page.locator(".mic-row.silent")).toBeVisible();
   await expect(page.locator("#voice-panel .chip")).toHaveText("live");
   expect(await session(page)).toBe(before);
   // Talking off and on again keeps the picked input.
@@ -56,4 +58,24 @@ test("a silent mic gets the other inputs offered, and switching keeps the sessio
   await expect(picker(page)).toHaveCount(0);
   await talk(page).click();
   await expect(picker(page)).toHaveValue(other as string, { timeout: 10_000 });
+});
+
+test("the mic can be picked before starting", async ({ page }) => {
+  await expect(picker(page)).toHaveCount(0);
+  await talk(page).click();
+  // The browser already may use the mic (the fake one), so it knows the names.
+  await expect(picker(page)).toBeVisible();
+  const values = await picker(page)
+    .locator("option")
+    .evaluateAll((options) => options.map((o) => (o as HTMLOptionElement).value));
+  const other = values.find((v) => v !== (values[0] ?? ""));
+  expect(other, "the fake device has more than one input").toBeTruthy();
+  await picker(page).selectOption(other as string);
+  await page.locator("#voice-start").click();
+  await expect(page.locator("#voice-panel .chip")).toHaveText("live", { timeout: 30_000 });
+  // Talking started on the picked input.
+  await expect(picker(page)).toHaveValue(other as string);
+  // Both Talk chips off: the row goes.
+  await talk(page).click();
+  await expect(picker(page)).toHaveCount(0);
 });

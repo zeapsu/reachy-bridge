@@ -12,6 +12,7 @@ bridge, see the [README](../README.md).
 - [Apps](#apps)
 - [Simulation](#simulation)
 - [Devices and logging in](#devices-and-logging-in)
+- [Profiles](#profiles)
 - [Troubleshooting](#troubleshooting)
 
 ## The dashboard
@@ -20,7 +21,9 @@ The dashboard has three tabs:
 
 - **Robot:** the live view of the robot, with panes for Expressions, Drive, Controls and Voice.
 - **Apps:** installed apps, and Get apps to install more from Hugging Face.
-- **System:** the board's stats, logs, paired devices, simulation and appearance.
+- **System:** the board's stats, logs, paired devices, simulation and appearance. Once the
+  dashboard has an admin, System is the admin's only: other people see it dimmed with a lock (see
+  [Profiles](#profiles)).
 
 The top bar always shows the robot's status and the power button. The status shows the running app
 or, with a person icon, who is in control. While anyone has an audio session open, a badge shows
@@ -107,11 +110,13 @@ session connected through the daemon, also hears you when you talk to apps.
 **Your mic level.** While you talk, the lit Talk chip fills from the left with your microphone's
 level. If it stays flat while you speak, the robot isn't getting your voice.
 
-**Picking a microphone.** If no sound comes from your microphone for 4 seconds after talking
-starts, a row with a crossed-out mic appears under the Talk chips. It shows the input your browser
-is using; pick another one there and it switches at once, without reconnecting. The row goes away
-when talking stops, and stays away for that microphone once sound comes through. The input you pick
-is kept until you leave the page.
+**Picking a microphone.** While Out loud or To apps is on, a row under the Talk chips shows the
+microphone your browser will send, so you can pick another before pressing Start. While talking,
+picking switches at once without reconnecting; the choice is kept until you leave the page. On a
+first visit the browser doesn't share microphone names until talking starts, so the row shows up
+then. The row turns amber with a crossed-out mic if no sound at all has come from the microphone
+since it started (a dead or muted input). A wrong microphone that still hears the room, such as a
+Bluetooth speaker's, isn't flagged, so check the name.
 
 **Privacy.** Nothing in the room signals that someone is listening. Every dashboard shows a mic
 badge with the person's name while a session is open.
@@ -178,6 +183,44 @@ code, so only the command on the robot can approve it.
 **Removing a browser.** Revoke it under Devices, or run `reachy-bridge devices revoke <n>`. A browser
 unused for 30 days is logged out.
 
+**Shared browsers.** Turn on Shared when approving a tablet that several people use. It belongs to
+nobody: whoever picks it up chooses their profile (see below).
+
+## Profiles
+
+Once the dashboard has an admin, everyone who uses it has a profile: the person each browser was
+approved for. Only the admin sees System, and only the admin manages profiles, under System ›
+Profiles. Everyone else has a chip with their name in the top bar. Tap it for the browser's
+appearance and to log this browser out.
+
+**What a profile can do.** Each profile has:
+
+- **Apps:** all installed apps, or the ones you switch on. The Apps tab lists only those, and the
+  robot refuses to start, stop or open any other. Starting an app wakes the robot, even for a profile
+  that can't use the power button.
+- **Power on and off**, **Drive and expressions**, **Talk and listen**, **Camera**, and **Volume,
+  sounds and motors** (the Controls pane): anything switched off is dimmed in the dashboard and
+  refused by the robot. Without Controls, a profile can still turn the motors on to drive, but never
+  make the robot go limp. Motor modes also need Drive and expressions.
+
+People approved before profiles existed have everything allowed, so nothing changes for them except
+System. A new profile starts with no apps, power and driving on, and Talk, camera and Controls off.
+Changes apply within seconds. That profile's open camera, voice or live views reconnect under the
+new rules; nobody else's do. Each profile keeps its own pinned apps. The admin's profile always has
+everything, and can't be restricted.
+
+**Adding someone.** Add a profile, then approve their browser with their name as the person
+(upper or lower case doesn't matter). To
+move a browser to another profile, log it out and approve it again. A profile with browsers of its own
+can't be removed: log them out first. Renaming a profile moves its browsers with it.
+
+**Shared tablets.** A browser approved as Shared shows everyone's profile when it opens. Pick yours.
+Admins are shown dimmed with a lock, because an admin's profile works only on the admin's own
+browsers. Until someone picks, the tablet can only watch. Switch in the chip's sheet hands it back
+to the picker, which ends that person's control and voice session. Anyone can pick any non-admin
+profile on a shared tablet, and then acts as that person, including taking over control from that
+person's own browser. Don't share one between people with different rules if that matters. After the robot restarts, the tablet asks again.
+
 ## Troubleshooting
 
 | What you see | What to do |
@@ -186,7 +229,7 @@ unused for 30 days is logged out.
 | The dashboard won't load on an iPhone by its tailnet name | Turn off iCloud Private Relay, and Limit IP Address Tracking for the network. |
 | Voice chips are greyed out | Check [what you need](#voice). |
 | Voice stops by itself | See [when a session ends](#voice). |
-| Talk is on but the robot is silent, and the Talk chip doesn't fill when you speak | Your device is using another microphone, or it's muted. Pick another input in the row under Talk. If none works, check the input in your computer's sound settings (Safari on a Mac always uses the system's default input), the browser's site permissions, and any mute switch on a headset. |
+| Talk is on but the robot is silent, and the Talk chip doesn't fill when you speak | Your device is using another microphone, or it's muted. Check the microphone named under the Talk chips and pick another. If none works, check the input in your computer's sound settings (Safari on a Mac always uses the system's default input), the browser's site permissions, and any mute switch on a headset. |
 | The mic shows as unavailable | An app has taken the hardware. Stop it. |
 | An app's interface won't open | Run `reachy-bridge logs controller`. |
 

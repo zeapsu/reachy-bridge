@@ -2,7 +2,7 @@
 
 How to set up, test and change the bridge, and how work is split so several people or
 agent sessions can work at once. For what the bridge is and how users install it, see
-the [README](README.md).
+the [README](README.md). Coding agents also follow [`AGENTS.md`](AGENTS.md).
 
 ## Setup
 
@@ -45,12 +45,20 @@ CI runs these on every PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPac
 
 | Job | Commands |
 |---|---|
-| python | `uv run pytest`, `uv run ruff check runtime tools`, `uv run reachy-bridge-runtime --check` |
-| rust-web | `cargo test` and `cargo clippy --all-targets` in `controller/`; `bun run typecheck`, `bun test`, `bun run build` in `web/` |
-| shell | `shellcheck` on the scripts in `deploy/` and `tools/`; `bash tools/test_uninstall.sh` and `bash tools/test_cli.sh` (the `reachy-bridge` command's robot-off gate, sim mode, deploy and rollback) |
+| python | `uv run pytest`, `uv run ruff check runtime tools`, `uv run ruff format --check`, `uv run reachy-bridge-runtime --check` |
+| rust-web | `cargo fmt --check`, `cargo test` and `cargo clippy --locked --all-targets -- -D warnings` in `controller/`; `bun install --frozen-lockfile`, `bun run typecheck`, `bun test`, `bun run build` in `web/` |
+| shell | `shellcheck` on the scripts in `deploy/` and `tools/`; `bash tools/test_uninstall.sh`, `bash tools/test_cli.sh` (the `reachy-bridge` command's robot-off gate, sim mode, deploy and rollback) and `bash tools/test_review_gate.sh` (the review check), `bash tools/test_catchup_check.sh` and `bash tools/test_precheck.sh` |
 | sim | `uv run python tools/sim/run.py`: the controller against a sim daemon (see [`tools/sim/README.md`](tools/sim/README.md)) |
 | browser | `uv run python tools/sim/run.py --audio -- bash -c 'cd web && bunx playwright test'`: the dashboard in Chromium against the sim stack, at desktop and phone sizes, and the voice pane's audio routing over WebRTC with a test tone per source (`--audio`; needs gstreamer1.0-plugins-bad and gstreamer1.0-nice, and an address on the tailnet or in `AUDIO_GATEWAY_NETS`) (not required yet) |
 | install | `deploy/install.sh` on a fresh runner with a systemd user manager, checked by `tools/check_install.sh`; run twice, then `reachy-bridge uninstall --yes` and `check_install.sh --gone` (not required yet) |
+
+Before you push, `bash tools/precheck.sh` runs the format, lint, type and unit checks for
+the areas your branch changed (`--all` for every area); Claude Code sessions run it from a
+hook (AGENTS.md, "Verification"). Before each commit, check the change running against the
+sim stack: `.claude/skills/verify/SKILL.md` says how, area by area. Reviewers work from
+[`REVIEW.md`](REVIEW.md) and the items of
+[`docs/reliability-checklist.md`](docs/reliability-checklist.md) that match the diff
+(`git show origin/main:tools/checklist.py | python3 -I -`), both read from `main`.
 
 Run the sim tests before asking for hardware QA. The python and rust-web jobs report line
 coverage in their job summaries (pytest-cov, `bun test --coverage`, cargo-llvm-cov); it's
@@ -93,17 +101,21 @@ holds the tested version. The upstream watch workflow opens a PR when Pollen rel
 new one (#155); a new daemon version needs hardware QA before it merges.
 Dependabot (`.github/dependabot.yml`) proposes everything else once a week, grouped per
 ecosystem. Patch and minor updates merge on their own once CI passes, and a workflow keeps
-them up to date with `main` until they do; a major bump waits for the owner. Python
-updates run on the robot, so they get hardware QA after merge too.
+them up to date with `main` until they do; a major bump, or one that changes
+`.github/`, needs a review first (see "Claiming work"). Python updates run on the robot,
+so they get hardware QA after merge too.
 
 ## Robot safety
 
 Starting the daemon's backend, an app, an expression or a move moves the real robot.
 Changes to motion, power and torque, return-home, the one-actuator-at-a-time guards
 (one app, expressions serialized, apps and expressions mutually exclusive), the daemon's
-binding, `deploy/install.sh` or the units need hardware QA by the owner. Don't weaken
-those guards. Camera and audio come from the daemon's shared media; never open a second
-capture of the same device.
+binding, `deploy/install.sh` or the units need hardware QA by the owner. A PR that
+changes robot-side code gets the `needs hardware QA` label from
+`.github/workflows/hardware-qa-label.yml` (#306), by path; it stays on after merge until
+the owner has QA'd the change on the robot and removes it. Don't weaken those guards.
+Camera and audio come from the daemon's shared media; never open a second capture of the
+same device.
 
 ## Adding a platform adapter
 
@@ -126,7 +138,8 @@ A board becomes `tested` once someone runs it with the robot and owns keeping it
 Work goes epic → milestone → issue. The epic (#111) lists the milestones; each milestone's
 description holds its scope and order, and each issue its acceptance criteria. Labels include
 `epic`, `bug`, `enhancement`, `documentation`, `security`, `upstream-break` (opened by the
-upstream watch), and `regression` for anything found in hardware QA or soak. Branches are `feat/`, `fix/`, `docs/` or `chore/` plus the issue
+upstream watch), `needs hardware QA` (set by path, removed by the owner after QA on the
+robot), and `regression` for anything found in hardware QA or soak. Branches are `feat/`, `fix/`, `docs/` or `chore/` plus the issue
 number. Related issues go in one PR, each with its own commit and its own `Closes #N`.
 Commits have a short subject and a body that says what changed and why.
 
@@ -198,13 +211,53 @@ say-so.
    see what's taken.
 3. Before asking for review, merge the current `main` into your branch and rerun the
    checks.
-4. Merge once every gate passes: CI green with the current `main` merged in, and a
+4. Merge only once every gate passes: CI green with the current `main` merged in, and a
    separate read-only review (a reviewer with fresh context, given the diff) with no
-   unresolved correctness findings. Security-relevant PRs (login, sessions, headers,
-   anything exposed beyond `127.0.0.1`, secrets, update signing) also need a dedicated
-   security review and a second independent reviewer, both clean. Merge with a merge
-   commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
-   `main` directly. Only Dependabot's PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
+   unresolved Important findings (as [`REVIEW.md`](REVIEW.md) defines them).
+   Security-relevant PRs (the list in REVIEW.md, "Security-relevant PRs") also need a
+   dedicated security review and a second independent reviewer, both clean.
+5. Record each clean review as a PR comment of its own (not a review body) that holds
+   only the marker and the full 40-digit sha of the head commit the reviewer was
+   given: `Review: clean @<sha>`, and for a security-relevant PR also
+   `Security review: clean @<sha>` and `Second review: clean @<sha>`, each in its own
+   comment. The only other text a marker comment may hold is the footer Claude Code's
+   cloud sessions sign every comment with (`---` and `_Generated by [Claude Code](https://claude.ai/code)_`,
+   below the marker). Don't edit a marker comment; post a new one. The required `review` check
+   (`tools/review_gate.sh`, #302) stays pending until the repo owner's account has
+   posted them for the PR's current head, so a new push, including a merge of `main`,
+   needs fresh markers (except after a clean catch-up with `main`, step 6); and a head
+   commit shared by two open PRs stays pending. Post markers only from the owner's
+   account: check that `gh api user -q .login` matches
+   `gh repo view --json owner -q .owner.login` first. Get the
+   head with `gh pr view <n> --json headRefOid -q .headRefOid`, and wait for the check
+   with `gh pr checks <n> --watch` before merging, and confirm the `review` row passed; when it stays pending, its
+   description (`gh pr checks <n> --json name,state,description`) and its run's log say
+   what's missing. The gate treats a PR as security-relevant when it has the `security`
+   or `auth` label or changes a file in the script's `SECURITY_PATHS`: login, sessions, pairing and setup and the guards and
+   headers that apply them, the app proxy, bind addresses and what's exposed, request
+   signing, app binding, secrets, the installer, dependency manifests and lock files,
+   build scripts and toolchains, everything under `.github/`, the agent rules and
+   agent config, and the gate itself. Label a PR
+   `security` when it is security-relevant by REVIEW.md's list but touches none of
+   those files. Dependabot PRs whose commits are all Dependabot's (or the branch
+   updater's merge of `main`) pass without markers when every update is patch or minor,
+   nothing under `.github/` changes and there's no `security`/`auth` label; a major,
+   unclassified or workflow update needs one `Review` marker (the `security` or `auth`
+   label asks for the full set). Bring those up to
+   date before their reviews with `@dependabot rebase` (or `@dependabot recreate` once the
+   branch updater has pushed to them), not "Update branch", which adds a commit of yours;
+   any other commit on a Dependabot PR needs the full set of markers.
+6. A clean catch-up with `main` keeps the earlier reviews. `bash tools/catchup_check.sh <n>`,
+   run from a checkout of current `main` (never the PR's branch), checks that the PR's head N
+   only merges a commit of `main` into its first parent R, the reviewed commit: one merge
+   base on `main`'s first-parent history, no conflicts or hand edits, no file changed on both
+   sides, N's change against `main` exactly R's reviewed change, no change of base branch,
+   and, when R has a `Security review` marker, no `SECURITY_PATHS` file from `main`. It lists
+   R's markers; `--post` re-posts exactly those for N. Nothing happens until it is run. When
+   it fails, the reviews run again on N. CI tests the merged commit either way. The check
+   relies on `main` taking only merge and squash merges (the ruleset), never fast-forwards.
+7. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
+   `main` directly. Only Dependabot's patch and minor PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
    again.
 
 ## Shared files

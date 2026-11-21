@@ -49,7 +49,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libgirepository1.0-dev libcairo2-dev \
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gir1.2-gst-plugins-bad-1.0
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ steps.tools.outputs.uv }}
           enable-cache: true
@@ -94,7 +94,7 @@ jobs:
         run: |
           rustup toolchain install "$RUST" --profile minimal --component clippy,llvm-tools,rustfmt
           rustup default "$RUST"
-      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-llvm-cov@0.9.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -164,7 +164,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libgirepository1.0-dev libcairo2-dev \
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ steps.tools.outputs.uv }}
           enable-cache: true
@@ -261,7 +261,7 @@ jobs:
           sudo ip link add tailnet0 type dummy
           sudo ip addr add 100.64.0.1/32 dev tailnet0
           sudo ip link set tailnet0 up
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ steps.tools.outputs.uv }}
           enable-cache: true
@@ -336,7 +336,7 @@ jobs:
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gir1.2-gst-plugins-bad-1.0
       # setup-uv's tool-cache path has no /installs/ component, which
       # install.sh requires of the uv it writes into the daemon unit's PATH.
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ steps.tools.outputs.uv }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -408,6 +408,9 @@ jobs:
           tar -xJf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
       - run: shellcheck --version
-      - run: shellcheck deploy/install.sh deploy/uninstall.sh deploy/reachy-bridge tools/build_webrtcsink_jetson.sh tools/test_uninstall.sh tools/test_cli.sh tools/check_install.sh
+      - run: shellcheck deploy/install.sh deploy/uninstall.sh deploy/reachy-bridge tools/build_webrtcsink_jetson.sh tools/test_uninstall.sh tools/test_cli.sh tools/check_install.sh tools/review_gate.sh tools/test_review_gate.sh tools/catchup_check.sh tools/test_catchup_check.sh tools/precheck.sh tools/test_precheck.sh
       - run: bash tools/test_uninstall.sh
       - run: bash tools/test_cli.sh
+      - run: bash tools/test_review_gate.sh
+      - run: bash tools/test_catchup_check.sh
+      - run: bash tools/test_precheck.sh

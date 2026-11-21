@@ -175,6 +175,19 @@ impl Control {
         });
     }
 
+    /// A profile was renamed (#297): its holder, under the old name, lets go.
+    pub fn forget_person(&self, person: &str) {
+        self.with(|inner, _| {
+            if inner.holder.as_ref().is_some_and(|h| h.person == person) {
+                tracing::info!("control: {person} lost control: profile renamed");
+                inner.holder = None;
+            }
+            if inner.away.as_ref().is_some_and(|h| h.person == person) {
+                inner.away = None;
+            }
+        });
+    }
+
     /// A revoked device: it loses control, and with it any claim to come back.
     pub fn forget(&self, device: &str) {
         self.with(|inner, _| {
