@@ -134,6 +134,10 @@ expect "security PR, security path from main" 1 "security paths: AGENTS.md"
 comments "OWNER|no|Review: clean @$R"
 expect "non-security PR, security path from main" 0 "clean catch-up"
 
+setup; commit Claude.local.md hooks main-local-rules; catchup; publish
+comments "OWNER|no|Review: clean @$R" "OWNER|no|Security review: clean @$R" "OWNER|no|Second review: clean @$R"
+expect "security path from main in another case" 1 "security paths: Claude.local.md"
+
 setup; commit b.txt b2 main-b; catchup; publish
 comments "CONTRIBUTOR|no|Review: clean @$R"
 expect "a contributor's marker doesn't count" 1 "no owner Review marker"

@@ -49,13 +49,13 @@ set -Eeuo pipefail
 # secrets (the HF token and its scrubbing, sound tokens), the
 # installer, dependency manifests and locks, build scripts, toolchains and
 # the shipped webrtcsink build, CI and release workflows (update signing),
-# agent rules and agent config for every coding agent (Claude, Codex,
-# Cursor, Gemini and the like, at any depth, CLAUDE.local.md included even
+# agent rules and agent config for every coding agent (Claude, Codex and its
+# .agents/ skills, Cursor, Gemini and the like, at any depth and any case, CLAUDE.local.md included even
 # though it's gitignored), .gitmodules (what a checkout pulls in),
 # .gitignore (what of it is tracked), .gitattributes (it can hide lines from
 # diffs), the review focus and reliability checklist (reviewers read them
 # from main), and this gate, its catch-up check and the local precheck hook.
-SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|control|sim|audio|logs|apps|host)|routes/(store|sounds|apps|power|logs))\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|upstream|features/((app_bind|sim_apps)(_shim)?|sim_sounds|apps_venv_sync))\.py|web/src/(api/(auth|hf|client|setup)|logic/(auth|setup))\.ts|web/src/components/(Login|Setup)\.tsx|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|(runtime/)?pyproject\.toml|uv\.lock|controller/Cargo\.(toml|lock)|web/(package\.json|bun\.lock)|controller/build\.rs|web/vite\.config\.ts|mise\.toml|tools/(toolchain_versions\.py|build_webrtcsink_jetson\.sh)|tools/udev/[^/]+\.rules|\.gitmodules|\.github/.+|(.+/)?\.(claude|codex|cursor|gemini|windsurf|clinerules|continue|roo)/.+|(.+/)?\.(mcp\.json|cursorrules|windsurfrules|clinerules|aider\.conf\.yml)|\.gitignore|(.+/)?\.gitattributes|(.+/)?(AGENTS(\.override)?|CLAUDE(\.local)?|GEMINI)\.md|CONTRIBUTING\.md|REVIEW\.md|docs/reliability-checklist\.md|tools/checklist\.py|tools/(test_)?(review_gate|catchup_check|precheck)\.sh)$'
+SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|control|sim|audio|logs|apps|host)|routes/(store|sounds|apps|power|logs))\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|upstream|features/((app_bind|sim_apps)(_shim)?|sim_sounds|apps_venv_sync))\.py|web/src/(api/(auth|hf|client|setup)|logic/(auth|setup))\.ts|web/src/components/(Login|Setup)\.tsx|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|(runtime/)?pyproject\.toml|uv\.lock|controller/Cargo\.(toml|lock)|web/(package\.json|bun\.lock)|controller/build\.rs|web/vite\.config\.ts|mise\.toml|tools/(toolchain_versions\.py|build_webrtcsink_jetson\.sh)|tools/udev/[^/]+\.rules|\.gitmodules|\.github/.+|(.+/)?\.(claude|codex|agents|cursor|gemini|windsurf|clinerules|continue|roo|junie|kiro|opencode)/.+|(.+/)?(\.(mcp\.json|cursorrules|windsurfrules|clinerules|aider\.conf\.yml)|opencode\.jsonc?)|\.gitignore|(.+/)?\.gitattributes|(.+/)?(AGENTS(\.override)?|CLAUDE(\.local)?|GEMINI)\.md|CONTRIBUTING\.md|REVIEW\.md|docs/reliability-checklist\.md|tools/checklist\.py|tools/(test_)?(review_gate|catchup_check|precheck)\.sh)$'
 
 # Every page of a list endpoint, as one JSON array.
 list() { gh api --paginate "$1" | jq -s 'add // []'; }
@@ -178,7 +178,9 @@ fi
 # A Dependabot-only PR is judged by the label alone: its paths are always
 # manifests, locks or workflows, and one review covers the update.
 if [[ -z $dependabot ]]; then
-    hits=$(grep -E "$SECURITY_PATHS" <<<"$names" || [[ $? == 1 ]])
+    # Ignoring case: on a case-insensitive checkout (macOS) `.Claude/` or
+    # `Claude.local.md` is the file the list names.
+    hits=$(grep -iE "$SECURITY_PATHS" <<<"$names" || [[ $? == 1 ]])
     if [[ -n $hits ]]; then
         security=${security:+$security, }"paths"
         # File names are the PR author's: no control characters (a CR could

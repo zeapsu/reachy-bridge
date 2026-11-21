@@ -201,7 +201,9 @@ for f in controller/src/auth.rs controller/src/profiles.rs controller/src/main.r
     web/.cursor/rules/x.mdc .gitmodules tools/udev/99-reachy-mini-doa.rules tools/udev/new.rules \
     runtime/src/reachy_bridge_runtime/features/apps_venv_sync.py runtime/src/reachy_bridge_runtime/upstream.py \
     controller/src/host.rs controller/src/routes/apps.rs controller/src/routes/power.rs \
-    controller/src/routes/logs.rs; do
+    controller/src/routes/logs.rs Claude.local.md .Claude/settings.local.json web/Agents.md .Cursor/rules/x.mdc \
+    Gemini.md .Github/workflows/x.yml .agents/skills/x/SKILL.md .junie/guidelines.md .kiro/steering/x.md \
+    .opencode/agent/x.md opencode.json web/opencode.jsonc; do
     setup; files web/src/App.tsx "$f"; comment OWNER "Review: clean @$HEAD"
     expect "security path $f" pending "security PR: paths"
 done

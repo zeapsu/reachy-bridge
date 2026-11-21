@@ -158,7 +158,7 @@ markers=$(jq -r --arg sha "$R" --arg footer "$FOOTER" '.[]
     | sub(" clean @.*"; "")' <<<"$comments" | sort -u)
 grep -qx 'Review:' <<<"$markers" || fail "${R:0:7} has no owner Review marker to reuse"
 if grep -qx 'Security review:' <<<"$markers"; then
-    hits=$(grep -E "$security_paths" <<<"$from_main" || [[ $? == 1 ]])
+    hits=$(grep -iE "$security_paths" <<<"$from_main" || [[ $? == 1 ]])  # any case, as the gate
     [[ -z $hits ]] || fail "security PR, and main brought in security paths: $(tr '\n' ' ' <<<"$hits")"
 fi
 
