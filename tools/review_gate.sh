@@ -187,8 +187,10 @@ fi
 # manifests, locks or workflows, and one review covers the update.
 if [[ -z $dependabot ]]; then
     # Ignoring case: on a case-insensitive checkout (macOS) `.Claude/` or
-    # `Claude.local.md` is the file the list names.
-    hits=$(grep -iE "$SECURITY_PATHS" <<<"$names" || [[ $? == 1 ]])
+    # `Claude.local.md` is the file the list names. And any name with a byte
+    # outside printable ASCII counts too: APFS folds Unicode (a Kelvin sign
+    # is a K, so `uv.loc\u212A` is uv.lock there), which no pattern keeps up with.
+    hits=$(LC_ALL=C grep -iE -e "$SECURITY_PATHS" -e '[^ -~]' <<<"$names" || [[ $? == 1 ]])
     if [[ -n $hits ]]; then
         security=${security:+$security, }"paths"
         # File names are the PR author's: no control characters (a CR could

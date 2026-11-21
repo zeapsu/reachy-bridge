@@ -130,7 +130,11 @@ merged=$(git merge-tree --write-tree "$R" "$M") || rc=$?
 # can't match; such a name isn't a clean catch-up.
 from_main=$(g -c core.quotePath=false diff --no-renames --name-only "$R" "$N")
 own=$(g -c core.quotePath=false diff --no-renames --name-only "$M" "$N")
-if grep -q '^"' <<<"$from_main"$'\n'"$own"; then fail "a changed file name has quotes or control characters"; fi
+# Nor is a name outside printable ASCII: macOS folds Unicode case (a Kelvin
+# sign is a K), so it can be a security path or collide with another name.
+if LC_ALL=C grep -qE '^"|[^ -~]' <<<"$from_main"$'\n'"$own"; then
+    fail "a changed file name has quotes, control characters or non-ASCII characters"
+fi
 # Ignoring case: README and readme are one file on a case-insensitive checkout.
 lower() { tr '[:upper:]' '[:lower:]' <<<"$1" | LC_ALL=C sort -u; }
 both=$(LC_ALL=C comm -12 <(lower "$from_main") <(lower "$own") | sed '/^$/d')
@@ -158,7 +162,7 @@ markers=$(jq -r --arg sha "$R" --arg footer "$FOOTER" '.[]
     | sub(" clean @.*"; "")' <<<"$comments" | sort -u)
 grep -qx 'Review:' <<<"$markers" || fail "${R:0:7} has no owner Review marker to reuse"
 if grep -qx 'Security review:' <<<"$markers"; then
-    hits=$(grep -iE "$security_paths" <<<"$from_main" || [[ $? == 1 ]])  # any case, as the gate
+    hits=$(LC_ALL=C grep -iE "$security_paths" <<<"$from_main" || [[ $? == 1 ]])  # any case, as the gate
     [[ -z $hits ]] || fail "security PR, and main brought in security paths: $(tr '\n' ' ' <<<"$hits")"
 fi
 

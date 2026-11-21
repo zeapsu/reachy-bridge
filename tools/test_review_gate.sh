@@ -203,7 +203,8 @@ for f in controller/src/auth.rs controller/src/profiles.rs controller/src/main.r
     controller/src/host.rs controller/src/routes/apps.rs controller/src/routes/power.rs \
     controller/src/routes/logs.rs Claude.local.md .Claude/settings.local.json web/Agents.md .Cursor/rules/x.mdc \
     Gemini.md .Github/workflows/x.yml .agents/skills/x/SKILL.md .junie/guidelines.md .kiro/steering/x.md \
-    .opencode/agent/x.md opencode.json web/opencode.jsonc; do
+    .opencode/agent/x.md opencode.json web/opencode.jsonc $'uv.loc\xe2\x84\xaa' $'.cur\xc5\xbfor/rules/x.mdc' \
+    $'controller/src/pro\xef\xac\x81les.rs' $'docs/caf\xc3\xa9.md' $'.\xe2\x84\xaairo/steering/x.md'; do
     setup; files web/src/App.tsx "$f"; comment OWNER "Review: clean @$HEAD"
     expect "security path $f" pending "security PR: paths"
 done

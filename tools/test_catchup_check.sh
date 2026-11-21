@@ -206,7 +206,12 @@ expect "closed PR" 1 "is not open"
 # A name git still quotes (a tab in it) can't be matched against the paths.
 setup; mkdir -p .github; commit $'.github/a\tb.yml' x main-odd; catchup; publish
 comments "OWNER|no|Review: clean @$R" "OWNER|no|Security review: clean @$R" "OWNER|no|Second review: clean @$R"
-expect "unusual file name" 1 "quotes or control characters"
+expect "unusual file name" 1 "quotes, control characters"
+
+# A non-ASCII name: on macOS a Kelvin sign is a K, so this is uv.lock.
+setup; commit $'uv.loc\xe2\x84\xaa' x main-kelvin; catchup; publish
+comments "OWNER|no|Review: clean @$R"
+expect "non-ASCII file name" 1 "non-ASCII characters"
 
 # A Security review marker without a Review one isn't enough.
 setup; commit b.txt b2 main-b; catchup; publish
