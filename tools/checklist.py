@@ -96,23 +96,76 @@ def parse(text: str) -> list[Item]:
     return items
 
 
+_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+
+
+def unquote(name: str) -> str | None:
+    """A path git C-quoted (`"b/q\\"x.rs"`) as it is, or None if `name` isn't a quoted string.
+
+    Git quotes a path holding `"`, `\\` or a control character (and non-ASCII bytes, unless
+    core.quotePath is off), escaping those bytes as `\\"`, `\\\\`, `\\t` or three octal digits.
+    """
+    if len(name) < 2 or name[0] != '"' or name[-1] != '"':
+        return None
+    out = bytearray()
+    i, body = 0, name[1:-1]
+    while i < len(body):
+        c = body[i]
+        if c == '"':
+            return None  # an unescaped quote inside: not one quoted string
+        if c != "\\":
+            out += c.encode("utf-8", "surrogateescape")
+            i += 1
+            continue
+        nxt = body[i + 1 : i + 2]
+        if nxt in _ESCAPES:
+            out.append(_ESCAPES[nxt])
+            i += 2
+        elif re.fullmatch(r"[0-3][0-7]{2}", body[i + 1 : i + 4]):
+            out.append(int(body[i + 1 : i + 4], 8))
+            i += 4
+        else:
+            return None
+    return out.decode("utf-8", "replace")
+
+
+def header_path(rest: str, prefix: str) -> str | None:
+    """The path in a `--- ` or `+++ ` header after the marker; None for /dev/null.
+
+    A header git quoted is unquoted; one this can't parse is kept whole, so the file's
+    lines are still matched rather than skipped.
+    """
+    rest = rest.rstrip("\t")  # git adds a tab after a path with spaces
+    if rest == "/dev/null":
+        return None
+    unquoted = unquote(rest)
+    if unquoted is not None:
+        rest = unquoted
+    return rest[len(prefix) :] if rest.startswith(prefix) else rest
+
+
 def changed_lines(diff: str) -> list[tuple[str, str]]:
     """(path, line) for each added or removed line of a unified diff."""
     out = []
     path = ""
     in_hunk = False
-    for line in diff.splitlines():
+    # Only "\n" ends a diff line; splitlines() would also split on \r, \f,
+    # \x1c-\x1e, \x85, U+2028 and U+2029 inside a changed line, which could
+    # forge a `diff --git` header and file the rest under another path.
+    for line in diff.split("\n"):
+        line = line.removesuffix("\r")
         if line.startswith("diff --git "):
             in_hunk = False
             path = ""
-        elif not in_hunk and line.startswith("--- a/"):
-            path = line[6:].rstrip("\t")
-        elif not in_hunk and line.startswith("+++ b/"):
-            path = line[6:].rstrip("\t")
+        elif not in_hunk and line.startswith(("--- ", "+++ ")):
+            found = header_path(line[4:], "a/" if line[0] == "-" else "b/")
+            if found is not None:
+                path = found
         elif line.startswith("@@"):
             in_hunk = True
-        elif in_hunk and line.startswith(("+", "-")) and path:
-            out.append((path, line[1:]))
+        elif in_hunk and line.startswith(("+", "-")):
+            # A hunk whose headers named no path is still matched, under "?".
+            out.append((path or "?", line[1:]))
     return out
 
 
@@ -135,13 +188,12 @@ def match(items: list[Item], paths: list[str], lines: list[tuple[str, str]]) -> 
 def git(*args: str) -> str:
     # quotePath off: non-ASCII paths come through as they are, not quoted and escaped.
     # (main() passes --text to diff so a .gitattributes `-diff` can't hide lines.)
+    # Bytes, decoded here: text mode would turn a lone \r into a newline.
     return subprocess.run(
         ["git", "-c", "core.quotePath=false", *args],
         check=True,
         capture_output=True,
-        encoding="utf-8",
-        errors="replace",  # --text puts binary files' raw bytes in the diff
-    ).stdout
+    ).stdout.decode("utf-8", "replace")  # --text puts binary files' raw bytes in the diff
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -201,16 +253,16 @@ def main(argv: list[str] | None = None) -> int:
         untracked = [p for p in git("ls-files", "--others", "--exclude-standard", "-z").split("\0") if p]
         paths = {p for p in git("diff", "--name-only", "--no-renames", "-z", base).split("\0") if p}
     except subprocess.CalledProcessError as e:
-        print(f"error: can't diff against {args.base}: {e.stderr.strip()}", file=sys.stderr)
+        print(f"error: can't diff against {args.base}: {e.stderr.decode('utf-8', 'replace').strip()}", file=sys.stderr)
         return 2
     paths |= set(untracked)
     lines = changed_lines(diff)
     # Untracked files are all added lines.
     for path in untracked:
         try:
-            with open(path, encoding="utf-8") as f:
-                lines += [(path, line) for line in f.read().splitlines()]
-        except (OSError, UnicodeDecodeError):
+            with open(path, encoding="utf-8", errors="replace", newline="") as f:
+                lines += [(path, line.removesuffix("\r")) for line in f.read().split("\n")]
+        except OSError:
             pass
 
     hits = match(items, sorted(paths), lines)

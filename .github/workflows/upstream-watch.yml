@@ -223,7 +223,12 @@ jobs:
           EOF
             # A daemon bump runs on the robot (#306).
             gh label create "needs hardware QA" --color B60205 --description "Changes robot-side code; the owner removes this after QA on the robot" 2>/dev/null || true
-            if gh pr create --base main --head "$BRANCH" --title "Lock reachy-mini $VERSION" --label "needs hardware QA" --body-file "$body"; then
+            # Label after creating: a failed label is a warning, not a PR the
+            # watch couldn't open.
+            if pr_url=$(gh pr create --base main --head "$BRANCH" --title "Lock reachy-mini $VERSION" --body-file "$body"); then
+              echo "$pr_url"
+              gh pr edit "$pr_url" --add-label "needs hardware QA" ||
+                echo "::warning::Opened $pr_url but couldn't add the needs hardware QA label; add it by hand."
               exit 0
             fi
             # Actions may not be allowed to open PRs in this repository; leave
