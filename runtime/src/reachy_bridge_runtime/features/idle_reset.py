@@ -49,6 +49,10 @@ async def pending(backend: Any) -> bool:
     try:
         future = asyncio.run_coroutine_threadsafe(read(), loop)
         return await asyncio.wait_for(asyncio.wrap_future(future), READ_TIMEOUT_S)
+    except TimeoutError:
+        # The controller polls while it waits: one line per read, no trace.
+        logger.warning("Backend loop busy for %.0f s; reporting the idle reset pending", READ_TIMEOUT_S)
+        return True
     except Exception:
         logger.warning("Could not read the idle reset state; reporting it pending", exc_info=True)
         return True

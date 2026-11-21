@@ -63,16 +63,16 @@ where
 /// sleep move's torque cut lands where it stopped, and on reachy-mini 1.14.0
 /// the stop fails on the move guard and leaves the daemon in `error` (#292).
 /// With no reset pending (a requested stop, an asleep robot) this is one
-/// read and no wait. An unreadable daemon isn't waited for: the next call
-/// reports it.
+/// read and no wait. A daemon that can't be read at first isn't waited for:
+/// the next call reports it. Once a reset is seen, only a read saying it has
+/// ended stops the wait, so a slow read mid-reset doesn't cut it short.
 pub async fn settle_idle_reset(state: &Shared) -> bool {
     let daemon = &state.daemon;
-    let settled = || async { daemon.idle_reset_pending().await != Some(true) };
-    if settled().await {
+    if daemon.idle_reset_pending().await != Some(true) {
         return true;
     }
     tracing::info!("waiting for the daemon's idle reset to put the robot to sleep");
-    wait_until(state.idle_reset_timeout, settled).await
+    wait_until(state.idle_reset_timeout, || async { daemon.idle_reset_pending().await == Some(false) }).await
 }
 
 /// Make sure the robot is on, the motors enabled and the wake-up move done.

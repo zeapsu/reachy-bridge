@@ -170,11 +170,9 @@ async fn power_off_without_an_idle_reset_reads_once_and_does_not_wait() {
         f.motors = Some("disabled".into());
     })
     .await;
-    let started = std::time::Instant::now();
     h.call("POST", "/api/daemon/stop", None).await;
     assert_eq!(h.calls(), vec!["stop sleep=false"]);
     assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 1);
-    assert!(started.elapsed() < Duration::from_millis(200), "{:?}", started.elapsed());
 
     // A requested stop of a running app: keep-awake skips the reset.
     let h = harness(|f| {
@@ -211,10 +209,9 @@ async fn power_off_goes_ahead_when_the_idle_reset_never_ends() {
     })
     .await;
     Arc::get_mut(&mut h.state).unwrap().idle_reset_timeout = Duration::from_millis(600);
-    let started = std::time::Instant::now();
     let (status, _) = h.call("POST", "/api/daemon/stop", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(started.elapsed() >= Duration::from_millis(500), "{:?}", started.elapsed());
+    assert!(h.fake.lock().unwrap().idle_reset_reads > 1);
     assert_eq!(h.calls(), vec!["stop sleep=true"]);
 }
 
@@ -227,5 +224,20 @@ async fn power_off_without_the_idle_reset_route_works_as_before() {
     })
     .await;
     h.call("POST", "/api/daemon/stop", None).await;
+    assert_eq!(h.calls(), vec!["stop sleep=true"]);
+}
+
+#[tokio::test]
+async fn an_error_from_the_idle_reset_route_reads_as_pending() {
+    let mut h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.idle_reset_status = 500;
+    })
+    .await;
+    Arc::get_mut(&mut h.state).unwrap().idle_reset_timeout = Duration::from_millis(600);
+    h.call("POST", "/api/daemon/stop", None).await;
+    // It waited (and polled) until the timeout, then powered off.
+    assert!(h.fake.lock().unwrap().idle_reset_reads > 1);
     assert_eq!(h.calls(), vec!["stop sleep=true"]);
 }

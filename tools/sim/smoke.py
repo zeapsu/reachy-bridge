@@ -131,11 +131,13 @@ def idle_reset_pending() -> bool | None:
 
 
 class Sampler:
-    """Daemon (state, motor mode) every 100 ms while an action runs, to see
-    the order things happened in."""
+    """Every 100 ms while an action runs: the daemon's (state, motor mode),
+    the current app's state, then whether the idle reset is pending. Read in
+    that order, a sample that shows the controller's action already done can
+    only read pending if the controller acted during the reset."""
 
     def __init__(self) -> None:
-        self.states: list[tuple[str, str | None]] = []
+        self.samples: list[tuple[tuple[str, str | None], str | None, bool | None]] = []
         self._done = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -144,7 +146,12 @@ class Sampler:
         while not self._done.is_set():
             try:
                 s = sampler.get("/api/daemon/status").json()
-                self.states.append((s.get("state"), (s.get("backend_status") or {}).get("motor_control_mode")))
+                daemon = (s.get("state"), (s.get("backend_status") or {}).get("motor_control_mode"))
+                r = sampler.get("/api/apps/current-app-status")
+                app = (r.json() or {}).get("state") if r.content.strip() else None
+                r = sampler.get("/api/bridge/idle-reset")
+                pending = r.json().get("pending") if r.status_code == 200 else None
+                self.samples.append((daemon, app, pending))
             except httpx.HTTPError:
                 pass
             time.sleep(0.1)
@@ -157,22 +164,17 @@ class Sampler:
         self._done.set()
         self._thread.join(5)
 
+    def saw_pending(self) -> bool:
+        return any(pending for _, _, pending in self.samples)
+
+    def acted_during_reset(self, acted) -> bool:
+        """Some sample shows ``acted(daemon, app)`` while the reset was pending."""
+        return any(pending and acted(daemon, app) for daemon, app, pending in self.samples)
+
     def changes(self) -> str:
         """The samples with repeats dropped."""
-        return " -> ".join(
-            f"{state}/{mode}"
-            for i, (state, mode) in enumerate(self.states)
-            if i == 0 or self.states[i - 1] != (state, mode)
-        )
-
-    def asleep_before(self, until) -> bool:
-        """The robot was asleep (running, disabled) before ``until`` held."""
-        for state in self.states:
-            if until(state):
-                return False
-            if state == ASLEEP:
-                return True
-        return False
+        out = [f"{d[0]}/{d[1]} app={a} pending={p}" for d, a, p in self.samples]
+        return " -> ".join(x for i, x in enumerate(out) if i == 0 or out[i - 1] != x)
 
 
 def crash_and_catch_idle_reset() -> bool:
@@ -274,8 +276,8 @@ if crash_and_catch_idle_reset():
         c.post("/api/daemon/stop")
         wait(lambda: daemon_state()[0] in ("stopped", "error"), 40)
     check(
-        "[#292] power off waits for the idle reset: asleep before stopping",
-        s.asleep_before(lambda st: st[0] != "running"),
+        "[#292] power off waits for the idle reset: no stop while it runs",
+        s.saw_pending() and not s.acted_during_reset(lambda daemon, _app: daemon[0] != "running"),
         s.changes(),
     )
     check("[#292] power off after the idle reset ends stopped", daemon_state()[0] == "stopped", str(daemon_state()))
@@ -289,10 +291,11 @@ if crash_and_catch_idle_reset():
         ok = wait(lambda: app_state() == "running", 60)
     check("[#292] app start after a crash runs", ok and r.get("status") == "loading", str(r))
     check(
-        "[#292] app start waits for the idle reset: asleep before waking",
-        s.asleep_before(lambda st: False) and s.states[-1] == AWAKE,
+        "[#292] app start waits for the idle reset: crashed app kept until it ends",
+        s.saw_pending() and not s.acted_during_reset(lambda _daemon, app: app != "error"),
         s.changes(),
     )
+    check("[#292] app start after the idle reset runs on an awake robot", daemon_state() == AWAKE, str(daemon_state()))
 
 # --- leave the sim off -------------------------------------------------
 stop_any_app()

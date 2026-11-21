@@ -232,10 +232,12 @@ Source: `request_idle_reset` and `_async_idle_reset` in
   `stop-current-app`. A requested stop then leaves the robot awake at the
   home pose; crashes and remote drops still put it to sleep.
 - **Not waited for by either stop path.** `daemon/stop?goto_sleep=true` and
-  `stop-current-app` don't cancel or wait for a running idle reset: they stop
-  its move part-way. The head can stay mid-pose, or drop when the sleep
-  move's final torque cut lands where it stopped; on 1.14.0 the stop then
-  fails on the move guard and the daemon ends in `error` (#292). No upstream
+  `stop-current-app` don't cancel or wait for a running idle reset. On 1.13.0
+  they run a competing move (`stop-current-app`'s return home, or a second
+  `reset_to_sleep`) and `daemon/stop` then tears the backend down under the
+  reset. On 1.14.0 they stop its move part-way: the head can stay mid-pose,
+  or drop when the sleep move's torque cut lands where it stopped, and the
+  stop fails on the move guard with the daemon in `error` (#292). No upstream
   endpoint shows the reset (`is_move_running` reaches only WebRTC clients,
   and `move/running` lists only REST moves).
 - **Bridge route (`features/idle_reset.py`, #292):** `GET
@@ -362,4 +364,6 @@ These follow from the sections above. The first four are the bugs found in
    30 s, which covers the 15 s hand-off grace), then read the robot state
    again: an asleep robot gets `goto_sleep=false` (rule 5). Power off goes
    ahead after the timeout; app start and stop are refused. With no reset
-   pending (a requested stop, a robot already asleep) this is one read.
+   pending (a requested stop, a robot already asleep) this is one read. A
+   stop of a `starting` or `running` app doesn't wait: the app holds the
+   robot, so no reset can be pending.

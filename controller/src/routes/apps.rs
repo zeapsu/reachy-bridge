@@ -201,15 +201,21 @@ async fn start(
         if state.player.active() {
             return Ok(refused(&name, "Robot busy", "refused"));
         }
+        // Read the app first: an exit seen here has already scheduled the
+        // daemon's idle reset, so the wait below can't miss it.
+        let current = state.apps.current().await.ok().flatten();
         // After an app exits on its own the daemon puts the robot to sleep;
         // clearing the app or waking the robot during that would stop the
         // sleep move part-way (#292).
         if !settle_idle_reset(&state).await {
             return Ok(refused(&name, GOING_TO_SLEEP, "refused"));
         }
+        // An expression may have started during the wait.
+        if state.player.active() {
+            return Ok(refused(&name, "Robot busy", "refused"));
+        }
         // The daemon keeps a crashed app in its slot (state "error") and
         // refuses every start until it is cleared.
-        let current = state.apps.current().await.ok().flatten();
         if current.as_ref().and_then(|c| c.get("state")).and_then(Value::as_str) == Some("error") {
             let _ = daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await;
             // reachy-mini 1.14.0 falls back to an idle reset when the clear's
@@ -240,19 +246,22 @@ async fn stop(
     ctx: Option<Extension<AuthContext>>,
     UrlPath(name): UrlPath<String>,
 ) -> ApiResult<Json<Value>> {
-    if ctx.as_ref().is_some_and(|Extension(c)| !matches!(c.access, crate::profiles::Access::Full)) {
-        let current = state.apps.current().await.map_err(|_| ApiError::unavailable())?;
-        let running = current.as_ref().and_then(|c| c.get("info")?.get("name")?.as_str().map(str::to_string));
-        if let Some(running) = running {
-            app_allowed(ctx.as_ref(), &running)?;
-        }
-    }
     let stopped = {
         // Under the power lock, so a stop can't interleave with a power off or
-        // an app start; and after any idle reset, which clearing a crashed
-        // app would cut short (#292).
+        // an app start, and the app checked is the one stopped.
         let _power = state.power_lock.lock().await;
-        if !settle_idle_reset(&state).await {
+        let current = state.apps.current().await.map_err(|_| ApiError::unavailable())?;
+        if ctx.as_ref().is_some_and(|Extension(c)| !matches!(c.access, crate::profiles::Access::Full)) {
+            let running = current.as_ref().and_then(|c| c.get("info")?.get("name")?.as_str().map(str::to_string));
+            if let Some(running) = running {
+                app_allowed(ctx.as_ref(), &running)?;
+            }
+        }
+        // Clearing an app that exited on its own would cut short the idle
+        // reset its exit started (#292). A running app holds the robot, so
+        // no reset is pending then: stop it at once.
+        let state_of = current.as_ref().and_then(|c| c.get("state")).and_then(Value::as_str);
+        if !matches!(state_of, Some("starting" | "running")) && !settle_idle_reset(&state).await {
             return Ok(refused(&name, GOING_TO_SLEEP, "refused"));
         }
         state.daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await

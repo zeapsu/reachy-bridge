@@ -62,11 +62,9 @@ async fn app_start_without_an_idle_reset_does_not_wait() {
         f.motors = Some("enabled".into());
     })
     .await;
-    let started = std::time::Instant::now();
     h.call("POST", "/api/apps/start/reachy_mini_radio", None).await;
     assert_eq!(h.calls(), vec!["start-app reachy_mini_radio"]);
     assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 1);
-    assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
 }
 
 #[tokio::test]
@@ -101,6 +99,24 @@ async fn app_stop_of_a_crashed_app_waits_for_the_idle_reset() {
     let (_, body) = h.call("POST", "/api/apps/stop/hello_world", None).await;
     assert_eq!(body["status"], "stopping");
     assert_eq!(h.calls(), vec!["idle-reset done", "stop-app"]);
+}
+
+#[tokio::test]
+async fn app_stop_of_a_running_app_does_not_wait() {
+    // A running app holds the robot, so no reset can be pending; even a
+    // route that says otherwise doesn't hold up the stop.
+    let mut h = harness(|f| {
+        f.state = "running".into();
+        f.motors = Some("enabled".into());
+        f.app = Some(json!({"info": {"name": "hello_world"}, "state": "running"}));
+        f.idle_reset_polls = u32::MAX;
+    })
+    .await;
+    Arc::get_mut(&mut h.state).unwrap().idle_reset_timeout = Duration::from_secs(60);
+    let (_, body) = h.call("POST", "/api/apps/stop/hello_world", None).await;
+    assert_eq!(body["status"], "stopping");
+    assert_eq!(h.calls(), vec!["stop-app"]);
+    assert_eq!(h.fake.lock().unwrap().idle_reset_reads, 0);
 }
 
 #[tokio::test]

@@ -42,6 +42,8 @@ pub struct Fake {
     pub idle_reset_reads: u32,
     /// A runtime without the idle reset route answers 404.
     pub idle_reset_missing: bool,
+    /// An error status for every read of the route (0: answer normally).
+    pub idle_reset_status: u16,
 }
 
 pub type FakeState = Arc<Mutex<Fake>>;
@@ -146,6 +148,9 @@ pub async fn fake_daemon(fake: FakeState) -> String {
                 f.idle_reset_reads += 1;
                 if f.idle_reset_missing {
                     return (StatusCode::NOT_FOUND, Json(json!({"detail": "Not Found"})));
+                }
+                if f.idle_reset_status >= 400 {
+                    return (StatusCode::from_u16(f.idle_reset_status).unwrap(), Json(json!({"detail": "boom"})));
                 }
                 let pending = f.idle_reset_polls > 0;
                 if pending {
