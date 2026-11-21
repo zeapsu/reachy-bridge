@@ -201,9 +201,10 @@ contributors stop at a ready PR with their review results in it.
    work"); follow them exactly.
 5. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`). Never squash or
    rebase, never push directly to `main`, never rewrite pushed history. Only Dependabot's patch
-   and minor PRs squash, through their own auto-merge, which stays off for majors and
-   workflow updates; those merge like any other PR once they have their `Review` marker. Python dependency updates still
-   get hardware QA after they land.
+   and minor PRs squash, through their own auto-merge, which stays off for majors,
+   unclassified updates, workflow updates and PRs with the `security` or `auth` label; those
+   merge like any other PR once they have their `Review` marker (the full set with the
+   label). Python dependency updates still get hardware QA after they land.
 6. After merging, tell the owner in one short note what to QA (what changed, what to try, what
    could look wrong). Robot-side changes (motion, power/torque, return-home, the
    actuating-surface guards, the daemon wrapper and its features, platform adapters, deploy,
@@ -220,9 +221,14 @@ Merging never relaxes the robot host and hardware safety rules above.
 - **Rollback points = `vX.Y.Z-rcN` tags.** Note `main`'s head first. If no merged PR into
   `main` still has `needs hardware QA`
   (`gh pr list --state merged --base main --label "needs hardware QA"` is empty), no
-  `regression` issue is open, and robot-side code changed since the last rc
-  (`git diff --name-only <last rc> <head>` touches the label workflow's paths), the agent tags
-  the next rc on the head it noted and tells the owner. Check this after each merge
+  `regression` issue is open, and robot-side code changed since the last rc (this prints
+  the changed files that match the label workflow's patterns on `main`; any output counts):
+  ```bash
+  wf=$(git show origin/main:.github/workflows/hardware-qa-label.yml)
+  pat() { sed -n "s/^ *$1='\(.*\)'\$/\1/p" <<<"$wf"; }
+  git diff --name-only --no-renames <last rc> <head> | grep -E "$(pat robot)" | grep -vE "$(pat simonly)"
+  ```
+  the agent tags the next rc on the head it noted and tells the owner. Check this after each merge
   and whenever the owner clears labels. The label started with #306, so the first rc after it
   also needs the owner's explicit go: everything merged before it was never labeled.
   Pushing a tag runs `release.yml`, which publishes a prerelease with generated notes unless

@@ -2,9 +2,10 @@ name: Hardware QA label
 # A PR that changes what the robot does or how the bridge runs on it gets
 # "needs hardware QA" (#306): all of the controller and the runtime wrapper
 # (motion, power and torque, return-home and the one-actuator guards, the
-# daemon and its features, platform adapters), the dashboard code that
-# drives the robot, the installer, units, CLI and udev rules, and the Python
-# dependencies the robot runs. Sim-only files don't count. The label stays on
+# daemon and its features, platform adapters), its Rust dependencies and
+# build script, the dashboard code that drives the robot (hooks, API, logic
+# and the panels that move it), the installer, units, CLI and udev rules, the
+# shipped webrtcsink build, and the Python dependencies the robot runs. Sim-only files don't count. The label stays on
 # after merge until the owner has QA'd the change on the robot and removes
 # it; nothing here ever removes it, so a label an agent adds by hand stays
 # too. With none left on merged PRs (and no open `regression` issue), the
@@ -19,7 +20,8 @@ name: Hardware QA label
 # out: it only reads the PR's file list and sets the label.
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize]
+    # edited: a PR retargeted to main from another branch.
+    types: [opened, reopened, synchronize, edited]
 permissions:
   contents: read
 env:
@@ -41,7 +43,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          robot='^(controller/src/.+\.rs|runtime/src/reachy_bridge_runtime/.+\.py|web/src/(hooks/use(Drive|Power|Control|Expressions|Apps|Voice)|api/(power|control|expressions|apps)|logic/(drive|power|moves|pose|control|controls|expressions))\.tsx?|deploy/.+|tools/udev/.+|runtime/pyproject\.toml|uv\.lock)$'
+          # AGENTS.md ("Channels") reads these two lines from this file; keep
+          # each a single-quoted one-liner.
+          robot='^(controller/src/.+\.rs|controller/Cargo\.(toml|lock)|controller/build\.rs|runtime/src/reachy_bridge_runtime/.+\.py|web/src/(hooks/use(Drive|Power|Control|Expressions|Apps|Voice)|api/(power|control|expressions|apps)|logic/(drive|power|moves|pose|control|controls|expressions)|components/(DrivePanel|ControlStrip|ControlsPanel|ExpressionsPanel|AppsPanel))\.tsx?|deploy/.+|tools/udev/.+|tools/build_webrtcsink_jetson\.sh|runtime/pyproject\.toml|uv\.lock)$'
           simonly='^(runtime/src/reachy_bridge_runtime/features/sim_[a-z_]+\.py|deploy/systemd/reachy-bridge-sim\.service)$'
           # Both names of a renamed file.
           files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
