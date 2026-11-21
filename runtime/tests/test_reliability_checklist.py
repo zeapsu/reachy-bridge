@@ -228,3 +228,70 @@ def test_main_survives_binary_files_in_the_diff(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert checklist.main(["--base", "main", "--file", "list.md"]) == 0
     assert "checklist items match" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "quoted, path",
+    [
+        ('"b/q\\"x.rs"', 'b/q"x.rs'),
+        ('"b/back\\\\slash.rs"', "b/back\\slash.rs"),
+        ('"b/tab\\there.rs"', "b/tab\there.rs"),
+        ('"b/new\\nline.rs"', "b/new\nline.rs"),
+        ('"b/caf\\303\\251.rs"', "b/café.rs"),
+        ('"b/bell\\a.rs"', "b/bell\a.rs"),
+        ("b/plain.rs", None),
+        ('"b/bad\\q.rs"', None),
+        ('"b/a"b.rs"', None),
+    ],
+)
+def test_unquote_reads_gits_c_quoting(quoted, path):
+    assert checklist.unquote(quoted) == path
+
+
+def test_changed_lines_unquotes_quoted_headers():
+    diff = (
+        'diff --git "a/q\\"x.rs" "b/q\\"x.rs"\n'
+        '--- "a/q\\"x.rs"\n'
+        '+++ "b/q\\"x.rs"\n'
+        "@@ -1 +1 @@\n"
+        '-let a = "127.0.0.1:1";\n'
+        '+let a = "0.0.0.0:1";\n'
+        'diff --git "a/gone\\tfile.rs" "b/gone\\tfile.rs"\n'
+        "deleted file mode 100644\n"
+        '--- "a/gone\\tfile.rs"\n'
+        "+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n"
+        "-old\n"
+    )
+    assert checklist.changed_lines(diff) == [
+        ('q"x.rs', 'let a = "127.0.0.1:1";'),
+        ('q"x.rs', 'let a = "0.0.0.0:1";'),
+        ("gone\tfile.rs", "old"),
+    ]
+
+
+def test_changed_lines_keeps_lines_under_a_header_it_cannot_parse():
+    diff = 'diff --git x y\n+++ "b/odd\\q"\n@@ -0,0 +1 @@\n+0.0.0.0\n'
+    assert checklist.changed_lines(diff) == [('"b/odd\\q"', "0.0.0.0")]
+    assert checklist.changed_lines("@@ -0,0 +1 @@\n+0.0.0.0\n") == [("?", "0.0.0.0")]
+
+
+@pytest.mark.parametrize("name", ['q"x.rs', "back\\slash.rs", "tab\there.rs", "bell\x07.rs"])
+def test_main_matches_diff_triggers_in_files_git_quotes(tmp_path, monkeypatch, capsys, name):
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "list.md").write_text(ITEMS)
+    (tmp_path / name).write_text("fn main() {}\n")
+    git("add", ".")
+    git("commit", "-qm", "base")
+    git("checkout", "-qb", "change")
+    (tmp_path / name).write_text('fn main() { let a = "0.0.0.0:1"; }\n')
+    monkeypatch.chdir(tmp_path)
+    assert checklist.main(["--base", "main", "--file", "list.md"]) == 0
+    out = capsys.readouterr().out
+    assert "[ports]" in out
+    assert f"line in {name}:" in out
