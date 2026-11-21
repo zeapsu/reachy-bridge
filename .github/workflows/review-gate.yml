@@ -6,8 +6,9 @@ name: Review gate
 # however a PR is merged. The rules are in tools/review_gate.sh;
 # CONTRIBUTING.md ("Claiming work") says what to post.
 #
-# It runs when a PR's head or labels change, when a comment is posted, edited
-# or deleted, and on dispatch, which the Dependabot branch updater uses after
+# It runs when a PR's head or labels change, when one closes (to re-check an
+# open PR that shared its head), when a comment is posted, edited or deleted,
+# and on dispatch, which the Dependabot branch updater uses after
 # it merges main into a branch (a push with the workflow token starts no
 # workflows). A PR opened with the workflow token (the upstream watch) gets
 # its first status when a marker is posted.
@@ -17,8 +18,9 @@ name: Review gate
 # reads the PR, its files and comments through the API.
 on:
   pull_request_target:
-    # edited: a new base changes which files and PRs count.
-    types: [opened, reopened, synchronize, labeled, unlabeled, edited]
+    # edited: a new base changes which files and PRs count. closed: an open
+    # PR that shared this head can pass again (tools/review_gate.sh).
+    types: [opened, reopened, synchronize, labeled, unlabeled, edited, closed]
   issue_comment:
     types: [created, edited, deleted]
   workflow_dispatch:
@@ -52,7 +54,11 @@ jobs:
       # Pending first, so the head never sits with no status from this gate
       # (which would leave a same-named check run from elsewhere to stand in
       # for it) while the run below works, or if it dies before it posts.
-      - if: github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == github.event.repository.default_branch
+      # Only for an open PR: a closed one's head may be an open PR's too.
+      - if: >-
+          github.event_name == 'pull_request_target' &&
+          github.event.pull_request.state == 'open' &&
+          github.event.pull_request.base.ref == github.event.repository.default_branch
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -70,4 +76,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
+          # Set on the run a retarget starts (an `edited` event with a new base).
+          BASE_CHANGED: ${{ github.event.changes.base.ref.from }}
         run: bash tools/review_gate.sh

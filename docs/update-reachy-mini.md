@@ -56,7 +56,8 @@ The checks decide, not your reading of the code:
 6. Green: push to the branch, update the contract's version line and any
    changed sections, and open or update the PR with what changed upstream,
    what you changed and why. The watch opens it with the `needs hardware QA`
-   label; keep it on.
+   label; keep it on, and add it if it's missing (the watch only warns when
+   it can't).
 
 ## Allowed paths
 

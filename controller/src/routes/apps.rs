@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::apps::APP_CONTROL_TIMEOUT;
 use crate::auth::AuthContext;
 use crate::error::{ApiError, ApiResult};
-use crate::routes::power::ensure_awake;
+use crate::routes::power::{ensure_awake, settle_idle_reset};
 use crate::state::Shared;
 
 pub const MAX_FAVORITES: usize = 3;
@@ -162,6 +162,9 @@ async fn put_favorites(
     Ok(Json(json!({"favorites": favorites})))
 }
 
+/// Refused while the daemon's idle reset is still putting the robot to sleep.
+const GOING_TO_SLEEP: &str = "Robot is going to sleep; try again shortly";
+
 fn refused(name: &str, error: impl Into<String>, status: &str) -> Json<Value> {
     Json(json!({"error": error.into(), "name": name, "status": status}))
 }
@@ -198,11 +201,45 @@ async fn start(
         if state.player.active() {
             return Ok(refused(&name, "Robot busy", "refused"));
         }
+        // Read the app first: an exit seen here has already scheduled the
+        // daemon's idle reset, so the wait below can't miss it.
+        let current = state.apps.current().await.ok().flatten();
+        // The daemon refuses a second app anyway; refuse before waking the
+        // robot or holding the lock through the waits below.
+        if crate::apps::is_active(current.as_ref()) {
+            return Ok(refused(&name, "An app is already running", "refused"));
+        }
+        // After an app exits on its own the daemon puts the robot to sleep;
+        // clearing the app or waking the robot during that would stop the
+        // sleep move part-way (#292).
+        if !settle_idle_reset(&state).await {
+            return Ok(refused(&name, GOING_TO_SLEEP, "refused"));
+        }
+        // An expression may have started during the wait, and a remote
+        // session may have changed the app.
+        if state.player.active() {
+            return Ok(refused(&name, "Robot busy", "refused"));
+        }
+        let current = state.apps.current().await.ok().flatten();
+        if crate::apps::is_active(current.as_ref()) {
+            return Ok(refused(&name, "An app is already running", "refused"));
+        }
         // The daemon keeps a crashed app in its slot (state "error") and
         // refuses every start until it is cleared.
-        let current = state.apps.current().await.ok().flatten();
         if current.as_ref().and_then(|c| c.get("state")).and_then(Value::as_str) == Some("error") {
             let _ = daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await;
+            // reachy-mini 1.14.0 falls back to an idle reset when the clear's
+            // return home fails.
+            if !settle_idle_reset(&state).await {
+                return Ok(refused(&name, GOING_TO_SLEEP, "refused"));
+            }
+            // As after the first wait.
+            if state.player.active() {
+                return Ok(refused(&name, "Robot busy", "refused"));
+            }
+            if crate::apps::is_active(state.apps.current().await.ok().flatten().as_ref()) {
+                return Ok(refused(&name, "An app is already running", "refused"));
+            }
         }
         ensure_awake(&state).await?;
         daemon.post_slow(&format!("apps/start-app/{name}"), APP_CONTROL_TIMEOUT).await
@@ -226,14 +263,37 @@ async fn stop(
     ctx: Option<Extension<AuthContext>>,
     UrlPath(name): UrlPath<String>,
 ) -> ApiResult<Json<Value>> {
-    if ctx.as_ref().is_some_and(|Extension(c)| !matches!(c.access, crate::profiles::Access::Full)) {
-        let current = state.apps.current().await.map_err(|_| ApiError::unavailable())?;
-        let running = current.as_ref().and_then(|c| c.get("info")?.get("name")?.as_str().map(str::to_string));
-        if let Some(running) = running {
-            app_allowed(ctx.as_ref(), &running)?;
+    let stopped = {
+        // Under the power lock, so a stop can't interleave with a power off or
+        // an app start, and the app checked is the one stopped.
+        let _power = state.power_lock.lock().await;
+        let mut current = state.apps.current().await;
+        // Only clearing a crashed app can cut short the idle reset its exit
+        // started (#292): a running app holds the robot, and with no app or
+        // a `done` one the daemon stops nothing. An unreadable app may be
+        // the crashed one. After a wait, read the app again: it is the one
+        // checked and stopped.
+        let crashed = current
+            .as_ref()
+            .map_or(true, |c| c.as_ref().and_then(|c| c.get("state")).and_then(Value::as_str) == Some("error"));
+        if crashed {
+            if !settle_idle_reset(&state).await {
+                return Ok(refused(&name, GOING_TO_SLEEP, "refused"));
+            }
+            current = state.apps.current().await;
         }
-    }
-    match state.daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await {
+        // Full access stops whatever runs, so an unreadable app is no reason
+        // to refuse; a profile needs the app's name.
+        if ctx.as_ref().is_some_and(|Extension(c)| !matches!(c.access, crate::profiles::Access::Full)) {
+            let current = current.as_ref().map_err(|_| ApiError::unavailable())?;
+            let running = current.as_ref().and_then(|c| c.get("info")?.get("name")?.as_str().map(str::to_string));
+            if let Some(running) = running {
+                app_allowed(ctx.as_ref(), &running)?;
+            }
+        }
+        state.daemon.post_slow("apps/stop-current-app", APP_CONTROL_TIMEOUT).await
+    };
+    match stopped {
         Ok(_) => {}
         Err(crate::daemon::DaemonError::Unavailable) => return Err(ApiError::unavailable()),
         Err(crate::daemon::DaemonError::Refused { .. }) => {

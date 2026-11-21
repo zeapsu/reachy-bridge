@@ -154,7 +154,10 @@ stop an app before removing it.
 
 An app with its own interface opens in the dashboard, and that interface can also open in a new
 tab. When an app ends by itself or crashes, the robot goes to sleep. When you stop it, the robot
-stays awake.
+stays awake. The robot also goes to sleep when a remote session (through Pollen's relay) ends.
+Power off, starting an app and clearing a crashed one wait for that sleep move to finish: usually
+under 10 seconds, up to about 25 after a remote session. If it takes longer than 30 seconds, starting
+or stopping is refused with "Robot is going to sleep; try again shortly".
 
 A Hugging Face token is only needed for private Spaces. Create a read token at
 huggingface.co/settings/tokens and sign in under Get apps. The robot keeps the token, and the page

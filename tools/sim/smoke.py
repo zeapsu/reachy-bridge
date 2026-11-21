@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import threading
 import time
 
 import httpx
@@ -124,6 +125,76 @@ def crash_to_sleep() -> None:
     check("[bug 2] controller reports asleep after crash", ctrl_status() == "asleep", ctrl_status())
 
 
+def idle_reset_pending() -> bool | None:
+    r = d.get("/api/bridge/idle-reset")
+    return r.json().get("pending") if r.status_code == 200 else None
+
+
+class Sampler:
+    """Every 100 ms while an action runs: the daemon's (state, motor mode),
+    the current app's state, then whether the idle reset is pending. Read in
+    that order, a sample that shows the controller's action already done can
+    only read pending if the controller acted during the reset."""
+
+    def __init__(self) -> None:
+        self.samples: list[tuple[tuple[str, str | None], str | None, bool | None]] = []
+        self.errors: list[str] = []
+        self._done = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        with httpx.Client(base_url=DAEMON, timeout=5) as sampler:
+            self._sample(sampler)
+
+    def _sample(self, sampler: httpx.Client) -> None:
+        while not self._done.is_set():
+            try:
+                s = sampler.get("/api/daemon/status").json()
+                daemon = (s.get("state"), (s.get("backend_status") or {}).get("motor_control_mode"))
+                r = sampler.get("/api/apps/current-app-status")
+                app = (r.json() or {}).get("state") if r.content.strip() else None
+                r = sampler.get("/api/bridge/idle-reset")
+                pending = r.json().get("pending") if r.status_code == 200 else None
+                self.samples.append((daemon, app, pending))
+            except Exception as error:  # noqa: BLE001 - any odd body skips one sample
+                # A non-JSON body (a teardown error page) skips one sample;
+                # it mustn't end the thread and quietly weaken the check.
+                self.errors.append(repr(error))
+            time.sleep(0.1)
+
+    def __enter__(self) -> Sampler:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._done.set()
+        self._thread.join(5)
+
+    def saw_pending(self) -> bool:
+        return any(pending for _, _, pending in self.samples)
+
+    def acted_during_reset(self, acted) -> bool:
+        """Some sample shows ``acted(daemon, app)`` while the reset was pending."""
+        return any(pending and acted(daemon, app) for daemon, app, pending in self.samples)
+
+    def changes(self) -> str:
+        """The samples with repeats dropped."""
+        out = [f"{d[0]}/{d[1]} app={a} pending={p}" for d, a, p in self.samples]
+        changes = " -> ".join(x for i, x in enumerate(out) if i == 0 or out[i - 1] != x)
+        return changes + (f" (skipped samples: {self.errors})" if self.errors else "")
+
+
+def crash_and_catch_idle_reset() -> bool:
+    """Start the crash app and return once it has exited, with the daemon's
+    idle reset under way (#292)."""
+    stop_any_app()
+    c.post(f"/api/apps/start/{CRASH_APP}")
+    crashed = wait(lambda: app_state() == "error", 60, step=0.1)
+    pending = idle_reset_pending()
+    check("[#292] idle reset reported pending right after a crash", crashed and pending is True, f"pending={pending}")
+    return crashed and pending is True
+
+
 started = time.monotonic()
 
 # --- reset to a known state: robot off ---------------------------------
@@ -203,6 +274,35 @@ c.post("/api/daemon/start")
 ok = wait(lambda: daemon_state() == AWAKE, 30)
 check("[bug 1] power on from asleep -> motors enabled", ok, str(daemon_state()))
 check("controller reports running after wake", ctrl_status() == "running", ctrl_status())
+
+# 11. [#292] power off while the daemon puts the robot to sleep after a
+# crash: the controller waits for the sleep move, then powers off from asleep,
+# instead of cutting the move short (1.14.0: daemon "error", head mid-pose).
+if crash_and_catch_idle_reset():
+    with Sampler() as s:
+        c.post("/api/daemon/stop")
+        wait(lambda: daemon_state()[0] in ("stopped", "error"), 40)
+    check(
+        "[#292] power off waits for the idle reset: no stop while it runs",
+        s.saw_pending() and not s.acted_during_reset(lambda daemon, _app: daemon[0] != "running"),
+        s.changes(),
+    )
+    check("[#292] power off after the idle reset ends stopped", daemon_state()[0] == "stopped", str(daemon_state()))
+
+# 12. [#292] starting an app while the daemon puts the robot to sleep after a
+# crash: the controller lets the sleep move finish before it clears the crashed
+# app and wakes the robot (1.14.0: torque cut wherever the head stopped).
+if crash_and_catch_idle_reset():
+    with Sampler() as s:
+        r = c.post(f"/api/apps/start/{APP}").json()
+        ok = wait(lambda: app_state() == "running", 60)
+    check("[#292] app start after a crash runs", ok and r.get("status") == "loading", str(r))
+    check(
+        "[#292] app start waits for the idle reset: crashed app kept until it ends",
+        s.saw_pending() and not s.acted_during_reset(lambda _daemon, app: app != "error"),
+        s.changes(),
+    )
+    check("[#292] app start after the idle reset runs on an awake robot", daemon_state() == AWAKE, str(daemon_state()))
 
 # --- leave the sim off -------------------------------------------------
 stop_any_app()

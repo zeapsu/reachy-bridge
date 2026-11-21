@@ -171,6 +171,26 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         ),
     ),
     Requirement(
+        "idle_reset",
+        "the backend keeps its event loop in _log_loop and the idle reset in _idle_reset_task",
+        _source_mentions(_BACKEND, "Backend", "self._log_loop", "self._idle_reset_task"),
+    ),
+    Requirement(
+        "idle_reset",
+        "request_idle_reset schedules the reset on _log_loop with call_soon_threadsafe",
+        _source_mentions(_BACKEND, "Backend.request_idle_reset", "call_soon_threadsafe", "_maybe_start_idle_reset"),
+    ),
+    Requirement(
+        "idle_reset",
+        "_maybe_start_idle_reset creates the reset task on the loop",
+        _source_mentions(_BACKEND, "Backend._maybe_start_idle_reset", "self._idle_reset_task = asyncio.create_task"),
+    ),
+    Requirement(
+        "idle_reset",
+        "the slot's became-free hook requests the idle reset directly",
+        _source_mentions(_DAEMON, "Daemon._on_robot_slot_free", "backend.request_idle_reset("),
+    ),
+    Requirement(
         "app_bind",
         "AppManager.start_app(app_name)",
         _coroutine(_MANAGER, "AppManager.start_app", "app_name"),
@@ -527,6 +547,19 @@ def daemon_backend(daemon: Any) -> Any | None:
 
 def backend_shutting_down(backend: Any) -> bool:
     return bool(getattr(backend, "is_shutting_down", False))
+
+
+def backend_loop(backend: Any) -> Any | None:
+    """The backend's own event loop, where the idle reset runs (``None`` until
+    the media server, or the sim launcher, creates it)."""
+    return getattr(backend, "_log_loop", None)
+
+
+def idle_reset_running(backend: Any) -> bool:
+    """Whether the idle reset is waiting out its grace or moving. Call on
+    ``backend_loop(backend)``: the task is only created and cleared there."""
+    task = getattr(backend, "_idle_reset_task", None)
+    return task is not None and not task.done()
 
 
 def sync_torque_mode(backend: Any) -> bool:

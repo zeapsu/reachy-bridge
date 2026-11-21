@@ -7,7 +7,8 @@ name: Dependabot auto-merge
 # commit someone else pushed onto the branch) needs review markers first
 # (tools/review_gate.sh, #306), so auto-merge stays off: the branch updater
 # would otherwise keep merging main into it, and each new head voids the
-# markers. It runs again when labels change. Python updates run on the robot, so they
+# markers. It runs again when labels change (on open PRs only; it reads the
+# labels live, not from the event). Python updates run on the robot, so they
 # still get hardware QA after they land on main.
 #
 # The PRs this merges squash: one commit per update on main, without the
@@ -31,11 +32,16 @@ concurrency:
   cancel-in-progress: false
 jobs:
   auto-merge:
-    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'zeapsu/reachy-bridge'
+    # Open PRs only: removing a label from a merged one still fires `unlabeled`.
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.state == 'open' &&
+      github.repository == 'zeapsu/reachy-bridge'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     permissions:
       contents: write
+      issues: read # the PR's labels, read live
       pull-requests: write
     steps:
       - id: metadata
@@ -52,7 +58,6 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           DEPS: ${{ steps.metadata.outputs.updated-dependencies-json }}
           TYPE: ${{ steps.metadata.outputs.update-type }}
-          LABELS: ${{ toJSON(github.event.pull_request.labels) }}
         run: |
           safe=$(jq 'length > 0 and all(.[]; .updateType == "version-update:semver-patch" or .updateType == "version-update:semver-minor")' <<< "${DEPS:-[]}")
           # Made on GitHub (committer web-flow, signed by GitHub), so it wasn't
@@ -64,13 +69,16 @@ jobs:
           workflows=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files" \
             --jq '.[] | .filename, (.previous_filename // empty) | select(startswith(".github/"))') ||
             workflows="(couldn't list the files)"
-          # A security or auth label asks for the full set of reviews.
-          flagged=$(jq -r '[.[].name | ascii_downcase | select(. == "security" or . == "auth")] | join(", ")' <<< "${LABELS:-[]}") ||
+          # A security or auth label asks for the full set of reviews. Read
+          # live: the event's copy is stale if labels changed while this run
+          # waited its turn.
+          flagged=$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/labels" \
+            --jq '.[].name | ascii_downcase | select(. == "security" or . == "auth")') ||
             flagged="(couldn't read the labels)"
           if [[ "$safe" == true && -z "$others" && -z "$workflows" && -z "$flagged" ]]; then
             echo merge=true >> "$GITHUB_OUTPUT"
           else
-            echo "Leaving it for review: update type '${TYPE:-unknown}'${others:+, commits from someone else: $others}${workflows:+, changes $(tr '\n' ' ' <<< "$workflows")}${flagged:+, label $flagged}."
+            echo "Leaving it for review: update type '${TYPE:-unknown}'${others:+, commits from someone else: $others}${workflows:+, changes $(tr '\n' ' ' <<< "$workflows")}${flagged:+, label $(tr '\n' ' ' <<< "$flagged")}."
             echo merge=false >> "$GITHUB_OUTPUT"
           fi
       - name: Turn on auto-merge
@@ -86,5 +94,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.html_url }}
         run: |
-          gh pr merge --disable-auto "$PR" || true
+          # --disable-auto fails when auto-merge is already off, so check the
+          # result instead of trusting the exit code.
+          gh pr merge --disable-auto "$PR" || echo "--disable-auto failed; checking whether auto-merge is off"
+          if [[ $(gh pr view "$PR" --json autoMergeRequest -q '.autoMergeRequest == null') != true ]]; then
+            echo "::error::Auto-merge is still on for $PR; turn it off by hand."
+            exit 1
+          fi
           gh pr edit "$PR" --add-reviewer zeapsu

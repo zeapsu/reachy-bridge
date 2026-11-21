@@ -14,9 +14,10 @@ HEAD=0123456789abcdef0123456789abcdef01234567
 OLD=fedcba9876543210fedcba9876543210fedcba98
 
 mkdir -p "$ROOT/bin"
-# The stub serves $ROOT/fx/{pr,files,comments,commits,shared}.json by endpoint, fails
-# an endpoint when $ROOT/fx/fail-<name> exists, and logs a status POST as
-# "<sha> <state> <description>".
+# The stub serves $ROOT/fx/{pr,files,comments,commits,shared,timeline,events}.json by endpoint
+# (pr-<n>.json for PR n when it exists), fails an endpoint when
+# $ROOT/fx/fail-<name> exists (fail-statuses-<k>: only the next k status
+# POSTs), and logs a status POST as "<sha> <state> <description>".
 cat >"$ROOT/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 args=("$@")
@@ -24,6 +25,10 @@ for a in "${args[@]}"; do
     case $a in
         repos/*/statuses/*)
             [[ -e $FX/fail-statuses ]] && exit 1
+            for f in "$FX"/fail-statuses-*; do
+                [[ -e $f ]] || continue
+                k=${f##*-}; rm "$f"; ((k > 1)) && touch "$FX/fail-statuses-$((k - 1))"; exit 1
+            done
             sha=${a##*/} state= desc=
             for f in "${args[@]}"; do
                 case $f in state=*) state=${f#state=} ;; description=*) desc=${f#description=} ;; esac
@@ -34,14 +39,16 @@ for a in "${args[@]}"; do
         repos/*/pulls/*/files) [[ -e $FX/fail-files ]] && exit 1; cat "$FX/files.json"; exit 0 ;;
         repos/*/pulls/*/commits) [[ -e $FX/fail-commits ]] && exit 1; cat "$FX/commits.json"; exit 0 ;;
         repos/*/issues/*/comments) [[ -e $FX/fail-comments ]] && exit 1; cat "$FX/comments.json"; exit 0 ;;
-        repos/*/pulls/*) cat "$FX/pr.json"; exit 0 ;;
+        repos/*/issues/*/timeline) [[ -e $FX/fail-timeline ]] && exit 1; cat "$FX/timeline.json" 2>/dev/null || echo '[]'; exit 0 ;;
+        repos/*/issues/*/events) [[ -e $FX/fail-events ]] && exit 1; cat "$FX/events.json" 2>/dev/null || echo '[]'; exit 0 ;;
+        repos/*/pulls/*) n=${a##*/}; if [[ -e $FX/pr-$n.json ]]; then cat "$FX/pr-$n.json"; else cat "$FX/pr.json"; fi; exit 0 ;;
     esac
 done
 echo "stub gh: unexpected call: $*" >&2
 exit 1
 EOF
 chmod +x "$ROOT/bin/gh"
-export PATH="$ROOT/bin:$PATH" FX="$ROOT/fx" GH_REPO=owner/repo PR=7
+export PATH="$ROOT/bin:$PATH" FX="$ROOT/fx" GH_REPO=owner/repo PR=7 REVIEW_GATE_RETRY_DELAY=0
 
 # setup [author] [labels-json]: a fresh open PR by `author` with a plain file.
 setup() {
@@ -188,16 +195,35 @@ for f in controller/src/auth.rs controller/src/profiles.rs controller/src/main.r
     deploy/uninstall.sh controller/Cargo.lock runtime/pyproject.toml uv.lock web/bun.lock AGENTS.md \
     REVIEW.md docs/reliability-checklist.md tools/checklist.py tools/precheck.sh tools/test_precheck.sh \
     .gitignore web/CLAUDE.md controller/src/AGENTS.md web/.claude/skills/x/SKILL.md runtime/.mcp.json \
-    .gitattributes controller/.gitattributes; do
+    .gitattributes controller/.gitattributes CLAUDE.local.md web/CLAUDE.local.md GEMINI.md AGENTS.override.md \
+    .cursor/rules/x.mdc .cursorrules .codex/config.toml .gemini/settings.json .windsurf/rules/x.md \
+    .windsurfrules .clinerules .clinerules/x.md .continue/config.yaml .roo/rules/x.md .aider.conf.yml \
+    web/.cursor/rules/x.mdc .gitmodules tools/udev/99-reachy-mini-doa.rules tools/udev/new.rules \
+    runtime/src/reachy_bridge_runtime/features/apps_venv_sync.py runtime/src/reachy_bridge_runtime/upstream.py \
+    controller/src/host.rs controller/src/routes/apps.rs controller/src/routes/power.rs \
+    controller/src/routes/logs.rs Claude.local.md .Claude/settings.local.json web/Agents.md .Cursor/rules/x.mdc \
+    Gemini.md .Github/workflows/x.yml .agents/skills/x/SKILL.md .junie/guidelines.md .kiro/steering/x.md \
+    .opencode/agent/x.md opencode.json web/opencode.jsonc $'uv.loc\xe2\x84\xaa' $'.cur\xc5\xbfor/rules/x.mdc' \
+    $'controller/src/pro\xef\xac\x81les.rs' $'docs/caf\xc3\xa9.md' $'.\xe2\x84\xaairo/steering/x.md' .cursor .codex .agents .github web/.claude \
+    .Kiro Docs Web Controller web/src/Logic deploy/Systemd Tools tools/Udev controller/src/Routes \
+    runtime runtime/src/Reachy_bridge_runtime/Features; do
     setup; files web/src/App.tsx "$f"; comment OWNER "Review: clean @$HEAD"
     expect "security path $f" pending "security PR: paths"
 done
 
-setup; files controller/src/routes/power.rs runtime/src/reachy_bridge_runtime/audio_tee.py \
+setup; files controller/src/routes/powers.rs runtime/src/reachy_bridge_runtime/audio_tee.py \
     web/src/api/power.ts tools/review_gate.sh.bak deploy/systemd/README.md \
-    docs/REVIEW.md docs/reliability-checklist.md.bak web/.gitignore docs/AGENTS.md.txt docs/claude/notes.md web/mcp.json
+    docs/REVIEW.md docs/reliability-checklist.md.bak web/.gitignore docs/AGENTS.md.txt docs/claude/notes.md web/mcp.json \
+    docs/CLAUDE.local.md.txt docs/cursor/notes.md tools/udev/README.md tools/udev/sub/x.rules \
+    runtime/src/reachy_bridge_runtime/upstream_notes.py controller/src/hosts.rs docs/gitmodules.md \
+    webx docs2 tools/udevx controllers web/srcx
 comment OWNER "Review: clean @$HEAD"
 expect "near-miss paths aren't security paths" success
+
+# A newline can't split a name into lines that each look harmless.
+setup; jq -n --arg f $'x\n/.claude/settings.json' '[{filename: "web/src/App.tsx"}, {filename: $f}]' >"$FX/files.json"
+comment OWNER "Review: clean @$HEAD"
+expect "a newline in a file name" pending "security PR: paths"
 
 setup; jq -n '[{filename: "controller/src/login.rs", previous_filename: "controller/src/auth.rs"}]' >"$FX/files.json"
 comment OWNER "Review: clean @$HEAD"
@@ -302,8 +328,25 @@ expect "a stacked PR that only contains the head doesn't block it" success
 
 setup; comment OWNER "Review: clean @${HEAD:0:7}"; comment OWNER "Review: clean @$HEAD\nnotes"
 expect "near misses: pending" pending
-if grep -q "not the full head sha" "$FX/out" && grep -q "other text in the comment" "$FX/out"; then echo "ok: near misses explained in the log"
+if grep -q "(another commit)" "$FX/out" && grep -q "other text in the comment" "$FX/out"; then echo "ok: near misses explained in the log"
 else fail "near misses not explained"; cat "$FX/out"; fi
+
+# A PR whose base changed: only markers posted after the change count (#310).
+setup; comment OWNER "Review: clean @$HEAD"
+echo '[{"event": "commented"}, {"event": "base_ref_changed", "created_at": "2026-01-01T00:00:00Z"}]' >"$FX/timeline.json"
+expect "marker from before a base change" pending "Needs Review"
+if grep -q "posted before the base branch changed" "$FX/out"; then echo "ok: base change explained in the log"
+else fail "base change not explained"; cat "$FX/out"; fi
+echo '[{"event": "base_ref_changed", "created_at": "2025-12-31T00:00:00Z"}]' >"$FX/timeline.json"
+expect "marker from after a base change" success
+rm "$FX/timeline.json"
+echo '[{"event": "automatic_base_change_succeeded", "created_at": "2026-01-02T00:00:00Z"}]' >"$FX/events.json"
+expect "marker from before an automatic base change" pending "Needs Review"
+rm "$FX/events.json"
+# The retarget's own run, before the timeline shows the change.
+jq '.updated_at = "2026-01-01T00:00:05Z"' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"
+BASE_CHANGED=feature expect "retarget run: markers from before the PR's last update" pending "Needs Review"
+expect "the same markers on a later run once nothing says the base changed" success
 
 # A failing API call fails the run and replaces any earlier pass.
 setup; files controller/src/auth.rs; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-files"
@@ -314,15 +357,57 @@ setup "dependabot[bot]"; touch "$FX/fail-commits"
 broken "Dependabot commits listing fails: error"
 setup; touch "$FX/fail-shared"
 broken "shared-head listing fails: error"
+setup; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-timeline"
+broken "timeline listing fails: error"
+setup; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-events"
+broken "events listing fails: error"
+setup; comment OWNER "Review: clean @$HEAD"; echo '[1]' >"$FX/timeline.json"
+broken "malformed timeline: error"
+setup; comment OWNER "Review: clean @$HEAD"; echo '[{"event": "base_ref_changed"}]' >"$FX/timeline.json"
+broken "base change with no time: error"
 setup; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-statuses"
 rm -f "$FX/status.log"
 if bash "$GATE" >"$FX/out" 2>&1; then fail "status POST fails: gate succeeded"
 else echo "ok: status POST fails: run fails"; fi
 
+setup; comment OWNER "Review: clean @$HEAD"; touch "$FX/fail-statuses-2"
+expect "status POST fails twice, then lands" success
+
+setup; files web/src/App.tsx $'.github/x\r\e[2K::warning::spoofed'
+comment OWNER "Review: clean @$HEAD"
+expect "control characters in a file name" pending
+if grep -q $'[\r\e]' "$FX/out"; then fail "control characters reached the log"; cat -v "$FX/out"
+else echo "ok: no control characters in the log"; fi
+
 setup; jq '.state = "closed"' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"
 rm -f "$FX/status.log"
 if bash "$GATE" >"$FX/out" 2>&1 && [[ ! -e $FX/status.log ]]; then echo "ok: closed PR: no status"
 else fail "closed PR: set a status or failed"; fi
+
+setup; jq '.state = "closed"' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"; touch "$FX/fail-shared"
+if bash "$GATE" >"$FX/out" 2>&1; then fail "closed PR, shared-head listing fails: gate succeeded"
+else echo "ok: closed PR, shared-head listing fails: run fails"; fi
+
+# A closed fork PR (#7 here) that shared the head of open PR #9 re-checks #9,
+# which then passes on its own markers; the re-check doesn't recurse.
+setup; comment OWNER "Review: clean @$HEAD"
+jq '.state = "closed"' "$FX/pr.json" >"$FX/pr-7.json"
+jq '.state = "open"' "$FX/pr.json" >"$FX/pr-9.json"
+jq -n --arg h "$HEAD" '[{number: 7, state: "closed", base: {ref: "main"}, head: {sha: $h}},
+    {number: 9, state: "open", base: {ref: "main"}, head: {sha: $h}}]' >"$FX/shared.json"
+expect "closing a PR re-checks the open PR with the same head" success
+jq '.base.ref = "feature" | .state = "open"' "$FX/pr.json" >"$FX/pr-7.json"
+jq -n --arg h "$HEAD" '[{number: 7, state: "open", base: {ref: "feature"}, head: {sha: $h}},
+    {number: 9, state: "open", base: {ref: "main"}, head: {sha: $h}}]' >"$FX/shared.json"
+BASE_CHANGED=main expect "retargeting a PR away from main re-checks the PR with the same head" success
+jq '.state = "closed"' "$FX/pr.json" >"$FX/pr-7.json"
+cp "$FX/pr-7.json" "$FX/pr-9.json"
+jq -n --arg h "$HEAD" '[{number: 7, state: "closed", base: {ref: "main"}, head: {sha: $h}},
+    {number: 9, state: "open", base: {ref: "main"}, head: {sha: $h}}]' >"$FX/shared.json"
+rm -f "$FX/status.log"
+if bash "$GATE" >"$FX/out" 2>&1 && [[ ! -e $FX/status.log ]] && [[ $(grep -c "Re-checking" "$FX/out") == 1 ]]; then
+    echo "ok: a re-check doesn't recurse"
+else fail "a re-check recursed or failed"; cat "$FX/out"; fi
 
 for bad in "7; true" 07 0 ""; do
     if PR=$bad bash "$GATE" >"$FX/out" 2>&1; then fail "PR '$bad' accepted"

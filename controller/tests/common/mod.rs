@@ -34,6 +34,26 @@ pub struct Fake {
     pub calls: Vec<String>,
     /// The Hugging Face user the fake daemon is logged in as.
     pub hf_user: Option<String>,
+    /// Reads of `bridge/idle-reset` that still answer pending (#292). The
+    /// last one ends the reset: the motors go `disabled` (asleep) and
+    /// `idle-reset done` is recorded.
+    pub idle_reset_polls: u32,
+    /// Every read of `bridge/idle-reset`.
+    pub idle_reset_reads: u32,
+    /// `idle_reset_reads` when `stop-current-app` was last called.
+    pub reads_at_app_stop: Option<u32>,
+    /// A runtime without the idle reset route answers 404.
+    pub idle_reset_missing: bool,
+    /// An error status for every read of the route (0: answer normally).
+    pub idle_reset_status: u16,
+    /// `apps/current-app-status` answers 500.
+    pub app_status_fails: bool,
+    /// `stop-current-app` starts an idle reset this many reads long
+    /// (reachy-mini 1.14.0's fallback when the return home fails).
+    pub idle_reset_after_stop: u32,
+    /// The app in the slot once the idle reset ends (a remote session
+    /// started one meanwhile).
+    pub app_after_idle_reset: Option<Value>,
 }
 
 pub type FakeState = Arc<Mutex<Fake>>;
@@ -131,6 +151,31 @@ pub async fn fake_daemon(fake: FakeState) -> String {
                 StatusCode::SERVICE_UNAVAILABLE
             }),
         )
+        .route(
+            "/api/bridge/idle-reset",
+            get(|State(fake): State<FakeState>| async move {
+                let mut f = fake.lock().unwrap();
+                f.idle_reset_reads += 1;
+                if f.idle_reset_missing {
+                    return (StatusCode::NOT_FOUND, Json(json!({"detail": "Not Found"})));
+                }
+                if f.idle_reset_status >= 400 {
+                    return (StatusCode::from_u16(f.idle_reset_status).unwrap(), Json(json!({"detail": "boom"})));
+                }
+                let pending = f.idle_reset_polls > 0;
+                if pending {
+                    f.idle_reset_polls -= 1;
+                    if f.idle_reset_polls == 0 {
+                        f.motors = Some("disabled".into());
+                        f.calls.push("idle-reset done".into());
+                        if let Some(app) = f.app_after_idle_reset.take() {
+                            f.app = Some(app);
+                        }
+                    }
+                }
+                (StatusCode::OK, Json(json!({"pending": pending})))
+            }),
+        )
         .route("/api/daemon/start", post(start))
         .route("/api/daemon/stop", post(stop))
         .route("/api/motors/set_mode/{mode}", post(set_mode))
@@ -216,7 +261,13 @@ pub async fn fake_daemon(fake: FakeState) -> String {
         )
         .route(
             "/api/apps/current-app-status",
-            get(|State(f): State<FakeState>| async move { Json(f.lock().unwrap().app.clone().unwrap_or(Value::Null)) }),
+            get(|State(f): State<FakeState>| async move {
+                let f = f.lock().unwrap();
+                if f.app_status_fails {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": "boom"})));
+                }
+                (StatusCode::OK, Json(f.app.clone().unwrap_or(Value::Null)))
+            }),
         )
         .route(
             "/api/apps/list-available/installed",
@@ -232,10 +283,17 @@ pub async fn fake_daemon(fake: FakeState) -> String {
             post(|State(f): State<FakeState>| async move {
                 record(&f, "stop-app");
                 let mut f = f.lock().unwrap();
-                if f.app.is_none() {
+                f.reads_at_app_stop = Some(f.idle_reset_reads);
+                // Upstream refuses with no app, or one that is done or stopping.
+                let state = f.app.as_ref().and_then(|a| a["state"].as_str().map(str::to_string));
+                if f.app.is_none() || matches!(state.as_deref(), Some("done" | "stopping")) {
                     return (StatusCode::BAD_REQUEST, Json(json!({"detail": "No app is currently running"})));
                 }
                 f.app = None;
+                // Neither stop path cancels a reset already running.
+                if f.idle_reset_after_stop > 0 {
+                    f.idle_reset_polls = f.idle_reset_after_stop;
+                }
                 (StatusCode::OK, Json(json!({"ok": true})))
             }),
         )

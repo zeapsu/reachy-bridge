@@ -44,6 +44,9 @@ pub struct AppState {
     pub audio: Audio,
     /// The setup page, while it is open (#135).
     pub setup: Setup,
+    /// How long power and app actions wait for the daemon's idle reset to
+    /// finish (#292); `routes::power::IDLE_RESET_TIMEOUT` outside tests.
+    pub idle_reset_timeout: Duration,
 }
 
 impl AppState {
@@ -79,6 +82,7 @@ impl AppState {
             control: Control::new(player.clone()),
             audio,
             setup: Setup::default(),
+            idle_reset_timeout: crate::routes::power::IDLE_RESET_TIMEOUT,
             apps: DaemonApps::new(daemon.clone()),
             catalog: Catalog::default(),
             player,
