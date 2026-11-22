@@ -807,7 +807,7 @@ pub fn is_api(path: &str) -> bool {
 /// Changes only an admin (or the CLI) may make in admin mode: installing
 /// code (an app runs as the bridge's user and can read the local key, so a
 /// member installing one could make itself admin), the Hugging Face token,
-/// and the kinematics engine.
+/// the kinematics engine, and the app that starts when the robot wakes.
 pub fn admin_only(method: &axum::http::Method, path: &str) -> bool {
     if method.is_safe() {
         return false;
@@ -819,6 +819,7 @@ pub fn admin_only(method: &axum::http::Method, path: &str) -> bool {
         "/api/apps/remove/",
         "/api/hf/token",
         "/api/daemon/kinematics",
+        "/api/system/wake-app",
     ]
     .iter()
     .any(|p| if p.ends_with('/') { path.starts_with(p) } else { path == *p })

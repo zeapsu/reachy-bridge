@@ -416,7 +416,7 @@ pub struct Harness {
     pub _dir: TempDir,
 }
 
-pub struct TempDir(std::path::PathBuf);
+pub struct TempDir(pub std::path::PathBuf);
 
 impl TempDir {
     pub fn path(&self) -> &std::path::Path {

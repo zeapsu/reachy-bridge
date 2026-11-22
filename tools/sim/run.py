@@ -237,6 +237,8 @@ def main() -> int:
                     "CONTROLLER_APP_PORT": str(app_port),
                     "REACHY_BRIDGE_STATE_DIR": str(work / "controller-state"),
                     "REACHY_DAEMON_UNIT": "none.service",
+                    # The Conversation app isn't in the sim: a test app stands in (#334).
+                    "REACHY_WAKE_APP": "sim_ui_app",
                     # No gateway unit: --audio starts it, or nothing answers.
                     "AUDIO_GATEWAY_URL": audio_url,
                     "AUDIO_GATEWAY_UNIT": "",

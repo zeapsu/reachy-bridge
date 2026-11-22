@@ -4,6 +4,7 @@ import type { Appearance } from "../hooks/useAppearance.ts";
 import type { ControlApi } from "../hooks/useControl.ts";
 import type { SimState } from "../hooks/useSim.ts";
 import type { SimSoundsState } from "../hooks/useSimSounds.ts";
+import { useWakeApp } from "../hooks/useWakeApp.ts";
 import { read, write } from "../logic/appearance.ts";
 import { SYSTEM_PANE_KEY, parseSystemPane, type SystemPane } from "../logic/shell.ts";
 import { AppearanceRows } from "./Appearance.tsx";
@@ -14,6 +15,7 @@ import { Segmented } from "./Segmented.tsx";
 import { ROW_ICONS } from "./SettingsRow.tsx";
 import { SimRows } from "./SimPanel.tsx";
 import { Diagnostics } from "./SystemPanel.tsx";
+import { WakeAppRow } from "./WakeAppRow.tsx";
 import "./SystemView.css";
 
 const MANUAL = "https://github.com/zeapsu/reachy-bridge/blob/main/docs/manual.md";
@@ -36,6 +38,8 @@ interface Props {
   powerStatus: string | null;
   control: ControlApi;
   look: Appearance;
+  /** Open the Apps tab, where a missing app is installed. */
+  onOpenApps: () => void;
 }
 
 /**
@@ -43,19 +47,25 @@ interface Props {
  * sheet. Settings changes things, Access says who may use the robot, and
  * Diagnostics shows how the board is doing.
  */
-export function SystemView({ family, installed, daemonOnline, live, sim, sounds, powerStatus, control, look }: Props) {
+export function SystemView({ family, installed, daemonOnline, live, sim, sounds, powerStatus, control, look, onOpenApps }: Props) {
   const sheet = useLens<HTMLElement>();
   const [pane, setPaneState] = useState<SystemPane>(() => parseSystemPane(read(SYSTEM_PANE_KEY)));
   const setPane = (next: SystemPane) => {
     setPaneState(next);
     write(SYSTEM_PANE_KEY, next);
   };
+  const wake = useWakeApp(live && pane === "settings", sim.target, daemonOnline);
   return (
     <section className="glass sheet sys" data-lens ref={sheet} aria-label="System">
       <Segmented role="tabs" label="System sections" options={PANES} value={pane} onChange={setPane} panelId={(p) => `system-${p}`} />
       <div className="pane" id="system-settings" role="tabpanel" aria-label="Settings" hidden={pane !== "settings"}>
         <Panel inset title="Robot" titleId="settings-robot-title">
-          <SimRows sim={sim} sounds={sounds} powerStatus={powerStatus} control={control} />
+          <SimRows sim={sim} sounds={sounds} powerStatus={powerStatus} control={control}>
+            <WakeAppRow wake={wake} onInstall={onOpenApps} />
+          </SimRows>
+          <p className="note error" role="alert">
+            {wake.error}
+          </p>
         </Panel>
         <Panel inset title="Appearance" titleId="settings-look-title">
           <AppearanceRows look={look} />

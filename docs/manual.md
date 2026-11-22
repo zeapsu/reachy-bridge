@@ -21,9 +21,9 @@ The dashboard has three tabs:
 
 - **Robot:** the live view of the robot, with panes for Expressions, Drive, Controls and Voice.
 - **Apps:** installed apps, and Get apps to install more from Hugging Face.
-- **System:** three sections. **Settings** has the simulation and this browser's appearance,
-  **Access** has paired devices and profiles, and **Diagnostics** has the board's stats, the audio
-  path and the logs. It opens on the section you used last. Once the dashboard has an admin, System
+- **System:** three sections. **Settings** has Conversation on wake, the simulation and this
+  browser's appearance, **Access** has paired devices and profiles, and **Diagnostics** has the
+  board's stats, the audio path and the logs. It opens on the section you used last. Once the dashboard has an admin, System
   is the admin's only: other people see it dimmed with a lock (see [Profiles](#profiles)).
 
 The top bar always shows the robot's status and the power button. The status shows the running app
@@ -159,6 +159,17 @@ stays awake. The robot also goes to sleep when a remote session (through Pollen'
 Power off, starting an app and clearing a crashed one wait for that sleep move to finish: usually
 under 10 seconds, up to about 25 after a remote session. If it takes longer than 30 seconds, starting
 or stopping is refused with "Robot is going to sleep; try again shortly".
+
+**Conversation on wake.** With this switch on (System › Settings), the Conversation app starts each
+time you switch the robot on from the dashboard, from off or from asleep. The robot then moves and
+listens as soon as it has woken, without anyone starting an app, so leave it off if that would
+surprise people near the robot. It starts the way a tap on Start would: not while another app, an
+expression or a drive session has the robot, and not for someone whose profile doesn't include the
+app. If it can't start, the robot stays awake with no app and the controller log says why (System ›
+Diagnostics). Switching the robot off stops it as it stops any app, and removing the app switches
+this off. The row is dimmed with an Install button
+until the app is installed; Install opens the Apps tab, where Get apps lists it. Only the admin
+changes the switch. The simulation has its own switch.
 
 A Hugging Face token is only needed for private Spaces. Create a read token at
 huggingface.co/settings/tokens and sign in under Get apps. The robot keeps the token, and the page

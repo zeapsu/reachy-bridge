@@ -12,7 +12,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Request, StatusCode};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use reachy_controller::audio;
@@ -35,14 +35,34 @@ const ROBOT_ON: u8 = 1;
 const ROBOT_CRASHED: u8 = 2;
 const ROBOT_STARTING: u8 = 3;
 const ROBOT_SILENT: u8 = 4;
+/// On, with an app started (`apps/start-app`).
+const ROBOT_APP: u8 = 5;
 
-/// A daemon that reports `power`.
+/// A daemon that reports `power`, and switches it on and off and starts an
+/// app when asked (the wake app, #334).
 async fn fake_daemon(power: Arc<AtomicU8>) -> String {
-    let app = Router::new().route(
+    let set = |to: u8| {
+        let power = power.clone();
+        post(move || async move {
+            power.store(to, Ordering::SeqCst);
+            Json(json!({"job_id": "job"}))
+        })
+    };
+    let app = Router::new()
+        .route("/api/daemon/start", set(ROBOT_ON))
+        .route("/api/daemon/stop", set(ROBOT_OFF))
+        .route("/api/apps/start-app/{name}", set(ROBOT_APP))
+        .route(
+            "/api/apps/list-available/installed",
+            get(|| async { Json(json!([{"name": "dance"}, {"name": "dj_reactor"}])) }),
+        )
+        .route("/api/apps/current-app-status", get(|| async { Json(Value::Null) }))
+        .route("/api/move/running", get(|| async { Json(json!([])) }));
+    let app = app.route(
         "/api/daemon/status",
         get(move || async move {
             let (state, backend) = match power.load(Ordering::SeqCst) {
-                ROBOT_ON => ("running", json!({"motor_control_mode": "enabled"})),
+                ROBOT_ON | ROBOT_APP => ("running", json!({"motor_control_mode": "enabled"})),
                 ROBOT_CRASHED => ("error", Value::Null),
                 ROBOT_STARTING => ("starting", Value::Null),
                 ROBOT_SILENT => return Err(StatusCode::SERVICE_UNAVAILABLE),
@@ -833,6 +853,7 @@ async fn only_an_admin_installs_apps_or_changes_the_token() {
         ("PUT", "/api/hf/token"),
         ("DELETE", "/api/hf/token"),
         ("PUT", "/api/daemon/kinematics"),
+        ("PUT", "/api/system/wake-app"),
     ] {
         let r = h.call(method, uri, LAN, &[("cookie", &member)], Some(json!({}))).await;
         assert_eq!(r.status, StatusCode::FORBIDDEN, "{method} {uri}");
@@ -1528,6 +1549,8 @@ async fn a_profile_limits_what_its_devices_do() {
         ("GET", "/api/apps/dj_reactor/ui"),
         ("GET", "/api/logs/sources"),
         ("GET", "/api/system/stats"),
+        ("GET", "/api/system/wake-app"),
+        ("PUT", "/api/system/wake-app"),
         ("POST", "/api/sim/enter"),
     ] {
         let r = h.call(method, uri, LAN2, &as_mia, Some(json!({}))).await;
@@ -1545,6 +1568,37 @@ async fn a_profile_limits_what_its_devices_do() {
     let id = h.status_of(LAN2, &mia).await["device"].as_str().unwrap().to_string();
     let access = h.state.auth.access_for_device(&id);
     assert!(access.allows_app("dance") && !access.allows_app("dj_reactor"));
+}
+
+#[tokio::test]
+async fn powering_on_starts_the_wake_app_only_for_a_profile_that_has_it() {
+    let (mut h, admin, _sam, mia) = family_harness().await;
+    Arc::get_mut(&mut h.state).unwrap().wake_app = "dj_reactor".into();
+    let mut profile = limited_profile();
+    profile["can"]["power"] = json!(true);
+    assert_eq!(h.put_profile(&[("cookie", &admin)], "Mia", profile).await.status, StatusCode::OK);
+    let as_admin = [("cookie", admin.as_str())];
+    let as_mia = [("cookie", mia.as_str())];
+    let r = h.call("PUT", "/api/system/wake-app", LOOPBACK, &as_admin, Some(json!({"enabled": true}))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+
+    // Mia's list has no dj_reactor: her power-on wakes the robot and no more.
+    assert_eq!(h.control(LAN2, &mia, "take", None).await.status, StatusCode::OK);
+    assert_eq!(h.call("POST", "/api/daemon/start", LAN2, &as_mia, None).await.status, StatusCode::OK);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(h.robot.load(Ordering::SeqCst), ROBOT_ON);
+    assert_eq!(h.call("POST", "/api/daemon/stop", LAN2, &as_mia, None).await.status, StatusCode::OK);
+
+    // The admin's does start it.
+    assert_eq!(h.control(LOOPBACK, &admin, "take", None).await.status, StatusCode::OK);
+    assert_eq!(h.call("POST", "/api/daemon/start", LOOPBACK, &as_admin, None).await.status, StatusCode::OK);
+    for _ in 0..200 {
+        if h.robot.load(Ordering::SeqCst) == ROBOT_APP {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(h.robot.load(Ordering::SeqCst), ROBOT_APP);
 }
 
 #[tokio::test]

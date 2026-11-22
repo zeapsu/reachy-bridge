@@ -40,6 +40,12 @@ export const ROW_ICONS = {
       <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4" />
     </svg>
   ),
+  warn: (
+    <svg {...stroke} strokeWidth={2.2}>
+      <path d="M12 4 2.5 20h19L12 4Z" />
+      <path d="M12 10v4.5M12 17.2v.3" />
+    </svg>
+  ),
   manual: (
     <svg {...stroke}>
       <path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5v-15Z" />
@@ -54,8 +60,10 @@ interface Props {
   /** The label's id, for the control it names. */
   labelId?: string;
   /** A short second line: why it's dimmed, what is happening. */
-  sub?: string;
+  sub?: ReactNode;
   subId?: string;
+  /** The second line is a warning. */
+  warn?: boolean;
   /** Unavailable right now: the icon and label dim. */
   off?: boolean;
   /** On a phone the control goes under the label. */
@@ -64,7 +72,7 @@ interface Props {
 }
 
 /** One setting: an icon, its name, and its control on the right. */
-export function SettingsRow({ icon, label, labelId, sub, subId, off, stack, children }: Props) {
+export function SettingsRow({ icon, label, labelId, sub, subId, warn, off, stack, children }: Props) {
   return (
     <li className={`set-row${off ? " off" : ""}${stack ? " stack" : ""}`}>
       <span className="set-ico">{icon}</span>
@@ -73,7 +81,7 @@ export function SettingsRow({ icon, label, labelId, sub, subId, off, stack, chil
           {label}
         </span>
         {sub ? (
-          <span className="set-sub" id={subId}>
+          <span className={`set-sub${warn ? " warn" : ""}`} id={subId}>
             {sub}
           </span>
         ) : null}

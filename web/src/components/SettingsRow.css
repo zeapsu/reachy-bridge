@@ -25,6 +25,10 @@
 .set-ico svg { width: 18px; height: 18px; }
 .set-label { min-width: 0; font-weight: 500; }
 .set-sub { display: block; font-size: 13px; font-weight: 400; color: var(--ink-3); }
+/* A warning as the second line: the sign in the warning colour, the words in ink. */
+.set-sub.warn { color: var(--ink-2); }
+.set-sub.warn svg { width: 13px; height: 13px; margin-right: 5px; vertical-align: -2px; color: var(--warn); }
+.set-ico > .app-tile { width: 32px; height: 32px; font-size: 15px; border-radius: 10px; }
 .set-trail { display: flex; align-items: center; gap: 10px; justify-self: end; min-width: 0; }
 .set-trail .out { font-size: 15px; color: var(--ink-3); padding-right: 1px; }
 .set-row.off > .set-ico,

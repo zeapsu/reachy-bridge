@@ -303,6 +303,7 @@ function Dashboard() {
               powerStatus={power.status}
               control={control}
               look={look}
+              onOpenApps={() => setTab("apps")}
             />
           ) : null}
         </main>

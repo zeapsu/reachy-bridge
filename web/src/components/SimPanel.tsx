@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { ControlApi } from "../hooks/useControl.ts";
 import type { SimState } from "../hooks/useSim.ts";
 import type { SimSoundsState } from "../hooks/useSimSounds.ts";
@@ -13,11 +14,14 @@ export function SimRows({
   sounds,
   powerStatus,
   control,
+  children,
 }: {
   sim: SimState;
   sounds: SimSoundsState;
   powerStatus: string | null;
   control: ControlApi;
+  /** Rows above the simulation's, in the same list. */
+  children?: ReactNode;
 }) {
   const view = simView(sim.target, sim.switching, powerStatus !== null && OFF.includes(powerStatus));
   const on = sim.target === "sim";
@@ -28,6 +32,7 @@ export function SimRows({
       {/* Switching acts on the robot: take control here, not on the Robot tab. */}
       <ControlStrip control={control} />
       <ul className="set-list">
+        {children}
         <SettingsRow
           icon={ROW_ICONS.sim}
           label="Simulation"

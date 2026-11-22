@@ -23,6 +23,10 @@ pub struct AppState {
     pub daemon: Daemon,
     /// Held by every action that powers, wakes or sleeps the robot (#148).
     pub power_lock: tokio::sync::Mutex<()>,
+    /// Bumped, under `power_lock`, each time the controller switches the
+    /// robot on, wakes it or switches it off: what was decided for one
+    /// power-on doesn't carry over to the next (#334).
+    pub power_epoch: std::sync::atomic::AtomicU64,
     pub apps: DaemonApps,
     /// The app catalog listings (#126).
     pub catalog: Catalog,
@@ -47,6 +51,8 @@ pub struct AppState {
     /// How long power and app actions wait for the daemon's idle reset to
     /// finish (#292); `routes::power::IDLE_RESET_TIMEOUT` outside tests.
     pub idle_reset_timeout: Duration,
+    /// The app started on wake when its switch is on (#334).
+    pub wake_app: String,
 }
 
 impl AppState {
@@ -83,11 +89,13 @@ impl AppState {
             audio,
             setup: Setup::default(),
             idle_reset_timeout: crate::routes::power::IDLE_RESET_TIMEOUT,
+            wake_app: crate::routes::wake_app::app_from_env(),
             apps: DaemonApps::new(daemon.clone()),
             catalog: Catalog::default(),
             player,
             daemon,
             power_lock: tokio::sync::Mutex::new(()),
+            power_epoch: std::sync::atomic::AtomicU64::new(0),
             streams: Streams::default(),
             logs,
             probe: reqwest::Client::new(),
