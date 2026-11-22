@@ -12,7 +12,9 @@ inside a small, fixed surface or handing it back with a diagnosis.
   only `uv.lock`. All of CI passed against it.
 - **Red:** an issue labelled `upstream-break` titled "reachy-mini X: breaks
   the bridge", listing the failed jobs, with the new lock pushed to
-  `chore/reachy-mini-X`. A lock that doesn't resolve at all is also an
+  `chore/reachy-mini-X`. A failed `differential` job means the daemon now
+  answers some route the controller uses differently; its job summary lists
+  each difference. A lock that doesn't resolve at all is also an
   `upstream-break` issue, with uv's output.
 
 Either way, merging stays human. A new daemon drives the motors, so every
@@ -30,7 +32,15 @@ The checks decide, not your reading of the code:
 2. `uv run pytest` and `uv run ruff check runtime tools`.
 3. The sim contract tests: `uv run python tools/sim/run.py` (see
    `tools/sim/README.md`; needs the web build and a release controller).
-4. `cargo test` and `bun test` only if you touched anything they cover (you
+4. The differential sim run (#317): the sim checks on `main`'s lock and on
+   the branch's, with the daemon's answers recorded and compared:
+   `git show origin/main:uv.lock > /tmp/main.lock`, then
+   `uv run python tools/sim/differential.py run /tmp/main.lock uv.lock`. It
+   compares status codes and the shape of each JSON answer (fields and their
+   types, not values) for every daemon route the controller and `smoke.py`
+   call, and fails on any difference not listed in
+   `tools/sim/contract-changes.json`.
+5. `cargo test` and `bun test` only if you touched anything they cover (you
    shouldn't have; see the allowed paths).
 
 ## Steps
@@ -54,6 +64,13 @@ The checks decide, not your reading of the code:
      the contract says (power, motor modes, idle reset, app lifecycle,
      routes). Update the contract. If the controller or a runtime feature has
      to change to follow, that is not a seam fix: stop (see below).
+   - **A difference in the differential run:** read each one against the
+     controller's use of that route. One the controller doesn't depend on
+     (a new field, a route it no longer needs to call) is approved by adding
+     it to `tools/sim/contract-changes.json`, word for word as reported,
+     with the reason and the version; note it in the contract when it is
+     about behaviour. One the controller depends on (a field it reads is
+     gone or changed type, a new error status) is a behaviour change: stop.
 5. Iterate until the oracle passes or a stopping rule applies.
 6. Green: push to the branch, update the contract's version line and any
    changed sections, and open or update the PR with what changed upstream,
@@ -70,6 +87,8 @@ A fix may change only:
 - `runtime/src/reachy_bridge_runtime/upstream.py` (the seam)
 - `uv.lock`, and the `reachy-mini` floor in `runtime/pyproject.toml`
 - `docs/daemon-contract.md`
+- `tools/sim/contract-changes.json` (approved differences in the daemon's
+  answers, each with its reason)
 
 Everything else is out of bounds for an upstream fix: the controller, the
 web UI, runtime features and platform adapters, the sim patches in
