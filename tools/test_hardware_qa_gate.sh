@@ -45,6 +45,7 @@ for a in "${args[@]}"; do
             printf 'delete %s\n' "$(sed 's/%3A/:/g; s/%20/ /g' <<<"${a##*/}")" >>"$FX/labels.log"
             exit 0 ;;
         repos/*/issues/*/labels)
+            [[ -e $FX/fail-labels ]] && exit 1
             [[ -e $FX/label-gone ]] && { echo '[]'; exit 0; }
             jq '.labels' "$FX/pr.json"; exit 0 ;;
         repos/*/labels)
@@ -129,12 +130,12 @@ for f in controller/src/main.rs controller/src/routes/power.rs controller/Cargo.
     deploy/install.sh deploy/systemd/reachy-bridge.service tools/udev/99-reachy-mini.rules \
     tools/build_webrtcsink_jetson.sh runtime/pyproject.toml uv.lock; do
     setup '[]' web/src/App.tsx "$f"
-    expect "robot path $f" pending "Needs hardware QA (robot);"
+    expect "robot path $f" pending "Needs hardware QA (robot) at 0123456;"
 done
 
 for f in web/src/components/VoicePanel.tsx web/src/logic/voice.ts web/src/api/voice.ts; do
     setup '[]' "$f"
-    expect "audio path $f" pending "Needs hardware QA (audio);"
+    expect "audio path $f" pending "Needs hardware QA (audio) at 0123456;"
 done
 
 for f in runtime/src/reachy_bridge_runtime/audio_gateway.py runtime/src/reachy_bridge_runtime/mic_mixer.py \
@@ -143,11 +144,11 @@ for f in runtime/src/reachy_bridge_runtime/audio_gateway.py runtime/src/reachy_b
     web/src/hooks/useVoice.ts deploy/systemd/reachy-bridge-audio.service deploy/systemd/reachy-bridge-mic.service \
     deploy/reachy-bridge; do
     setup '[]' "$f"
-    expect "robot and audio path $f" pending "Needs hardware QA (robot, audio);"
+    expect "robot and audio path $f" pending "Needs hardware QA (robot, audio) at 0123456;"
 done
 
 setup '[]' runtime/src/reachy_bridge_runtime/audio_policy.py
-expect "audio_policy.py alone is robot, not audio" pending "Needs hardware QA (robot);"
+expect "audio_policy.py alone is robot, not audio" pending "Needs hardware QA (robot) at 0123456;"
 
 setup '[]' runtime/src/reachy_bridge_runtime/features/sim_apps.py deploy/systemd/reachy-bridge-sim.service tools/sim/run.py
 expect "sim-only files don't count" success "No hardware QA needed"
@@ -160,10 +161,10 @@ setup; jq -n '[{filename: "web/src/old.ts", previous_filename: "controller/src/p
 expect "renamed away from a robot path" pending "(robot)"
 
 setup; jq '.changed_files = 3001' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"
-expect "more files than the listing shows" pending "Needs hardware QA (unlisted files);"
+expect "more files than the listing shows" pending "Needs hardware QA (unlisted files) at 0123456;"
 
 setup '[]' controller/src/main.rs
-expect "robot PR creates the label" pending
+expect "pending names the head's sha" pending "Needs hardware QA (robot) at 0123456;"
 if grep -qxF "create qa: passed" "$FX/labels.log"; then echo "ok: qa: passed created"; else fail "label not created"; fi
 touch "$FX/fail-create"
 expect "a failed label create isn't the gate's failure" pending "Needs hardware QA (robot)"
@@ -175,7 +176,7 @@ else fail "description too long: $(cat "$FX/status.log")"; fi
 
 # --- The qa: passed label.
 setup '["qa: passed"]' controller/src/main.rs; owner_labels
-expect "owner adds qa: passed at the head" success "Hardware QA passed (robot)"
+expect "owner adds qa: passed at the head" success "Hardware QA passed (robot) at 0123456"
 kept "owner's label stays"
 
 setup '["qa: passed"]' controller/src/audio.rs; owner_labels
@@ -258,6 +259,8 @@ setup '["qa: passed"]' controller/src/main.rs; export EVENT=synchronize; touch "
 broken "removing the label fails: error"
 setup '["qa: passed"]' controller/src/main.rs; export EVENT=synchronize; touch "$FX/fail-unlabel" "$FX/label-gone"
 expect "label removed by someone else meanwhile" pending "Needs hardware QA (robot)"
+setup '["qa: passed"]' controller/src/main.rs; export EVENT=synchronize; touch "$FX/fail-unlabel" "$FX/fail-labels"
+broken "removing the label and re-reading the labels both fail: error"
 setup '[]' controller/src/main.rs; touch "$FX/fail-statuses"
 rm -f "$FX/status.log"
 if bash "$GATE" >"$FX/out" 2>&1; then fail "status POST fails: gate succeeded"

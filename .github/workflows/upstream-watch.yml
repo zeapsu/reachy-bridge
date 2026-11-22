@@ -229,7 +229,7 @@ jobs:
               # robot) here; a failure is a warning, since the next push or
               # label starts it too.
               gh workflow run hardware-qa-gate.yml --ref main -f pr="${pr_url##*/}" ||
-                echo "::warning::Opened $pr_url but couldn't start the Hardware QA gate; run it by hand."
+                echo "::warning::Opened $pr_url but couldn't start the Hardware QA gate; dispatch the Hardware QA gate workflow."
               exit 0
             fi
             # Actions may not be allowed to open PRs in this repository; leave

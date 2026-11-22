@@ -30,7 +30,8 @@
 # shares this status (same code, same QA).
 #
 # What it proves: the owner's account added `qa: passed` while this commit
-# was the head. It can't prove QA ran, and agents act with that same account,
+# was the head; that the owner tested this commit rests on them checking the
+# sha in the pending status against the robot's checkout before labelling. It can't prove QA ran, and agents act with that same account,
 # so agents never add the label (AGENTS.md). Anything that can post statuses
 # can also post this one.
 set -Eeuo pipefail
@@ -158,7 +159,9 @@ fi
 
 if [[ -n $passed ]]; then
     echo "$passed"
-    status success "Hardware QA passed ($what)"
+    status success "Hardware QA passed ($what) at ${sha:0:7}"
 else
-    status pending "Needs hardware QA ($what); the owner tests the head on the robot, then labels it $QA_LABEL"
+    # The sha, so the owner labels only the head they deployed: a catch-up
+    # with main (the Dependabot branch updater's, say) can land mid-QA.
+    status pending "Needs hardware QA ($what) at ${sha:0:7}; label $QA_LABEL only after testing that commit on the robot"
 fi

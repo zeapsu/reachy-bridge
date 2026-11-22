@@ -90,6 +90,6 @@ jobs:
             # And the hardware-qa status: a new head needs QA again when it
             # changes robot-side code (tools/hardware_qa_gate.sh).
             gh workflow run hardware-qa-gate.yml -f pr="$number" ||
-              echo "::warning::Couldn't start the Hardware QA gate for #$number; run it by hand."
+              echo "::warning::Couldn't start the Hardware QA gate for #$number; dispatch the Hardware QA gate workflow."
             exit 0
           done 3< behind.tsv

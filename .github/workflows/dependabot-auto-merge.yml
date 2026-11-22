@@ -12,7 +12,8 @@ name: Dependabot auto-merge
 # controller/Cargo.*) keep auto-merge on but wait for the `hardware-qa`
 # status (tools/hardware_qa_gate.sh): it stays pending until the owner tests
 # the head on the robot and labels the PR `qa: passed`, and a new head (the
-# branch updater's merge of main) needs QA again.
+# branch updater's merge of main) needs QA again. Auto-merge merges as soon as
+# it passes, so the owner labels only the sha the status names.
 #
 # The PRs this merges squash: one commit per update on main, without the
 # merges of main the branch updater adds. Everything else, including the

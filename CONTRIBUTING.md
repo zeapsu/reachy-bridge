@@ -116,7 +116,9 @@ The required `hardware-qa` status (`tools/hardware_qa_gate.sh`, run by
 `.github/workflows/hardware-qa-gate.yml`) checks the PR's files: it passes a PR that changes
 nothing the robot runs, and otherwise stays pending, naming the areas (`robot`, `audio`),
 until the owner has tested the PR's head on the robot and labelled the PR `qa: passed`.
-Only the owner adds that label; any new push, including a merge of `main`, removes it.
+The pending status names the head's short sha; label only when it matches what you
+tested, since a merge of `main` can land mid-test. Only the owner adds that label; any
+new push, including a merge of `main`, removes it.
 The PR's head goes on the robot host only with the owner's go and the robot off
 (AGENTS.md, merge gate 6), and the host goes back to `main` afterwards. Don't weaken
 those guards.
