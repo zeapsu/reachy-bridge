@@ -181,6 +181,15 @@ Backend: `daemon/backend/abstract.py`; endpoints:
   reset): stops a running move, then, holding the move guard,
   `reset_to_init()`, 0.2 s, `goto_sleep()`. From a limp robot this looks
   like a wake followed by a sleep.
+- **A move can fail on its own clock.** `play_move` (every goto, the wake-up
+  and sleep moves) and `goto_joint_positions` check `time.time() - t0 <
+  duration`, then read the clock again for `t`. A thread switch between the
+  two reads near the end of a move gives `t > duration`, and
+  `time_trajectory` raises `time value is out of range [0,1]`. In a
+  `daemon/start?wake_up=true` that leaves the state `error` with the backend
+  up and the wake-up cut short (#318: seen once in the sim browser tests).
+  **Bridge feature** (`features/move_clock.py`): times outside [0, 1] are
+  clamped to the move's ends, so the move finishes at its target.
 - **Bridge feature** (`features/wobble.py`): the sleep and reset moves stop
   the wobble the dashboard turned on, and it comes back when the outermost
   one ends (`goto_sleep`, `reset_to_sleep` and `reset_to_init` are wrapped;
