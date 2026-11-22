@@ -27,4 +27,32 @@ got=$(jq -n '{tool_input: {command: "git push"}}' | REACHY_PRECHECK_MODE=off PRE
 if [[ -z $got ]]; then echo "ok   off does nothing"; else echo "FAIL off printed '$got'"; fail=1; fi
 
 if bash tools/precheck.sh --bogus 2>/dev/null; then echo "FAIL unknown flag accepted"; fail=1; else echo "ok   unknown flag refused"; fi
+
+# A full run under /bin/bash (3.2 on macOS, #336) in a scratch repo whose
+# branch changes one tools/ script: the shellcheck step gets the repo's
+# scripts. The stub shellcheck logs its arguments; no mise on PATH, so the
+# stub is what runs.
+here=$PWD
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/bin" "$scratch/repo/tools"
+printf '#!/bin/sh\necho "$@" >>"%s/shellcheck.log"\n' "$scratch" >"$scratch/bin/shellcheck"
+chmod +x "$scratch/bin/shellcheck"
+(
+    cd "$scratch/repo"
+    export GIT_CONFIG_NOSYSTEM=1 HOME=$scratch GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com \
+        GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+    git init -q
+    echo 'echo a' >tools/a.sh; echo 'echo b' >tools/b.sh
+    git add tools; git commit -qm base
+    echo 'echo a2' >tools/a.sh; git commit -qam change
+)
+out=$(cd "$scratch/repo" && PATH="$scratch/bin:/usr/bin:/bin" PRECHECK_BASE=HEAD~1 \
+    /bin/bash "$here/tools/precheck.sh" 2>&1) && rc=0 || rc=$?
+if [[ $rc == 0 && $(cat "$scratch/shellcheck.log" 2>/dev/null) == "tools/a.sh tools/b.sh" ]]; then
+    echo "ok   full run under /bin/bash $(/bin/bash -c 'echo $BASH_VERSION')"
+else
+    echo "FAIL full run under /bin/bash: exit $rc, shellcheck got '$(cat "$scratch/shellcheck.log" 2>/dev/null)'"
+    echo "$out"; fail=1
+fi
 exit $fail

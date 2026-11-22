@@ -95,7 +95,9 @@ if has '^(controller/|web/)'; then
     step "cargo test" run bash -c 'cd controller && cargo test --locked -q'
 fi
 if has '^(deploy/|tools/.*\.sh$)'; then
-    mapfile -t scripts < <(git ls-files 'deploy/*.sh' deploy/reachy-bridge 'tools/*.sh')
+    # A read loop, not mapfile: macOS's /bin/bash is 3.2 (#336).
+    scripts=()
+    while IFS= read -r f; do scripts+=("$f"); done < <(git ls-files 'deploy/*.sh' deploy/reachy-bridge 'tools/*.sh')
     step "shellcheck" run shellcheck "${scripts[@]}"
     has '^deploy/' && step "test_cli" bash tools/test_cli.sh
     has '^deploy/' && step "test_uninstall" bash tools/test_uninstall.sh
