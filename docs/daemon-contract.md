@@ -1,6 +1,6 @@
 # Daemon behaviour contract
 
-What the bridge can rely on from Pollen's daemon (`reachy-mini` 1.13.0), as
+What the bridge can rely on from Pollen's daemon (`reachy-mini` 1.14.0), as
 found in its source and confirmed on a Reachy Mini Lite. The controller is
 built against this document, not against assumptions. When the pinned daemon
 version changes, re-check every section against the new source.
@@ -35,10 +35,18 @@ every symbol it relies on; `reachy-bridge-runtime --check` verifies them.
   (`eu.i.posthog.com`): daemon start, a daily heartbeat, app start, stop,
   install and removal with the public Space id, update results and client
   connections, tagged with a random install id, versions, OS and arch.
-  With `REACHY_MINI_TELEMETRY=0` (or `DO_NOT_TRACK=1`) the daemon starts
-  without it and writes no telemetry files, and neither the WebRTC
-  `set_telemetry` command nor `PUT /api/telemetry` can turn it back on. The
-  bridge's units, the sim test runner and `tools/sim/sim_daemon.py` set it.
+  1.14.0 adds a `usage_tick` (hourly while in use, and when use stops: active
+  seconds, client kinds, app ids), `js_app_started`/`js_app_stopped` from
+  a WebRTC client's new `client_hello`, and `move_played` (Pollen's move
+  names, other datasets as `other`); `GetVersion`'s `client_hello` is
+  `true` only while telemetry is active. All of it goes through the same
+  `capture`, a no-op while inactive. With `REACHY_MINI_TELEMETRY=0` (or
+  `DO_NOT_TRACK=1`) the daemon starts without it and writes no telemetry
+  files, and neither the WebRTC `set_telemetry` command nor
+  `PUT /api/telemetry` can turn it back on. The bridge's units, the sim
+  test runner and `tools/sim/sim_daemon.py` set it.
+  1.14.0 adds no other outbound call (its `adopt_legacy_login`, a local
+  file copy, runs only on the Wireless model).
 - Local camera sharing: the daemon publishes BGR frames at 10 fps through
   `unixfdsink` on `/tmp/reachymini_camera_socket`, and apps read them with
   `unixfdsrc` (`media/media_server.py`, `media/camera_gstreamer.py`). The
@@ -54,6 +62,10 @@ every symbol it relies on; `reachy-bridge-runtime --check` verifies them.
   **Bridge feature** (`features/media_return.py`): when an app's process
   ends and no newer app runs, a running daemon re-acquires the media; a
   stopped one forgets the release, so its next start brings media up.
+- Since 1.14.0 the media server restarts its pipeline (stop, then a
+  rebuild) after a pipeline error, at most 3 times in 60 s; WebRTC clients
+  reconnect. The rebuild goes through `_configure_webrtc` again, so the
+  bridge's signalling-host patch still applies.
 
 ## Daemon state and power
 
@@ -64,7 +76,7 @@ Endpoints: `daemon/app/routers/daemon.py`; implementation:
 |---|---|
 | `POST /api/daemon/start?wake_up=false` | Starts the backend without touching the motors. No motion. |
 | `POST /api/daemon/start?wake_up=true` | Starts the backend, sets motor mode `enabled`, then runs `wake_up()`. |
-| `POST /api/daemon/stop?goto_sleep=true` | Runs `reset_to_sleep()` (see below), then stops the backend. |
+| `POST /api/daemon/stop?goto_sleep=true` | Runs `reset_to_sleep()` (see below; it first stops a running move), then stops the backend. |
 | `POST /api/daemon/stop?goto_sleep=false` | Stops the backend where it is. |
 
 - On the real robot the reported motor mode is read from the motors
@@ -86,6 +98,18 @@ Endpoints: `daemon/app/routers/daemon.py`; implementation:
   state becomes `error`.
 - `stop` skips the sleep move when the state is already `stopping` or `error`,
   whatever `goto_sleep` says.
+- **Stop with the sleep move during an idle reset ends in `error`** (since
+  1.14.0). Nothing on the stop path cancels a running idle reset. Its
+  `reset_to_sleep()` stops the idle reset's move, which leaves the rest of
+  that sleep sequence's gotos returning at once while `goto_sleep()` keeps
+  the move guard through its final wait, then fails on the guard with
+  `MoveBusyError`. The state becomes `error` ("a move is already running")
+  and the backend stops without the sleep move having finished; the head
+  can be left mid-way, and the idle reset's own torque cut may come before
+  or after the backend closes. This happens when the robot is powered off
+  within about 1.5–8 s of an app exiting on its own or a remote session
+  dropping, if the caller sends `goto_sleep=true` while the mode still
+  reads `enabled`. The controller waits the reset out first (rule 8, #326).
 - `GET /api/daemon/status` → `state` is one of `not_initialized`, `starting`,
   `running`, `stopping`, `stopped`, `error`. **`running` does not mean awake.**
   The motor mode is `backend_status.motor_control_mode` (`enabled`,
@@ -104,8 +128,9 @@ The controller derives its robot state from these two fields
 ## Kinematics engine
 
 - The backend's kinematics engine comes from `--kinematics-engine`
-  (`AnalyticalKinematics` by default, or `Placo`). `daemon/start` reads it from
-  `app.state.args` each time, so it can only change while the backend is down.
+  (`AnalyticalKinematics` by default, or `Placo`; 1.14.0 removed `NN`).
+  `daemon/start` reads it from `app.state.args` each time, so it can only
+  change while the backend is down.
 - Under gravity compensation the head and antenna motors run in current
   control and **ignore every move target**: gotos, expressions and an app's
   moves are accepted and do nothing, while audio carries on. The controller
@@ -148,10 +173,18 @@ Backend: `daemon/backend/abstract.py`; endpoints:
   sleep pose over 2 s, waits, then sets the motors to `disabled`. It assumes
   position control; under gravity compensation or limp motors the trajectory
   is ignored and the head drops.
+- `reset_to_init()` (since 1.14.0; used by `reset_to_sleep()` and an app
+  stop): stops a move still running, quiesces head tracking and speech
+  wobble, sets the motors to `enabled` (clearing gravity compensation and
+  per-motor torque overrides), and lifts to the init pose (0.3–1.5 s).
 - `reset_to_sleep()` (used by `daemon/stop?goto_sleep=true` and the idle
-  reset): turns the torque on, lifts to the init pose (0.3–1.5 s), then
-  `goto_sleep()`. From a limp robot this looks like a wake followed by a
-  sleep.
+  reset): stops a running move, then, holding the move guard,
+  `reset_to_init()`, 0.2 s, `goto_sleep()`. From a limp robot this looks
+  like a wake followed by a sleep.
+- **Bridge feature** (`features/wobble.py`): the sleep and reset moves stop
+  the wobble the dashboard turned on, and it comes back when the outermost
+  one ends (`goto_sleep`, `reset_to_sleep` and `reset_to_init` are wrapped;
+  they nest).
 - **The dataset routes block the daemon's event loop.**
   - `GET /api/move/recorded-move-datasets/list/{dataset}` and `POST /api/move/play/recorded-move-dataset/...` are `async def` routes. They build `RecordedMoves(...)` synchronously: they resolve the Hugging Face snapshot and load every move file.
   - A cold list of the emotions library took about 5 s on the Jetson.
@@ -164,20 +197,27 @@ Backend: `daemon/backend/abstract.py`; endpoints:
   sound, `volume/test-sound`, `media/play_sound`) hands the file to the media
   server: the path as given, else the name under the package's `assets/`.
   `media/play_sound` first tries a relative name in its upload folder
-  (`/tmp/reachy_mini_sounds`). Move sounds are absolute paths into the
-  dataset's Hugging Face cache; an uploaded move's audio is deleted when the
-  move ends. A new sound stops the one playing. With `--no-media` there is no
+  (`/tmp/reachy_mini_sounds`), and since 1.14.0 answers `404` when the
+  file is found nowhere (`500` if playback can't start). Move sounds are
+  absolute paths into the dataset's Hugging Face cache; an uploaded move's
+  audio is deleted when the move ends. A new sound stops the one playing. With
+  `--no-media` there is no
   media server and nothing plays. **Bridge feature** (`features/sim_sounds.py`,
   sim daemons only, #219): every `play_sound` of a file in those folders
   (checked again when served), and every `stop_sound`, is recorded; `GET /api/bridge/sounds` lists the latest
   events and `GET /api/bridge/sounds/{token}` serves a played file by the
   random token its event names. The controller relays them to the dashboard in sim
   mode (`/api/sim/sounds-stream`, `/api/sim/sounds/{token}`).
-- **REST moves are not serialized.** `play_move`'s guard (`_play_move_lock`)
-  is a re-entrant `threading.RLock`, and every REST move runs on the same
-  event-loop thread, so two `move/play/wake_up` calls both run and write
-  targets at the same time. The controller serializes its own power and wake
-  actions (#148).
+- **One move at a time** (since 1.14.0). A move started while another runs
+  raises `MoveBusyError` ("a move is already running"), including a sibling
+  task on the same event loop. `wake_up()` (unless it returns early) and
+  `goto_sleep()` hold the guard across their whole sequence, `goto_sleep`
+  until the torque cut. A REST move still gets a UUID at once; the rejected
+  one then ends with `move_failed` on `/api/move/ws/updates` and leaves
+  `move/running`, so a UUID leaving `move/running` doesn't mean the move
+  ran. The guard of a daemon-internal sequence (the idle reset, an app
+  stop's `reset_to_init`) doesn't show in `move/running`. The controller
+  still serializes its own power and wake actions (#148).
 
 ## Robot slot (`robot_app_lock`)
 
@@ -197,20 +237,31 @@ The current state is exposed at `GET /api/daemon/robot-app-lock-status`.
 - A remote session can manage apps over the WebRTC data channel, without
   the controller (`daemon/jsonrpc_relay.py`): `apps.install` (older), and
   since 1.13.0 also `install_space`, `remove`, `update`, `restart`,
-  `list_installed`, `check_update` and `job_status`. The new verbs refuse
+  `list_installed`, `check_update` and `job_status`, and since 1.14.0
+  `get_startup` and `set_startup`. On a running backend, `set_startup`
+  saves the choice and arms it as the loopback REST route does: the next
+  `wake_up()` (even one that returns early) starts that app, and an
+  antenna touch on the sleeping robot enables the motors, wakes it and
+  starts the app, without the controller, until the daemon process
+  restarts (`--no-autostart` only stops arming it at boot). `remove` of
+  the startup app now clears it instead of refusing. The new verbs refuse
   while any registered job runs, REST-started ones included, but the REST
   app routes don't check for the relay's jobs, and the older inline
   `apps.install` isn't a registered job, so a controller install can
-  overlap a remote one.
+  overlap a remote one. Accepted by the owner for 1.14.0 (#292): an app
+  started this way shows as running in the controller, which stops it on
+  power off.
 
 ## Idle reset
 
 Source: `request_idle_reset` and `_async_idle_reset` in
 `daemon/backend/abstract.py`; wired in `Daemon.start`.
 
-- **Trigger:** every transition of the slot to `free`. That covers an app
-  exiting for any reason (clean exit, crash, kill, requested stop) and a
-  remote session ending or dropping.
+- **Trigger:** every transition of the slot to `free`, except a requested
+  stop: since 1.14.0 the app monitor releases with `cleaned_up=True` once
+  `stop-current-app` has begun, and `stop_current_app` resets the robot
+  itself. That leaves an app exiting on its own (clean exit, crash, kill)
+  and a remote session ending or dropping.
 - **Grace:** 1.5 s (`IDLE_RESET_DEBOUNCE_S`), or 15 s
   (`IDLE_RESET_HANDOFF_GRACE_S`) when a remote client released the slot for a
   successor.
@@ -229,8 +280,9 @@ Source: `request_idle_reset` and `_async_idle_reset` in
   (`tools/sim/sim_daemon.py`) give a `--no-media` backend that loop.
 - **Bridge patch:** the runtime's keep-awake feature
   (`runtime/.../features/keep_awake.py`) detaches the trigger during
-  `stop-current-app`. A requested stop then leaves the robot awake at the
-  home pose; crashes and remote drops still put it to sleep.
+  `stop-current-app`. Upstream skips it there since 1.14.0, so this is now
+  belt and braces. It doesn't block `stop_current_app`'s own fallback,
+  which calls `request_idle_reset()` directly.
 - **Not waited for by either stop path.** `daemon/stop?goto_sleep=true` and
   `stop-current-app` don't cancel or wait for a running idle reset. On 1.13.0
   they run a competing move (`stop-current-app`'s return home, or a second
@@ -239,7 +291,8 @@ Source: `request_idle_reset` and `_async_idle_reset` in
   or drop when the sleep move's torque cut lands where it stopped, and the
   stop fails on the move guard with the daemon in `error` (#292). No upstream
   endpoint shows the reset (`is_move_running` reaches only WebRTC clients,
-  and `move/running` lists only REST moves).
+  and `move/running` lists only REST moves). The controller waits for it
+  instead (rule 8 under Rules for the controller, #326).
 - **Bridge route (`features/idle_reset.py`, #292):** `GET
   /api/bridge/idle-reset` answers `{"pending": true}` from the reset's grace
   period until it ends. It reads `_idle_reset_task` on the backend's loop,
@@ -267,7 +320,8 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   - `starting` until the monitor task runs, then `running`.
   - Exit code 0 → `done`. A `done` app does not block the next start.
   - Non-zero exit → `error`, with the last 10 stderr lines in `error`.
-  - In every case the slot is released, which triggers the idle reset.
+  - In every case the slot is released. That triggers the idle reset,
+    except for a requested stop (see Idle reset).
 - **A crashed app blocks every start** until `POST
   /api/apps/stop-current-app` clears it. On an `error` app that call does not
   signal a process (it has already exited). It still runs the return-to-home
@@ -275,14 +329,28 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   returns `400 No app is currently running`.
 - **Requested stop** (`stop-current-app`): SIGINT, then SIGKILL of the process
   tree after 20 s. Then:
+  - First, since 1.14.0, it stops a move still running (`stop_running_move`,
+    waiting up to 1 s).
   - Head within the sleep-pose radius: sets the motors to `disabled`.
-  - Otherwise: enables the motors (real robot backend only) and moves to the
-    init pose over 1 s.
-  - That enable goes through `enable_motors()`, which leaves the motor mode
-    as it was: after an app that ran limp, status reports `disabled` on a
-    robot holding its pose. **Bridge patch:** the keep-awake wrapper sets the
-    mode to `enabled` after the stop when torque is on and the mode says
-    `disabled`.
+  - Otherwise: `reset_to_init()` (see Moves): motors `enabled`, gravity
+    compensation, tracking and wobble cleared, lift to the init pose over
+    0.3–1.5 s. The robot stays awake there. If that fails, it falls back
+    to `request_idle_reset()`.
+  - **Clearing a crashed app during its idle reset can drop the head.**
+    Roughly 1.5–6.5 s after a crash the idle reset's `reset_to_sleep()`
+    is running. The first step above sets the stop flag, which nested
+    moves keep, so every remaining goto of that sleep sequence returns at
+    once, while `goto_sleep()` still waits and then sets the motors to
+    `disabled` wherever the head is. The stop's own `reset_to_init()`
+    meanwhile enables the motors and fails with `MoveBusyError`, so the
+    fallback idle reset runs about 1.5 s later. 1.13.0's stop didn't
+    interrupt the sleep move. The controller clears an `error` app before
+    each start (rule 3), and before that waits for the idle reset to end
+    (rule 8, #326), so its Start and Stop don't take this path.
+  - **Bridge patch:** the keep-awake wrapper sets the mode to `enabled`
+    after the stop when torque is on and the mode says `disabled`. Written
+    for 1.13.0's `enable_motors()` path, which left the mode as it was;
+    `reset_to_init()` sets it, so this no longer triggers there.
 - The app's UI address is `extra.custom_app_url` in the app metadata (for
   example `0.0.0.0:8042` for radio, `:7860` for conversation). The UI server
   comes up 1–3 s after the process starts, so the bridge polls it before
@@ -336,9 +404,10 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   (:8043 inside :10000, or :7863 inside :7861 over plain http). An app that sends
   `X-Frame-Options` or a CSP `frame-ancestors` that leaves out the dashboard
   shows a blank frame; ↗ opens it in its own tab. Checked 2026-10-28: the
-  app base class in reachy-mini 1.12.0 (unchanged in 1.13.0), Radio, Conversation App and Gradio's
-  Python server send neither, and the proxy passes app headers through as
-  they are. It strips the controller's own cookies (both ways), the local
+  app base class in reachy-mini 1.12.0 (unchanged in 1.13.0 and 1.14.0),
+  Radio, Conversation App and Gradio's Python server send neither, and the
+  proxy passes app headers through as they are. It strips the controller's own
+  cookies (both ways), the local
   key header and hop-by-hop headers, and refuses cross-site writes and
   WebSocket upgrades.
 - App processes get a scrubbed environment (`GST_*`, `PYTHONPATH`, `GI_*`,
