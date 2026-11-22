@@ -272,8 +272,9 @@ say-so.
    relies on `main` taking only merge and squash merges (the ruleset): no fast-forwards
    and no merge queue.
 7. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
-   `main` directly. Only Dependabot's patch and minor PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
-   again.
+   `main` directly. Only Dependabot's patch and minor PRs squash, which their auto-merge does.
+   Robot-side changes are QA'd before they merge (see "Robot safety"). PRs still open merge
+   `main` again.
 
 ## Shared files
 

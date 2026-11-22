@@ -87,7 +87,12 @@ trap 'status error "Hardware QA gate failed; re-run the Hardware QA gate workflo
 labelled=$(jq --arg l "$QA_LABEL" '[.labels[].name] | index($l) != null' <<<"$pr")
 unlabel() {
     echo "Removing '$QA_LABEL': $1"
-    gh api -X DELETE "repos/$GH_REPO/issues/$PR/labels/$(jq -rn --arg l "$QA_LABEL" '$l|@uri')" >/dev/null
+    if ! gh api -X DELETE "repos/$GH_REPO/issues/$PR/labels/$(jq -rn --arg l "$QA_LABEL" '$l|@uri')" >/dev/null; then
+        # Fine if someone removed it meanwhile (a 404); otherwise the run fails.
+        local left
+        left=$(gh api --paginate "repos/$GH_REPO/issues/$PR/labels" | jq -r '.[].name')
+        if grep -qxF "$QA_LABEL" <<<"$left"; then return 1; fi
+    fi
     labelled=false
 }
 

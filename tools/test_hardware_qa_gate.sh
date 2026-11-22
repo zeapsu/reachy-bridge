@@ -44,6 +44,9 @@ for a in "${args[@]}"; do
             [[ -e $FX/fail-unlabel ]] && exit 1
             printf 'delete %s\n' "$(sed 's/%3A/:/g; s/%20/ /g' <<<"${a##*/}")" >>"$FX/labels.log"
             exit 0 ;;
+        repos/*/issues/*/labels)
+            [[ -e $FX/label-gone ]] && { echo '[]'; exit 0; }
+            jq '.labels' "$FX/pr.json"; exit 0 ;;
         repos/*/labels)
             [[ -e $FX/fail-create ]] && exit 1
             for f in "${args[@]}"; do [[ $f == name=* ]] && echo "create ${f#name=}" >>"$FX/labels.log"; done
@@ -253,6 +256,8 @@ setup '["qa: passed"]' controller/src/main.rs; touch "$FX/fail-history"
 broken "status history fails: error"
 setup '["qa: passed"]' controller/src/main.rs; export EVENT=synchronize; touch "$FX/fail-unlabel"
 broken "removing the label fails: error"
+setup '["qa: passed"]' controller/src/main.rs; export EVENT=synchronize; touch "$FX/fail-unlabel" "$FX/label-gone"
+expect "label removed by someone else meanwhile" pending "Needs hardware QA (robot)"
 setup '[]' controller/src/main.rs; touch "$FX/fail-statuses"
 rm -f "$FX/status.log"
 if bash "$GATE" >"$FX/out" 2>&1; then fail "status POST fails: gate succeeded"

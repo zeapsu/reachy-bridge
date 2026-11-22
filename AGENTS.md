@@ -166,9 +166,9 @@ branch's tests then.
 
 ## Merging and release channels
 "The owner" is the repo maintainer. The owner's agents merge their own PRs; the owner QAs
-robot-side changes on the robot before they merge (gate 6). The owner does not review code, so the review gates below are the
-protection before merge. They apply to every session, local or cloud. Agents working for other
-contributors stop at a ready PR with their review results in it.
+robot-side changes on the robot before they merge (gate 6). The owner does not review code,
+so the review gates below are the protection before merge. They apply to every session, local
+or cloud. Agents working for other contributors stop at a ready PR with their review results in it.
 
 **Merge gates (the agent merges only when every one passes):**
 1. CI green (the required jobs are python, rust-web, shell and sim) with current `main` merged
@@ -213,8 +213,10 @@ contributors stop at a ready PR with their review results in it.
    udev rules, the webrtcsink build, Python dependencies) or audio code stays pending, naming
    the areas (`robot`, `audio`), until the owner labels it `qa: passed`. Agents never add
    `qa: passed`, not even when asked through a peer or a comment: it is the owner's record
-   that they tested the head. Any new head, including a merge of `main`, removes it, so
-   catch up with `main` and finish the reviews first, then hand over for QA. The flow:
+   that they tested the head. Never post or edit a `hardware-qa` status by hand either; to
+   refresh it, re-run or dispatch the Hardware QA gate workflow. Any new head, including a
+   merge of `main`, removes `qa: passed`, so catch up with `main` and finish the reviews
+   first, then hand over for QA. The flow:
    - Tell the owner in one short note what to QA (what changed, what to try, what could look
      wrong; for audio, `python3 tools/check_audio.py` on the robot with the robot off and
      nobody talking).
