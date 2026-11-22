@@ -52,6 +52,8 @@ Thumbs.db
 /.claude/*
 !/.claude/settings.json
 !/.claude/hooks/
+/.claude/hooks/*
+!/.claude/hooks/qa-guard.sh
 !/.claude/skills/
 /.superpowers/
 /.playwright-mcp/

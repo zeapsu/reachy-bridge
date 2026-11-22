@@ -10,9 +10,13 @@
 # agent why.
 input=$(cat)
 cmd=$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null) || cmd=$input
-# Only gh where a command starts (a line, or after ; & | ( ` or $( ), so
-# prose that mentions gh, a commit message say, passes.
-grep -qE '(^|[;&|(`]|\$\()[[:space:]]*gh[[:space:]]' <<<"$cmd" || exit 0
+# Only gh where a command starts (a line, after ; & | ( { ` $( or do, then,
+# else, behind env or VAR=value prefixes; or after a quote when jq is
+# missing and this reads the raw JSON), so prose that mentions gh, a commit
+# message say, passes.
+start='(^|[;&|({`"]|\$\(|(^|[[:space:]])(do|then|else))[[:space:]]*'
+prefix='((env|command)[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
+grep -qE "${start}${prefix}gh[[:space:]]" <<<"$cmd" || exit 0
 
 block() {
     echo "Blocked: this $1. Only the owner adds 'qa: passed', and only the Hardware QA gate" \
@@ -20,8 +24,9 @@ block() {
     exit 2
 }
 # A gh api call that writes: an explicit method or any field (gh api then
-# defaults to POST).
+# defaults to POST) without an explicit GET.
 writes() {
+    grep -qE -- '(-X|--method)[[:space:]=]*["'\'']?GET([^A-Z]|$)' <<<"$cmd" && return 1
     grep -qE -- '(-X|--method)[[:space:]=]*["'\'']?(POST|PUT|PATCH)|(^|[[:space:]])(-[fF]|--field|--raw-field|--input)([[:space:]=]|$)' <<<"$cmd"
 }
 if grep -qiE 'qa(:|%3a)([[:space:]]|%20|\+)*passed' <<<"$cmd"; then

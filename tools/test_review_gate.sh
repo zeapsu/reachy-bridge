@@ -49,6 +49,8 @@ exit 1
 EOF
 chmod +x "$ROOT/bin/gh"
 export PATH="$ROOT/bin:$PATH" FX="$ROOT/fx" GH_REPO=owner/repo PR=7 REVIEW_GATE_RETRY_DELAY=0
+# Not the CI step's own: each case sets what it needs.
+unset GITHUB_OUTPUT GITHUB_RUN_ID GITHUB_ACTIONS
 
 # setup [author] [labels-json]: a fresh open PR by `author` with a plain file.
 setup() {

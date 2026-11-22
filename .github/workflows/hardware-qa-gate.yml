@@ -13,8 +13,9 @@ name: Hardware QA gate
 #
 # pull_request_target runs this file and the script as they are on main, and
 # nothing from the PR is checked out or run: the script only reads the PR,
-# its files and this gate's statuses through the API, and sets the status
-# and the `qa: passed` label.
+# its files, its issue events (when the owner added `qa: passed`) and this
+# gate's statuses through the API, and sets the status and the `qa: passed`
+# label.
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, labeled, unlabeled, edited]

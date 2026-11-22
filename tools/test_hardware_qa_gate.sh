@@ -62,6 +62,7 @@ exit 1
 EOF
 chmod +x "$ROOT/bin/gh"
 export PATH="$ROOT/bin:$PATH" FX="$ROOT/fx" GH_REPO=zeapsu/repo PR=7 HARDWARE_QA_GATE_RETRY_DELAY=0
+unset GITHUB_OUTPUT GITHUB_RUN_ID GITHUB_ACTIONS
 
 # setup [labels-json] FILE...: a fresh open PR into main changing FILEs.
 setup() {
@@ -368,6 +369,19 @@ guard 2 'echo $(gh pr edit 5 --add-label "qa: passed")'
 guard 2 'true; gh pr edit 5 --add-label "qa: passed"'
 guard 0 $'git commit -F - <<EOF\nThe hook blocks gh commands that add qa: passed (--add-label).\nEOF'
 guard 0 'echo "ugh pr edit 5 --add-label qa: passed"'
+guard 2 'GH_REPO=o/r gh pr edit 5 --add-label "qa: passed"'
+guard 2 'env GH_REPO=o/r gh pr edit 5 --add-label "qa: passed"'
+# shellcheck disable=SC2016  # the command's text, not expanded here
+guard 2 'for n in 5; do gh pr edit $n --add-label "qa: passed"; done'
+guard 2 'if true; then gh pr edit 5 --add-label "qa: passed"; fi'
+guard 2 '{ gh pr edit 5 --add-label "qa: passed"; }'
+guard 0 'gh api -X GET repos/o/r/commits/abc/statuses -f per_page=100 --jq ".[] | select(.context == \"hardware-qa\")"'
+# Without jq the hook reads the raw JSON, where gh follows a quote.
+mkdir -p "$ROOT/nojq"
+for t in cat grep; do ln -sf "$(command -v "$t")" "$ROOT/nojq/$t"; done
+if printf '%s' '{"tool_input":{"command":"gh pr edit 5 --add-label \"qa: passed\""}}' |
+    PATH=$ROOT/nojq /bin/bash "$HOOK" >/dev/null 2>&1; then fail "without jq, the hook lets a label through"
+else echo "ok: without jq, the hook still blocks"; fi
 
 # AGENTS.md ("Channels") reads ROBOT, AUDIO and SIMONLY from main's copy of
 # this script with sed; each must come out whole and be a valid ERE.

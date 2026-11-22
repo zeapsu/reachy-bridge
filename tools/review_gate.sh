@@ -29,7 +29,8 @@
 # stays pending. When one of them closes or leaves the default branch, its
 # run names the others (the `recheck` step output) and the workflow
 # dispatches the gate for each, so each re-check runs in that PR's own
-# concurrency group, after any run already queued for it.
+# concurrency group, one at a time with that PR's other runs, and reads its
+# live state when it starts.
 #
 # A failed status POST is retried; if GitHub keeps refusing it, the run
 # fails, and the `error` it then tries to post may be refused too, leaving
