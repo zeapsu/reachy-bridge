@@ -117,7 +117,8 @@ The required `hardware-qa` status (`tools/hardware_qa_gate.sh`, run by
 nothing the robot runs, and otherwise stays pending, naming the areas (`robot`, `audio`),
 until the owner has tested the PR's head on the robot and labelled the PR `qa: passed`.
 The pending status names the head's short sha; label only when it matches what you
-tested, since a merge of `main` can land mid-test. Only the owner adds that label; any
+tested, since a merge of `main` can land mid-test (a label added before the gate posted
+that pending status is removed; add it again). Only the owner adds that label; any
 new push, including a merge of `main`, removes it.
 The PR's head goes on the robot host only with the owner's go and the robot off
 (AGENTS.md, merge gate 6), and the host goes back to `main` afterwards. Don't weaken
@@ -247,12 +248,15 @@ say-so.
    headers that apply them, the app proxy, bind addresses and what's exposed, request
    signing, app binding, the host checks, the power, apps and logs routes, the upstream
    daemon shim and the apps venv sync, secrets, the installer and udev rules, dependency manifests and lock files,
-   build scripts and toolchains, everything under `.github/`, `.gitmodules`, the agent
-   rules and every coding agent's config (`CLAUDE.local.md`, `GEMINI.md`, `.cursor/`,
-   `.codex/` and the like, by their bare names too, as are the parent directories of the
-   listed files, so a symlink can't stand in), and
-   the gate itself and the hardware QA gate; a file name with any character outside printable ASCII counts as
-   well, since macOS folds Unicode case (a Kelvin sign is a K). Label a PR
+   build scripts, toolchain and package-tool config at any depth (`mise.toml`, `.cargo/`,
+   `rust-toolchain.toml`, `.tool-versions`, `.python-version`, `uv.toml`, `bunfig.toml`,
+   `.npmrc`), everything under `.github/`, `.gitmodules`, `.gitignore` and `.gitattributes`
+   at any depth, the agent rules and every coding agent's config (`CLAUDE.local.md`,
+   `GEMINI.md`, `.cursor/`, `.codex/` and the like), and the gate itself and the hardware QA
+   gate. Listed directories, and the parent directories of the listed files, match by their
+   bare names too, so a symlink can't stand in for one; a file name with any character
+   outside printable ASCII counts as well, since macOS folds Unicode case (a Kelvin sign is
+   a K). Label a PR
    `security` when it is security-relevant by REVIEW.md's list but touches none of
    those files. Dependabot PRs whose commits are all Dependabot's (or the branch
    updater's merge of `main`) pass without markers when every update is patch or minor,

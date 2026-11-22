@@ -12,8 +12,9 @@
 # - git merges R and M with no conflicts into exactly N's tree, so the merge
 #   has no hand edits;
 # - no file differs both between R and N (came from main) and between M and N
-#   (the PR's own changes), names compared ignoring case (they collide on a
-#   case-insensitive checkout), so every file in N is byte for byte the
+#   (the PR's own changes), and no file on one side is a directory holding a
+#   changed file on the other, names compared ignoring case (they collide on
+#   a case-insensitive checkout), so every file in N is byte for byte the
 #   reviewed PR's or main's;
 # - R and M have one merge base, on main's first-parent history: the base
 #   R's reviewer diffed against;
@@ -137,7 +138,11 @@ if LC_ALL=C grep -qE '^"|[^ -~]' <<<"$from_main"$'\n'"$own"; then
 fi
 # Ignoring case: README and readme are one file on a case-insensitive checkout.
 lower() { tr '[:upper:]' '[:lower:]' <<<"$1" | LC_ALL=C sort -u; }
-both=$(LC_ALL=C comm -12 <(lower "$from_main") <(lower "$own") | sed '/^$/d')
+# And a name on one side against the directories holding the other side's
+# names: a file `web/src/Hooks` from main and the PR's `web/src/hooks/x.ts`.
+dirs() { awk -F/ '{ p = $1; for (i = 2; i <= NF; i++) { print p; p = p "/" $i } }' <<<"$1"; }
+both=$( { LC_ALL=C comm -12 <(lower "$from_main") <(lower "$own"$'\n'"$(dirs "$own")")
+    LC_ALL=C comm -12 <(lower "$own") <(lower "$(dirs "$from_main")"); } | LC_ALL=C sort -u | sed '/^$/d')
 [[ -z $both ]] || fail "main changed files the PR changes too: $(tr '\n' ' ' <<<"$both")(names in lower case)"
 
 # The invariant itself, whatever the merge machinery or local settings did:
