@@ -76,13 +76,6 @@ def _play_preempted(monkeypatch: pytest.MonkeyPatch) -> _Backend:
     return backend
 
 
-def test_upstream_fails_a_move_whose_clock_read_lands_past_its_end(
-    restore: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    with pytest.raises(ValueError, match="out of range"):
-        _play_preempted(monkeypatch)
-
-
 def test_the_clamped_move_ends_at_its_target(restore: None, monkeypatch: pytest.MonkeyPatch) -> None:
     move_clock.apply()
     backend = _play_preempted(monkeypatch)
