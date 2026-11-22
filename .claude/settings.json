@@ -11,6 +11,11 @@
             "type": "command",
             "command": "bash -c 'input=$(cat); case $input in *push*|*\"pr create\"*) ;; *) exit 0 ;; esac; f=$(mktemp) || exit 0; if git -C \"$CLAUDE_PROJECT_DIR\" show origin/main:tools/precheck.sh >\"$f\" 2>/dev/null; then printf \"%s\" \"$input\" | bash \"$f\" --hook; s=$?; else s=0; fi; rm -f \"$f\"; exit $s'",
             "timeout": 900
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/qa-guard.sh\"",
+            "timeout": 10
           }
         ]
       }

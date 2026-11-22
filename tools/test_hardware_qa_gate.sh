@@ -14,7 +14,7 @@ HEAD=0123456789abcdef0123456789abcdef01234567
 OLD=fedcba9876543210fedcba9876543210fedcba98
 
 mkdir -p "$ROOT/bin"
-# The stub serves $ROOT/fx/{pr,files,statuses}.json by endpoint, fails an
+# The stub serves $ROOT/fx/{pr,files,statuses,events}.json by endpoint, fails an
 # endpoint when $ROOT/fx/fail-<name> exists (fail-statuses-<k>: only the next
 # k status POSTs), logs a status POST as "<sha> <state> <description>" in
 # status.log, and label changes as "delete <label>" / "create <label>" in
@@ -39,6 +39,7 @@ for a in "${args[@]}"; do
             done
             echo "$sha $state $desc" >>"$FX/status.log"
             exit 0 ;;
+        repos/*/issues/*/events) [[ -e $FX/fail-events ]] && exit 1; cat "$FX/events.json" 2>/dev/null || echo '[]'; exit 0 ;;
         repos/*/issues/*/labels/*)
             [[ $method == DELETE ]] || break
             [[ -e $FX/fail-unlabel ]] && exit 1
@@ -71,7 +72,7 @@ setup() {
           labels: [$labels[] | {name: .}], changed_files: 1,
           base: {ref: "main", repo: {default_branch: "main"}}}' >"$FX/pr.json"
     shift || true
-    files "${@:-web/src/App.tsx}"
+    files "${@:-docs/manual.md}"
     unset EVENT EVENT_SHA LABEL SENDER BASE_CHANGED
 }
 files() {
@@ -84,8 +85,22 @@ passed_before() {
         '[{context: "hardware-qa", state: "pending", description: "Checking for hardware QA", creator: {login: "github-actions[bot]"}},
           {context: "hardware-qa", state: "success", description: $d, creator: {login: $c}}]' >"$FX/statuses.json"
 }
-# The owner adding qa: passed while HEAD is the head.
-owner_labels() { export EVENT=labeled LABEL="qa: passed" SENDER=zeapsu EVENT_SHA=$HEAD; }
+# asked [SHA] [AT] [LABELLED] [ACTOR]: this gate posted its pending status
+# naming SHA (default HEAD) at AT, and ACTOR (default the owner) added
+# qa: passed at LABELLED.
+asked() {
+    jq -n --arg s "${1:-$HEAD}" --arg at "${2:-2026-01-01T00:00:00Z}" \
+        '[{context: "hardware-qa", state: "pending", description: "Checking for hardware QA", created_at: "2025-12-31T00:00:00Z", creator: {login: "github-actions[bot]"}},
+          {context: "hardware-qa", state: "pending", created_at: $at, creator: {login: "github-actions[bot]"},
+           description: ("Needs hardware QA (robot) at " + $s[0:7] + "; label qa: passed only after testing that commit on the robot")}]' >"$FX/statuses.json"
+    jq -n --arg at "${3:-2026-01-01T00:05:00Z}" --arg who "${4:-zeapsu}" \
+        '[{event: "labeled", label: {name: "qa: passed"}, actor: {login: "zeapsu"}, created_at: "2025-12-01T00:00:00Z"},
+          {event: "labeled", label: {name: "other"}, actor: {login: "zeapsu"}, created_at: "2026-02-01T00:00:00Z"},
+          {event: "labeled", label: {name: "qa: passed"}, actor: {login: $who}, created_at: $at}]' >"$FX/events.json"
+}
+# The owner adding qa: passed while HEAD is the head, after the gate asked
+# for QA of it.
+owner_labels() { export EVENT=labeled LABEL="qa: passed" SENDER=zeapsu EVENT_SHA=$HEAD; asked; }
 fail() { echo "FAIL: $*"; fails=$((fails + 1)); }
 
 # expect NAME STATE [TEXT]: the gate runs, sets STATE on HEAD, saying TEXT.
@@ -119,7 +134,7 @@ broken() {
 }
 
 # --- Which files need QA.
-setup '[]' web/src/App.tsx docs/manual.md README.md
+setup '[]' docs/manual.md README.md web/src/components/Profiles.tsx web/package.json web/bun.lock web/e2e/dashboard.spec.ts
 expect "nothing robot-side: success" success "No hardware QA needed"
 if [[ -e $FX/labels.log ]]; then fail "nothing robot-side: touched labels"; else echo "ok: nothing robot-side: no label created"; fi
 
@@ -128,12 +143,17 @@ for f in controller/src/main.rs controller/src/routes/power.rs controller/Cargo.
     runtime/src/reachy_bridge_runtime/features/return_home.py web/src/hooks/useDrive.ts web/src/hooks/usePower.tsx \
     web/src/api/power.ts web/src/logic/moves.ts web/src/components/DrivePanel.tsx web/src/components/AppsPanel.tsx \
     deploy/install.sh deploy/systemd/reachy-bridge.service tools/udev/99-reachy-mini.rules \
-    tools/build_webrtcsink_jetson.sh runtime/pyproject.toml uv.lock; do
-    setup '[]' web/src/App.tsx "$f"
+    tools/build_webrtcsink_jetson.sh runtime/pyproject.toml uv.lock web/src/App.tsx web/src/api.ts \
+    pyproject.toml mise.toml .mise.toml mise.local.toml controller/mise.toml .config/mise.toml \
+    .config/mise/config.toml .mise/config.toml .cargo/config.toml controller/.cargo/config.toml \
+    controller/.cargo/config rust-toolchain.toml controller/rust-toolchain .tool-versions .python-version \
+    uv.toml web/bunfig.toml web/.npmrc .npmrc; do
+    setup '[]' docs/manual.md "$f"
     expect "robot path $f" pending "Needs hardware QA (robot) at 0123456;"
 done
 
-for f in web/src/components/VoicePanel.tsx web/src/logic/voice.ts web/src/api/voice.ts; do
+for f in web/src/components/VoicePanel.tsx web/src/logic/voice.ts web/src/api/voice.ts \
+    web/src/components/AudioPanel.tsx; do
     setup '[]' "$f"
     expect "audio path $f" pending "Needs hardware QA (audio) at 0123456;"
 done
@@ -142,7 +162,7 @@ for f in runtime/src/reachy_bridge_runtime/audio_gateway.py runtime/src/reachy_b
     runtime/src/reachy_bridge_runtime/upstream.py runtime/src/reachy_bridge_runtime/features/wobble.py \
     runtime/src/reachy_bridge_runtime/platforms/jetson.py controller/src/audio.rs controller/src/host.rs \
     web/src/hooks/useVoice.ts deploy/systemd/reachy-bridge-audio.service deploy/systemd/reachy-bridge-mic.service \
-    deploy/reachy-bridge; do
+    deploy/reachy-bridge web/src/api/media.ts web/src/components/ControlsPanel.tsx; do
     setup '[]' "$f"
     expect "robot and audio path $f" pending "Needs hardware QA (robot, audio) at 0123456;"
 done
@@ -154,7 +174,9 @@ setup '[]' runtime/src/reachy_bridge_runtime/features/sim_apps.py deploy/systemd
 expect "sim-only files don't count" success "No hardware QA needed"
 
 setup '[]' web/src/api/powers.ts web/src/components/DrivePanelNotes.md controller/Cargo.toml.bak \
-    runtime/src/reachy_bridge_runtime/notes.txt tools/udev controller/tests/power.rs web/src/hooks/useTheme.ts
+    runtime/src/reachy_bridge_runtime/notes.txt tools/udev controller/tests/power.rs web/src/hooks/useTheme.ts \
+    web/src/AppView.tsx web/src/components/App.tsx web/src/api.test.ts web/src/api/mediax.ts docs/pyproject.toml.md \
+    docs/mise.md docs/rust-toolchain.md .cargo .config/other.toml uv.toml.bak web/bunfig.json web/src/logic/audio.ts
 expect "near-miss paths don't count" success "No hardware QA needed"
 
 setup; jq -n '[{filename: "web/src/old.ts", previous_filename: "controller/src/power.rs"}]' >"$FX/files.json"
@@ -198,6 +220,35 @@ setup '["qa: passed"]' controller/src/main.rs; owner_labels; export LABEL=other
 expect "a labeled event for another label doesn't pass" pending
 stripped "the label from an unknown head removed"
 
+# The label counts only when this gate had asked for QA of this head first.
+setup '["qa: passed"]' controller/src/main.rs; owner_labels; asked "$HEAD" 2026-01-01T00:00:00Z 2026-01-01T00:00:00Z
+expect "qa: passed in the same second as the gate's pending" pending "Needs hardware QA"
+stripped "a label no later than the pending is removed"
+if grep -q "add it again after testing that commit" "$FX/out"; then echo "ok: the log says to add it again"
+else fail "no re-label hint"; fi
+setup '["qa: passed"]' controller/src/main.rs; owner_labels; asked "$HEAD" 2026-01-01T00:10:00Z
+expect "qa: passed before the gate named this head" pending "Needs hardware QA"
+stripped "a label from before the pending is removed"
+setup '["qa: passed"]' controller/src/main.rs; owner_labels; asked "$OLD"
+expect "the gate only ever named another head" pending "Needs hardware QA"
+stripped "a pending for another head doesn't count"
+setup '["qa: passed"]' controller/src/main.rs; owner_labels; echo '[]' >"$FX/statuses.json"
+expect "the gate never asked for QA of this head" pending "Needs hardware QA"
+stripped "no pending at all: label removed"
+setup '["qa: passed"]' controller/src/main.rs; owner_labels; asked "$HEAD" 2026-01-01T00:00:00Z 2026-01-01T00:05:00Z someone-else
+expect "only someone else's labeled event after the pending" pending "Needs hardware QA"
+stripped "the owner's own label time decides"
+setup '["qa: passed"]' controller/src/main.rs; owner_labels
+jq '[.[] | .creator.login = "zeapsu"]' "$FX/statuses.json" >"$FX/s" && mv "$FX/s" "$FX/statuses.json"
+expect "a pending the owner's account posted by hand doesn't count" pending
+setup '["qa: passed"]' controller/src/main.rs; owner_labels
+jq '.[1].description = null' "$FX/statuses.json" >"$FX/s" && mv "$FX/s" "$FX/statuses.json"
+expect "a pending with no description doesn't count, and doesn't fail the run" pending
+setup '["qa: passed"]' controller/src/main.rs; owner_labels; touch "$FX/fail-events"
+broken "issue events listing fails: error"
+setup '["qa: passed"]' controller/src/main.rs; owner_labels; echo '[1]' >"$FX/events.json"
+broken "malformed issue events: error"
+
 for ev in opened reopened synchronize; do
     setup '["qa: passed"]' controller/src/main.rs; passed_before; export EVENT=$ev EVENT_SHA=$HEAD
     expect "$ev: qa: passed goes" pending "Needs hardware QA (robot)"
@@ -212,7 +263,7 @@ setup '["qa: passed"]' controller/src/main.rs; passed_before; export EVENT=edite
 expect "an edit without a new base keeps a pass" success "Hardware QA passed"
 kept "edit keeps the label"
 
-setup '["qa: passed"]' web/src/App.tsx; export EVENT=synchronize
+setup '["qa: passed"]' docs/manual.md; export EVENT=synchronize
 expect "new push on a PR with nothing robot-side" success "No hardware QA needed"
 stripped "a new push removes qa: passed there too"
 
@@ -234,6 +285,11 @@ stripped "hand-posted success: label removed"
 
 setup '["qa: passed"]' controller/src/main.rs; passed_before "github-actions[bot]" "No hardware QA needed"
 expect "an earlier 'no QA needed' isn't a QA pass" pending
+
+setup '["qa: passed"]' controller/src/main.rs; passed_before
+jq '.[1].description = null' "$FX/statuses.json" >"$FX/s" && mv "$FX/s" "$FX/statuses.json"
+expect "a success with no description isn't a pass, and doesn't fail the run" pending
+stripped "no-description success: label removed"
 
 setup '[]' controller/src/main.rs; passed_before; export EVENT=unlabeled LABEL="qa: passed" SENDER=zeapsu EVENT_SHA=$HEAD
 expect "owner removes qa: passed: pending again" pending "Needs hardware QA"
@@ -277,6 +333,60 @@ for bad in "7; true" 07 0 ""; do
     if PR=$bad bash "$GATE" >"$FX/out" 2>&1; then fail "PR '$bad' accepted"
     else echo "ok: PR '$bad' refused"; fi
 done
+
+# The Claude Code hook that keeps agents from adding qa: passed or posting a
+# hardware-qa status. guard WANT COMMAND: the hook exits WANT (2 blocks).
+HOOK=$(dirname "$GATE")/../.claude/hooks/qa-guard.sh
+guard() {
+    local rc=0
+    jq -n --arg c "$2" '{tool_name: "Bash", tool_input: {command: $c}}' | bash "$HOOK" >/dev/null 2>&1 || rc=$?
+    if [[ $rc == "$1" ]]; then echo "ok: hook exits $1 for: $2"; else fail "hook exits $rc, want $1, for: $2"; fi
+}
+guard 2 'gh pr edit 5 --add-label "qa: passed"'
+guard 2 "gh issue edit 5 --add-label 'QA: Passed'"
+guard 2 'gh pr create --title x --body-file b --label "qa: passed"'
+guard 2 'gh pr create -t x -F b -l "qa: passed"'
+guard 2 'gh api -X POST repos/o/r/issues/5/labels -f "labels[]=qa: passed"'
+guard 2 'gh api repos/o/r/issues/5/labels -f labels[]=qa:%20passed'
+guard 2 'gh api --method PUT repos/o/r/issues/5/labels --input l.json # qa: passed'
+guard 2 'gh api -X POST repos/o/r/statuses/abc -f state=success -f context=hardware-qa'
+guard 2 'gh api repos/o/r/statuses/abc -f context=hardware-qa -f state=success'
+guard 2 $'cd x &&\ngh pr edit 5 --add-label "qa: passed"'
+guard 0 'gh pr edit 5 --remove-label "qa: passed"'
+guard 0 'gh pr list --label "qa: passed"'
+guard 0 'gh api repos/o/r/issues/5/labels | jq ".[] | select(.name == \"qa: passed\")"'
+guard 0 'gh api --paginate repos/o/r/commits/abc/statuses | jq "select(.context == \"hardware-qa\")"'
+guard 0 'gh workflow run hardware-qa-gate.yml --ref main -f pr=5'
+guard 0 'gh pr checks 5 --watch'
+guard 0 'gh pr create --title x --body-file body.md'
+guard 0 'gh pr edit 5 --add-label security'
+guard 0 'git log --grep "qa: passed" --add-label'
+guard 2 'cd x && gh pr edit 5 --add-label "qa: passed"'
+# shellcheck disable=SC2016  # the command's text, not expanded here
+guard 2 'echo $(gh pr edit 5 --add-label "qa: passed")'
+guard 2 'true; gh pr edit 5 --add-label "qa: passed"'
+guard 0 $'git commit -F - <<EOF\nThe hook blocks gh commands that add qa: passed (--add-label).\nEOF'
+guard 0 'echo "ugh pr edit 5 --add-label qa: passed"'
+
+# AGENTS.md ("Channels") reads ROBOT, AUDIO and SIMONLY from main's copy of
+# this script with sed; each must come out whole and be a valid ERE.
+gate=$(cat "$GATE")
+pat() { sed -n "s/^$1='\(.*\)'\$/\1/p" <<<"$gate"; }
+for v in ROBOT AUDIO SIMONLY; do
+    p=$(pat "$v")
+    rc=0; grep -E "$p" <<<"x" >/dev/null || rc=$?
+    if [[ -z $p ]]; then fail "AGENTS.md can't read $v"
+    elif (( rc > 1 )); then fail "$v isn't a valid ERE"
+    else echo "ok: AGENTS.md reads $v"; fi
+done
+# shellcheck disable=SC2016  # the literal text of AGENTS.md's line
+if grep -qF 'pat() { sed -n "s/^$1='"'"'\(.*\)'"'"'\$/\1/p" <<<"$gate"; }' "$(dirname "$GATE")/../AGENTS.md"; then
+    echo "ok: AGENTS.md's pat() is the one tested here"
+else fail "AGENTS.md's pat() differs from this test's"; fi
+got=$(printf '%s\n' controller/src/main.rs web/src/components/AudioPanel.tsx deploy/systemd/reachy-bridge-sim.service docs/manual.md |
+    grep -E "$(pat ROBOT)|$(pat AUDIO)" | grep -vE "$(pat SIMONLY)")
+if [[ $got == $'controller/src/main.rs\nweb/src/components/AudioPanel.tsx' ]]; then echo "ok: the rc snippet picks robot and audio files"
+else fail "rc snippet picked: $got"; fi
 
 echo
 if ((fails)); then echo "$fails failed"; exit 1; fi
