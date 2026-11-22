@@ -329,10 +329,12 @@ REQUIREMENTS: tuple[Requirement, ...] = (
     ),
     Requirement(
         "speaker_wobble",
-        "a sleep stops the wobble, and the backend keeps its media server",
+        "a sleep or an app stop's return home stops the wobble, and the backend keeps its media server",
         lambda: (
+            _coroutine(_BACKEND, "Backend.reset_to_init")(),
             _source_mentions(_BACKEND, "Backend.goto_sleep", "_quiesce_aim_sources")(),
-            _source_mentions(_BACKEND, "Backend.reset_to_sleep", "_quiesce_aim_sources")(),
+            _source_mentions(_BACKEND, "Backend.reset_to_sleep", "reset_to_init", "goto_sleep")(),
+            _source_mentions(_BACKEND, "Backend.reset_to_init", "_quiesce_aim_sources")(),
             _source_mentions(_BACKEND, "Backend._quiesce_aim_sources", "_media_server", "disable_wobbling")(),
         ),
     ),
@@ -564,8 +566,9 @@ def sync_torque_mode(backend: Any) -> bool:
     """Set the motor mode to ``enabled`` when torque is on but the mode says
     ``disabled``; True if it did.
 
-    The app manager's return home after a stop turns torque on with
-    ``enable_motors()``, which leaves ``motor_control_mode`` as it was. Only the
+    Up to 1.13.0 the app manager's return home after a stop turned torque on
+    with ``enable_motors()``, which left ``motor_control_mode`` as it was; since
+    1.14.0 it goes through ``reset_to_init()``, which sets the mode. Only the
     real robot backend tracks torque; the simulators report a mode that is
     always right.
     """
@@ -667,6 +670,8 @@ def wrap_wobbling(
     _wrap(Backend, "process_command", process_command)
     _wrap(Backend, "goto_sleep", sleep)
     _wrap(Backend, "reset_to_sleep", sleep)
+    # An app stop returns home through it; inside reset_to_sleep it nests.
+    _wrap(Backend, "reset_to_init", sleep)
     _wrap(Backend, "_quiesce_aim_sources", quiesce)
 
 
