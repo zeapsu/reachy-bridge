@@ -60,6 +60,22 @@
 .route .row span:last-child { text-align: right; overflow-wrap: anywhere; }
 
 /* Logs */
+/* The source picker: the browser's own arrow sits against the edge, so draw one. */
+.log-pick { position: relative; display: inline-flex; }
+.log-pick select { appearance: none; padding-right: 34px; }
+.log-pick::after {
+  content: "";
+  position: absolute;
+  right: 15px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -5px;
+  border: solid var(--ink-2);
+  border-width: 0 1.75px 1.75px 0;
+  transform: rotate(45deg);
+  pointer-events: none;
+}
 .log-body { position: relative; }
 .log-scroll {
   height: 280px;

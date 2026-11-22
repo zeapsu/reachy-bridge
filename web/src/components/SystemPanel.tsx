@@ -300,13 +300,15 @@ export function Diagnostics({ daemonOnline, live }: { daemonOnline: boolean; liv
         titleId="logs-title"
         aside={
           <>
-            <select className="field" id="log-source" aria-label="Log source" value={log.source} onChange={(e) => selectSource(e.target.value)}>
-              {log.sources.map((id) => (
-                <option key={id} value={id}>
-                  {id}
-                </option>
-              ))}
-            </select>
+            <span className="log-pick">
+              <select className="field" id="log-source" aria-label="Log source" value={log.source} onChange={(e) => selectSource(e.target.value)}>
+                {log.sources.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            </span>
             <span className="chip" id="logs-pill">
               <span className={`dot ${logDisplay.dot}`} id="log-dot"></span>
               <span id="log-state">{logDisplay.text}</span>
