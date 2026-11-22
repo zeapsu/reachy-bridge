@@ -83,17 +83,23 @@ def test_the_clamped_move_ends_at_its_target(restore: None, monkeypatch: pytest.
     np.testing.assert_allclose(backend.antennas[-1], np.ones(2))
 
 
-def test_times_outside_the_move_clamp_to_its_ends(restore: None) -> None:
+def test_times_past_the_move_clamp_to_its_end(restore: None) -> None:
     move_clock.apply()
     head, antennas, _ = _move().evaluate(DURATION * 1.5)
     np.testing.assert_allclose(head, TARGET)
     np.testing.assert_allclose(antennas, np.ones(2))
-    head, antennas, _ = _move().evaluate(-0.01)
-    np.testing.assert_allclose(head, START)
-    np.testing.assert_allclose(antennas, np.zeros(2))
     # goto_joint_positions calls it from the backend module.
-    assert abstract.time_trajectory(-1e-9) == 0.0
     assert abstract.time_trajectory(1.0 + 1e-9) == pytest.approx(1.0)
+
+
+def test_a_time_before_the_move_still_raises(restore: None) -> None:
+    # Only a clock stepped back gives one; holding the start pose until the
+    # clock caught up would replay the move later.
+    move_clock.apply()
+    with pytest.raises(ValueError, match="out of range"):
+        _move().evaluate(-0.01)
+    with pytest.raises(ValueError, match="out of range"):
+        abstract.time_trajectory(-1e-9)
 
 
 def test_times_inside_the_move_are_unchanged(restore: None) -> None:

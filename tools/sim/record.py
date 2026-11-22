@@ -3,7 +3,8 @@
 ``run.py --record FILE`` puts it between the daemon and both the controller
 and ``smoke.py``, so the recording holds every daemon answer the checks and
 the controller relied on during the run (``differential.py`` compares two).
-Bodies are read whole, so it suits the smoke run, not streams.
+Bodies are read whole and WebSocket upgrades aren't passed on, so it suits
+the smoke run, not streams, live state or driving (the browser tests).
 """
 
 from __future__ import annotations

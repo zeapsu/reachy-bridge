@@ -188,8 +188,11 @@ Backend: `daemon/backend/abstract.py`; endpoints:
   `time_trajectory` raises `time value is out of range [0,1]`. In a
   `daemon/start?wake_up=true` that leaves the state `error` with the backend
   up and the wake-up cut short (#318: seen once in the sim browser tests).
-  **Bridge feature** (`features/move_clock.py`): times outside [0, 1] are
-  clamped to the move's ends, so the move finishes at its target.
+  **Bridge feature** (`features/move_clock.py`): a time past the end is
+  clamped to 1, so the move finishes at its target. Recorded moves
+  (`RecordedMove.evaluate`) have the same race; upstream catches that one
+  with a warning, so it can cut an expression's last frame but not fail a
+  power-on.
 - **Bridge feature** (`features/wobble.py`): the sleep and reset moves stop
   the wobble the dashboard turned on, and it comes back when the outermost
   one ends (`goto_sleep`, `reset_to_sleep` and `reset_to_init` are wrapped;

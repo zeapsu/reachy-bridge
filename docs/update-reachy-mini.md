@@ -66,11 +66,14 @@ The checks decide, not your reading of the code:
      to change to follow, that is not a seam fix: stop (see below).
    - **A difference in the differential run:** read each one against the
      controller's use of that route. One the controller doesn't depend on
-     (a new field, a route it no longer needs to call) is approved by adding
+     (a new field it ignores, an unused field gone) is approved by adding
      it to `tools/sim/contract-changes.json`, word for word as reported,
      with the reason and the version; note it in the contract when it is
      about behaviour. One the controller depends on (a field it reads is
      gone or changed type, a new error status) is a behaviour change: stop.
+     So is a route "newly called" or "no longer called": the controller and
+     `smoke.py` are the same in both runs, so the run took another path
+     because the daemon answered differently.
 5. Iterate until the oracle passes or a stopping rule applies.
 6. Green: push to the branch, update the contract's version line and any
    changed sections, and open or update the PR with what changed upstream,

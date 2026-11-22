@@ -15,12 +15,12 @@ moment), ``t`` comes back past ``duration`` and the move raises instead of
 finishing. During ``daemon/start?wake_up=true`` that leaves the daemon in
 ``error`` with the backend up and the wake-up move cut short: the dashboard
 shows the robot off, and a person has to press power again (#318: the sim
-browser test waited 60 s for a power-on that had already failed). A wall
-clock stepped back by NTP gives a negative ``t`` the same way.
+browser test waited 60 s for a power-on that had already failed).
 
-The move was due to end at that step anyway, so a time outside [0, 1] is
-clamped to its end instead: past the end is the target pose, before the start
-is the start pose.
+The move was due to end at that step anyway, so a time past the end is
+clamped to it: the target pose. A negative time (only a wall clock stepped
+back gives one) still raises as before; clamping it would hold the start
+pose until the clock caught up, then replay the move.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ FEATURE = "move_clock"
 
 
 def _clamped(original: Callable[..., float], t: float, *args: Any, **kwargs: Any) -> float:
-    return original(min(max(t, 0.0), 1.0), *args, **kwargs)
+    return original(min(t, 1.0), *args, **kwargs)
 
 
 def apply() -> None:

@@ -11,9 +11,11 @@ name: Upstream watch
 #
 # Only the push and report jobs hold write tokens. Neither runs code from the
 # new package; resolving and testing it happen in read-only jobs. The
-# differential's two recordings are made in separate jobs, so the new
-# package's code never runs where main's recording is made, and compared in a
-# third that runs no package code at all.
+# differential's two recordings are made in separate jobs and compared in a
+# third that runs no package code. That keeps an honest comparison clean; it
+# is no integrity check against a hostile release, whose job could upload
+# whatever recordings it likes (as it could fake CI). Review and hardware QA
+# stay the protection there.
 
 on:
   schedule:
@@ -183,8 +185,10 @@ jobs:
 
   # The sim checks with a recording proxy in front of the daemon, once on
   # main's lock and once on the new one (tools/sim/differential.py).
+  # After push: no new-package code runs while push still has to fetch the
+  # lock artifact it commits.
   record:
-    needs: detect
+    needs: [detect, push]
     if: needs.detect.outputs.status == 'new'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
@@ -301,7 +305,7 @@ jobs:
           exit "$code"
 
   report:
-    needs: [detect, push, check, differential]
+    needs: [detect, push, check, record, differential]
     if: >-
       !cancelled() && needs.detect.result == 'success' &&
       (needs.detect.outputs.status == 'new' || needs.detect.outputs.status == 'lock-failed')
@@ -326,6 +330,7 @@ jobs:
           PUSH: ${{ needs.push.result }}
           CHECK: ${{ needs.check.result }}
           DIFF: ${{ needs.differential.result }}
+          RECORD: ${{ needs.record.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PLAYBOOK: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/update-reachy-mini.md
           COMPARE_URL: ${{ github.server_url }}/${{ github.repository }}/compare/main...${{ needs.detect.outputs.branch }}
@@ -338,7 +343,7 @@ jobs:
           - Review it as [docs/update-reachy-mini.md]($PLAYBOOK) describes: read the [upstream changelog]($changelog) and diff for behaviour changes the checks can't see, and update \`docs/daemon-contract.md\` for the new version.
           - Needs hardware QA: a new daemon drives the motors. The \`hardware-qa\` check stays pending until the owner tests this branch's head on the robot and labels the PR \`qa: passed\`."
 
-          if [[ "$STATUS" == new && "$CHECK" == success && "$DIFF" == success ]]; then
+          if [[ "$STATUS" == new && "$CHECK" == success && "$RECORD" == success && "$DIFF" == success ]]; then
             cat > "$body" <<EOF
           The daily upstream watch locked reachy-mini $VERSION (was $OLD). CI passed against this branch in [the watch run]($RUN_URL): unit tests, \`reachy-bridge-runtime --check\` and the sim contract tests. The differential sim run found no unapproved differences in the daemon's answers (\`tools/sim/contract-changes.json\`).
 
@@ -389,7 +394,7 @@ jobs:
 
           ${failed:-- (no failed job found; see the run)}
 
-          Fix it on \`$BRANCH\` following [docs/update-reachy-mini.md]($PLAYBOOK): the fix stays inside \`upstream.py\`, the lock and the daemon contract, or the issue gets a diagnosis and a proposed patch instead. Upstream changes: [changelog]($changelog).
+          Fix it on \`$BRANCH\` following [docs/update-reachy-mini.md]($PLAYBOOK): the fix stays inside \`upstream.py\`, the lock, the daemon contract and the approved differences in \`tools/sim/contract-changes.json\`, or the issue gets a diagnosis and a proposed patch instead. Upstream changes: [changelog]($changelog).
           EOF
           fi
           echo >> "$body"

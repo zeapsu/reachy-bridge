@@ -50,7 +50,9 @@ uv run python tools/sim/differential.py run /tmp/main.lock uv.lock
 Each lock gets a venv of its own. `run.py --record FILE` puts a proxy
 (`record.py`) between the daemon and both the controller and `smoke.py`, and
 writes, per route, the status codes seen and each JSON field's path and
-types. Values are left out, so timestamps, ids, ports and poses never
+types. It doesn't pass streams or WebSockets on, so it is for the smoke run,
+not the browser tests. Fields inside a list are compared only when both runs
+saw the list non-empty. Values are left out, so timestamps, ids, ports and poses never
 differ; ids in paths and keys fold into `{id}`. `differential.py compare
 A.json B.json` compares two recordings with the standard library only (the
 upstream watch runs it under `python3 -I`, apart from the code that made

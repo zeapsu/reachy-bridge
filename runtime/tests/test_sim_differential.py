@@ -181,3 +181,22 @@ def test_the_locked_version_is_read_from_the_lock() -> None:
         p["version"] for p in tomllib.loads((ROOT / "uv.lock").read_text())["package"] if p["name"] == "reachy-mini"
     )
     assert differential.lock_version(ROOT / "uv.lock") == locked
+
+
+def test_list_elements_count_only_when_both_runs_saw_some() -> None:
+    moving = _recording(("GET", "/api/move/running", 200, b'[{"uuid": "a"}]'), ("GET", "/api/move/running", 200, b"[]"))
+    idle = _recording(("GET", "/api/move/running", 200, b"[]"))
+    assert differential.differences(moving, idle) == []
+    assert differential.differences(idle, moving) == []
+    renamed = _recording(("GET", "/api/move/running", 200, b'[{"id": "a"}]'))
+    assert differential.differences(moving, renamed) == [
+        "GET /api/move/running: $[].id added (str)",
+        "GET /api/move/running: $[].uuid removed",
+    ]
+
+
+def test_control_characters_in_routes_are_escaped() -> None:
+    base = _recording(("GET", "/api/a", 200, b"{}"))
+    candidate = _recording(("GET", "/api/a", 200, b'{"x\\n::error::boom": 1}'))
+    [line] = differential.differences(base, candidate)
+    assert "\n" not in line and "\\n::error::boom" in line

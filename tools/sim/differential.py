@@ -116,6 +116,13 @@ class Recorder:
         }
 
 
+def _unseen(fields: dict[str, list[str]], other: dict[str, list[str]]) -> tuple[str, ...]:
+    """Array elements one run saw and the other didn't: a list that happened
+    to be empty at every poll (``move/running`` between moves) says nothing
+    about its elements' shape."""
+    return tuple(p for p in fields.keys() - other.keys() if p.endswith("[]"))
+
+
 def differences(base: Recording, candidate: Recording) -> list[str]:
     """Every difference between two recordings, one line each."""
     out = []
@@ -131,7 +138,10 @@ def differences(base: Recording, candidate: Recording) -> list[str]:
             out.append(f"{key}: no longer answers {status}")
         for status in sorted(set(new["status"]) - set(old["status"])):
             out.append(f"{key}: now answers {status}")
+        unseen = _unseen(old["fields"], new["fields"]) + _unseen(new["fields"], old["fields"])
         for path in sorted(old["fields"].keys() | new["fields"].keys()):
+            if path.startswith(unseen):
+                continue
             was, now = old["fields"].get(path), new["fields"].get(path)
             if was == now:
                 continue
@@ -141,7 +151,13 @@ def differences(base: Recording, candidate: Recording) -> list[str]:
                 out.append(f"{key}: {path} added ({'|'.join(now)})")
             else:
                 out.append(f"{key}: {path} {'|'.join(was)} -> {'|'.join(now)}")
-    return out
+    return [_printable(d) for d in out]
+
+
+def _printable(text: str) -> str:
+    """Routes and keys come from the daemon under test: no control characters
+    (a newline could start a workflow command in the job log)."""
+    return "".join(c if c.isprintable() else repr(c)[1:-1] for c in text)
 
 
 def load_allowed(path: Path) -> dict[str, str]:
@@ -188,6 +204,7 @@ def _compare_files(base: Path, candidate: Path, allow: Path) -> tuple[int, str]:
 def _record(lock: Path, work: Path, name: str) -> int:
     """Install ``lock`` into a venv of its own and record a sim run on it."""
     project = work / f"{name}-project"
+    shutil.rmtree(project, ignore_errors=True)
     project.mkdir(parents=True)
     shutil.copy(ROOT / "pyproject.toml", project / "pyproject.toml")
     shutil.copy(lock, project / "uv.lock")

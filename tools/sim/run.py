@@ -288,10 +288,12 @@ def main() -> int:
     finally:
         stop(gateway)
         stop(controller)
-        if proxy is not None:
-            proxy.save(args.record)
-            proxy.close()
-        stop(daemon)
+        try:
+            if proxy is not None:
+                proxy.save(args.record)
+                proxy.close()
+        finally:
+            stop(daemon)
     if code == 0 and temporary:
         shutil.rmtree(work, ignore_errors=True)
     else:
