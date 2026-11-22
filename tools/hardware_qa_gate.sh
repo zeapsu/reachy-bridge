@@ -17,7 +17,12 @@
 #   - opened, reopened, a new push (synchronize) and a new base (edited with
 #     BASE_CHANGED) remove `qa: passed`: any QA was of other code;
 #   - the run for the owner adding `qa: passed` passes the head it was added
-#     at, when that is still the head and the label is still on, read live;
+#     at, when that is still the head, the label is still on (read live) and
+#     this gate had already posted its pending status naming that head before
+#     the label went on (a label that beats a push's pending can't pass the
+#     new head; one a moment after it still rests on the owner reading the
+#     sha). A label the issue events don't list yet is removed too, and the
+#     owner adds it again;
 #   - any other run (a dispatch, the owner removing the label, a run that
 #     replaced a dropped one in the concurrency queue) passes only a head
 #     this gate already passed and that still carries the label. A label on
@@ -30,10 +35,12 @@
 # shares this status (same code, same QA).
 #
 # What it proves: the owner's account added `qa: passed` while this commit
-# was the head; that the owner tested this commit rests on them checking the
-# sha in the pending status against the robot's checkout before labelling. It can't prove QA ran, and agents act with that same account,
-# so agents never add the label (AGENTS.md). Anything that can post statuses
-# can also post this one.
+# was the head, after this gate asked for QA of it; that the owner tested
+# this commit rests on them checking the sha in the pending status against
+# the robot's checkout before labelling. It can't prove QA ran, and agents
+# act with that same account, so agents never add the label (AGENTS.md; the
+# repo's Claude Code hook .claude/hooks/qa-guard.sh blocks the usual gh
+# commands for it). Anything that can post statuses can also post this one.
 set -Eeuo pipefail
 
 : "${GH_REPO:?set GH_REPO}" "${PR:?set PR}"
@@ -45,14 +52,28 @@ QA_LABEL='qa: passed'
 # Robot: the controller, its Rust dependencies and build script, the runtime
 # wrapper (motion, power and torque, return-home and the one-actuator guards,
 # the daemon and its features, platform adapters), the dashboard code that
-# drives the robot, the installer, units, CLI and udev rules, the shipped
-# webrtcsink build, and the Python dependencies the robot runs.
-ROBOT='^(controller/src/.+\.rs|controller/Cargo\.(toml|lock)|controller/build\.rs|runtime/src/reachy_bridge_runtime/.+\.py|web/src/(hooks/use(Drive|Power|Control|Expressions|Apps|Voice)|api/(power|control|expressions|apps)|logic/(drive|power|moves|pose|control|controls|expressions)|components/(DrivePanel|ControlStrip|ControlsPanel|ExpressionsPanel|AppsPanel))\.tsx?|deploy/.+|tools/udev/.+|tools/build_webrtcsink_jetson\.sh|runtime/pyproject\.toml|uv\.lock)$'
+# drives the robot (the panels, hooks, API calls and logic for it, App.tsx
+# that wires them up and api.ts that maps their routes), the installer,
+# units, CLI and udev rules, the shipped webrtcsink build, the Python
+# dependencies the robot runs (both pyproject.toml files: the root one is the
+# uv workspace the installer syncs) and the toolchain config the installer's
+# uv, cargo and bun builds read (mise, rustup, cargo, uv, bun and npm files,
+# at any depth, as they look for them upward, with the directories by their
+# bare names so a symlink can't stand in; and a root Cargo.toml, Cargo.lock,
+# package.json or bun.lock, which cargo and bun would take as the workspace
+# of controller/ and web/). Not web/package.json or
+# web/bun.lock: the dashboard's packages are checked by the browser tests
+# against the sim, and gating them would hold Dependabot's weekly web
+# updates for QA.
+ROBOT='^(controller/src/.+\.rs|controller/Cargo\.(toml|lock)|controller/build\.rs|runtime/src/reachy_bridge_runtime/.+\.py|web/src/(App|api|hooks/use(Drive|Power|Control|Expressions|Apps|Voice)|api/(power|control|expressions|apps|media)|logic/(drive|power|moves|pose|control|controls|expressions)|components/(DrivePanel|ControlStrip|ControlsPanel|ExpressionsPanel|AppsPanel))\.tsx?|deploy/.+|tools/udev/.+|tools/build_webrtcsink_jetson\.sh|(runtime/)?pyproject\.toml|uv\.lock|Cargo\.(toml|lock)|package\.json|bun\.lockb?|(.+/)?(\.cargo(/.+)?|rust-toolchain(\.toml)?|\.tool-versions|\.?mise(\.[^/]+)?\.toml|\.?mise(/.+)?|\.config(/mise(\.[^/]+)?\.toml|/mise(/.+)?)?|\.python-versions?|uv\.toml|\.?bunfig\.toml|\.npmrc))$'
 # Audio: what CI can't run without a sound card (the gateway, tee, mic mixer
 # and wobble, the host setup, the controller's audio routes and ALSA volume,
-# the voice pane, their units and the CLI that tees and checks them).
+# their units and the CLI that tees and checks them) and the dashboard files
+# that drive them (the voice pane, AudioPanel, ControlsPanel's volume and test
+# sound, api/media.ts's routes for them; not the pure level math in
+# logic/audio.ts, which has unit tests).
 # audio_policy.py is only request signing, so it counts as robot alone.
-AUDIO='^(runtime/src/reachy_bridge_runtime/((audio_[a-z_]+|mic_mixer|upstream)\.py|features/wobble\.py|platforms/[a-z_]+\.py)|controller/src/(audio|host)\.rs|web/src/(hooks/useVoice|components/VoicePanel|logic/voice|api/voice)\.tsx?|deploy/systemd/reachy-bridge-(audio|mic)\.service|deploy/reachy-bridge)$'
+AUDIO='^(runtime/src/reachy_bridge_runtime/((audio_[a-z_]+|mic_mixer|upstream)\.py|features/wobble\.py|platforms/[a-z_]+\.py)|controller/src/(audio|host)\.rs|web/src/(hooks/useVoice|components/(VoicePanel|AudioPanel|ControlsPanel)|logic/voice|api/(voice|media))\.tsx?|deploy/systemd/reachy-bridge-(audio|mic)\.service|deploy/reachy-bridge)$'
 SIMONLY='^(runtime/src/reachy_bridge_runtime/features/sim_[a-z_]+\.py|deploy/systemd/reachy-bridge-sim\.service)$'
 
 pr=$(gh api "repos/$GH_REPO/pulls/$PR")
@@ -137,18 +158,36 @@ gh api -X POST "repos/$GH_REPO/labels" -f name="$QA_LABEL" -f color=0E8A16 \
 passed=
 if [[ $labelled == true ]]; then
     owner=${GH_REPO%%/*}
+    # This gate's own statuses on this head (into a variable, so a failed
+    # call fails the run).
+    history=$(gh api --paginate "repos/$GH_REPO/commits/$sha/statuses" | jq -s 'add // []')
     if [[ $event == labeled && ${LABEL:-} == "$QA_LABEL" && ${EVENT_SHA:-} == "$sha" ]]; then
-        if [[ ${SENDER:-} == "$owner" ]]; then
-            passed="the owner added '$QA_LABEL' at this head"
-        else
+        if [[ ${SENDER:-} != "$owner" ]]; then
             unlabel "added by ${SENDER:-someone} rather than the owner"
+        else
+            # When the owner last added the label, and whether this gate had
+            # asked for QA of this head before then. A push seconds before
+            # the label makes a head the owner never saw named; so does a
+            # PR whose gate never ran (the owner re-labels once it has).
+            events=$(gh api --paginate "repos/$GH_REPO/issues/$PR/events" | jq -s 'add // []')
+            at=$(jq -r --arg l "$QA_LABEL" --arg o "$owner" '[.[] | select(.event == "labeled"
+                and .label.name == $l and .actor.login == $o) | .created_at | strings] | max // ""' <<<"$events")
+            asked=$(jq --arg at "$at" --arg s "at ${sha:0:7};" '[.[] | select(.context == "hardware-qa"
+                and .state == "pending" and .creator.login == "github-actions[bot]"
+                and ((.description // "") | startswith("Needs hardware QA") and contains($s))
+                and (.created_at | strings) < $at)] | length' <<<"$history")
+            if [[ -n $at ]] && (( asked > 0 )); then
+                passed="the owner added '$QA_LABEL' at this head after the gate asked for QA of it"
+            else
+                unlabel "added before this gate asked for QA of ${sha:0:7}; add it again after testing that commit"
+            fi
         fi
     else
         # This gate's own success on this head, from an earlier run.
-        prior=$(gh api --paginate "repos/$GH_REPO/commits/$sha/statuses" | jq -s --arg c hardware-qa '
-            add // [] | [.[] | select(.context == $c and .state == "success"
+        prior=$(jq --arg c hardware-qa '
+            [.[] | select(.context == $c and .state == "success"
                 and .creator.login == "github-actions[bot]"
-                and (.description | startswith("Hardware QA passed")))] | length')
+                and ((.description // "") | startswith("Hardware QA passed")))] | length' <<<"$history")
         if (( prior > 0 )); then
             passed="this head already passed and still has '$QA_LABEL'"
         else
