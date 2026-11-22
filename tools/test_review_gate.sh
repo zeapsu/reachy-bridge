@@ -207,17 +207,46 @@ for f in controller/src/auth.rs controller/src/profiles.rs controller/src/main.r
     .opencode/agent/x.md opencode.json web/opencode.jsonc $'uv.loc\xe2\x84\xaa' $'.cur\xc5\xbfor/rules/x.mdc' \
     $'controller/src/pro\xef\xac\x81les.rs' $'docs/caf\xc3\xa9.md' $'.\xe2\x84\xaairo/steering/x.md' .cursor .codex .agents .github web/.claude \
     .Kiro Docs Web Controller web/src/Logic deploy/Systemd Tools tools/Udev controller/src/Routes \
-    runtime runtime/src/Reachy_bridge_runtime/Features; do
+    runtime runtime/src/Reachy_bridge_runtime/Features deploy controller/src runtime/src \
+    runtime/src/reachy_bridge_runtime web/src web/src/api web/src/components \
+    web/.gitignore controller/src/.gitignore .cargo/config.toml .cargo/config controller/.cargo/config.toml \
+    .cargo .Cargo controller/.cargo rust-toolchain.toml rust-toolchain controller/rust-toolchain.toml \
+    .tool-versions web/.tool-versions mise.toml .mise.toml mise.local.toml .mise.local.toml mise.ci.toml \
+    Mise.toml controller/mise.toml .config/mise.toml .config/mise/config.toml .config/mise/conf.d/x.toml \
+    .config .Config web/.config .mise/config.toml .mise mise/config.toml mise .python-version \
+    runtime/.python-version .python-versions uv.toml runtime/uv.toml bunfig.toml web/bunfig.toml \
+    .bunfig.toml .npmrc web/.npmrc; do
     setup; files web/src/App.tsx "$f"; comment OWNER "Review: clean @$HEAD"
     expect "security path $f" pending "security PR: paths"
 done
 
+# Every parent directory of a tracked security file matches by its bare name,
+# so no symlink can stand in for one. Files that match at any depth (agent
+# config, toolchains) are skipped: they match wherever a symlink puts them.
+re=$(sed -n "s/^SECURITY_PATHS='\(.*\)'\$/\1/p" "$GATE")
+tracked=$(git -C "$(dirname "$GATE")" ls-files --full-name :/ | { LC_ALL=C grep -iE "$re" || [[ $? == 1 ]]; })
+gaps=
+while read -r f; do
+    [[ -n $f ]] || continue
+    LC_ALL=C grep -qiE "$re" <<<"zz-any-depth/$f" && continue
+    d=$f
+    while [[ $d == */* ]]; do
+        d=${d%/*}
+        LC_ALL=C grep -qiE "$re" <<<"$d" || gaps+="$d (of $f) "
+    done
+done <<<"$tracked"
+if [[ -z $tracked ]]; then fail "no tracked security files found"
+elif [[ -n $gaps ]]; then fail "parent directories that don't match SECURITY_PATHS: $gaps"
+else echo "ok: every parent directory of a tracked security file matches ($(grep -c . <<<"$tracked") files)"; fi
+
 setup; files controller/src/routes/powers.rs runtime/src/reachy_bridge_runtime/audio_tee.py \
     web/src/api/power.ts tools/review_gate.sh.bak deploy/systemd/README.md \
-    docs/REVIEW.md docs/reliability-checklist.md.bak web/.gitignore docs/AGENTS.md.txt docs/claude/notes.md web/mcp.json \
+    docs/REVIEW.md docs/reliability-checklist.md.bak docs/gitignore.md docs/AGENTS.md.txt docs/claude/notes.md web/mcp.json \
     docs/CLAUDE.local.md.txt docs/cursor/notes.md tools/udev/README.md tools/udev/sub/x.rules \
     runtime/src/reachy_bridge_runtime/upstream_notes.py controller/src/hosts.rs docs/gitmodules.md \
-    webx docs2 tools/udevx controllers web/srcx tools/hardware_qa_gate.sh.bak docs/hardware_qa_gate.sh
+    webx docs2 tools/udevx controllers web/srcx tools/hardware_qa_gate.sh.bak docs/hardware_qa_gate.sh \
+    docs/rust-toolchain.md docs/mise.md tools/toolchain.toml cargo/config.toml .configx/misc.toml \
+    .config/other.toml uv.toml.bak docs/uv.md x.npmrc npmrc web/bunfig.json docs/tool-versions.md
 comment OWNER "Review: clean @$HEAD"
 expect "near-miss paths aren't security paths" success
 
@@ -389,26 +418,51 @@ setup; jq '.state = "closed"' "$FX/pr.json" >"$FX/p" && mv "$FX/p" "$FX/pr.json"
 if bash "$GATE" >"$FX/out" 2>&1; then fail "closed PR, shared-head listing fails: gate succeeded"
 else echo "ok: closed PR, shared-head listing fails: run fails"; fi
 
-# A closed fork PR (#7 here) that shared the head of open PR #9 re-checks #9,
-# which then passes on its own markers; the re-check doesn't recurse.
+# A closed fork PR (#7 here) that shared the head of open PR #9 names #9 in
+# the `recheck` output, for the workflow to dispatch the gate for #9 in #9's
+# own concurrency group; it sets no status itself.
+# rechecks NAME WANT: the gate runs, sets no status, and outputs recheck=WANT
+# (nothing when WANT is empty).
+rechecks() {
+    rm -f "$FX/status.log" "$FX/output"
+    if ! GITHUB_OUTPUT=$FX/output bash "$GATE" >"$FX/out" 2>&1; then fail "$1: gate failed"; cat "$FX/out"; return; fi
+    local got
+    got=$(cat "$FX/output" 2>/dev/null || true)
+    if [[ -e $FX/status.log ]]; then fail "$1: set a status: $(cat "$FX/status.log")"
+    elif [[ $got != "${2:+recheck=$2}" ]]; then fail "$1: output '$got', want '${2:+recheck=$2}'"; cat "$FX/out"
+    else echo "ok: $1"; fi
+}
 setup; comment OWNER "Review: clean @$HEAD"
 jq '.state = "closed"' "$FX/pr.json" >"$FX/pr-7.json"
-jq '.state = "open"' "$FX/pr.json" >"$FX/pr-9.json"
 jq -n --arg h "$HEAD" '[{number: 7, state: "closed", base: {ref: "main"}, head: {sha: $h}},
     {number: 9, state: "open", base: {ref: "main"}, head: {sha: $h}}]' >"$FX/shared.json"
-expect "closing a PR re-checks the open PR with the same head" success
+rechecks "closing a PR names the open PR with the same head" 9
+rm -f "$FX/status.log"
+if bash "$GATE" >"$FX/out" 2>&1 && [[ ! -e $FX/status.log ]] \
+    && grep -qF "gh workflow run review-gate.yml --ref main -f pr=9" "$FX/out"; then
+    echo "ok: outside Actions, the re-check is printed"
+else fail "outside Actions: no re-check command printed"; cat "$FX/out"; fi
+jq -n --arg h "$HEAD" --arg o "$OLD" '[{number: 7, state: "closed", base: {ref: "main"}, head: {sha: $h}},
+    {number: 9, state: "open", base: {ref: "main"}, head: {sha: $h}}, {number: 11, state: "open", base: {ref: "main"}, head: {sha: $h}},
+    {number: 5, state: "open", base: {ref: "feature"}, head: {sha: $h}}, {number: 4, state: "closed", base: {ref: "main"}, head: {sha: $h}},
+    {number: 8, state: "open", base: {ref: "main"}, head: {sha: $o}}]' >"$FX/shared.json"
+rechecks "only open PRs into main with the same head are named" "9 11"
+jq -n --arg h "$HEAD" '[{number: 7, state: "closed", base: {ref: "main"}, head: {sha: $h}}]' >"$FX/shared.json"
+rechecks "closing a PR that shared no head names no one" ""
 jq '.base.ref = "feature" | .state = "open"' "$FX/pr.json" >"$FX/pr-7.json"
 jq -n --arg h "$HEAD" '[{number: 7, state: "open", base: {ref: "feature"}, head: {sha: $h}},
     {number: 9, state: "open", base: {ref: "main"}, head: {sha: $h}}]' >"$FX/shared.json"
-BASE_CHANGED=main expect "retargeting a PR away from main re-checks the PR with the same head" success
+BASE_CHANGED=main rechecks "retargeting a PR away from main names the PR with the same head" 9
+# The dispatched run for #9 sees an open PR into main and names no one.
 jq '.state = "closed"' "$FX/pr.json" >"$FX/pr-7.json"
-cp "$FX/pr-7.json" "$FX/pr-9.json"
 jq -n --arg h "$HEAD" '[{number: 7, state: "closed", base: {ref: "main"}, head: {sha: $h}},
     {number: 9, state: "open", base: {ref: "main"}, head: {sha: $h}}]' >"$FX/shared.json"
-rm -f "$FX/status.log"
-if bash "$GATE" >"$FX/out" 2>&1 && [[ ! -e $FX/status.log ]] && [[ $(grep -c "Re-checking" "$FX/out") == 1 ]]; then
-    echo "ok: a re-check doesn't recurse"
-else fail "a re-check recursed or failed"; cat "$FX/out"; fi
+rm -f "$FX/output"
+PR=9 GITHUB_OUTPUT=$FX/output expect "the dispatched re-check passes #9 on its own markers" success
+if [[ -s $FX/output ]]; then fail "the re-check named another PR: $(cat "$FX/output")"; else echo "ok: a re-check names no one"; fi
+jq '.state = "closed"' "$FX/pr.json" >"$FX/pr-7.json"; touch "$FX/fail-shared"
+if PR=7 bash "$GATE" >"$FX/out" 2>&1; then fail "closed PR, shared-head listing fails: gate succeeded"
+else echo "ok: closed PR, shared-head listing fails (re-check): run fails"; fi
 
 for bad in "7; true" 07 0 ""; do
     if PR=$bad bash "$GATE" >"$FX/out" 2>&1; then fail "PR '$bad' accepted"

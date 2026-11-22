@@ -339,6 +339,27 @@ git update-ref refs/heads/pr "$(git commit-tree "$(git merge-tree --write-tree p
 publish; comments "OWNER|no|Review: clean @$R"
 expect "case-colliding file names" 1 "main changed files the PR changes too: pr.txt"
 
+# A file on one side and a directory holding a changed file on the other
+# collide on a case-insensitive checkout too, in either direction.
+# add_tree BRANCH NAME: a commit on BRANCH adding NAME, built with plumbing.
+add_tree() {
+    local blob
+    blob=$(echo "$2" | git hash-object -w --stdin)
+    GIT_INDEX_FILE=$FX/index git read-tree "$1"
+    GIT_INDEX_FILE=$FX/index git update-index --add --cacheinfo "100644,$blob,$2"
+    git update-ref "refs/heads/$1" "$(git commit-tree "$(GIT_INDEX_FILE=$FX/index git write-tree)" -p "$1" -m "add $2")"
+}
+plumb_catchup() { git update-ref refs/heads/pr "$(git commit-tree "$(git merge-tree --write-tree pr main)" -p pr -p main -m catchup)"; }
+setup; add_tree main PR.txt/x.txt; plumb_catchup
+publish; comments "OWNER|no|Review: clean @$R"
+expect "main's directory holds the PR's file name" 1 "main changed files the PR changes too: pr.txt"
+setup; add_tree pr hooks/x.txt; R=$(git rev-parse pr); add_tree main Hooks; plumb_catchup
+publish; comments "OWNER|no|Review: clean @$R"
+expect "the PR's directory holds main's file name" 1 "main changed files the PR changes too: hooks"
+setup; add_tree pr d/x.txt; R=$(git rev-parse pr); add_tree main D/y.txt; plumb_catchup
+publish; comments "OWNER|no|Review: clean @$R"
+expect "both sides adding files to one directory is fine" 0 "clean catch-up"
+
 # Histories with no merge base.
 setup
 git checkout -q --orphan lone; git rm -rqf .; commit z.txt z lone-root

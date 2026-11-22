@@ -247,12 +247,15 @@ say-so.
    headers that apply them, the app proxy, bind addresses and what's exposed, request
    signing, app binding, the host checks, the power, apps and logs routes, the upstream
    daemon shim and the apps venv sync, secrets, the installer and udev rules, dependency manifests and lock files,
-   build scripts and toolchains, everything under `.github/`, `.gitmodules`, the agent
-   rules and every coding agent's config (`CLAUDE.local.md`, `GEMINI.md`, `.cursor/`,
-   `.codex/` and the like, by their bare names too, as are the parent directories of the
-   listed files, so a symlink can't stand in), and
-   the gate itself and the hardware QA gate; a file name with any character outside printable ASCII counts as
-   well, since macOS folds Unicode case (a Kelvin sign is a K). Label a PR
+   build scripts, toolchain and package-tool config at any depth (`mise.toml`, `.cargo/`,
+   `rust-toolchain.toml`, `.tool-versions`, `.python-version`, `uv.toml`, `bunfig.toml`,
+   `.npmrc`), everything under `.github/`, `.gitmodules`, `.gitignore` and `.gitattributes`
+   at any depth, the agent rules and every coding agent's config (`CLAUDE.local.md`,
+   `GEMINI.md`, `.cursor/`, `.codex/` and the like), and the gate itself and the hardware QA
+   gate. Listed directories, and the parent directories of the listed files, match by their
+   bare names too, so a symlink can't stand in for one; a file name with any character
+   outside printable ASCII counts as well, since macOS folds Unicode case (a Kelvin sign is
+   a K). Label a PR
    `security` when it is security-relevant by REVIEW.md's list but touches none of
    those files. Dependabot PRs whose commits are all Dependabot's (or the branch
    updater's merge of `main`) pass without markers when every update is patch or minor,
