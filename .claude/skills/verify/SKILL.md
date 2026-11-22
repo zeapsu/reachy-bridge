@@ -53,15 +53,15 @@ Pick what matches the diff. Run the specific test, not the whole suite, while it
   browser.
 - **Voice or audio routing:** `run.py --audio -- bash -c 'cd web && bunx playwright test --project voice'`
   (needs gstreamer1.0-plugins-bad and gstreamer1.0-nice). CI can't test the ALSA side;
-  the PR keeps `audio: needs device test`.
+  the `hardware-qa` status stays pending until the owner's device test.
 - **Runtime (`runtime/`):** the sim smoke test above, plus `uv run reachy-bridge-runtime --check`
   when `upstream.py`, `uv.lock` or the `reachy-mini` floor changed.
 - **Controller ↔ daemon behaviour:** a check in `tools/sim/smoke.py`, tagged with its issue.
   What the controller may assume is in `docs/daemon-contract.md`.
 - **`deploy/` or the `reachy-bridge` command:** `bash tools/test_cli.sh` and
   `bash tools/test_uninstall.sh`.
-- **The review gate or catch-up check:** `bash tools/test_review_gate.sh`,
-  `bash tools/test_catchup_check.sh`.
+- **The review gate, catch-up check or hardware QA gate:** `bash tools/test_review_gate.sh`,
+  `bash tools/test_catchup_check.sh`, `bash tools/test_hardware_qa_gate.sh`.
 - **Docs only:** nothing to run; say so in the stamp.
 
 ## 4. Stamp the commit

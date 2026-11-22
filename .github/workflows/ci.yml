@@ -408,9 +408,10 @@ jobs:
           tar -xJf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
       - run: shellcheck --version
-      - run: shellcheck deploy/install.sh deploy/uninstall.sh deploy/reachy-bridge tools/build_webrtcsink_jetson.sh tools/test_uninstall.sh tools/test_cli.sh tools/check_install.sh tools/review_gate.sh tools/test_review_gate.sh tools/catchup_check.sh tools/test_catchup_check.sh tools/precheck.sh tools/test_precheck.sh
+      - run: shellcheck deploy/install.sh deploy/uninstall.sh deploy/reachy-bridge tools/build_webrtcsink_jetson.sh tools/test_uninstall.sh tools/test_cli.sh tools/check_install.sh tools/review_gate.sh tools/test_review_gate.sh tools/catchup_check.sh tools/test_catchup_check.sh tools/precheck.sh tools/test_precheck.sh tools/hardware_qa_gate.sh tools/test_hardware_qa_gate.sh
       - run: bash tools/test_uninstall.sh
       - run: bash tools/test_cli.sh
       - run: bash tools/test_review_gate.sh
       - run: bash tools/test_catchup_check.sh
       - run: bash tools/test_precheck.sh
+      - run: bash tools/test_hardware_qa_gate.sh

@@ -1,15 +1,18 @@
 name: Dependabot auto-merge
 # Patch and minor updates from Dependabot merge on their own once the
-# required checks pass (python, rust-web, sim, shell, and `review` once the
-# ruleset requires it); GitHub's auto-merge waits for them. Anything else (a
+# required checks pass (python, rust-web, sim, shell, `review` and
+# `hardware-qa`); GitHub's auto-merge waits for them. Anything else (a
 # major bump, a group that contains one, an update Dependabot can't
 # classify, a change under .github/, a `security` or `auth` label, or a
 # commit someone else pushed onto the branch) needs review markers first
 # (tools/review_gate.sh, #306), so auto-merge stays off: the branch updater
 # would otherwise keep merging main into it, and each new head voids the
 # markers. It runs again when labels change (on open PRs only; it reads the
-# labels live, not from the event). Python updates run on the robot, so they
-# still get hardware QA after they land on main.
+# labels live, not from the event). Updates that run on the robot (uv.lock,
+# controller/Cargo.*) keep auto-merge on but wait for the `hardware-qa`
+# status (tools/hardware_qa_gate.sh): it stays pending until the owner tests
+# the head on the robot and labels the PR `qa: passed`, and a new head (the
+# branch updater's merge of main) needs QA again.
 #
 # The PRs this merges squash: one commit per update on main, without the
 # merges of main the branch updater adds. Everything else, including the

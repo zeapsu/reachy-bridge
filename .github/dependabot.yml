@@ -7,7 +7,7 @@
 #
 # Not covered here:
 # - reachy-mini (Pollen's daemon) is bumped by the upstream watch workflow,
-#   which tests it against the sim and asks for hardware QA (#155).
+#   which tests it against the sim; the hardware-qa status holds it for QA (#155).
 # - Toolchains (Rust, Bun, uv, shellcheck) and the gst-plugins-rs version are
 #   pinned in the workflows and bumped by hand.
 version: 2
@@ -27,7 +27,7 @@ updates:
       prefix: chore
 
   # The workspace lock (uv.lock) holds the runtime's dependencies; they run on
-  # the robot, so a PR here needs hardware QA after merge.
+  # the robot, so a PR here waits for hardware QA (the hardware-qa status).
   - package-ecosystem: uv
     directory: /
     schedule:

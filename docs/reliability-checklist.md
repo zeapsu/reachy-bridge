@@ -70,7 +70,8 @@ proposes removals when it tags an rc (AGENTS.md, "Rules upkeep").
 - **Paths:** `(?i)(^|[/_-])(audio|camera|media|mic|voice)`
 - **Diff:** `VideoCapture|/dev/video|/dev/snd|\barecord\b|\baplay\b|sounddevice|pyaudio|\balsa`
 - **Check:** camera and audio come from the daemon's shared media, with no second capture of
-  a device; the PR has the `audio: needs device test` label if it changes audio code, and
+  a device; a PR that changes audio code gets its device test (`tools/check_audio.py`)
+  before the owner marks it `qa: passed`, and
   the voice browser tests (`web/e2e/voice*.spec.ts`) cover new routes.
 - **From:** #268, #273, #288
 
@@ -92,8 +93,8 @@ proposes removals when it tags an rc (AGENTS.md, "Rules upkeep").
 - **Paths:** `^runtime/src/reachy_bridge_runtime/upstream\.py$`
 - **Diff:** `reachy[-_]mini(\s*[>=<~]|-\d)`
 - **Check:** `uv run reachy-bridge-runtime --check` passes, `docs/daemon-contract.md` matches
-  the new version, the sim smoke test passes, and the PR waits for hardware QA before it
-  merges (`docs/update-reachy-mini.md`).
+  the new version, the sim smoke test passes, and the PR waits for the `hardware-qa` status
+  before it merges (`docs/update-reachy-mini.md`).
 - **From:** #155, #292 (1.14.0 broke the bridge)
 
 ### profiles: Profiles, pins and shared devices

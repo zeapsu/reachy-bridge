@@ -5,7 +5,8 @@ name: Upstream watch
 # runtime/pyproject.toml allows. When that differs from uv.lock, it pushes the
 # new lock to chore/reachy-mini-<version>, runs CI against that branch, and
 # opens a PR when everything passes or an upstream-break issue when it
-# doesn't. Merging the bump stays human: a new daemon needs hardware QA.
+# doesn't. Merging the bump stays human: a new daemon needs hardware QA,
+# which the required `hardware-qa` status holds it for (hardware-qa-gate.yml).
 #
 # Only the push and report jobs hold write tokens. Neither runs code from the
 # new package; resolving and testing it happen in read-only jobs.
@@ -183,7 +184,7 @@ jobs:
       (needs.detect.outputs.status == 'new' || needs.detect.outputs.status == 'lock-failed')
     runs-on: ubuntu-24.04-arm
     permissions:
-      actions: read
+      actions: write # dispatch the hardware QA gate for the PR it opens
       contents: read
       issues: write
       pull-requests: write
@@ -211,7 +212,7 @@ jobs:
           checklist="Before merging (a human decision while #155 is in step 1):
           - Push a commit to this branch (merging current \`main\` will do) so the PR gets CI of its own; PRs opened by Actions don't trigger it.
           - Review it as [docs/update-reachy-mini.md]($PLAYBOOK) describes: read the [upstream changelog]($changelog) and diff for behaviour changes the checks can't see, and update \`docs/daemon-contract.md\` for the new version.
-          - Needs hardware QA: a new daemon drives the motors."
+          - Needs hardware QA: a new daemon drives the motors. The \`hardware-qa\` check stays pending until the owner tests this branch's head on the robot and labels the PR \`qa: passed\`."
 
           if [[ "$STATUS" == new && "$CHECK" == success ]]; then
             cat > "$body" <<EOF
@@ -221,14 +222,14 @@ jobs:
 
           Part of #155.
           EOF
-            # A daemon bump runs on the robot (#306).
-            gh label create "needs hardware QA" --color B60205 --description "Changes robot-side code; the owner removes this after QA on the robot" 2>/dev/null || true
-            # Label after creating: a failed label is a warning, not a PR the
-            # watch couldn't open.
             if pr_url=$(gh pr create --base main --head "$BRANCH" --title "Lock reachy-mini $VERSION" --body-file "$body"); then
               echo "$pr_url"
-              gh pr edit "$pr_url" --add-label "needs hardware QA" ||
-                echo "::warning::Opened $pr_url but couldn't add the needs hardware QA label; add it by hand."
+              # A PR opened with the workflow token starts no workflows, so
+              # start the hardware-qa status (pending: uv.lock runs on the
+              # robot) here; a failure is a warning, since the next push or
+              # label starts it too.
+              gh workflow run hardware-qa-gate.yml --ref main -f pr="${pr_url##*/}" ||
+                echo "::warning::Opened $pr_url but couldn't start the Hardware QA gate; run it by hand."
               exit 0
             fi
             # Actions may not be allowed to open PRs in this repository; leave

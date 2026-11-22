@@ -194,6 +194,7 @@ for f in controller/src/auth.rs controller/src/profiles.rs controller/src/main.r
     web/src/logic/auth.ts web/src/api/hf.ts web/src/api/client.ts web/src/components/Login.tsx \
     deploy/uninstall.sh controller/Cargo.lock runtime/pyproject.toml uv.lock web/bun.lock AGENTS.md \
     REVIEW.md docs/reliability-checklist.md tools/checklist.py tools/precheck.sh tools/test_precheck.sh \
+    tools/hardware_qa_gate.sh tools/test_hardware_qa_gate.sh .github/workflows/hardware-qa-gate.yml \
     .gitignore web/CLAUDE.md controller/src/AGENTS.md web/.claude/skills/x/SKILL.md runtime/.mcp.json \
     .gitattributes controller/.gitattributes CLAUDE.local.md web/CLAUDE.local.md GEMINI.md AGENTS.override.md \
     .cursor/rules/x.mdc .cursorrules .codex/config.toml .gemini/settings.json .windsurf/rules/x.md \
@@ -216,7 +217,7 @@ setup; files controller/src/routes/powers.rs runtime/src/reachy_bridge_runtime/a
     docs/REVIEW.md docs/reliability-checklist.md.bak web/.gitignore docs/AGENTS.md.txt docs/claude/notes.md web/mcp.json \
     docs/CLAUDE.local.md.txt docs/cursor/notes.md tools/udev/README.md tools/udev/sub/x.rules \
     runtime/src/reachy_bridge_runtime/upstream_notes.py controller/src/hosts.rs docs/gitmodules.md \
-    webx docs2 tools/udevx controllers web/srcx
+    webx docs2 tools/udevx controllers web/srcx tools/hardware_qa_gate.sh.bak docs/hardware_qa_gate.sh
 comment OWNER "Review: clean @$HEAD"
 expect "near-miss paths aren't security paths" success
 

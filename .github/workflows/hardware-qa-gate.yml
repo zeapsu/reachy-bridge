@@ -1,0 +1,81 @@
+name: Hardware QA gate
+# Sets the `hardware-qa` commit status on a PR's head commit: success when
+# nothing the robot runs changed, pending until the owner has tested the head
+# on the robot and labelled the PR `qa: passed`, `error` when a run fails.
+# main's ruleset requires it, so robot and audio changes are QA'd before they
+# merge. The rules are in tools/hardware_qa_gate.sh; AGENTS.md ("Merging and
+# release channels") describes the QA flow.
+#
+# It runs when a PR opens, reopens, gets a new head or a new base, when
+# `qa: passed` is added or removed, and on dispatch, which the Dependabot
+# branch updater and the upstream watch use: PRs opened or pushed with the
+# workflow token start no workflows.
+#
+# pull_request_target runs this file and the script as they are on main, and
+# nothing from the PR is checked out or run: the script only reads the PR,
+# its files and this gate's statuses through the API, and sets the status
+# and the `qa: passed` label.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled, unlabeled, edited]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number
+        required: true
+permissions:
+  contents: read
+jobs:
+  # Not named `hardware-qa`: a check run with the required status's name
+  # would make the requirement ambiguous.
+  set-status:
+    name: set hardware QA status
+    # Other labels and title or body edits don't change the answer, and a run
+    # for one would take a queued run's place. A dispatch runs main's copy only.
+    if: >-
+      github.repository == 'zeapsu/reachy-bridge' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (github.event_name != 'pull_request_target' || (
+        github.event.pull_request.state == 'open' &&
+        github.event.pull_request.base.ref == github.event.repository.default_branch &&
+        ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+          github.event.label.name == 'qa: passed') &&
+        (github.event.action != 'edited' || github.event.changes.base.ref.from != '')))
+    concurrency:
+      group: hardware-qa-gate-${{ github.event.pull_request.number || inputs.pr }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # the qa: passed label: create it, remove it
+      pull-requests: write
+      statuses: write
+    steps:
+      # Pending first, so the head never sits without a status from this gate
+      # while the run below works, or if it dies before it posts.
+      - if: github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api -X POST "repos/$GH_REPO/statuses/$SHA" -f state=pending -f context=hardware-qa \
+            -f description="Checking for hardware QA" >/dev/null
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: tools/hardware_qa_gate.sh
+          sparse-checkout-cone-mode: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          EVENT: ${{ github.event_name == 'pull_request_target' && github.event.action || '' }}
+          EVENT_SHA: ${{ github.event.pull_request.head.sha }}
+          LABEL: ${{ github.event.label.name }}
+          SENDER: ${{ github.event.sender.login }}
+          # Set on the run a retarget starts (an `edited` event with a new base).
+          BASE_CHANGED: ${{ github.event.changes.base.ref.from }}
+        run: bash tools/hardware_qa_gate.sh
