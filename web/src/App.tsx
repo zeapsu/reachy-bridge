@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson, errorText, paths, type Kinematics, type RobotState } from "./api.ts";
 import { AppsPanel } from "./components/AppsPanel.tsx";
 import { CatalogPanel } from "./components/CatalogPanel.tsx";
-import { AudioPanel } from "./components/AudioPanel.tsx";
 import { ControlsPanel, type ControlHint } from "./components/ControlsPanel.tsx";
 import { ControlStrip, ControlToast } from "./components/ControlStrip.tsx";
 import { DevicesPanel } from "./components/DevicesPanel.tsx";
@@ -12,10 +11,9 @@ import { AppearancePanel, Wallpaper } from "./components/Appearance.tsx";
 import { AuthGate } from "./components/Login.tsx";
 import { Segmented } from "./components/Segmented.tsx";
 import { PhoneTabs, TopBar } from "./components/Shell.tsx";
-import { ProfilePicker, ProfileSheet, ProfilesPanel } from "./components/Profiles.tsx";
-import { SimPanel } from "./components/SimPanel.tsx";
+import { ProfilePicker, ProfileSheet } from "./components/Profiles.tsx";
+import { SystemView } from "./components/SystemView.tsx";
 import { VoicePanel } from "./components/VoicePanel.tsx";
-import { LogsPanel, StatsPanel } from "./components/SystemPanel.tsx";
 import { Viewport, type PoseSink } from "./components/Viewport.tsx";
 import { useLens } from "./glass.ts";
 import { useAppearance } from "./hooks/useAppearance.ts";
@@ -295,16 +293,17 @@ function Dashboard() {
         <main className="view list" id="view-system" role="tabpanel" hidden={tab !== "system"} aria-label="System">
           {/* System is the admin's (#297): its panels load only for one. */}
           {systemOpen ? (
-            <>
-              {may.family ? <ProfilesPanel installed={apps.names.map((name) => ({ name, display: appForName(apps.statuses, name).display || name }))} /> : null}
-              <StatsPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
-              <AudioPanel daemonOnline={daemonOnline} live={visible && tab === "system"} />
-              <SimPanel sim={sim} sounds={simSounds} powerStatus={power.status} control={control} />
-              <LogsPanel live={visible && tab === "system"} />
-              <DevicesPanel />
-              {/* With profiles the look lives on the profile chip. */}
-              {may.family ? null : <AppearancePanel look={look} />}
-            </>
+            <SystemView
+              family={may.family}
+              installed={apps.names.map((name) => ({ name, display: appForName(apps.statuses, name).display || name }))}
+              daemonOnline={daemonOnline}
+              live={visible && tab === "system"}
+              sim={sim}
+              sounds={simSounds}
+              powerStatus={power.status}
+              control={control}
+              look={look}
+            />
           ) : null}
         </main>
       </div>

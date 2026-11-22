@@ -4,6 +4,7 @@ import { useLens } from "../glass.ts";
 import { appHue, appInitial } from "../logic/apps.ts";
 import type { Can, PairedDevice, ProfileItem, ProfileView } from "../logic/auth.ts";
 import { ALL_CAN, NEW_CAN, appsText, profileHue, profileInitial } from "../logic/profile.ts";
+import { Panel } from "./Panel.tsx";
 import "./Profiles.css";
 
 const stroke = { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true } as const;
@@ -230,7 +231,6 @@ interface EditorProps {
 
 /** The admin's editor for one profile; changes save as they're made. */
 function ProfileEditor({ initial, installed, devices, onDone, onChanged }: EditorProps) {
-  const sheet = useLens<HTMLElement>();
   const [saved, setSaved] = useState<string | null>(initial?.name ?? null);
   const [name, setName] = useState(initial?.name ?? "");
   const [can, setCan] = useState<Can>(initial?.can ?? NEW_CAN);
@@ -313,14 +313,20 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
   };
 
   return (
-    <section className="glass sheet profile-editor" data-lens ref={sheet} aria-labelledby="profile-edit-title">
-      <header>
-        <h2 id="profile-edit-title">Profile</h2>
-        {busy ? <span className="spin" aria-hidden="true"></span> : null}
-        <button className="btn quiet press" type="button" onClick={onDone}>
-          Done
-        </button>
-      </header>
+    <Panel
+      inset
+      className="profile-editor"
+      title="Profile"
+      titleId="profile-edit-title"
+      aside={
+        <>
+          {busy ? <span className="spin" aria-hidden="true"></span> : null}
+          <button className="btn quiet press" type="button" onClick={onDone}>
+            Done
+          </button>
+        </>
+      }
+    >
       <form
         className="profile-edit-head"
         onSubmit={(event) => {
@@ -434,13 +440,12 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
           </div>
         </>
       ) : null}
-    </section>
+    </Panel>
   );
 }
 
-/** Everyone's profile, for the admin in System (#297). */
+/** Everyone's profile, for the admin in System's Access section (#297). */
 export function ProfilesPanel({ installed }: { installed: InstalledApp[] }) {
-  const sheet = useLens<HTMLElement>();
   const [profiles, setProfiles] = useState<ProfileItem[]>([]);
   const [devices, setDevices] = useState<PairedDevice[]>([]);
   const [editing, setEditing] = useState<ProfileItem | "new" | null>(null);
@@ -482,13 +487,16 @@ export function ProfilesPanel({ installed }: { installed: InstalledApp[] }) {
 
   const deviceName = (id: string) => devices.find((d) => d.id === id)?.name ?? id;
   return (
-    <section className="glass sheet" data-lens ref={sheet} aria-labelledby="profiles-title">
-      <header>
-        <h2 id="profiles-title">Profiles</h2>
+    <Panel
+      inset
+      title="Profiles"
+      titleId="profiles-title"
+      aside={
         <button className="btn press" type="button" onClick={() => setEditing("new")}>
           Add
         </button>
-      </header>
+      }
+    >
       <ul className="profiles-list">
         {profiles.map((p) => (
           <li key={p.name}>
@@ -509,6 +517,6 @@ export function ProfilesPanel({ installed }: { installed: InstalledApp[] }) {
       <p className="note error" role="alert">
         {error}
       </p>
-    </section>
+    </Panel>
   );
 }

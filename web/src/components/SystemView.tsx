@@ -1,0 +1,82 @@
+import { useState } from "react";
+import { useLens } from "../glass.ts";
+import type { Appearance } from "../hooks/useAppearance.ts";
+import type { ControlApi } from "../hooks/useControl.ts";
+import type { SimState } from "../hooks/useSim.ts";
+import type { SimSoundsState } from "../hooks/useSimSounds.ts";
+import { read, write } from "../logic/appearance.ts";
+import { SYSTEM_PANE_KEY, parseSystemPane, type SystemPane } from "../logic/shell.ts";
+import { AppearanceRows } from "./Appearance.tsx";
+import { DevicesPanel } from "./DevicesPanel.tsx";
+import { Panel } from "./Panel.tsx";
+import { ProfilesPanel, type InstalledApp } from "./Profiles.tsx";
+import { Segmented } from "./Segmented.tsx";
+import { ROW_ICONS } from "./SettingsRow.tsx";
+import { SimRows } from "./SimPanel.tsx";
+import { Diagnostics } from "./SystemPanel.tsx";
+import "./SystemView.css";
+
+const MANUAL = "https://github.com/zeapsu/reachy-bridge/blob/main/docs/manual.md";
+
+const PANES: { value: SystemPane; label: string }[] = [
+  { value: "settings", label: "Settings" },
+  { value: "access", label: "Access" },
+  { value: "diagnostics", label: "Diagnostics" },
+];
+
+interface Props {
+  /** Profiles apply (admin mode): Access lists them. */
+  family: boolean;
+  installed: InstalledApp[];
+  daemonOnline: boolean;
+  /** The System tab is showing: its live streams may run. */
+  live: boolean;
+  sim: SimState;
+  sounds: SimSoundsState;
+  powerStatus: string | null;
+  control: ControlApi;
+  look: Appearance;
+}
+
+/**
+ * System (#334): one sheet with a section per tab, as the Robot tab's side
+ * sheet. Settings changes things, Access says who may use the robot, and
+ * Diagnostics shows how the board is doing.
+ */
+export function SystemView({ family, installed, daemonOnline, live, sim, sounds, powerStatus, control, look }: Props) {
+  const sheet = useLens<HTMLElement>();
+  const [pane, setPaneState] = useState<SystemPane>(() => parseSystemPane(read(SYSTEM_PANE_KEY)));
+  const setPane = (next: SystemPane) => {
+    setPaneState(next);
+    write(SYSTEM_PANE_KEY, next);
+  };
+  return (
+    <section className="glass sheet sys" data-lens ref={sheet} aria-label="System">
+      <Segmented role="tabs" label="System sections" options={PANES} value={pane} onChange={setPane} panelId={(p) => `system-${p}`} />
+      <div className="pane" id="system-settings" role="tabpanel" aria-label="Settings" hidden={pane !== "settings"}>
+        <Panel inset title="Robot" titleId="settings-robot-title">
+          <SimRows sim={sim} sounds={sounds} powerStatus={powerStatus} control={control} />
+        </Panel>
+        <Panel inset title="Appearance" titleId="settings-look-title">
+          <AppearanceRows look={look} />
+        </Panel>
+        <a className="set-row manual-link" href={MANUAL} target="_blank" rel="noopener noreferrer">
+          <span className="set-ico">{ROW_ICONS.manual}</span>
+          <span className="set-label">User manual</span>
+          <span className="set-trail">
+            <span className="out" aria-hidden="true">
+              ↗
+            </span>
+          </span>
+        </a>
+      </div>
+      <div className="pane" id="system-access" role="tabpanel" aria-label="Access" hidden={pane !== "access"}>
+        {family ? <ProfilesPanel installed={installed} /> : null}
+        <DevicesPanel inset />
+      </div>
+      <div className="pane" id="system-diagnostics" role="tabpanel" aria-label="Diagnostics" hidden={pane !== "diagnostics"}>
+        <Diagnostics daemonOnline={daemonOnline} live={live && pane === "diagnostics"} />
+      </div>
+    </section>
+  );
+}

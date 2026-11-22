@@ -1,14 +1,14 @@
-import { useLens } from "../glass.ts";
 import type { ControlApi } from "../hooks/useControl.ts";
 import type { SimState } from "../hooks/useSim.ts";
 import type { SimSoundsState } from "../hooks/useSimSounds.ts";
 import { simView } from "../logic/sim.ts";
 import { ControlStrip } from "./ControlStrip.tsx";
+import { ROW_ICONS, SettingsRow } from "./SettingsRow.tsx";
 
 const OFF = ["stopped", "not_initialized", "error", "offline"];
 
 /** Sim mode (#149): drive a simulated Reachy instead of the real one. */
-export function SimPanel({
+export function SimRows({
   sim,
   sounds,
   powerStatus,
@@ -19,45 +19,52 @@ export function SimPanel({
   powerStatus: string | null;
   control: ControlApi;
 }) {
-  const sheet = useLens<HTMLElement>();
   const view = simView(sim.target, sim.switching, powerStatus !== null && OFF.includes(powerStatus));
+  const on = sim.target === "sim";
+  const soundsOff = !on || sim.switching;
+  const sub = sim.switching ? view.action : view.hint;
   return (
-    <section className="glass sheet" data-lens ref={sheet} aria-labelledby="sim-title">
-      <header>
-        <h2 id="sim-title">Simulation</h2>
-      </header>
+    <>
       {/* Switching acts on the robot: take control here, not on the Robot tab. */}
       <ControlStrip control={control} />
-      <div className="row">
-        <p className="note" id="sim-hint">{view.hint}</p>
-        <button
-          type="button"
-          className={`btn press${sim.target === "sim" ? "" : " primary"}`}
-          id="sim-toggle"
-          disabled={view.disabled}
-          onClick={sim.toggle}
-          aria-describedby="sim-hint"
+      <ul className="set-list">
+        <SettingsRow
+          icon={ROW_ICONS.sim}
+          label="Simulation"
+          labelId="sim-label"
+          sub={sub}
+          subId="sim-hint"
+          off={view.disabled && !sim.switching}
         >
-          {view.action}
-        </button>
-      </div>
-      {sim.target === "sim" && !sim.switching ? (
-        <div className="row">
-          <label htmlFor="sim-sound">Play its sounds on this device</label>
+          {sim.switching ? <span className="spin" aria-hidden="true"></span> : null}
+          <button
+            type="button"
+            className="switch"
+            role="switch"
+            id="sim-toggle"
+            aria-labelledby="sim-label"
+            aria-describedby={sub ? "sim-hint" : undefined}
+            aria-checked={on}
+            disabled={view.disabled}
+            onClick={sim.toggle}
+          ></button>
+        </SettingsRow>
+        <SettingsRow icon={ROW_ICONS.sound} label="Play its sounds on this device" labelId="sim-sound-label" off={soundsOff}>
           <button
             className="switch"
             type="button"
             role="switch"
             id="sim-sound"
-            aria-checked={sounds.on}
+            aria-labelledby="sim-sound-label"
+            aria-checked={on && sounds.on}
+            disabled={soundsOff}
             onClick={() => sounds.setOn(!sounds.on)}
           ></button>
-        </div>
-      ) : null}
+        </SettingsRow>
+      </ul>
       <p className="note error" role="alert">
         {sim.error}
       </p>
-    </section>
+    </>
   );
 }
-

@@ -27,6 +27,24 @@ test("loads without errors and keeps the tab across a reload", async ({ page }) 
   expect(errors).toEqual([]);
 });
 
+test("System's sections switch and keep their place across a reload", async ({ page }) => {
+  await tab(page, "System");
+  const section = (name: string) => page.getByRole("tab", { name });
+  const simulation = page.getByRole("switch", { name: "Simulation" });
+  await expect(section("Settings")).toHaveAttribute("aria-selected", "true");
+  await expect(simulation).toBeVisible();
+  await expect(page.getByRole("link", { name: "User manual" })).toBeVisible();
+  await section("Access").click();
+  await expect(page.getByRole("heading", { name: "Devices" })).toBeVisible();
+  await expect(simulation).toBeHidden();
+  await section("Diagnostics").click();
+  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
+  await expect(page.getByRole("log")).toBeVisible();
+  await page.reload();
+  await expect(section("Diagnostics")).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("log")).toBeVisible();
+});
+
 test("the robot's controls follow its power", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Power on" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Play" })).toBeDisabled();

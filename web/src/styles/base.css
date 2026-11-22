@@ -79,7 +79,7 @@
   }
 }
 
-/* Accent colours (System · Appearance). Amber is the default above. */
+/* Accent colours (System · Settings). Amber is the default above. */
 :root[data-scheme="arctic"] { --accent: #6fd6ff; --accent-ink: #04141c; }
 :root[data-scheme="emerald"] { --accent: #3ce3a0; --accent-ink: #03170f; }
 :root[data-scheme="ultraviolet"] { --accent: #c199ff; --accent-ink: #160a2a; }

@@ -1,4 +1,4 @@
-/* System tab: board stats, logs and the microphone meter. */
+/* System › Diagnostics: board stats, logs and the microphone meter. */
 .gauges {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -60,7 +60,6 @@
 .route .row span:last-child { text-align: right; overflow-wrap: anywhere; }
 
 /* Logs */
-.log-bar select { width: 100%; }
 .log-body { position: relative; }
 .log-scroll {
   height: 280px;

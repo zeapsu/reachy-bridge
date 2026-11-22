@@ -116,7 +116,7 @@ export function PairCode({ admin = false }: { admin?: boolean }) {
           ) : (
             <p className="login-note">
               Run <code className="login-cmd">reachy-bridge pair {phase.code}</code> on the robot, ask an admin to approve this code
-              from their dashboard (System · devices), or, while setting up, type it into the setup page. The code is
+              from their dashboard (System · Access), or, while setting up, type it into the setup page. The code is
               valid for 5 minutes.
             </p>
           )}
