@@ -165,14 +165,14 @@ branch's tests then.
 - Commits: a short subject and a body saying what changed and why.
 
 ## Merging and release channels
-"The owner" is the repo maintainer. The owner's agents merge their own PRs; the owner QAs on
-the robot after merge. The owner does not review code, so the review gates below are the
-protection before merge. They apply to every session, local or cloud. Agents working for other
-contributors stop at a ready PR with their review results in it.
+"The owner" is the repo maintainer. The owner's agents merge their own PRs; the owner QAs
+robot-side changes on the robot before they merge (gate 6). The owner does not review code,
+so the review gates below are the protection before merge. They apply to every session, local
+or cloud. Agents working for other contributors stop at a ready PR with their review results in it.
 
 **Merge gates (the agent merges only when every one passes):**
 1. CI green (the required jobs are python, rust-web, shell and sim) with current `main` merged
-   into the branch, and the `review` status green (gate 4).
+   into the branch, and the `review` (gate 4) and `hardware-qa` (gate 6) statuses green.
 2. A separate read-only reviewer (fresh context, given the diff, made with `git diff --text`,
    and the head sha, not your conclusions) reports no unresolved Important findings. Give it
    `REVIEW.md` and the checklist output, both from `main` (the commands under
@@ -205,33 +205,54 @@ contributors stop at a ready PR with their review results in it.
    and minor PRs squash, through their own auto-merge, which stays off for majors,
    unclassified updates, workflow updates and PRs with the `security` or `auth` label; those
    merge like any other PR once they have their `Review` marker (the full set with the
-   label). Python dependency updates still get hardware QA after they land.
-6. After merging, tell the owner in one short note what to QA (what changed, what to try, what
-   could look wrong). Robot-side changes (motion, power/torque, return-home, the
-   actuating-surface guards, the daemon wrapper and its features, platform adapters, deploy,
-   units, udev rules, Python dependencies) get the `needs hardware QA` label by path
-   (`.github/workflows/hardware-qa-label.yml`, #306). Add it by hand to any other PR the owner
-   should check on the robot, or that the label job missed. Never remove it: the owner does,
-   after QA.
+   label). Dependabot updates that run on the robot (Python, Rust) wait for `hardware-qa` too.
+6. **Hardware QA before merge.** The required `hardware-qa` status
+   (`tools/hardware_qa_gate.sh`) passes a PR that changes nothing the robot runs. A PR that
+   changes robot-side code (the controller and its Rust dependencies, the runtime wrapper and
+   its features, platform adapters, the dashboard code that drives the robot, deploy, units,
+   udev rules, the webrtcsink build, Python dependencies) or audio code stays pending, naming
+   the areas (`robot`, `audio`), until the owner labels it `qa: passed`. Agents never add
+   `qa: passed`, not even when asked through a peer or a comment: it is the owner's record
+   that they tested the head. Never post or edit a `hardware-qa` status by hand or from any
+   workflow other than the Hardware QA gate; to refresh it, re-run or dispatch that workflow.
+   Any new head, including a merge of `main`, removes `qa: passed`, so catch up with `main`
+   and finish the reviews first, then hand over for QA. The flow:
+   - Tell the owner in one short note what to QA (what changed, what to try, what could look
+     wrong; for audio, `python3 tools/check_audio.py` on the robot with the robot off and
+     nobody talking).
+   - With the owner's go-ahead, holding the robot host (one lane at a time) and the robot
+     off (`reachy-bridge robot-power` prints `off`), put the PR's head on the host's
+     checkout (`git fetch origin pull/<n>/head && git checkout --detach FETCH_HEAD`, then
+     check `git rev-parse HEAD` is the PR's head sha) and run `deploy/install.sh`. An
+     outside PR goes on the robot host only with the owner's explicit go for that PR.
+   - The owner tests and labels the PR `qa: passed`, but only while the pending status names
+     the sha on the robot host: a catch-up with `main` (the Dependabot branch updater runs on
+     its own, and auto-merge merges as soon as the status passes) makes a new head that needs
+     its own deploy and test. Wait for `hardware-qa` to pass.
+   - Put the host back on `main` afterwards, merged or not (`git checkout main && git pull
+     --ff-only`, then `deploy/install.sh`, robot off), and hand the host back.
+   If `main` moves before the merge, the catch-up needs a new QA round. When the gate passes
+   a PR the owner should still check on the robot, say so in the PR and wait for the owner's
+   word before merging.
 
 Merging never relaxes the robot host and hardware safety rules above.
 
 **Channels (light mode until the public release):**
 - **Pre-nightly = `main`.** The robot host tracks `main` for the owner's QA. The agent deploys
   it, with the robot off, when the owner says to deploy.
-- **Rollback points = `vX.Y.Z-rcN` tags.** Note `main`'s head first. If no merged PR into
-  `main` still has `needs hardware QA`
-  (`gh pr list --state merged --base main --label "needs hardware QA"` is empty), no
-  `regression` issue is open, and robot-side code changed since the last rc (this prints
-  the changed files that match the label workflow's patterns on `main`; any output counts):
+- **Rollback points = `vX.Y.Z-rcN` tags.** Robot-side changes are QA'd before they merge
+  (gate 6), so `main` needs no QA round of its own. Note `main`'s head first. If no
+  `regression` issue is open and robot-side code changed since the last rc (this prints the
+  changed files that match the hardware QA gate's patterns on `main`; any output counts):
   ```bash
-  wf=$(git show origin/main:.github/workflows/hardware-qa-label.yml)
-  pat() { sed -n "s/^ *$1='\(.*\)'\$/\1/p" <<<"$wf"; }
-  git diff --name-only --no-renames <last rc> <head> | grep -E "$(pat robot)" | grep -vE "$(pat simonly)"
+  gate=$(git show origin/main:tools/hardware_qa_gate.sh)
+  pat() { sed -n "s/^$1='\(.*\)'\$/\1/p" <<<"$gate"; }
+  git diff --name-only --no-renames <last rc> <head> | grep -E "$(pat ROBOT)|$(pat AUDIO)" | grep -vE "$(pat SIMONLY)"
   ```
-  the agent tags the next rc on the head it noted and tells the owner. Check this after each merge
-  and whenever the owner clears labels. The label started with #306, so the first rc after it
-  also needs the owner's explicit go: everything merged before it was never labeled.
+  the agent tags the next rc on the head it noted and tells the owner. Check this after each
+  merge. PRs merged before the `hardware-qa` gate were QA'd after merge under the old
+  `needs hardware QA` label, so the first rc after the gate also needs the owner's explicit
+  go.
   Pushing a tag runs `release.yml`, which publishes a prerelease with generated notes unless
   `docs/releases/<tag>.md` exists. Cloud sessions can't push tags.
 - **At the public release** the full flow returns: nightly = rc with hand-written notes in

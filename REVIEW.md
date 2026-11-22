@@ -85,5 +85,5 @@ that is security-relevant by this list but touches none of those paths gets the
 
 The security reviewer looks for: authentication or guard bypasses, anything newly
 reachable from beyond loopback, secrets in logs or responses, injection into shell
-commands or paths, weakened gates (review, robot-off, actuating surface), and changes
+commands or paths, weakened gates (review, hardware QA, robot-off, actuating surface), and changes
 that let a PR edit what judges it.

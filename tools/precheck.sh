@@ -102,6 +102,7 @@ if has '^(deploy/|tools/.*\.sh$)'; then
     has '^tools/(test_)?review_gate\.sh$' && step "test_review_gate" bash tools/test_review_gate.sh
     has '^tools/(test_)?catchup_check\.sh$' && step "test_catchup_check" bash tools/test_catchup_check.sh
     has '^tools/(test_)?precheck\.sh$' && step "test_precheck" bash tools/test_precheck.sh
+    has '^tools/(test_)?hardware_qa_gate\.sh$' && step "test_hardware_qa_gate" bash tools/test_hardware_qa_gate.sh
 fi
 
 gitdir=$(git rev-parse --git-dir)

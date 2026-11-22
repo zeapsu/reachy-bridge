@@ -47,7 +47,7 @@ CI runs these on every PR, on `ubuntu-24.04-arm` (GStreamer 1.24.2, as on JetPac
 |---|---|
 | python | `uv run pytest`, `uv run ruff check runtime tools`, `uv run ruff format --check`, `uv run reachy-bridge-runtime --check` |
 | rust-web | `cargo fmt --check`, `cargo test` and `cargo clippy --locked --all-targets -- -D warnings` in `controller/`; `bun install --frozen-lockfile`, `bun run typecheck`, `bun test`, `bun run build` in `web/` |
-| shell | `shellcheck` on the scripts in `deploy/` and `tools/`; `bash tools/test_uninstall.sh`, `bash tools/test_cli.sh` (the `reachy-bridge` command's robot-off gate, sim mode, deploy and rollback) and `bash tools/test_review_gate.sh` (the review check), `bash tools/test_catchup_check.sh` and `bash tools/test_precheck.sh` |
+| shell | `shellcheck` on the scripts in `deploy/` and `tools/`; `bash tools/test_uninstall.sh`, `bash tools/test_cli.sh` (the `reachy-bridge` command's robot-off gate, sim mode, deploy and rollback) and `bash tools/test_review_gate.sh` (the review check), `bash tools/test_catchup_check.sh`, `bash tools/test_precheck.sh` and `bash tools/test_hardware_qa_gate.sh` (the hardware QA check) |
 | sim | `uv run python tools/sim/run.py`: the controller against a sim daemon (see [`tools/sim/README.md`](tools/sim/README.md)) |
 | browser | `uv run python tools/sim/run.py --audio -- bash -c 'cd web && bunx playwright test'`: the dashboard in Chromium against the sim stack, at desktop and phone sizes, and the voice pane's audio routing over WebRTC with a test tone per source (`--audio`; needs gstreamer1.0-plugins-bad and gstreamer1.0-nice, and an address on the tailnet or in `AUDIO_GATEWAY_NETS`) (not required yet) |
 | install | `deploy/install.sh` on a fresh runner with a systemd user manager, checked by `tools/check_install.sh`; run twice, then `reachy-bridge uninstall --yes` and `check_install.sh --gone` (not required yet) |
@@ -73,11 +73,11 @@ the load time, and the HTML report is in the `browser-report` artifact. Locally,
 `bunx playwright install chromium` once in `web/` first.
 
 CI has no sound card, so it can't run the robot's ALSA side of the audio (the speaker
-and mic tee, the mic mixer, the speaker mute). A PR that changes audio code gets the
-`audio: needs device test` label. To clear it, deploy its latest commit to a robot and,
-with the robot off and nobody listening or talking, run `python3 tools/check_audio.py`
-there (it plays test tones through the tee, and two quiet beeps on the speaker); when it
-passes, label the PR `audio: device-tested`. A new push puts the first label back.
+and mic tee, the mic mixer, the speaker mute). A PR that changes audio code keeps the
+`hardware-qa` status pending with `audio` in its description (see "Robot safety"). The
+device test: deploy the PR's head to a robot and, with the robot off and nobody listening
+or talking, run `python3 tools/check_audio.py` there (it plays test tones through the tee,
+and two quiet beeps on the speaker).
 
 ## How the bridge fits together
 
@@ -98,22 +98,30 @@ passes, label the PR `audio: device-tested`. A new push puts the first label bac
 
 `reachy-mini` is tracked, not pinned: `runtime/pyproject.toml` sets a floor and `uv.lock`
 holds the tested version. The upstream watch workflow opens a PR when Pollen releases a
-new one (#155); a new daemon version needs hardware QA before it merges.
+new one (#155); a new daemon version needs hardware QA before it merges, like any change
+to `uv.lock`.
 Dependabot (`.github/dependabot.yml`) proposes everything else once a week, grouped per
 ecosystem. Patch and minor updates merge on their own once CI passes, and a workflow keeps
 them up to date with `main` until they do; a major bump, or one that changes
-`.github/`, needs a review first (see "Claiming work"). Python updates run on the robot,
-so they get hardware QA after merge too.
+`.github/`, needs a review first (see "Claiming work"). Python and Rust updates run on the
+robot, so they wait for hardware QA before they merge.
 
 ## Robot safety
 
 Starting the daemon's backend, an app, an expression or a move moves the real robot.
 Changes to motion, power and torque, return-home, the one-actuator-at-a-time guards
 (one app, expressions serialized, apps and expressions mutually exclusive), the daemon's
-binding, `deploy/install.sh` or the units need hardware QA by the owner. A PR that
-changes robot-side code gets the `needs hardware QA` label from
-`.github/workflows/hardware-qa-label.yml` (#306), by path; it stays on after merge until
-the owner has QA'd the change on the robot and removes it. Don't weaken those guards.
+binding, `deploy/install.sh` or the units need hardware QA by the owner, before they merge.
+The required `hardware-qa` status (`tools/hardware_qa_gate.sh`, run by
+`.github/workflows/hardware-qa-gate.yml`) checks the PR's files: it passes a PR that changes
+nothing the robot runs, and otherwise stays pending, naming the areas (`robot`, `audio`),
+until the owner has tested the PR's head on the robot and labelled the PR `qa: passed`.
+The pending status names the head's short sha; label only when it matches what you
+tested, since a merge of `main` can land mid-test. Only the owner adds that label; any
+new push, including a merge of `main`, removes it.
+The PR's head goes on the robot host only with the owner's go and the robot off
+(AGENTS.md, merge gate 6), and the host goes back to `main` afterwards. Don't weaken
+those guards.
 Camera and audio come from the daemon's shared media; never open a second capture of the
 same device.
 
@@ -138,8 +146,8 @@ A board becomes `tested` once someone runs it with the robot and owns keeping it
 Work goes epic → milestone → issue. The epic (#111) lists the milestones; each milestone's
 description holds its scope and order, and each issue its acceptance criteria. Labels include
 `epic`, `bug`, `enhancement`, `documentation`, `security`, `upstream-break` (opened by the
-upstream watch), `needs hardware QA` (set by path, removed by the owner after QA on the
-robot), and `regression` for anything found in hardware QA or soak. Branches are `feat/`, `fix/`, `docs/` or `chore/` plus the issue
+upstream watch), `qa: passed` (added by the owner after testing a PR's head on the robot;
+see "Robot safety"), and `regression` for anything found in hardware QA or soak. Branches are `feat/`, `fix/`, `docs/` or `chore/` plus the issue
 number. Related issues go in one PR, each with its own commit and its own `Closes #N`.
 Commits have a short subject and a body that says what changed and why.
 
@@ -243,7 +251,7 @@ say-so.
    rules and every coding agent's config (`CLAUDE.local.md`, `GEMINI.md`, `.cursor/`,
    `.codex/` and the like, by their bare names too, as are the parent directories of the
    listed files, so a symlink can't stand in), and
-   the gate itself; a file name with any character outside printable ASCII counts as
+   the gate itself and the hardware QA gate; a file name with any character outside printable ASCII counts as
    well, since macOS folds Unicode case (a Kelvin sign is a K). Label a PR
    `security` when it is security-relevant by REVIEW.md's list but touches none of
    those files. Dependabot PRs whose commits are all Dependabot's (or the branch
@@ -266,8 +274,9 @@ say-so.
    relies on `main` taking only merge and squash merges (the ruleset): no fast-forwards
    and no merge queue.
 7. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`); never squash, rebase or push to
-   `main` directly. Only Dependabot's patch and minor PRs squash, which their auto-merge does. The owner QAs on the robot after merge. PRs still open merge `main`
-   again.
+   `main` directly. Only Dependabot's patch and minor PRs squash, which their auto-merge does.
+   Robot-side changes are QA'd before they merge (see "Robot safety"). PRs still open merge
+   `main` again.
 
 ## Shared files
 
@@ -288,5 +297,5 @@ A few files are touched by almost every PR in a lane, or by several lanes:
 - **`README.md`**: owned by Public Release Readiness. Other lanes change only the lines
   about their own area.
 
-Anything that runs on the robot gets hardware QA by the owner after it merges, one PR at
+Anything that runs on the robot gets hardware QA by the owner before it merges, one PR at
 a time.

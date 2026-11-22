@@ -16,7 +16,9 @@ inside a small, fixed surface or handing it back with a diagnosis.
   `upstream-break` issue, with uv's output.
 
 Either way, merging stays human. A new daemon drives the motors, so every
-bump gets hardware QA on the robot before the Jetson keeps it.
+bump gets hardware QA on the robot before it merges: the required
+`hardware-qa` status stays pending until the owner has tested the branch's
+head on the robot and labelled the PR `qa: passed`.
 
 ## The oracle
 
@@ -55,9 +57,11 @@ The checks decide, not your reading of the code:
 5. Iterate until the oracle passes or a stopping rule applies.
 6. Green: push to the branch, update the contract's version line and any
    changed sections, and open or update the PR with what changed upstream,
-   what you changed and why. The watch opens it with the `needs hardware QA`
-   label; keep it on, and add it if it's missing (the watch only warns when
-   it can't).
+   what you changed and why. The watch starts the hardware QA gate for the
+   PR it opens; if `hardware-qa` is missing from the PR's checks, your push
+   starts it. Every push removes `qa: passed`, so push your last change before
+   asking the owner for QA (AGENTS.md, merge gate 6). Never add `qa: passed`
+   yourself.
 
 ## Allowed paths
 
