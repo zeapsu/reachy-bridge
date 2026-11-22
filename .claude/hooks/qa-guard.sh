@@ -24,9 +24,10 @@ block() {
     exit 2
 }
 # A gh api call that writes: an explicit method or any field (gh api then
-# defaults to POST) without an explicit GET.
+# defaults to POST). Judged over the whole command, so a read with fields
+# (-X GET -f per_page=100) next to a label or hardware-qa name is blocked
+# too: an exemption for GET would also pass `gh api -X GET ...; gh api ... -f`.
 writes() {
-    grep -qE -- '(-X|--method)[[:space:]=]*["'\'']?GET([^A-Z]|$)' <<<"$cmd" && return 1
     grep -qE -- '(-X|--method)[[:space:]=]*["'\'']?(POST|PUT|PATCH)|(^|[[:space:]])(-[fF]|--field|--raw-field|--input)([[:space:]=]|$)' <<<"$cmd"
 }
 if grep -qiE 'qa(:|%3a)([[:space:]]|%20|\+)*passed' <<<"$cmd"; then

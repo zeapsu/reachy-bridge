@@ -375,13 +375,16 @@ guard 2 'env GH_REPO=o/r gh pr edit 5 --add-label "qa: passed"'
 guard 2 'for n in 5; do gh pr edit $n --add-label "qa: passed"; done'
 guard 2 'if true; then gh pr edit 5 --add-label "qa: passed"; fi'
 guard 2 '{ gh pr edit 5 --add-label "qa: passed"; }'
-guard 0 'gh api -X GET repos/o/r/commits/abc/statuses -f per_page=100 --jq ".[] | select(.context == \"hardware-qa\")"'
+guard 2 'gh api -X GET repos/o/r/commits/abc/statuses; gh api repos/o/r/statuses/abc -f context=hardware-qa -f state=success'
+guard 2 'gh api -X GET repos/o/r/issues/5/labels && gh api repos/o/r/issues/5/labels -f "labels[]=qa: passed"'
+guard 2 'gh api -X GET -X POST repos/o/r/statuses/abc -f state=success -f context=hardware-qa'
 # Without jq the hook reads the raw JSON, where gh follows a quote.
 mkdir -p "$ROOT/nojq"
 for t in cat grep; do ln -sf "$(command -v "$t")" "$ROOT/nojq/$t"; done
 if printf '%s' '{"tool_input":{"command":"gh pr edit 5 --add-label \"qa: passed\""}}' |
-    PATH=$ROOT/nojq /bin/bash "$HOOK" >/dev/null 2>&1; then fail "without jq, the hook lets a label through"
-else echo "ok: without jq, the hook still blocks"; fi
+    PATH=$ROOT/nojq /bin/bash "$HOOK" >/dev/null 2>&1; then rc=0; else rc=$?; fi
+if [[ $rc == 2 ]]; then echo "ok: without jq, the hook still blocks"
+else fail "without jq, the hook exits $rc, want 2"; fi
 
 # AGENTS.md ("Channels") reads ROBOT, AUDIO and SIMONLY from main's copy of
 # this script with sed; each must come out whole and be a valid ERE.
