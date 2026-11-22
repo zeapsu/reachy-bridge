@@ -6,8 +6,9 @@ name: Review gate
 # however a PR is merged. The rules are in tools/review_gate.sh;
 # CONTRIBUTING.md ("Claiming work") says what to post.
 #
-# It runs when a PR's head or labels change, when one closes (to re-check an
-# open PR that shared its head), when a comment is posted, edited or deleted,
+# It runs when a PR's head or labels change, when one closes or gets a new
+# base (the recheck job then dispatches it for an open PR that shared its
+# head), when a comment is posted, edited or deleted,
 # and on dispatch, which the Dependabot branch updater uses after
 # it merges main into a branch (a push with the workflow token starts no
 # workflows). A PR opened with the workflow token (the upstream watch) gets
@@ -50,6 +51,8 @@ jobs:
       issues: read
       pull-requests: read
       statuses: write
+    outputs:
+      recheck: ${{ steps.gate.outputs.recheck }}
     steps:
       # Pending first, so the head never sits with no status from this gate
       # (which would leave a same-named check run from elsewhere to stand in
@@ -72,10 +75,37 @@ jobs:
           persist-credentials: false
           sparse-checkout: tools/review_gate.sh
           sparse-checkout-cone-mode: false
-      - env:
+      - id: gate
+        env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
           # Set on the run a retarget starts (an `edited` event with a new base).
           BASE_CHANGED: ${{ github.event.changes.base.ref.from }}
         run: bash tools/review_gate.sh
+  # A PR that closed or left the default branch held an open PR with the same
+  # head pending; run the gate for that PR as a run of its own, so it queues
+  # in that PR's concurrency group behind any run of its own (a marker
+  # deleted meanwhile can't lose to it). Its own job: only this one may start
+  # workflows, and it runs nothing but the dispatch of main's gate.
+  recheck:
+    name: re-check PRs with the same head
+    needs: set-status
+    if: needs.set-status.outputs.recheck != ''
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read # gh reads the workflow file to check its inputs
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PRS: ${{ needs.set-status.outputs.recheck }}
+          MAIN: ${{ github.event.repository.default_branch }}
+        run: |
+          for n in $PRS; do
+            [[ $n =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a PR number: $n"; exit 1; }
+            echo "Dispatching the Review gate for #$n"
+            gh workflow run review-gate.yml --ref "$MAIN" -f pr="$n"
+          done
