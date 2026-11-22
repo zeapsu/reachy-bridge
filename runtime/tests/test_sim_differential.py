@@ -183,16 +183,24 @@ def test_the_locked_version_is_read_from_the_lock() -> None:
     assert differential.lock_version(ROOT / "uv.lock") == locked
 
 
-def test_list_elements_count_only_when_both_runs_saw_some() -> None:
+def test_list_elements_skip_only_when_both_runs_saw_the_list_empty() -> None:
     moving = _recording(("GET", "/api/move/running", 200, b'[{"uuid": "a"}]'), ("GET", "/api/move/running", 200, b"[]"))
     idle = _recording(("GET", "/api/move/running", 200, b"[]"))
     assert differential.differences(moving, idle) == []
     assert differential.differences(idle, moving) == []
-    renamed = _recording(("GET", "/api/move/running", 200, b'[{"id": "a"}]'))
+    renamed = _recording(("GET", "/api/move/running", 200, b'[{"id": "a"}]'), ("GET", "/api/move/running", 200, b"[]"))
     assert differential.differences(moving, renamed) == [
         "GET /api/move/running: $[].id added (str)",
         "GET /api/move/running: $[].uuid removed",
     ]
+
+
+def test_a_list_that_comes_back_empty_is_a_difference() -> None:
+    path = "/api/move/recorded-move-datasets/list/pollen-robotics/reachy-mini-emotions-library"
+    full = _recording(("GET", path, 200, b'["cheerful1", "sad1"]'))
+    empty = _recording(("GET", path, 200, b"[]"))
+    assert differential.differences(full, empty) == [f"GET {path}: $[] str -> none"]
+    assert differential.differences(empty, full) == [f"GET {path}: $[] none -> str"]
 
 
 def test_control_characters_in_routes_are_escaped() -> None:

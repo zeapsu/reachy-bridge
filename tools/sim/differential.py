@@ -20,7 +20,9 @@ asserts, on both versions.
 Any difference between the two recordings fails the comparison unless
 ``contract-changes.json`` (next to this file) lists it with a reason: a route
 the controller relies on gaining or losing a field, a field changing type, a
-status code appearing or disappearing, a route no longer being called.
+status code appearing or disappearing. A route newly or no longer called means
+the run took another path; that is a behaviour change to investigate, not to
+approve (``docs/update-reachy-mini.md``).
 Exit code: 0 when every difference is approved (and, for ``run``, both sim
 runs passed).
 """
@@ -49,6 +51,8 @@ _ID = re.compile(
 )
 
 Recording = dict[str, dict[str, Any]]
+# The "type" of a list's elements when the list was empty.
+EMPTY = "none"
 
 
 def route(method: str, path: str) -> str:
@@ -91,6 +95,8 @@ def shape(body: bytes, out: dict[str, set[str]] | None = None) -> dict[str, set[
             for key, item in value.items():
                 walk(f"{path}.{'{id}' if _ID.match(str(key)) else key}", item)
         elif isinstance(value, list):
+            if not value:
+                out.setdefault(f"{path}[]", set()).add(EMPTY)
             for item in value:
                 walk(f"{path}[]", item)
 
@@ -116,11 +122,18 @@ class Recorder:
         }
 
 
-def _unseen(fields: dict[str, list[str]], other: dict[str, list[str]]) -> tuple[str, ...]:
-    """Array elements one run saw and the other didn't: a list that happened
-    to be empty at every poll (``move/running`` between moves) says nothing
-    about its elements' shape."""
-    return tuple(p for p in fields.keys() - other.keys() if p.endswith("[]"))
+def _unseen(old: dict[str, list[str]], new: dict[str, list[str]]) -> tuple[str, ...]:
+    """Lists whose elements only one run saw, where both runs also saw them
+    empty: ``move/running`` is empty between moves, and whether a poll landed
+    mid-move says nothing about the daemon. A list one run saw only empty
+    and the other never empty is still a difference."""
+    unseen = []
+    for path in old.keys() & new.keys():
+        if not path.endswith("[]") or EMPTY not in old[path] or EMPTY not in new[path]:
+            continue
+        if set(old[path]) == {EMPTY} or set(new[path]) == {EMPTY}:
+            unseen.append(path)
+    return tuple(unseen)
 
 
 def differences(base: Recording, candidate: Recording) -> list[str]:
@@ -138,7 +151,7 @@ def differences(base: Recording, candidate: Recording) -> list[str]:
             out.append(f"{key}: no longer answers {status}")
         for status in sorted(set(new["status"]) - set(old["status"])):
             out.append(f"{key}: now answers {status}")
-        unseen = _unseen(old["fields"], new["fields"]) + _unseen(new["fields"], old["fields"])
+        unseen = _unseen(old["fields"], new["fields"])
         for path in sorted(old["fields"].keys() | new["fields"].keys()):
             if path.startswith(unseen):
                 continue

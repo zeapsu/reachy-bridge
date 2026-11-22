@@ -190,9 +190,9 @@ Backend: `daemon/backend/abstract.py`; endpoints:
   up and the wake-up cut short (#318: seen once in the sim browser tests).
   **Bridge feature** (`features/move_clock.py`): a time past the end is
   clamped to 1, so the move finishes at its target. Recorded moves
-  (`RecordedMove.evaluate`) have the same race; upstream catches that one
-  with a warning, so it can cut an expression's last frame but not fail a
-  power-on.
+  (`RecordedMove.evaluate`) have the same race; it can end an expression a
+  frame early with a failed move (a `move_failed` notification on the HTTP
+  route the controller uses), but not fail a power-on.
 - **Bridge feature** (`features/wobble.py`): the sleep and reset moves stop
   the wobble the dashboard turned on, and it comes back when the outermost
   one ends (`goto_sleep`, `reset_to_sleep` and `reset_to_init` are wrapped;
