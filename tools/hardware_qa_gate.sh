@@ -19,8 +19,10 @@
 #   - the run for the owner adding `qa: passed` passes the head it was added
 #     at, when that is still the head, the label is still on (read live) and
 #     this gate had already posted its pending status naming that head before
-#     the label went on (so a push seconds before the label can't pass code
-#     the owner never saw named);
+#     the label went on (a label that beats a push's pending can't pass the
+#     new head; one a moment after it still rests on the owner reading the
+#     sha). A label the issue events don't list yet is removed too, and the
+#     owner adds it again;
 #   - any other run (a dispatch, the owner removing the label, a run that
 #     replaced a dropped one in the concurrency queue) passes only a head
 #     this gate already passed and that still carries the label. A label on
@@ -56,16 +58,20 @@ QA_LABEL='qa: passed'
 # dependencies the robot runs (both pyproject.toml files: the root one is the
 # uv workspace the installer syncs) and the toolchain config the installer's
 # uv, cargo and bun builds read (mise, rustup, cargo, uv, bun and npm files,
-# at any depth, as they look for them upward). Not web/package.json or
+# at any depth, as they look for them upward, with the directories by their
+# bare names so a symlink can't stand in; and a root Cargo.toml, Cargo.lock,
+# package.json or bun.lock, which cargo and bun would take as the workspace
+# of controller/ and web/). Not web/package.json or
 # web/bun.lock: the dashboard's packages are checked by the browser tests
 # against the sim, and gating them would hold Dependabot's weekly web
 # updates for QA.
-ROBOT='^(controller/src/.+\.rs|controller/Cargo\.(toml|lock)|controller/build\.rs|runtime/src/reachy_bridge_runtime/.+\.py|web/src/(App|api|hooks/use(Drive|Power|Control|Expressions|Apps|Voice)|api/(power|control|expressions|apps|media)|logic/(drive|power|moves|pose|control|controls|expressions)|components/(DrivePanel|ControlStrip|ControlsPanel|ExpressionsPanel|AppsPanel))\.tsx?|deploy/.+|tools/udev/.+|tools/build_webrtcsink_jetson\.sh|(runtime/)?pyproject\.toml|uv\.lock|(.+/)?(\.cargo/.+|rust-toolchain(\.toml)?|\.tool-versions|\.?mise(\.[^/]+)?\.toml|\.?mise/.+|\.config/mise(\.[^/]+)?\.toml|\.config/mise/.+|\.python-versions?|uv\.toml|\.?bunfig\.toml|\.npmrc))$'
+ROBOT='^(controller/src/.+\.rs|controller/Cargo\.(toml|lock)|controller/build\.rs|runtime/src/reachy_bridge_runtime/.+\.py|web/src/(App|api|hooks/use(Drive|Power|Control|Expressions|Apps|Voice)|api/(power|control|expressions|apps|media)|logic/(drive|power|moves|pose|control|controls|expressions)|components/(DrivePanel|ControlStrip|ControlsPanel|ExpressionsPanel|AppsPanel))\.tsx?|deploy/.+|tools/udev/.+|tools/build_webrtcsink_jetson\.sh|(runtime/)?pyproject\.toml|uv\.lock|Cargo\.(toml|lock)|package\.json|bun\.lockb?|(.+/)?(\.cargo(/.+)?|rust-toolchain(\.toml)?|\.tool-versions|\.?mise(\.[^/]+)?\.toml|\.?mise(/.+)?|\.config(/mise(\.[^/]+)?\.toml|/mise(/.+)?)?|\.python-versions?|uv\.toml|\.?bunfig\.toml|\.npmrc))$'
 # Audio: what CI can't run without a sound card (the gateway, tee, mic mixer
 # and wobble, the host setup, the controller's audio routes and ALSA volume,
-# their units and the CLI that tees and checks them) and dashboard files that
-# set volume, play sound or show audio (the voice pane, AudioPanel's levels,
-# ControlsPanel's volume and test sound, api/media.ts's routes for them).
+# their units and the CLI that tees and checks them) and the dashboard files
+# that drive them (the voice pane, AudioPanel, ControlsPanel's volume and test
+# sound, api/media.ts's routes for them; not the pure level math in
+# logic/audio.ts, which has unit tests).
 # audio_policy.py is only request signing, so it counts as robot alone.
 AUDIO='^(runtime/src/reachy_bridge_runtime/((audio_[a-z_]+|mic_mixer|upstream)\.py|features/wobble\.py|platforms/[a-z_]+\.py)|controller/src/(audio|host)\.rs|web/src/(hooks/useVoice|components/(VoicePanel|AudioPanel|ControlsPanel)|logic/voice|api/(voice|media))\.tsx?|deploy/systemd/reachy-bridge-(audio|mic)\.service|deploy/reachy-bridge)$'
 SIMONLY='^(runtime/src/reachy_bridge_runtime/features/sim_[a-z_]+\.py|deploy/systemd/reachy-bridge-sim\.service)$'

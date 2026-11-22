@@ -147,7 +147,8 @@ for f in controller/src/main.rs controller/src/routes/power.rs controller/Cargo.
     pyproject.toml mise.toml .mise.toml mise.local.toml controller/mise.toml .config/mise.toml \
     .config/mise/config.toml .mise/config.toml .cargo/config.toml controller/.cargo/config.toml \
     controller/.cargo/config rust-toolchain.toml controller/rust-toolchain .tool-versions .python-version \
-    uv.toml web/bunfig.toml web/.npmrc .npmrc; do
+    uv.toml web/bunfig.toml web/.npmrc .npmrc .cargo controller/.cargo .mise mise .config Cargo.toml Cargo.lock \
+    package.json bun.lock bun.lockb; do
     setup '[]' docs/manual.md "$f"
     expect "robot path $f" pending "Needs hardware QA (robot) at 0123456;"
 done
@@ -176,7 +177,7 @@ expect "sim-only files don't count" success "No hardware QA needed"
 setup '[]' web/src/api/powers.ts web/src/components/DrivePanelNotes.md controller/Cargo.toml.bak \
     runtime/src/reachy_bridge_runtime/notes.txt tools/udev controller/tests/power.rs web/src/hooks/useTheme.ts \
     web/src/AppView.tsx web/src/components/App.tsx web/src/api.test.ts web/src/api/mediax.ts docs/pyproject.toml.md \
-    docs/mise.md docs/rust-toolchain.md .cargo .config/other.toml uv.toml.bak web/bunfig.json web/src/logic/audio.ts
+    docs/mise.md docs/rust-toolchain.md .cargox .config/other.toml docs/package.json controller/package.json uv.toml.bak web/bunfig.json web/src/logic/audio.ts
 expect "near-miss paths don't count" success "No hardware QA needed"
 
 setup; jq -n '[{filename: "web/src/old.ts", previous_filename: "controller/src/power.rs"}]' >"$FX/files.json"

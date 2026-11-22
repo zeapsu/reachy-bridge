@@ -48,9 +48,10 @@ Thumbs.db
 /reachy_mini_conversation_app/
 
 # --- Agent scratch / local QA artifacts (not committed) ---
-# .claude/ is local except the shared settings (the precheck hook) and skills.
+# .claude/ is local except the shared settings, their hooks and skills.
 /.claude/*
 !/.claude/settings.json
+!/.claude/hooks/
 !/.claude/skills/
 /.superpowers/
 /.playwright-mcp/

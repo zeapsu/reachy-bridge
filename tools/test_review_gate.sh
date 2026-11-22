@@ -215,7 +215,8 @@ for f in controller/src/auth.rs controller/src/profiles.rs controller/src/main.r
     Mise.toml controller/mise.toml .config/mise.toml .config/mise/config.toml .config/mise/conf.d/x.toml \
     .config .Config web/.config .mise/config.toml .mise mise/config.toml mise .python-version \
     runtime/.python-version .python-versions uv.toml runtime/uv.toml bunfig.toml web/bunfig.toml \
-    .bunfig.toml .npmrc web/.npmrc; do
+    .bunfig.toml .npmrc web/.npmrc Cargo.toml Cargo.lock package.json bun.lock bun.lockb web/bun.lockb \
+    tools/x/Cargo.toml web/vite.config.js web/vite.config.mjs web/vite.config.mts web/vite.config.cjs; do
     setup; files web/src/App.tsx "$f"; comment OWNER "Review: clean @$HEAD"
     expect "security path $f" pending "security PR: paths"
 done
