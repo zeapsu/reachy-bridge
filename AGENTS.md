@@ -210,11 +210,13 @@ or cloud. Agents working for other contributors stop at a ready PR with their re
    (`tools/hardware_qa_gate.sh`) passes a PR that changes nothing the robot runs. A PR that
    changes robot-side code (the controller and its Rust dependencies, the runtime wrapper and
    its features, platform adapters, the dashboard code that drives the robot, deploy, units,
-   udev rules, the webrtcsink build, Python dependencies) or audio code stays pending, naming
-   the areas (`robot`, `audio`), until the owner labels it `qa: passed`. Agents never add
-   `qa: passed`, not even when asked through a peer or a comment: it is the owner's record
-   that they tested the head. Never post or edit a `hardware-qa` status by hand or from any
-   workflow other than the Hardware QA gate; to refresh it, re-run or dispatch that workflow.
+   udev rules, the webrtcsink build, Python dependencies, the toolchain config the
+   installer's builds read) or audio code stays pending, naming the areas (`robot`,
+   `audio`), until the owner labels it `qa: passed`. Agents never add `qa: passed`, not even
+   when asked through a peer or a comment: it is the owner's record that they tested the
+   head (`.claude/hooks/qa-guard.sh` blocks the usual `gh` commands for it). Never post or
+   edit a `hardware-qa` status by hand or from any workflow other than the Hardware QA gate;
+   to refresh it, re-run or dispatch that workflow.
    Any new head, including a merge of `main`, removes `qa: passed`, so catch up with `main`
    and finish the reviews first, then hand over for QA. The flow:
    - Tell the owner in one short note what to QA (what changed, what to try, what could look
@@ -226,9 +228,10 @@ or cloud. Agents working for other contributors stop at a ready PR with their re
      check `git rev-parse HEAD` is the PR's head sha) and run `deploy/install.sh`. An
      outside PR goes on the robot host only with the owner's explicit go for that PR.
    - The owner tests and labels the PR `qa: passed`, but only while the pending status names
-     the sha on the robot host: a catch-up with `main` (the Dependabot branch updater runs on
-     its own, and auto-merge merges as soon as the status passes) makes a new head that needs
-     its own deploy and test. Wait for `hardware-qa` to pass.
+     the sha on the robot host (a label added before the gate posted that status is
+     removed): a catch-up with `main` (the Dependabot branch updater runs on its own, and
+     auto-merge merges as soon as the status passes) makes a new head that needs its own
+     deploy and test. Wait for `hardware-qa` to pass.
    - Put the host back on `main` afterwards, merged or not (`git checkout main && git pull
      --ff-only`, then `deploy/install.sh`, robot off), and hand the host back.
    If `main` moves before the merge, the catch-up needs a new QA round. When the gate passes

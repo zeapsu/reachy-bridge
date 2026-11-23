@@ -37,6 +37,30 @@ It also checks power off, expressions refused while an app runs, a requested
 stop keeping the robot awake (the runtime's keep-awake feature), and a second
 app start.
 
+## Differential run for reachy-mini bumps
+
+`differential.py` (#317) runs the sim checks on two locks, usually `main`'s
+and an upstream bump's, and compares what the daemon answered:
+
+```bash
+git show origin/main:uv.lock > /tmp/main.lock
+uv run python tools/sim/differential.py run /tmp/main.lock uv.lock
+```
+
+Each lock gets a venv of its own. `run.py --record FILE` puts a proxy
+(`record.py`) between the daemon and both the controller and `smoke.py`, and
+writes, per route, the status codes seen and each JSON field's path and
+types. It doesn't pass streams or WebSockets on, so it is for the smoke run,
+not the browser tests. A list's elements are skipped only when both runs saw
+the list empty at some point and one never saw it otherwise (`move/running`
+between moves). Values are left out, so timestamps, ids, ports and poses never
+differ; ids in paths and keys fold into `{id}`. `differential.py compare
+A.json B.json` compares two recordings with the standard library only (the
+upstream watch runs it under `python3 -I`, apart from the code that made
+them). A difference fails unless `contract-changes.json` lists it, word for
+word as reported, with a reason. Runs on the same lock give no
+differences; if one ever does, that's a flaky check to fix, not to approve.
+
 ## How the sim is made to behave like the robot
 
 `sim_daemon.py` runs `reachy-bridge-runtime` with two sim-only patches,

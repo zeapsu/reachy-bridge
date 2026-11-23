@@ -26,10 +26,11 @@
 #
 # A commit status belongs to the commit, not the PR, so only PRs into the
 # default branch post one, and a head shared by more than one open PR into it
-# stays pending. When one of them closes, its run re-checks the others. That
-# re-check runs in the closed PR's concurrency group, not the other PR's, so
-# a marker deleted in the same few seconds can lose to it; re-run the
-# workflow for that PR if its status looks stale.
+# stays pending. When one of them closes or leaves the default branch, its
+# run names the others (the `recheck` step output) and the workflow
+# dispatches the gate for each, so each re-check runs in that PR's own
+# concurrency group, one at a time with that PR's other runs, and reads its
+# live state when it starts.
 #
 # A failed status POST is retried; if GitHub keeps refusing it, the run
 # fails, and the `error` it then tries to post may be refused too, leaving
@@ -50,13 +51,16 @@ set -Eeuo pipefail
 # proxy, the host checks, the power, apps and logs routes, the upstream
 # daemon shim and the apps venv sync, the udev rules (installed as root),
 # secrets (the HF token and its scrubbing, sound tokens), the
-# installer, dependency manifests and locks, build scripts, toolchains and
-# the shipped webrtcsink build, CI and release workflows (update signing),
-# agent rules and agent config for every coding agent (Claude, Codex and its
-# .agents/ skills, Cursor, Gemini and the like, at any depth and any case, CLAUDE.local.md included even
-# though it's gitignored), .gitmodules (what a checkout pulls in),
-# .gitignore (what of it is tracked), .gitattributes (it can hide lines from
-# diffs), the review focus and reliability checklist (reviewers read them
+# installer, dependency manifests and locks, build scripts and the shipped
+# webrtcsink build, toolchain and package-tool config at any depth (cargo,
+# rustup, mise, uv, bun and npm look for theirs from the working directory
+# up, and `.cargo/config.toml` can set a rustc wrapper or a runner), CI and
+# release workflows (update signing), agent rules and agent config for every
+# coding agent (Claude, Codex and its .agents/ skills, Cursor, Gemini and the
+# like, at any depth and any case, CLAUDE.local.md included even though it's
+# gitignored), .gitmodules (what a checkout pulls in), .gitignore (what of it
+# is tracked) and .gitattributes (it can hide lines from diffs) at any depth,
+# the review focus and reliability checklist (reviewers read them
 # from main), this gate, its catch-up check, the hardware QA gate and the
 # local precheck hook.
 # Directories match by their bare name as well, so a symlink called `.cursor`
@@ -65,7 +69,7 @@ set -Eeuo pipefail
 # web/package.json). A real directory never appears in a PR's file list, so
 # only a file or symlink in its place matches. Besides this list, any file
 # name with a character outside printable ASCII counts (see below).
-SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|control|sim|audio|logs|apps|host)|routes/(store|sounds|apps|power|logs))\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|upstream|features/((app_bind|sim_apps)(_shim)?|sim_sounds|apps_venv_sync))\.py|web/src/(api/(auth|hf|client|setup)|logic/(auth|setup))\.ts|web/src/components/(Login|Setup)\.tsx|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|(runtime/)?pyproject\.toml|uv\.lock|controller/Cargo\.(toml|lock)|web/(package\.json|bun\.lock)|controller/build\.rs|web/vite\.config\.ts|mise\.toml|tools/(toolchain_versions\.py|build_webrtcsink_jetson\.sh)|tools/udev/[^/]+\.rules|\.gitmodules|\.github(/.+)?|(.+/)?\.(claude|codex|agents|cursor|gemini|windsurf|clinerules|continue|roo|junie|kiro|opencode)(/.+)?|(.+/)?(\.(mcp\.json|cursorrules|windsurfrules|clinerules|aider\.conf\.yml)|opencode\.jsonc?)|\.gitignore|(.+/)?\.gitattributes|(.+/)?(AGENTS(\.override)?|CLAUDE(\.local)?|GEMINI)\.md|CONTRIBUTING\.md|REVIEW\.md|docs/reliability-checklist\.md|tools/checklist\.py|tools/(test_)?(review_gate|catchup_check|precheck|hardware_qa_gate)\.sh|controller(/src(/routes)?)?|runtime(/src(/reachy_bridge_runtime(/features)?)?)?|web(/src(/(api|logic|components))?)?|deploy(/systemd)?|tools(/udev)?|docs)$'
+SECURITY_PATHS='^(controller/src/((auth|profiles|setup|app_proxy|main|lib|state|control|sim|audio|logs|apps|host)|routes/(store|sounds|apps|power|logs))\.rs|runtime/src/reachy_bridge_runtime/(main|audio_policy|audio_gateway|upstream|features/((app_bind|sim_apps)(_shim)?|sim_sounds|apps_venv_sync))\.py|web/src/(api/(auth|hf|client|setup)|logic/(auth|setup))\.ts|web/src/components/(Login|Setup)\.tsx|deploy/(reachy-bridge|install\.sh|uninstall\.sh|systemd/[^/]+\.service)|(runtime/)?pyproject\.toml|uv\.lock|(.+/)?Cargo\.(toml|lock)|(web/)?(package\.json|bun\.lockb?)|controller/build\.rs|web/vite\.config\.[cm]?[jt]s|tools/(toolchain_versions\.py|build_webrtcsink_jetson\.sh)|tools/udev/[^/]+\.rules|(.+/)?(\.cargo(/.+)?|rust-toolchain(\.toml)?|\.tool-versions|\.?mise(\.[^/]+)?\.toml|\.?mise(/.+)?|\.config(/mise(\.[^/]+)?\.toml|/mise(/.+)?)?|\.python-versions?|uv\.toml|\.?bunfig\.toml|\.npmrc)|\.gitmodules|\.github(/.+)?|(.+/)?\.(claude|codex|agents|cursor|gemini|windsurf|clinerules|continue|roo|junie|kiro|opencode)(/.+)?|(.+/)?(\.(mcp\.json|cursorrules|windsurfrules|clinerules|aider\.conf\.yml)|opencode\.jsonc?)|(.+/)?\.git(ignore|attributes)|(.+/)?(AGENTS(\.override)?|CLAUDE(\.local)?|GEMINI)\.md|CONTRIBUTING\.md|REVIEW\.md|docs/reliability-checklist\.md|tools/checklist\.py|tools/(test_)?(review_gate|catchup_check|precheck|hardware_qa_gate)\.sh|controller(/src(/routes)?)?|runtime(/src(/reachy_bridge_runtime(/features)?)?)?|web(/src(/(api|logic|components))?)?|deploy(/systemd)?|tools(/udev)?|docs)$'
 
 # Every page of a list endpoint, as one JSON array.
 list() { gh api --paginate "$1" | jq -s 'add // []'; }
@@ -79,20 +83,26 @@ twins() {
 
 # An open PR into the default branch sharing this head was held pending
 # while this PR was open into it too (a fork PR can reuse an owner PR's
-# head). Closing or retargeting this one runs no gate for it, so check it
-# here. Once: the re-check doesn't recurse.
+# head). Closing or retargeting this one runs no gate for it, so name it for
+# the workflow to dispatch the gate for, in that PR's concurrency group (a
+# re-check from here would race that PR's own runs). The dispatched run sees
+# an open PR into the default branch, so it names no one in turn.
 recheck_twins() {
-    [[ -z ${REVIEW_GATE_RECHECK:-} && $sha =~ ^[0-9a-f]{40}$ ]] || return 0
+    [[ $sha =~ ^[0-9a-f]{40}$ ]] || return 0
     # (Listings into variables, so a failed call fails the run instead of
     # reading as "no other PR".)
-    local n prs open
+    local prs open
     prs=$(list "repos/$GH_REPO/commits/$sha/pulls")
     open=$(twins "$prs")
-    for n in $open; do
-        echo "Re-checking #$n, which has the same head"
-        # BASE_CHANGED is this PR's event, not the other PR's.
-        PR=$n REVIEW_GATE_RECHECK=1 BASE_CHANGED='' bash "${BASH_SOURCE[0]}"
-    done
+    [[ -n $open ]] || return 0
+    open=${open//$'\n'/ }
+    echo "Re-check needed for #${open// / #}, which has the same head"
+    if [[ -n ${GITHUB_OUTPUT:-} ]]; then
+        echo "recheck=$open" >>"$GITHUB_OUTPUT"
+    else
+        local n
+        for n in $open; do echo "  gh workflow run review-gate.yml --ref $default -f pr=$n"; done
+    fi
 }
 
 pr=$(gh api "repos/$GH_REPO/pulls/$PR")
