@@ -196,8 +196,8 @@ browser. People without System find the same settings under their chip in the to
 
 **Admin.** Until an admin exists, anyone who reaches the dashboard can drive the robot. Under
 System › Access, choose Make this browser the admin, then run the command it shows on the robot.
-Only the command on the robot can approve an admin. After that, every browser logs in, including
-over Tailscale.
+Only the command on the robot can approve the first admin. After that, every browser logs in,
+including over Tailscale, and an admin can approve more admin browsers from the dashboard.
 
 **Adding a browser.** A new browser shows a 6-digit code, valid for 5 minutes. Approve it from an
 admin's dashboard, or run `reachy-bridge pair <code>` on the robot. Too many wrong tries lock the

@@ -15,7 +15,9 @@
 //! browser logs in, LAN mode or not, and loopback is no longer trusted: a
 //! request through `tailscale serve` carries no identity, and control moves
 //! between one person's devices. Only an admin (or the local key) approves and revokes
-//! devices; a member can log out its own. Admin mode is kept in
+//! devices; a member can log out its own. An admin device can also approve
+//! another admin device and change a device's role (#334): it could already
+//! install an app, which runs as the bridge's user and reads the local key. Admin mode is kept in
 //! `devices.json`, so it stays on when the last admin device expires or is
 //! revoked; the CLI pairs a new one.
 //!
@@ -295,6 +297,13 @@ impl AuthContext {
     /// authenticated before an admin exists (the #141 rule).
     fn manages_devices(&self, admin_mode: bool) -> bool {
         self.local || self.role == Some(Role::Admin) || (!admin_mode && self.authenticated)
+    }
+
+    /// May approve an admin device or make a device one: the CLI, or an
+    /// admin device once admin mode is on (#334). Never "anyone before an
+    /// admin exists": the first admin comes from the robot.
+    fn approves_admins(&self, admin_mode: bool) -> bool {
+        self.local || (admin_mode && self.role == Some(Role::Admin))
     }
 
     fn by(&self) -> String {
@@ -638,8 +647,10 @@ impl Auth {
     fn still_counts(&self, credential: &Credential) -> bool {
         match credential {
             Credential::Local => true,
-            Credential::Device(id, generation) => {
-                self.has_device(id) && generation.is_none_or(|g| g == self.generation(id))
+            Credential::Device(id, Some(generation)) => self.has_device(id) && *generation == self.generation(id),
+            // Issued to an admin device: it counts while the device is one (#334).
+            Credential::Device(id, None) => {
+                self.devices.lock().unwrap().iter().any(|d| d.id == *id && d.role == Role::Admin)
             }
             Credential::Trusted => !self.admin_mode(),
         }
@@ -963,8 +974,10 @@ pub fn router() -> Router<Shared> {
         .route("/api/auth/pair", post(pair))
         .route("/api/auth/pair/{id}", get(poll))
         .route("/api/auth/approve", post(approve))
+        .route("/api/auth/pending", get(list_pending))
         .route("/api/auth/devices", get(list_devices))
         .route("/api/auth/devices/{id}", delete(revoke))
+        .route("/api/auth/devices/{id}/role", axum::routing::put(set_role))
         .route("/api/auth/profiles", get(list_profiles))
         .route("/api/auth/profiles/{name}", axum::routing::put(save_profile).delete(delete_profile))
         .route("/api/auth/pick", post(pick))
@@ -1145,11 +1158,15 @@ async fn approve(
 ) -> ApiResult<Json<Value>> {
     let Json(body) = body.map_err(|_| ApiError::bad_body())?;
     let by = ctx.by();
-    // An admin only through the CLI on the robot: a stolen admin browser
-    // can't mint more admins, and the first admin needs the robot's shell.
-    if body.role == Role::Admin && !ctx.local {
-        tracing::warn!("auth: admin approval refused for {by}: needs the local key");
-        return Err(ApiError::new(403, "only `reachy-bridge pair --admin` on the robot can approve an admin"));
+    // The first admin needs the robot's shell (the local key). After that an
+    // admin device approves another (#334), with the code typed like any
+    // approval: it could already make itself one through an installed app.
+    if body.role == Role::Admin && !ctx.approves_admins(state.auth.admin_mode()) {
+        tracing::warn!("auth: admin approval refused for {by}: needs an admin or the local key");
+        return Err(ApiError::new(
+            403,
+            "only an admin, or `reachy-bridge pair --admin` on the robot, can approve an admin",
+        ));
     }
     if !ctx.manages_devices(state.auth.admin_mode()) {
         tracing::warn!("auth: approval refused for {by}: not an admin");
@@ -1271,6 +1288,93 @@ impl Auth {
             json!({"status": "approved", "name": name, "person": person, "role": role, "shared": shared, "peer": request.peer.to_string()}),
         )
     }
+}
+
+/// Browsers waiting for a code to be approved (#334): where each asks from
+/// and for how long. Never the code or the request's id: whoever approves
+/// reads the code off the waiting browser's own screen. Requests locked by
+/// wrong codes are left out; only the CLI approves those.
+async fn list_pending(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>) -> ApiResult<Json<Value>> {
+    let auth = &state.auth;
+    if !ctx.manages_devices(auth.admin_mode()) {
+        return Err(ApiError::new(403, "only an admin can see who is waiting"));
+    }
+    let now = Instant::now();
+    let ttl = auth.config.pair_ttl;
+    let mut pending = auth.pending.lock().unwrap();
+    pending.prune(now);
+    let mut list: Vec<(u64, String)> = pending
+        .requests
+        .iter()
+        .filter(|r| r.status(now) == "pending")
+        .map(|r| (ttl.saturating_sub(r.expires.saturating_duration_since(now)).as_secs(), r.peer.to_string()))
+        .collect();
+    // Longest waiting first.
+    list.sort_by(|a, b| b.cmp(a));
+    let list: Vec<Value> = list.into_iter().map(|(age, peer)| json!({"peer": peer, "age": age})).collect();
+    Ok(Json(json!({"pending": list})))
+}
+
+#[derive(Deserialize)]
+struct RoleBody {
+    role: Role,
+}
+
+/// Make a paired device an admin, or a member again (#334). An admin's (or
+/// the CLI's) only, and only once an admin exists: the first one pairs from
+/// the robot. The dashboard can't demote the last admin; the CLI can.
+async fn set_role(
+    State(state): State<Shared>,
+    Extension(ctx): Extension<AuthContext>,
+    UrlPath(id): UrlPath<String>,
+    body: Result<Json<RoleBody>, axum::extract::rejection::JsonRejection>,
+) -> ApiResult<Json<Value>> {
+    let Json(RoleBody { role }) = body.map_err(|_| ApiError::bad_body())?;
+    let auth = &state.auth;
+    let by = ctx.by();
+    if !auth.admin_mode() {
+        return Err(ApiError::new(409, "pair the first admin with `reachy-bridge pair --admin` on the robot"));
+    }
+    if !ctx.approves_admins(true) {
+        tracing::warn!("auth: role change refused for {by}: not an admin");
+        return Err(ApiError::new(403, "only an admin can change a device's role"));
+    }
+    let mut devices = auth.devices.lock().unwrap();
+    let Some(index) = devices.iter().position(|d| d.id == id) else {
+        return Err(ApiError::new(404, "unknown device"));
+    };
+    let was = devices[index].role;
+    if was != role {
+        if devices[index].shared {
+            return Err(ApiError::new(400, "a shared device can't be an admin"));
+        }
+        let admins = devices.iter().filter(|d| d.role == Role::Admin).count();
+        if was == Role::Admin && admins == 1 && !ctx.local {
+            return Err(ApiError::new(409, "this is the last admin device; make another device an admin first"));
+        }
+        devices[index].role = role;
+        if let Err(error) = auth.save(&devices) {
+            devices[index].role = was;
+            tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
+            return Err(ApiError::new(500, "could not save the device list"));
+        }
+    }
+    let device = devices[index].clone();
+    drop(devices);
+    let person = if device.person.is_empty() { device.name.clone() } else { device.person.clone() };
+    if was != role {
+        // The person's rights change with it (an admin's devices are never
+        // limited by a profile): their devices, and tablets that picked
+        // them, reconnect under the new rules. A demoted device's own
+        // streams end too: its credential was an admin's.
+        let mut affected = auth.devices_of(&person);
+        if !affected.contains(&id) {
+            affected.push(id.clone());
+        }
+        auth.rules_changed(&affected);
+        tracing::info!("auth: device {id} ({}) is now {role:?}, changed by {by}", device.name);
+    }
+    Ok(Json(json!({"id": device.id, "name": device.name, "person": person, "role": role})))
 }
 
 async fn list_devices(State(state): State<Shared>, Extension(ctx): Extension<AuthContext>) -> Json<Value> {

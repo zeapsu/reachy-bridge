@@ -333,6 +333,22 @@ else:
         "[#334] wake app can't be switched on while it isn't installed", r.status_code == 409, f"HTTP {r.status_code}"
     )
 
+# 14. [#334] a browser asking for a login shows in the waiting list with its
+# address and age, never its code; and without an admin no device is made one.
+with httpx.Client(base_url=CTRL, timeout=10) as browser:
+    asked = browser.post("/api/auth/pair").json()
+    waiting = c.get("/api/auth/pending")
+    listed = waiting.json().get("pending", []) if waiting.status_code == 200 else []
+    check(
+        "[#334] a waiting browser is listed by address and age only",
+        len(listed) == 1 and set(listed[0]) == {"peer", "age"} and asked["code"] not in waiting.text,
+        waiting.text,
+    )
+    r = c.post("/api/auth/approve", json={"code": asked["code"], "role": "admin"})
+    check("[#334] no admin from the dashboard before the first one", r.status_code == 403, f"HTTP {r.status_code}")
+    r = c.put("/api/auth/devices/none/role", json={"role": "admin"})
+    check("[#334] no role change before the first admin", r.status_code == 409, f"HTTP {r.status_code}")
+
 # --- leave the sim off -------------------------------------------------
 stop_any_app()
 c.post("/api/daemon/stop")
