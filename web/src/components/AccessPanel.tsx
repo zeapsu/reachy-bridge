@@ -1,6 +1,7 @@
-import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useState, type ReactNode } from "react";
 import { apiJson, errorText, paths } from "../api.ts";
-import { accessList, isLastAdmin, makeAdminQuestion, waitingText, type WaitingDevice } from "../logic/access.ts";
+import { usePoll } from "../hooks/usePoll.ts";
+import { accessList, approveAdminQuestion, isLastAdmin, makeAdminQuestion, waitingText, type WaitingDevice } from "../logic/access.ts";
 import { normalizeCode, seenText, type PairedDevice, type ProfileItem } from "../logic/auth.ts";
 import { ALL_CAN, appsText } from "../logic/profile.ts";
 import { Panel } from "./Panel.tsx";
@@ -33,6 +34,9 @@ const ICONS = {
   ),
 };
 
+/** An approved browser is a device once it has asked again, a few seconds later: the list keeps up by itself. */
+const LIST_POLL_MS = 3000;
+
 const ADMIN_TAG = <span className="role-tag">{ICONS.shield}Admin</span>;
 
 /** A profile that limits its person today: the one Make admin would lift. */
@@ -59,6 +63,7 @@ export function AccessPanel({ installed, person, waiting }: Props) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [hint, setHint] = useState<{ text: string; error: boolean } | null>(null);
+  const [loadError, setLoadError] = useState("");
 
   const reload = useCallback(async () => {
     try {
@@ -68,15 +73,13 @@ export function AccessPanel({ installed, person, waiting }: Props) {
       ]);
       setProfiles(p.profiles);
       setDevices(d.devices);
+      setLoadError("");
     } catch (err) {
-      setHint({ text: errorText(err, "Couldn't load devices"), error: true });
+      setLoadError(errorText(err, "Couldn't load devices"));
     }
   }, []);
 
-  // A browser that stops waiting was approved (it is a device now) or gave up.
-  useEffect(() => {
-    void reload();
-  }, [reload, waiting.length]);
+  usePoll(reload, LIST_POLL_MS, true);
 
   if (editing) {
     return (
@@ -107,13 +110,16 @@ export function AccessPanel({ installed, person, waiting }: Props) {
   };
 
   const typed = normalizeCode(code);
-  const approve = (as: { role?: "admin"; person?: string; shared?: boolean }) =>
-    act("Approval failed", async () => {
+  const approve = (as: { role?: "admin"; person?: string; shared?: boolean }) => {
+    // The one choice that can't be narrowed afterwards, next to the profile buttons.
+    if (as.role === "admin" && !window.confirm(approveAdminQuestion(name.trim()))) return;
+    void act("Approval failed", async () => {
       await apiJson(paths.authApprove, { method: "POST", body: JSON.stringify({ code: typed, name: name.trim() || undefined, ...as }) });
       setCode("");
       setName("");
       setHint({ text: "Approved", error: false });
     });
+  };
 
   const revoke = (device: PairedDevice) => {
     const question = device.current ? `Log this browser (${device.name}) out? It will need a new code to log in.` : `Revoke ${device.name}?`;
@@ -136,6 +142,7 @@ export function AccessPanel({ installed, person, waiting }: Props) {
   const list = accessList(profiles, devices);
   const now = Date.now();
   const members = profiles.filter((p) => !p.admin);
+  const shown = hint ?? (loadError ? { text: loadError, error: true } : null);
 
   const deviceRow = (device: PairedDevice, nested: boolean, lead: ReactNode) => (
     <li className={`acc-row${nested ? " nested" : ""}`} key={device.id}>
@@ -151,7 +158,7 @@ export function AccessPanel({ installed, person, waiting }: Props) {
         {lead}
         {/* The controller keeps the last admin device: no button that it would refuse. */}
         {isLastAdmin(devices, device) ? null : (
-          <button className="btn danger press" type="button" disabled={busy} onClick={() => revoke(device)}>
+          <button className="btn danger press" type="button" aria-label={`${device.current ? "Log out" : "Revoke"} ${device.name}`} disabled={busy} onClick={() => revoke(device)}>
             {device.current ? "Log out" : "Revoke"}
           </button>
         )}
@@ -166,7 +173,7 @@ export function AccessPanel({ installed, person, waiting }: Props) {
       device.role === "admin" ? (
         list.solo ? ADMIN_TAG : null
       ) : (
-        <button className="btn press" type="button" disabled={busy} onClick={() => makeAdmin(device, profile)}>
+        <button className="btn press" type="button" aria-label={`Make ${device.name} an admin`} disabled={busy} onClick={() => makeAdmin(device, profile)}>
           {ICONS.shield}Make admin
         </button>
       ),
@@ -200,12 +207,12 @@ export function AccessPanel({ installed, person, waiting }: Props) {
             <input className="field" aria-label="Device name (optional)" placeholder="name" maxLength={64} value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div className="acc-actions">
-            <button className="btn primary press" type="button" disabled={!typed || busy} onClick={() => void approve({ role: "admin", person: person ?? undefined })}>
+            <button className="btn primary press" type="button" disabled={!typed || busy} onClick={() => approve({ role: "admin", person: person ?? undefined })}>
               {ICONS.shield}Approve as Admin
             </button>
             <span className="or">or for</span>
             {members.map((p) => (
-              <button className="btn press who" type="button" key={p.name} disabled={!typed || busy} onClick={() => void approve({ person: p.name })}>
+              <button className="btn press who" type="button" key={p.name} disabled={!typed || busy} onClick={() => approve({ person: p.name })}>
                 <Avatar name={p.name} size={24} />
                 {p.name}
               </button>
@@ -215,7 +222,7 @@ export function AccessPanel({ installed, person, waiting }: Props) {
                 {ICONS.plus}New profile
               </button>
             ) : null}
-            <button className="btn press who" type="button" disabled={!typed || busy} onClick={() => void approve({ shared: true })}>
+            <button className="btn press who" type="button" disabled={!typed || busy} onClick={() => approve({ shared: true })}>
               <span className="acc-ico">{ICONS.tablet}</span>
               Shared
             </button>
@@ -255,9 +262,9 @@ export function AccessPanel({ installed, person, waiting }: Props) {
             </button>
           </li>
         </ul>
-        {hint ? (
-          <p className={`note ${hint.error ? "error" : "ok"}`} role={hint.error ? "alert" : "status"}>
-            {hint.text}
+        {shown ? (
+          <p className={`note ${shown.error ? "error" : "ok"}`} role={shown.error ? "alert" : "status"}>
+            {shown.text}
           </p>
         ) : null}
       </Panel>

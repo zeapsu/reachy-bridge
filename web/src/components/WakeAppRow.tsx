@@ -11,8 +11,9 @@ import { ROW_ICONS, SettingsRow } from "./SettingsRow.tsx";
 export function WakeAppRow({ wake, onInstall }: { wake: WakeAppState; onInstall: () => void }) {
   const { info } = wake;
   const name = info?.name ?? "Conversation App";
-  const missing = info !== null && !info.installed;
-  const on = Boolean(info?.installed && info.enabled);
+  const missing = info?.installed === false;
+  // On also while the robot service can't say what is installed: it can still be turned off.
+  const on = Boolean(info?.enabled && info.installed !== false);
   const tile = (
     <span className="app-tile" style={{ "--hue": appHue(info?.app ?? "") } as CSSProperties} aria-hidden="true">
       {appInitial(name)}
@@ -27,7 +28,7 @@ export function WakeAppRow({ wake, onInstall }: { wake: WakeAppState; onInstall:
     </>
   ) : undefined;
   return (
-    <SettingsRow icon={tile} label={wakeLabel(name)} labelId="wake-app-label" sub={sub} subId="wake-app-hint" warn={on} off={!info?.installed}>
+    <SettingsRow icon={tile} label={wakeLabel(name)} labelId="wake-app-label" sub={sub} subId="wake-app-hint" warn={on} off={!info || missing || (!on && info.installed === null)}>
       {missing ? (
         <button className="btn press" type="button" onClick={onInstall}>
           Install
@@ -43,7 +44,7 @@ export function WakeAppRow({ wake, onInstall }: { wake: WakeAppState; onInstall:
             aria-labelledby="wake-app-label"
             aria-describedby={sub ? "wake-app-hint" : undefined}
             aria-checked={on}
-            disabled={!info || wake.busy}
+            disabled={!info || wake.busy || (!on && info.installed === null)}
             onClick={() => wake.set(!on)}
           ></button>
         </>

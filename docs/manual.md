@@ -166,9 +166,12 @@ listens as soon as it has woken, without anyone starting an app, so leave it off
 surprise people near the robot. It starts the way a tap on Start would: not while another app, an
 expression or a drive session has the robot, and not for someone whose profile doesn't include the
 app. If it can't start, the robot stays awake with no app and the controller log says why (System ›
-Diagnostics). Switching the robot off stops it as it stops any app, and removing the app switches
-this off. The row is dimmed with an Install button
-until the app is installed; Install opens the Apps tab, where Get apps lists it. Only the admin
+Diagnostics). Switching the robot off, or its motors off, before the app has started cancels the
+start. If the app starts and then stops with an error, the robot goes to sleep as after any app
+that ends by itself; turn the switch off if that happens at every power-on. Switching the robot off
+stops the app as it stops any app, and removing the app switches this off. The row is dimmed with
+an Install button until the app is installed; Install opens the Apps tab, where Get apps lists it.
+While the robot service can't be reached, the switch can be turned off but not on. Only the admin
 changes the switch. The simulation has its own switch.
 
 A Hugging Face token is only needed for private Spaces. Create a read token at
@@ -208,9 +211,11 @@ waiting, Access shows a dot on its tab and a card with the browser's address and
 been asking. Type the code from that browser's screen (the card never shows it, so a browser you
 can't see can't be approved by mistake), give it a name if you like, and choose who it is for:
 
-- **Approve as Admin** makes it another admin browser of yours. An admin browser can do everything
-  yours can, including approving more admins, so approve only your own devices this way.
-- **A profile's name** approves it for that person. New profile adds one first.
+- **Approve as Admin** makes it another admin browser of yours, after a confirmation. An admin
+  browser can do everything yours can, including approving more admins, so approve only your own
+  devices this way.
+- **A profile's name** approves it for that person. While there is no profile yet, New profile adds
+  one first; after that, Add profile under the list does.
 - **Shared** is for a tablet several people use. It belongs to nobody: whoever picks it up chooses
   their profile (see below).
 
@@ -222,6 +227,7 @@ becomes an admin, so their profile stops limiting their other browsers too. To t
 role away again, revoke the browser and approve it again for a profile.
 
 **Removing a browser.** Revoke it under System › Access, or run `reachy-bridge devices revoke <n>`. A browser
+it had approved that hasn't logged in yet has to ask again. A browser
 unused for 30 days is logged out. The dashboard keeps the last admin browser: it has no Revoke
 button. If you lose every admin browser, pair a new one with `reachy-bridge pair --admin` on the
 robot.

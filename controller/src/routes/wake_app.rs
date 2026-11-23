@@ -60,12 +60,14 @@ fn save(state: &Shared, enabled: bool) -> std::io::Result<()> {
     std::fs::rename(tmp, target)
 }
 
-async fn installed(state: &Shared) -> ApiResult<bool> {
-    let names = state.apps.installed_names().await.map_err(|_| ApiError::unavailable())?;
-    Ok(names.contains(&state.wake_app))
+/// Whether the app is installed; `None` while the daemon can't say.
+async fn installed(state: &Shared) -> Option<bool> {
+    let names = state.apps.installed_names().await.ok()?;
+    Some(names.contains(&state.wake_app))
 }
 
-fn view(state: &Shared, installed: bool) -> Json<Value> {
+/// `installed` is null while the daemon can't say.
+fn view(state: &Shared, installed: Option<bool>) -> Json<Value> {
     Json(json!({
         "app": state.wake_app,
         "name": crate::apps::display_name(&state.wake_app),
@@ -74,8 +76,22 @@ fn view(state: &Shared, installed: bool) -> Json<Value> {
     }))
 }
 
-async fn read(State(state): State<Shared>) -> ApiResult<Json<Value>> {
-    Ok(view(&state, installed(&state).await?))
+/// The app is gone (removed here, or by a session the controller didn't
+/// see): it must not start by itself once it is back.
+fn switch_off(state: &Shared) {
+    if enabled(state)
+        && let Err(error) = save(state, false)
+    {
+        tracing::error!(%error, "could not switch the wake app off");
+    }
+}
+
+async fn read(State(state): State<Shared>) -> Json<Value> {
+    let installed = installed(&state).await;
+    if installed == Some(false) {
+        switch_off(&state);
+    }
+    view(&state, installed)
 }
 
 async fn write(State(state): State<Shared>, body: Bytes) -> ApiResult<Json<Value>> {
@@ -83,10 +99,14 @@ async fn write(State(state): State<Shared>, body: Bytes) -> ApiResult<Json<Value
         .ok()
         .and_then(|v| v.get("enabled")?.as_bool())
         .ok_or_else(|| ApiError::new(422, r#"Body must be {"enabled": true or false}"#))?;
-    // Off never waits on the daemon: it must work while the daemon is down.
-    let installed = if on { installed(&state).await? } else { installed(&state).await.unwrap_or(false) };
-    if on && !installed {
-        return Err(ApiError::new(409, "Install the app first"));
+    // Off needs nothing from the daemon: it works while the daemon is down.
+    let installed = installed(&state).await;
+    if on {
+        match installed {
+            None => return Err(ApiError::unavailable()),
+            Some(false) => return Err(ApiError::new(409, "Install the app first")),
+            Some(true) => {}
+        }
     }
     save(&state, on).map_err(|error| {
         tracing::error!(%error, "could not save the wake app switch");
@@ -95,21 +115,18 @@ async fn write(State(state): State<Shared>, body: Bytes) -> ApiResult<Json<Value
     Ok(view(&state, installed))
 }
 
-/// The app is being removed: it must not start by itself once it is back.
+/// The app is being removed.
 pub fn removed(state: &Shared, name: &str) {
-    if name == state.wake_app
-        && enabled(state)
-        && let Err(error) = save(state, false)
-    {
-        tracing::error!(%error, "could not switch the wake app off");
+    if name == state.wake_app {
+        switch_off(state);
     }
 }
 
 /// The dashboard's power-on woke the robot: start the app once it is up.
 /// A profile the app is off for (#297) doesn't get it by powering on.
 /// `epoch` is `power_epoch` after that power-on: the start is dropped if the
-/// robot was switched off or on again since, so it never acts for a later
-/// power-on, which may be someone else's.
+/// robot was switched off, made limp or switched on again since, so it never
+/// acts for a later power-on, which may be someone else's.
 pub fn after_power_on(state: &Shared, ctx: Option<&AuthContext>, epoch: u64) {
     let name = state.wake_app.clone();
     if !enabled(state) || ctx.is_some_and(|c| !c.access.allows_app(&name)) {
@@ -128,21 +145,32 @@ async fn start_when_awake(state: &Shared, name: &str, epoch: u64) -> Result<(), 
     let daemon = &state.daemon;
     let on = || async { daemon.status().await.is_some_and(|s| robot_state(&s) == "running") };
     let same_power_on = || state.power_epoch.load(Ordering::SeqCst) == epoch;
-    // Outside the power lock, so a power off during the wake isn't held up.
+    // The wake is waited out before the locks, so a power off during it
+    // isn't held up. Only the app's own start runs under them, as a start
+    // from the Apps tab does.
     if !wait_until(WAKE_TIMEOUT, || async { !same_power_on() || on().await }).await {
         return Err("the robot did not wake up in time".into());
     }
+    // From asleep the robot is "running" at once, with the wake move still
+    // playing. Like `ensure_awake`, carry on if the moves never clear.
+    wait_until(WAKE_TIMEOUT, || async {
+        !same_power_on() || daemon.running_moves().await.is_some_and(|m| m.is_empty())
+    })
+    .await;
+    // As a request's action: a switch to or from the simulation waits for it.
+    let _switch = state.sim.acting().await;
     let _power = state.power_lock.lock().await;
-    // Powered off since (starting the app would switch the robot back on),
-    // or on again by someone else.
+    // Powered off or made limp since (starting the app would switch the
+    // motors back on), or on again by someone else.
     if !same_power_on() || !on().await {
-        return Err("the robot was switched off or on again meanwhile".into());
+        return Err("the robot was switched off, made limp or switched on again meanwhile".into());
     }
     if !enabled(state) {
         return Err("switched off meanwhile".into());
     }
     let installed = state.apps.installed_names().await.map_err(|_| "robot service down")?;
     if !installed.iter().any(|n| n == name) {
+        switch_off(state);
         return Err("not installed".into());
     }
     let started = start_locked(state, name).await.map_err(|error| error.detail)?;

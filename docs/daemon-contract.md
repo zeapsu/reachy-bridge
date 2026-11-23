@@ -473,5 +473,6 @@ These follow from the sections above. The first four are the bugs found in
 9. To start an app when the robot wakes, start it from the controller after
    its own power-on, through the same guards as any app start (rule 3, rule
    8). Don't set the daemon's startup app: it doesn't start on a REST
-   power-on, and once armed its antenna watcher checks only the robot slot,
-   which the controller's expressions and drive sessions don't hold.
+   power-on, and once armed its antenna watcher checks only the daemon's
+   own app and robot slot, which the controller's expressions and drive
+   sessions don't hold.

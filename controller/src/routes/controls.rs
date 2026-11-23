@@ -91,6 +91,11 @@ async fn set_motor_mode(State(state): State<Shared>, Path(mode): Path<String>) -
     // Only a clear refusal means nothing changed: a timeout or a 5xx may have
     // applied the mode anyway.
     if !matches!(outcome, Err(DaemonError::Refused { status, .. }) if status < 500) {
+        if mode == "disabled" {
+            // Someone made the robot limp: an app still to start for the last
+            // power-on (wake_app) would switch the motors back on.
+            state.power_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         state.player.mode_changed();
         // A drive session ends here rather than holding the slot until its
         // socket notices, so the return home below isn't refused as busy.

@@ -188,11 +188,12 @@ impl Control {
         });
     }
 
-    /// A revoked device: it loses control, and with it any claim to come back.
+    /// A revoked device, or one whose role changed: it loses control, and
+    /// with it any claim to come back.
     pub fn forget(&self, device: &str) {
         self.with(|inner, _| {
             if inner.holder.as_ref().is_some_and(|h| h.device == device) {
-                tracing::info!("control: {device} lost control: revoked");
+                tracing::info!("control: {device} lost control: revoked or its role changed");
                 inner.holder = None;
             }
             if inner.away.as_ref().is_some_and(|h| h.device == device) {

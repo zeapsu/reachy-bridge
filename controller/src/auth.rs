@@ -186,6 +186,8 @@ struct Approval {
     person: String,
     role: Role,
     shared: bool,
+    /// The device that approved it; none for the local key.
+    by: Option<String>,
 }
 
 struct PairRequest {
@@ -220,6 +222,13 @@ struct Pending {
 }
 
 impl Pending {
+    /// `device` was revoked or is no longer an admin: what it approved and
+    /// nobody collected yet is void, and those browsers ask for a new code.
+    /// Else a browser it approved could still log in afterwards, as an admin.
+    fn void_approved_by(&mut self, device: &str) {
+        self.requests.retain(|r| r.approved.as_ref().is_none_or(|a| a.by.as_deref() != Some(device)));
+    }
+
     fn prune(&mut self, now: Instant) {
         self.requests.retain(|r| now < r.expires + FORGET_AFTER);
         self.recent.retain(|_, times| {
@@ -1187,6 +1196,7 @@ async fn approve(
                 person: body.person.as_deref(),
                 role: body.role,
                 shared: body.shared,
+                approver: ctx.device.as_deref(),
             },
             &by,
             ctx.local,
@@ -1201,6 +1211,9 @@ pub struct ApproveAs<'a> {
     pub role: Role,
     /// A shared tablet (#297).
     pub shared: bool,
+    /// The approving device, when it is one: revoking it voids the approval
+    /// until the approved browser has logged in.
+    pub approver: Option<&'a str>,
 }
 
 impl Auth {
@@ -1228,7 +1241,7 @@ impl Auth {
     /// request others locked with wrong codes, and its typos lock nothing.
     /// Who may approve, and an admin, is the caller's check.
     pub fn approve_code(&self, code: &str, approve: ApproveAs<'_>, by: &str, holds_key: bool) -> ApiResult<Value> {
-        let ApproveAs { name, person, role, shared } = approve;
+        let ApproveAs { name, person, role, shared, approver } = approve;
         let code = code.trim();
         if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
             return Err(ApiError::new(400, "the code is 6 digits"));
@@ -1276,7 +1289,13 @@ impl Auth {
             let lower = person.to_lowercase();
             self.people().into_iter().map(|(n, _)| n).find(|n| n.to_lowercase() == lower).unwrap_or(person)
         };
-        request.approved = Some(Approval { name: name.clone(), person: person.clone(), role, shared });
+        request.approved = Some(Approval {
+            name: name.clone(),
+            person: person.clone(),
+            role,
+            shared,
+            by: approver.map(str::to_string),
+        });
         request.attempts = 0;
         request.expires = request.expires.max(now + APPROVED_GRACE);
         tracing::info!(
@@ -1339,6 +1358,8 @@ async fn set_role(
         tracing::warn!("auth: role change refused for {by}: not an admin");
         return Err(ApiError::new(403, "only an admin can change a device's role"));
     }
+    // Before the devices, as a poll takes them.
+    let mut pending = auth.pending.lock().unwrap();
     let mut devices = auth.devices.lock().unwrap();
     let Some(index) = devices.iter().position(|d| d.id == id) else {
         return Err(ApiError::new(404, "unknown device"));
@@ -1358,9 +1379,13 @@ async fn set_role(
             tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
             return Err(ApiError::new(500, "could not save the device list"));
         }
+        if role != Role::Admin {
+            pending.void_approved_by(&id);
+        }
     }
     let device = devices[index].clone();
     drop(devices);
+    drop(pending);
     let person = if device.person.is_empty() { device.name.clone() } else { device.person.clone() };
     if was != role {
         // The person's rights change with it (an admin's devices are never
@@ -1372,6 +1397,9 @@ async fn set_role(
             affected.push(id.clone());
         }
         auth.rules_changed(&affected);
+        // Control is held as an admin or as a member (only an admin takes it
+        // from an admin): the device takes it again under its new role.
+        state.control.forget(&id);
         tracing::info!("auth: device {id} ({}) is now {role:?}, changed by {by}", device.name);
     }
     Ok(Json(json!({"id": device.id, "name": device.name, "person": person, "role": role})))
@@ -1412,6 +1440,8 @@ async fn revoke(
     if !own && !ctx.manages_devices(admin_mode) {
         return Err(ApiError::new(403, "only an admin can revoke other devices"));
     }
+    // Before the devices, as a poll takes them.
+    let mut pending = auth.pending.lock().unwrap();
     let mut devices = auth.devices.lock().unwrap();
     let Some(index) = devices.iter().position(|d| d.id == id) else {
         return Err(ApiError::new(404, "unknown device"));
@@ -1430,7 +1460,9 @@ async fn revoke(
         tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
         return Err(ApiError::new(500, "could not save the device list"));
     }
+    pending.void_approved_by(&id);
     drop(devices);
+    drop(pending);
     // A revoked browser can't drive any more: it gives up control now, so
     // nobody waits for it to go silent.
     state.control.forget(&id);

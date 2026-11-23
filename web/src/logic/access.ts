@@ -51,8 +51,15 @@ export function isLastAdmin(devices: PairedDevice[], device: PairedDevice): bool
   return device.role === "admin" && devices.filter((d) => d.role === "admin").length === 1;
 }
 
+const ADMIN_CAN = "It can then open System, approve devices and install apps.";
+
+/** What Approve as Admin asks before it acts. `name`: what the admin typed for the device, if anything. */
+export function approveAdminQuestion(name: string): string {
+  return `Approve ${name || "this device"} as an admin? ${ADMIN_CAN}`;
+}
+
 /** What Make admin asks before it acts. `limited`: the person's profile restricts them today. */
 export function makeAdminQuestion(device: PairedDevice, person: string, limited: boolean): string {
   const lifts = limited ? ` ${person}'s profile stops limiting every device of ${person}'s.` : "";
-  return `Make ${device.name} an admin? It can then open System, approve devices and install apps.${lifts}`;
+  return `Make ${device.name} an admin? ${ADMIN_CAN}${lifts}`;
 }

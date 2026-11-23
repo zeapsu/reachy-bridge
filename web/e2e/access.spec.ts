@@ -64,20 +64,34 @@ test("an admin approves another admin, adds a profile and makes its device an ad
   // A wrong code approves nothing; the right one makes it an admin of the same person.
   const code = waiting.getByRole("textbox", { name: "Code on the waiting device" });
   await code.fill(phone.code === "000000" ? "000001" : "000000");
+  page.once("dialog", (dialog) => void dialog.accept());
   await asAdmin.click();
   await expect(list.getByRole("alert")).toContainText(WRONG_CODE);
   expect((await whoAmI(phone.page)).authenticated).toBe(false);
+  // Approve as Admin asks first: declined, the code isn't sent.
   await code.fill(phone.code);
   await waiting.getByRole("textbox", { name: "Device name (optional)" }).fill("Phone");
+  let question = "";
+  page.once("dialog", (dialog) => {
+    question = dialog.message();
+    void dialog.dismiss();
+  });
   await asAdmin.click();
+  expect(question).toContain("Approve Phone as an admin?");
+  await expect(code).toHaveValue(phone.code);
+  expect((await whoAmI(phone.page)).authenticated).toBe(false);
+  page.once("dialog", (dialog) => void dialog.accept());
+  await asAdmin.click();
+  // The phone logs in a moment after the approval, and only then is a device:
+  // the list shows it by itself, whenever that is.
   await expect(phone.page.getByRole("tab", { name: "System" }).locator("visible=true").first()).toBeVisible({ timeout: 15_000 });
   await expect.poll(async () => (await whoAmI(phone.page)).role).toBe("admin");
   expect((await whoAmI(phone.page)).person).toBe("Sam");
-  await expect(row("Phone")).toContainText("Admin", { timeout: 15_000 });
+  await expect(row("Phone")).toContainText("Admin");
   await expect(waiting).toBeHidden();
   // With two admins, either can be revoked.
-  await expect(row("Laptop").getByRole("button", { name: "Log out" })).toBeVisible();
-  await expect(row("Phone").getByRole("button", { name: "Revoke" })).toBeVisible();
+  await expect(row("Laptop").getByRole("button", { name: "Log out Laptop" })).toBeVisible();
+  await expect(row("Phone").getByRole("button", { name: "Revoke Phone" })).toBeVisible();
 
   // A third browser, for someone new: add the profile, then approve for it.
   const ipad = await newBrowser(browser, baseURL!);
@@ -92,12 +106,12 @@ test("an admin approves another admin, adds a profile and makes its device an ad
   await waiting.getByRole("button", { name: "Mia" }).click();
   await expect.poll(async () => (await whoAmI(ipad.page)).role, { timeout: 15_000 }).toBe("member");
   expect((await whoAmI(ipad.page)).person).toBe("Mia");
-  await expect(row("iPad")).toBeVisible({ timeout: 15_000 });
+  await expect(row("iPad")).toBeVisible();
   // A new profile starts limited, and System is the admin's only.
   expect((await ipad.page.request.get("/api/logs/sources")).status()).toBe(403);
 
   // Make admin asks first, and says what it lifts.
-  const makeAdmin = row("iPad").getByRole("button", { name: "Make admin" });
+  const makeAdmin = row("iPad").getByRole("button", { name: "Make iPad an admin" });
   let asked = "";
   page.once("dialog", (dialog) => {
     asked = dialog.message();

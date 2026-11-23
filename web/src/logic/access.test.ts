@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PairedDevice, ProfileItem } from "./auth.ts";
-import { accessList, isLastAdmin, isWaitingList, makeAdminQuestion, waitingText } from "./access.ts";
+import { accessList, approveAdminQuestion, isLastAdmin, isWaitingList, makeAdminQuestion, waitingText } from "./access.ts";
 
 const device = (id: string, extra: Partial<PairedDevice> = {}): PairedDevice => ({
   id,
@@ -66,6 +66,13 @@ describe("waiting", () => {
     expect(isWaitingList({ pending: [{ peer: "10.0.0.2" }] })).toBe(false);
     expect(isWaitingList({ detail: "only an admin can see who is waiting" })).toBe(false);
     expect(isWaitingList(null)).toBe(false);
+  });
+});
+
+describe("approveAdminQuestion", () => {
+  test("names the device when the admin typed a name", () => {
+    expect(approveAdminQuestion("Phone")).toBe("Approve Phone as an admin? It can then open System, approve devices and install apps.");
+    expect(approveAdminQuestion("")).toContain("Approve this device as an admin?");
   });
 });
 

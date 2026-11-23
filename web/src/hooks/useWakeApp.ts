@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson, errorText, paths, type WakeApp } from "../api.ts";
 
 export interface WakeAppState {
-  /** Null until it loads, and while the robot service can't say what is installed. */
+  /** Null until it loads, and when the controller doesn't answer. */
   info: WakeApp | null;
   busy: boolean;
   error: string;
@@ -19,8 +19,10 @@ export function useWakeApp(live: boolean, target: string | null, online: boolean
   const [info, setInfo] = useState<WakeApp | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // Bumped by every read and write, so an older answer can't land over a newer one.
+  // Bumped by every read and by a write's answer, so an older answer can't land over a newer one.
   const seq = useRef(0);
+  // Bumped when a write ends: the switch is read again, whatever was read meanwhile.
+  const [written, setWritten] = useState(0);
 
   useEffect(() => {
     if (!live) return;
@@ -32,21 +34,23 @@ export function useWakeApp(live: boolean, target: string | null, online: boolean
       .catch(() => {
         if (mine === seq.current) setInfo(null);
       });
-  }, [live, target, online]);
+  }, [live, target, online, written]);
 
   const set = useCallback((enabled: boolean) => {
-    const mine = ++seq.current;
     setBusy(true);
     setError("");
+    // One write at a time (the switch is disabled meanwhile), so its answer is the newest there is:
+    // a read sent while it was on its way may have been answered from before the save.
     apiJson<WakeApp>(paths.wakeApp, { method: "PUT", body: JSON.stringify({ enabled }) })
       .then((next) => {
-        if (mine === seq.current) setInfo(next);
+        ++seq.current;
+        setInfo(next);
       })
-      .catch((err) => {
-        if (mine === seq.current) setError(errorText(err, "Couldn't save the setting"));
-      })
-      // One write at a time (the switch is disabled meanwhile), so this is always the one that ended.
-      .finally(() => setBusy(false));
+      .catch((err) => setError(errorText(err, "Couldn't save the setting")))
+      .finally(() => {
+        setBusy(false);
+        setWritten((n) => n + 1);
+      });
   }, []);
 
   return { info, busy, error, set };

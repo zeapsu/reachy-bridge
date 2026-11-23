@@ -241,6 +241,9 @@ def main() -> int:
                 start_new_session=True,
             )
         wait_up(f"{daemon_url}/api/daemon/status", daemon, "daemon")
+        # The admin controller talks to the daemon directly: a recording holds
+        # what the main controller and the checks relied on, nothing else.
+        direct_daemon_url = daemon_url
         if args.record:
             from record import RecordingProxy
 
@@ -274,7 +277,7 @@ def main() -> int:
                 [str(controller_bin)],
                 env={
                     **os.environ,
-                    "DAEMON_URL": daemon_url,
+                    "DAEMON_URL": direct_daemon_url,
                     "CONTROLLER_PORT": str(admin_port),
                     "CONTROLLER_APP_PORT": str(admin_app_port),
                     "REACHY_BRIDGE_STATE_DIR": str(work / "admin-controller-state"),

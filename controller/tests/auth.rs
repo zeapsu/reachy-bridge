@@ -804,6 +804,66 @@ async fn a_role_change_ends_what_the_device_had_open() {
 }
 
 #[tokio::test]
+async fn an_approval_nobody_collected_ends_with_its_approver() {
+    let (h, admin, sam, _mia) = family_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    let as_sam = [("cookie", sam.as_str())];
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &as_admin, None).await.body["devices"].clone();
+    let sam_id = devices.as_array().unwrap().iter().find(|d| d["person"] == "Sam").unwrap()["id"].as_str().unwrap();
+    let role = format!("/api/auth/devices/{sam_id}/role");
+    let make_sam = |to: &'static str| h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": to})));
+    let approved_as_admin = |by: &'static str| {
+        let (h, as_admin, as_sam) = (&h, &as_admin, &as_sam);
+        async move {
+            let (id, code, pair) = h.pair(LAN3).await;
+            let approver = if by == "sam" { &as_sam[..] } else { &as_admin[..] };
+            let body = json!({"code": code, "name": "new laptop", "person": "Sam", "role": "admin"});
+            let r = h.call("POST", "/api/auth/approve", LAN, approver, Some(body)).await;
+            assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+            (id, pair)
+        }
+    };
+    assert_eq!(make_sam("admin").await.status, StatusCode::OK);
+
+    // Sam, an admin, approves a browser as an admin and it doesn't log in
+    // yet. Sam is made a member again: the approval is gone with the role.
+    let (id, pair) = approved_as_admin("sam").await;
+    assert_eq!(make_sam("member").await.status, StatusCode::OK);
+    assert_eq!(h.poll(&id, LAN3, &pair).await.status, StatusCode::NOT_FOUND);
+
+    // The same when Sam's device is revoked.
+    assert_eq!(make_sam("admin").await.status, StatusCode::OK);
+    let (id, pair) = approved_as_admin("sam").await;
+    // What another admin approved stays.
+    let (kept, kept_pair) = approved_as_admin("admin").await;
+    let r = h.call("DELETE", &format!("/api/auth/devices/{sam_id}"), LOOPBACK, &as_admin, None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.poll(&id, LAN3, &pair).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(h.poll(&kept, LAN3, &kept_pair).await.body["status"], "approved");
+    let admins = h.state.auth.device_names().len();
+    assert_eq!(admins, 3, "the admin, Mia's ipad and the one the admin approved: {:?}", h.state.auth.device_names());
+}
+
+#[tokio::test]
+async fn a_role_change_gives_up_control() {
+    let (h, admin, sam, _mia) = family_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &as_admin, None).await.body["devices"].clone();
+    let sam_id = devices.as_array().unwrap().iter().find(|d| d["person"] == "Sam").unwrap()["id"].as_str().unwrap();
+    let role = format!("/api/auth/devices/{sam_id}/role");
+    // Sam's second device, a member's.
+    let spare = h.paired_as(LAN3, &as_admin, json!({"name": "spare", "person": "Sam"})).await;
+    for (to, holds_as_admin) in [("admin", false), ("member", true)] {
+        assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+        assert_eq!(h.view(LAN, &sam).await["holder"]["admin"], holds_as_admin);
+        assert_eq!(h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": to}))).await.status, StatusCode::OK);
+        // Held under the old role, it would keep (or miss) an admin's hold
+        // against Sam's other device.
+        assert_eq!(h.view(LAN3, &spare).await["holder"], Value::Null, "after becoming {to}");
+    }
+}
+
+#[tokio::test]
 async fn a_shared_tablet_is_never_made_an_admin() {
     let (h, admin, _sam, _mia) = family_harness().await;
     let as_admin = [("cookie", admin.as_str())];

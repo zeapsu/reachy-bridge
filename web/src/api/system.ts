@@ -46,7 +46,8 @@ export interface WakeApp {
   app: string;
   /** A readable name made from the package name. */
   name: string;
-  installed: boolean;
+  /** Null while the robot service can't say. */
+  installed: boolean | null;
   enabled: boolean;
 }
 

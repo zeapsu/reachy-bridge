@@ -231,6 +231,10 @@ pub async fn start_locked(state: &Shared, name: &str) -> ApiResult<Result<(), St
         }
     }
     ensure_awake(state).await?;
+    // The wait for the wake move is long enough for an expression to begin.
+    if state.player.active() {
+        return refuse("Robot busy");
+    }
     match daemon.post_slow(&format!("apps/start-app/{name}"), APP_CONTROL_TIMEOUT).await {
         Ok(_) => Ok(Ok(())),
         Err(crate::daemon::DaemonError::Unavailable) => Err(ApiError::unavailable()),
