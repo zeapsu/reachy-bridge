@@ -17,6 +17,7 @@ with an error instead of half-applying a patch to code it doesn't match.
 
 from __future__ import annotations
 
+import functools
 import importlib
 import inspect
 import math
@@ -105,6 +106,11 @@ _BACKEND = "reachy_mini.daemon.backend.abstract"
 _MEDIA_SERVER = "reachy_mini.media.media_server"
 _APPS_VENV = "reachy_mini.apps.sources.local_common_venv"
 _ROBOT_BACKEND = "reachy_mini.daemon.backend.robot.backend"
+_INTERPOLATION = "reachy_mini.utils.interpolation"
+# The modules whose move loops call time_trajectory, each through its own
+# import of it: goto moves (wake-up, sleep, goto_target) and the backend's
+# goto_joint_positions.
+_MOVE_CLOCK_USERS = ("reachy_mini.motion.goto", _BACKEND)
 # Backend.__init__ keeps uploaded move audio in <tempdir>/<this>/audio.
 _UPLOADS_DIR = "reachy-mini-uploads"
 
@@ -388,7 +394,26 @@ REQUIREMENTS: tuple[Requirement, ...] = (
             _attr("huggingface_hub.constants", "HF_HUB_CACHE"),
         ),
     ),
+    Requirement(
+        "move_clock",
+        "time_trajectory(t, method) raises outside [0, 1]",
+        _function(_INTERPOLATION, "time_trajectory", "t", "method"),
+    ),
+    *(
+        Requirement(
+            "move_clock",
+            f"{module} calls interpolation's time_trajectory through its own import",
+            lambda module=module: _same_function(module, "time_trajectory", _INTERPOLATION),
+        )
+        for module in _MOVE_CLOCK_USERS
+    ),
 )
+
+
+def _same_function(module: str, name: str, home: str) -> None:
+    used = inspect.unwrap(_attr(module, name))
+    if used is not _attr(home, name):
+        raise UpstreamMismatch(f"{module}.{name} is no longer {home}.{name}")
 
 
 def check(features: set[str] | None = None) -> dict[str, list[str]]:
@@ -459,6 +484,25 @@ def _wrap(owner: Any, name: str, wrapper: Callable[..., Any]) -> None:
     patched._bridge_wrapper = key  # type: ignore[attr-defined]
     patched.__wrapped__ = original  # type: ignore[attr-defined]
     setattr(owner, name, patched)
+
+
+def wrap_time_trajectory(wrapper: Callable[..., float]) -> None:
+    """Replace ``time_trajectory`` where the move loops call it with
+    ``wrapper(original, t, *args, **kwargs)``. Each module imported it by
+    name, so the name is rebound in each one; wrapping twice is a no-op."""
+    key = f"{wrapper.__module__}.{wrapper.__qualname__}"
+    for name in _MOVE_CLOCK_USERS:
+        module = importlib.import_module(name)
+        original = module.time_trajectory
+        if getattr(original, "_bridge_wrapper", None) == key:
+            continue
+
+        @functools.wraps(original)
+        def patched(t: float, *args: Any, _original: Any = original, **kwargs: Any) -> float:
+            return wrapper(_original, t, *args, **kwargs)
+
+        patched._bridge_wrapper = key  # type: ignore[attr-defined]
+        module.time_trajectory = patched
 
 
 # --- Apps and the robot slot -------------------------------------------------

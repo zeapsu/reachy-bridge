@@ -27,6 +27,7 @@ from reachy_bridge_runtime.features import (
     kinematics,
     media,
     media_return,
+    move_clock,
     platform_info,
     sim_apps,
     sim_sounds,
@@ -43,6 +44,7 @@ FEATURES = {
     keep_awake.FEATURE: keep_awake.apply,
     kinematics.FEATURE: kinematics.apply,
     media_return.FEATURE: media_return.apply,
+    move_clock.FEATURE: move_clock.apply,
     "audio_levels": media.apply_audio_spectrum,
     "camera": media.apply_camera_stream,
     sim_apps.FEATURE: lambda: sim_apps.apply(sys.argv[1:]),
@@ -51,7 +53,14 @@ FEATURES = {
 }
 # On every platform; the rest only where the platform adapter enables them.
 CORE_FEATURES = frozenset(
-    {app_bind.FEATURE, idle_reset.FEATURE, keep_awake.FEATURE, kinematics.FEATURE, media_return.FEATURE}
+    {
+        app_bind.FEATURE,
+        idle_reset.FEATURE,
+        keep_awake.FEATURE,
+        kinematics.FEATURE,
+        media_return.FEATURE,
+        move_clock.FEATURE,
+    }
 )
 # Features whose mismatch or failure stops startup, like a daemon mismatch:
 # without them the daemon would run apps open on the LAN (#186), or a sim

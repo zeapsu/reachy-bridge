@@ -1,6 +1,6 @@
 """Run the sim checks end to end: sim daemon, controller, test apps, smoke.py.
 
-    uv run python tools/sim/run.py [--work-dir DIR] [--audio] [-- COMMAND...]
+    uv run python tools/sim/run.py [--work-dir DIR] [--audio] [--record FILE] [-- COMMAND...]
 
 Starts its own sim daemon (through ``sim_daemon.py``) and controller on free
 ports, installs the test apps from ``tools/sim/apps`` into a fresh apps venv,
@@ -23,6 +23,11 @@ It needs GStreamer's WebRTC elements (gstreamer1.0-plugins-bad,
 gstreamer1.0-nice) and a local address on the gateway's ICE networks
 (``AUDIO_GATEWAY_NETS``, the tailnet by default). Not on a robot: the gateway
 would mute and unmute the robot's real speaker as the tests switch hearing.
+
+``--record FILE`` puts a recording proxy (``record.py``) between the daemon
+and both the controller and the command, and writes the status codes and
+body shapes the daemon answered to ``FILE`` (``differential.py`` compares
+two such recordings, #317).
 """
 
 from __future__ import annotations
@@ -160,6 +165,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--work-dir", type=Path, help="logs, state and apps venv (default: a temp dir)")
     parser.add_argument("--audio", action="store_true", help="also start the audio gateway, on test tones and files")
+    parser.add_argument("--record", type=Path, help="record the daemon's answers to this file (differential.py)")
     parser.add_argument(
         "command",
         nargs=argparse.REMAINDER,
@@ -194,7 +200,7 @@ def main() -> int:
     controller_url = f"http://127.0.0.1:{controller_port}"
     print(f"sim run in {work}: daemon {daemon_url}, controller {controller_url}", flush=True)
 
-    daemon = controller = gateway = None
+    daemon = controller = gateway = proxy = None
     code = 1
     try:
         install_apps(work / "apps")
@@ -227,6 +233,12 @@ def main() -> int:
                 start_new_session=True,
             )
         wait_up(f"{daemon_url}/api/daemon/status", daemon, "daemon")
+        if args.record:
+            from record import RecordingProxy
+
+            proxy = RecordingProxy(daemon_url)
+            proxy.start()
+            daemon_url = proxy.url
         with open(work / "controller.log", "wb") as log:
             controller = subprocess.Popen(
                 [str(controller_bin)],
@@ -276,7 +288,12 @@ def main() -> int:
     finally:
         stop(gateway)
         stop(controller)
-        stop(daemon)
+        try:
+            if proxy is not None:
+                proxy.save(args.record)
+                proxy.close()
+        finally:
+            stop(daemon)
     if code == 0 and temporary:
         shutil.rmtree(work, ignore_errors=True)
     else:
