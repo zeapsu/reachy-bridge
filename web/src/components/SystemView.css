@@ -2,6 +2,18 @@
 .sys { gap: 18px; }
 .sys .pane { gap: 20px; }
 
+/* A device is waiting for approval (#334). */
+.seg .seg-badge {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 7px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
 /* A titled group inside the sheet (Panel, inset). */
 .group-head {
   display: flex;

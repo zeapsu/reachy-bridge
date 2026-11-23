@@ -194,13 +194,21 @@ def main() -> int:
         pass
     while (audio_port := free_port()) in (daemon_port, controller_port, app_port):
         pass
+    # A second controller for the tests that make an admin (#334): admin mode
+    # stays on for good, and every other test needs a controller without it.
+    taken = {daemon_port, controller_port, app_port, audio_port}
+    while (admin_port := free_port()) in taken:
+        pass
+    while (admin_app_port := free_port()) in taken | {admin_port}:
+        pass
+    admin_url = f"http://127.0.0.1:{admin_port}"
     audio = work / "audio"
     audio_url = f"http://127.0.0.1:{audio_port}"
     daemon_url = f"http://127.0.0.1:{daemon_port}"
     controller_url = f"http://127.0.0.1:{controller_port}"
     print(f"sim run in {work}: daemon {daemon_url}, controller {controller_url}", flush=True)
 
-    daemon = controller = gateway = proxy = None
+    daemon = controller = admin_controller = gateway = proxy = None
     code = 1
     try:
         install_apps(work / "apps")
@@ -261,6 +269,25 @@ def main() -> int:
                 start_new_session=True,
             )
         wait_up(f"{controller_url}/api/daemon/status", controller, "controller")
+        with open(work / "admin-controller.log", "wb") as log:
+            admin_controller = subprocess.Popen(
+                [str(controller_bin)],
+                env={
+                    **os.environ,
+                    "DAEMON_URL": daemon_url,
+                    "CONTROLLER_PORT": str(admin_port),
+                    "CONTROLLER_APP_PORT": str(admin_app_port),
+                    "REACHY_BRIDGE_STATE_DIR": str(work / "admin-controller-state"),
+                    "REACHY_DAEMON_UNIT": "none.service",
+                    "AUDIO_GATEWAY_URL": audio_url,
+                    "AUDIO_GATEWAY_UNIT": "",
+                },
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        wait_up(f"{admin_url}/api/daemon/status", admin_controller, "admin controller")
         extra = {}
         if args.audio:
             audio.mkdir(exist_ok=True)
@@ -283,13 +310,22 @@ def main() -> int:
             }
         code = subprocess.run(
             command,
-            env={**os.environ, "SIM_DAEMON": daemon_url, "SIM_CONTROLLER": controller_url, **extra},
+            env={
+                **os.environ,
+                "SIM_DAEMON": daemon_url,
+                "SIM_CONTROLLER": controller_url,
+                "SIM_ADMIN_CONTROLLER": admin_url,
+                # What `reachy-bridge pair --admin` sends: the first admin needs it.
+                "SIM_ADMIN_KEY": str(work / "admin-controller-state" / "controller.key"),
+                **extra,
+            },
         ).returncode
     except (RuntimeError, OSError, subprocess.CalledProcessError) as e:
         print(f"sim run failed: {e}", file=sys.stderr)
     finally:
         stop(gateway)
         stop(controller)
+        stop(admin_controller)
         try:
             if proxy is not None:
                 proxy.save(args.record)

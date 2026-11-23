@@ -197,17 +197,34 @@ browser. People without System find the same settings under their chip in the to
 **Admin.** Until an admin exists, anyone who reaches the dashboard can drive the robot. Under
 System › Access, choose Make this browser the admin, then run the command it shows on the robot.
 Only the command on the robot can approve the first admin. After that, every browser logs in,
-including over Tailscale, and an admin can approve more admin browsers from the dashboard.
+including over Tailscale.
 
-**Adding a browser.** A new browser shows a 6-digit code, valid for 5 minutes. Approve it from an
-admin's dashboard, or run `reachy-bridge pair <code>` on the robot. Too many wrong tries lock the
-code, so only the command on the robot can approve it.
+**System › Access** is the admin's list of who may use the robot. With only your own admin
+browsers it is a list of devices; once there are other people it shows each profile with its
+browsers under it, then shared tablets.
+
+**Adding a browser.** A new browser shows a 6-digit code, valid for 5 minutes. While one is
+waiting, Access shows a dot on its tab and a card with the browser's address and how long it has
+been asking. Type the code from that browser's screen (the card never shows it, so a browser you
+can't see can't be approved by mistake), give it a name if you like, and choose who it is for:
+
+- **Approve as Admin** makes it another admin browser of yours. An admin browser can do everything
+  yours can, including approving more admins, so approve only your own devices this way.
+- **A profile's name** approves it for that person. New profile adds one first.
+- **Shared** is for a tablet several people use. It belongs to nobody: whoever picks it up chooses
+  their profile (see below).
+
+`reachy-bridge pair <code>` on the robot approves a code too. Five wrong codes lock a waiting
+browser: it leaves the card, and only the command on the robot can approve it.
+
+**Make admin** on a browser turns it into an admin browser after a confirmation. Its person
+becomes an admin, so their profile stops limiting their other browsers too. To take the admin
+role away again, revoke the browser and approve it again for a profile.
 
 **Removing a browser.** Revoke it under System › Access, or run `reachy-bridge devices revoke <n>`. A browser
-unused for 30 days is logged out.
-
-**Shared browsers.** Turn on Shared when approving a tablet that several people use. It belongs to
-nobody: whoever picks it up chooses their profile (see below).
+unused for 30 days is logged out. The dashboard keeps the last admin browser: it has no Revoke
+button. If you lose every admin browser, pair a new one with `reachy-bridge pair --admin` on the
+robot.
 
 ## Profiles
 
@@ -232,8 +249,7 @@ Changes apply within seconds. That profile's open camera, voice or live views re
 new rules; nobody else's do. Each profile keeps its own pinned apps. The admin's profile always has
 everything, and can't be restricted.
 
-**Adding someone.** Add a profile, then approve their browser with their name as the person
-(upper or lower case doesn't matter). To
+**Adding someone.** Add a profile, then approve their browser for it from the waiting card. To
 move a browser to another profile, log it out and approve it again. A profile with browsers of its own
 can't be removed: log them out first. Renaming a profile moves its browsers with it.
 

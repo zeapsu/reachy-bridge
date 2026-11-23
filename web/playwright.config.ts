@@ -34,6 +34,22 @@ const voice = process.env.SIM_AUDIO
     ]
   : [];
 
+// The admin tests (#334) run once, against a controller of their own
+// (SIM_ADMIN_CONTROLLER): making an admin can't be undone, and every other
+// test needs a controller without one.
+const admin = process.env.SIM_ADMIN_CONTROLLER
+  ? [
+      {
+        name: "admin",
+        testMatch: /access\.spec\.ts/,
+        use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 }, baseURL: process.env.SIM_ADMIN_CONTROLLER },
+      },
+    ]
+  : [];
+
+/** Specs that run in a project of their own. */
+const OWN_PROJECT = /(voice(-silent-mic)?|access)\.spec\.ts/;
+
 export default defineConfig({
   testDir: "e2e",
   workers: 1,
@@ -48,8 +64,9 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   projects: [
-    { name: "desktop", testIgnore: /voice(-silent-mic)?\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } } },
-    { name: "phone", testIgnore: /voice(-silent-mic)?\.spec\.ts/, use: { ...devices["Pixel 7"] } },
+    { name: "desktop", testIgnore: OWN_PROJECT, use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } } },
+    { name: "phone", testIgnore: OWN_PROJECT, use: { ...devices["Pixel 7"] } },
+    ...admin,
     ...voice,
   ],
 });

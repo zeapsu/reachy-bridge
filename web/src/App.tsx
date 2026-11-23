@@ -295,6 +295,7 @@ function Dashboard() {
           {systemOpen ? (
             <SystemView
               family={may.family}
+              person={me.profile?.name ?? null}
               installed={apps.names.map((name) => ({ name, display: appForName(apps.statuses, name).display || name }))}
               daemonOnline={daemonOnline}
               live={visible && tab === "system"}
