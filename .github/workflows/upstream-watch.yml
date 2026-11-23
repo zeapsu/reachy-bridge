@@ -3,13 +3,19 @@ name: Upstream watch
 # Follows Pollen's reachy-mini releases (#155, step 1: detect and check).
 # Daily, it locks the newest reachy-mini that the floor in
 # runtime/pyproject.toml allows. When that differs from uv.lock, it pushes the
-# new lock to chore/reachy-mini-<version>, runs CI against that branch, and
-# opens a PR when everything passes or an upstream-break issue when it
-# doesn't. Merging the bump stays human: a new daemon needs hardware QA,
+# new lock to chore/reachy-mini-<version>, runs CI against that branch and the
+# differential sim run (#317: the daemon's answers on main's lock and on the
+# new one, compared against tools/sim/contract-changes.json), and opens a PR
+# when everything passes or an upstream-break issue when it doesn't. Merging the bump stays human: a new daemon needs hardware QA,
 # which the required `hardware-qa` status holds it for (hardware-qa-gate.yml).
 #
 # Only the push and report jobs hold write tokens. Neither runs code from the
-# new package; resolving and testing it happen in read-only jobs.
+# new package; resolving and testing it happen in read-only jobs. The
+# differential's two recordings are made in separate jobs and compared in a
+# third that runs no package code. That keeps an honest comparison clean; it
+# is no integrity check against a hostile release, whose job could upload
+# whatever recordings it likes (as it could fake CI). Review and hardware QA
+# stay the protection there.
 
 on:
   schedule:
@@ -177,8 +183,131 @@ jobs:
     with:
       ref: ${{ needs.detect.outputs.branch }}
 
+  # The sim checks with a recording proxy in front of the daemon, once on
+  # main's lock and once on the new one (tools/sim/differential.py).
+  # After push: no new-package code runs while push still has to fetch the
+  # lock artifact it commits.
+  record:
+    needs: [detect, push]
+    if: needs.detect.outputs.status == 'new'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        lock: [base, candidate]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: tools
+        run: python3 tools/toolchain_versions.py >> "$GITHUB_OUTPUT"
+      # As in ci.yml's sim job.
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgirepository1.0-dev libcairo2-dev \
+            gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
+      # Caches are restored but never saved: this job runs unreviewed code.
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ steps.tools.outputs.uv }}
+          enable-cache: true
+          save-cache: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ steps.tools.outputs.bun }}
+          # setup-bun saves its own cache otherwise.
+          no-cache: true
+      - name: Install Rust
+        env:
+          RUST: ${{ steps.tools.outputs.rust }}
+        run: |
+          rustup toolchain install "$RUST" --profile minimal
+          rustup default "$RUST"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: controller
+          save-if: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: matrix.lock == 'candidate'
+        with:
+          name: lock
+          path: ${{ runner.temp }}/lock
+      - name: Use the new lock
+        if: matrix.lock == 'candidate'
+        run: cp "$RUNNER_TEMP/lock/uv.lock" uv.lock
+      - run: uv sync --frozen
+      - name: Web
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+      - name: Controller
+        working-directory: controller
+        run: cargo build --release --locked
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-datasets-${{ hashFiles('tools/sim/run.py') }}
+          restore-keys: hf-datasets-
+      - name: Recorded sim run
+        env:
+          LOCK: ${{ matrix.lock }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/recording"
+          uv run python tools/sim/run.py --work-dir "$RUNNER_TEMP/sim" --record "$RUNNER_TEMP/recording/$LOCK.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: recording-${{ matrix.lock }}
+          path: |
+            ${{ runner.temp }}/recording/
+            ${{ runner.temp }}/sim/*.log
+          if-no-files-found: ignore
+
+  # Main's comparison script on the two recordings, under python3 -I with no
+  # dependencies installed. Fails on any difference not approved in main's
+  # tools/sim/contract-changes.json; the job summary lists them.
+  differential:
+    needs: [detect, record]
+    if: ${{ !cancelled() && needs.detect.outputs.status == 'new' && needs.record.result != 'skipped' }}
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: recording-*
+          path: ${{ runner.temp }}/rec
+      - name: Compare the daemon's answers
+        run: |
+          set -uo pipefail
+          # One directory per artifact: recording-<lock>/recording/<lock>.json.
+          rec="$RUNNER_TEMP/rec"
+          python3 -I tools/sim/differential.py compare \
+            "$rec/recording-base/recording/base.json" "$rec/recording-candidate/recording/candidate.json" \
+            > "$RUNNER_TEMP/diff.md" 2>&1
+          code=$?
+          cat "$RUNNER_TEMP/diff.md"
+          {
+            echo "### Differential sim run"
+            echo
+            # A tilde fence: the report quotes routes the new daemon answered.
+            echo '~~~~~~~~~~'
+            tr -d '~' < "$RUNNER_TEMP/diff.md"
+            echo '~~~~~~~~~~'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+
   report:
-    needs: [detect, push, check]
+    needs: [detect, push, check, record, differential]
     if: >-
       !cancelled() && needs.detect.result == 'success' &&
       (needs.detect.outputs.status == 'new' || needs.detect.outputs.status == 'lock-failed')
@@ -202,6 +331,8 @@ jobs:
           BRANCH: ${{ needs.detect.outputs.branch }}
           PUSH: ${{ needs.push.result }}
           CHECK: ${{ needs.check.result }}
+          DIFF: ${{ needs.differential.result }}
+          RECORD: ${{ needs.record.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PLAYBOOK: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/update-reachy-mini.md
           COMPARE_URL: ${{ github.server_url }}/${{ github.repository }}/compare/main...${{ needs.detect.outputs.branch }}
@@ -214,9 +345,9 @@ jobs:
           - Review it as [docs/update-reachy-mini.md]($PLAYBOOK) describes: read the [upstream changelog]($changelog) and diff for behaviour changes the checks can't see, and update \`docs/daemon-contract.md\` for the new version.
           - Needs hardware QA: a new daemon drives the motors. The \`hardware-qa\` check stays pending until the owner tests this branch's head on the robot and labels the PR \`qa: passed\`."
 
-          if [[ "$STATUS" == new && "$CHECK" == success ]]; then
+          if [[ "$STATUS" == new && "$CHECK" == success && "$RECORD" == success && "$DIFF" == success ]]; then
             cat > "$body" <<EOF
-          The daily upstream watch locked reachy-mini $VERSION (was $OLD). CI passed against this branch in [the watch run]($RUN_URL): unit tests, \`reachy-bridge-runtime --check\` and the sim contract tests.
+          The daily upstream watch locked reachy-mini $VERSION (was $OLD). CI passed against this branch in [the watch run]($RUN_URL): unit tests, \`reachy-bridge-runtime --check\` and the sim contract tests. The differential sim run found no unapproved differences in the daemon's answers (\`tools/sim/contract-changes.json\`).
 
           $checklist
 
@@ -261,11 +392,11 @@ jobs:
             failed=$(gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/jobs" --paginate \
               --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | "- [\(.name)](\(.html_url)): \(.conclusion)"')
             cat > "$body" <<EOF
-          The daily upstream watch locked reachy-mini $VERSION (was $OLD) on \`$BRANCH\`, and CI failed against it ([run]($RUN_URL)):
+          The daily upstream watch locked reachy-mini $VERSION (was $OLD) on \`$BRANCH\`, and CI or the differential sim run failed against it ([run]($RUN_URL)):
 
           ${failed:-- (no failed job found; see the run)}
 
-          Fix it on \`$BRANCH\` following [docs/update-reachy-mini.md]($PLAYBOOK): the fix stays inside \`upstream.py\`, the lock and the daemon contract, or the issue gets a diagnosis and a proposed patch instead. Upstream changes: [changelog]($changelog).
+          Fix it on \`$BRANCH\` following [docs/update-reachy-mini.md]($PLAYBOOK): the fix stays inside \`upstream.py\`, the lock and the \`reachy-mini\` floor, the daemon contract and the approved differences in \`tools/sim/contract-changes.json\`, or the issue gets a diagnosis and a proposed patch instead. Upstream changes: [changelog]($changelog).
           EOF
           fi
           echo >> "$body"
