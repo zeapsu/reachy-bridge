@@ -186,7 +186,8 @@ struct Approval {
     person: String,
     role: Role,
     shared: bool,
-    /// The device that approved it; none for the local key.
+    /// The device that approved it; none for the local key. Checked when
+    /// the approval is collected (see `poll`).
     by: Option<String>,
 }
 
@@ -222,13 +223,6 @@ struct Pending {
 }
 
 impl Pending {
-    /// `device` was revoked or is no longer an admin: what it approved and
-    /// nobody collected yet is void, and those browsers ask for a new code.
-    /// Else a browser it approved could still log in afterwards, as an admin.
-    fn void_approved_by(&mut self, device: &str) {
-        self.requests.retain(|r| r.approved.as_ref().is_none_or(|a| a.by.as_deref() != Some(device)));
-    }
-
     fn prune(&mut self, now: Instant) {
         self.requests.retain(|r| now < r.expires + FORGET_AFTER);
         self.recent.retain(|_, times| {
@@ -1080,11 +1074,27 @@ async fn poll(
     }
     // First poll after approval: issue the device token to this browser. The
     // pending lock is held until the device is saved, so one token at most.
-    let request = &pending.requests[index];
-    let approval = request.approved.clone().expect("approved");
+    let approval = pending.requests[index].approved.clone().expect("approved");
     let token = random_token::<32>();
     let created = now_unix();
     let mut devices = auth.devices.lock().unwrap();
+    // What a device approved counts only while it could still approve it.
+    // Revoked, or an admin made a member again, since: the browser it
+    // approved must not log in afterwards (as an admin, even), and asks for
+    // a new code instead.
+    if let Some(by) = &approval.by {
+        let admin_mode = auth.admin_mode();
+        if !devices.iter().any(|d| d.id == *by && (!admin_mode || d.role == Role::Admin)) {
+            drop(devices);
+            let request = pending.requests.remove(index);
+            tracing::warn!(
+                "auth: pair request {} dropped: device {by}, which approved it, was revoked or is no longer an admin",
+                request.id
+            );
+            return Err(ApiError::new(404, "unknown pair request"));
+        }
+    }
+    let request = &pending.requests[index];
     let device_id = loop {
         let candidate = hex(&random_bytes::<6>());
         if !devices.iter().any(|d| d.id == candidate) {
@@ -1211,8 +1221,8 @@ pub struct ApproveAs<'a> {
     pub role: Role,
     /// A shared tablet (#297).
     pub shared: bool,
-    /// The approving device, when it is one: revoking it voids the approval
-    /// until the approved browser has logged in.
+    /// The approving device, when it is one: the approval can be collected
+    /// only while that device could still give it.
     pub approver: Option<&'a str>,
 }
 
@@ -1358,8 +1368,6 @@ async fn set_role(
         tracing::warn!("auth: role change refused for {by}: not an admin");
         return Err(ApiError::new(403, "only an admin can change a device's role"));
     }
-    // Before the devices, as a poll takes them.
-    let mut pending = auth.pending.lock().unwrap();
     let mut devices = auth.devices.lock().unwrap();
     let Some(index) = devices.iter().position(|d| d.id == id) else {
         return Err(ApiError::new(404, "unknown device"));
@@ -1379,13 +1387,9 @@ async fn set_role(
             tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
             return Err(ApiError::new(500, "could not save the device list"));
         }
-        if role != Role::Admin {
-            pending.void_approved_by(&id);
-        }
     }
     let device = devices[index].clone();
     drop(devices);
-    drop(pending);
     let person = if device.person.is_empty() { device.name.clone() } else { device.person.clone() };
     if was != role {
         // The person's rights change with it (an admin's devices are never
@@ -1440,8 +1444,6 @@ async fn revoke(
     if !own && !ctx.manages_devices(admin_mode) {
         return Err(ApiError::new(403, "only an admin can revoke other devices"));
     }
-    // Before the devices, as a poll takes them.
-    let mut pending = auth.pending.lock().unwrap();
     let mut devices = auth.devices.lock().unwrap();
     let Some(index) = devices.iter().position(|d| d.id == id) else {
         return Err(ApiError::new(404, "unknown device"));
@@ -1460,9 +1462,7 @@ async fn revoke(
         tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
         return Err(ApiError::new(500, "could not save the device list"));
     }
-    pending.void_approved_by(&id);
     drop(devices);
-    drop(pending);
     // A revoked browser can't drive any more: it gives up control now, so
     // nobody waits for it to go silent.
     state.control.forget(&id);

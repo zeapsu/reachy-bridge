@@ -118,10 +118,16 @@ pub async fn ensure_awake(state: &Shared) -> ApiResult<()> {
 /// without the wake move, so the motors stay limp and the robot comes back
 /// asleep.
 pub async fn power_on_locked(state: &Shared, wake: bool) -> ApiResult<Value> {
+    Ok(power_on_epoch_locked(state, wake).await?.0)
+}
+
+/// [`power_on_locked`], with the `power_epoch` this power-on made; none for
+/// a robot already on or coming up, which isn't woken again.
+async fn power_on_epoch_locked(state: &Shared, wake: bool) -> ApiResult<(Value, Option<u64>)> {
     let daemon = &state.daemon;
     let robot = daemon.status().await.map(|s| robot_state(&s));
     if let Some(robot @ ("running" | "starting")) = robot.as_deref() {
-        return Ok(json!({"status": robot}));
+        return Ok((json!({"status": robot}), None));
     }
     let result = if robot.as_deref() == Some("asleep") {
         daemon.post("motors/set_mode/enabled", &[]).await?;
@@ -129,11 +135,11 @@ pub async fn power_on_locked(state: &Shared, wake: bool) -> ApiResult<Value> {
     } else {
         daemon.post("daemon/start", &[("wake_up", if wake { "true" } else { "false" })]).await?
     };
-    state.power_epoch.fetch_add(1, Ordering::SeqCst);
+    let epoch = state.power_epoch.fetch_add(1, Ordering::SeqCst) + 1;
     // The wake-up move ends at the home pose; expressions are gated on the
     // daemon reporting running until then.
     state.player.set_needs_home(!wake);
-    Ok(result)
+    Ok((result, Some(epoch)))
 }
 
 /// Stop any app, play the sleep move and release torque; call with
@@ -209,11 +215,11 @@ async fn status(State(state): State<Shared>) -> Json<Value> {
 /// is on (#334).
 async fn start(State(state): State<Shared>, ctx: Option<Extension<AuthContext>>) -> ApiResult<Json<Value>> {
     let _power = state.power_lock.lock().await;
-    let before = state.power_epoch.load(Ordering::SeqCst);
-    let result = power_on_locked(&state, true).await?;
-    // A robot already on, or coming up, isn't woken again: the epoch stays.
-    let epoch = state.power_epoch.load(Ordering::SeqCst);
-    if epoch != before {
+    let (result, woke) = power_on_epoch_locked(&state, true).await?;
+    // The epoch this power-on made, not the one read afterwards: going limp
+    // moves it without the power lock, and must end this start, not pass for
+    // a power-on.
+    if let Some(epoch) = woke {
         wake_app::after_power_on(&state, ctx.as_ref().map(|Extension(c)| c), epoch);
     }
     Ok(Json(result))

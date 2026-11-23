@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useRef, useState, type ReactNode } from "react";
 import { apiJson, errorText, paths } from "../api.ts";
 import { usePoll } from "../hooks/usePoll.ts";
 import { accessList, approveAdminQuestion, isLastAdmin, makeAdminQuestion, waitingText, type WaitingDevice } from "../logic/access.ts";
@@ -65,17 +65,21 @@ export function AccessPanel({ installed, person, waiting }: Props) {
   const [hint, setHint] = useState<{ text: string; error: boolean } | null>(null);
   const [loadError, setLoadError] = useState("");
 
+  // The poll's reads and the ones after a change overlap: only the newest lands.
+  const loads = useRef(0);
   const reload = useCallback(async () => {
+    const mine = ++loads.current;
     try {
       const [p, d] = await Promise.all([
         apiJson<{ profiles: ProfileItem[] }>(paths.authProfiles),
         apiJson<{ devices: PairedDevice[] }>(paths.authDevices),
       ]);
+      if (mine !== loads.current) return;
       setProfiles(p.profiles);
       setDevices(d.devices);
       setLoadError("");
     } catch (err) {
-      setLoadError(errorText(err, "Couldn't load devices"));
+      if (mine === loads.current) setLoadError(errorText(err, "Couldn't load devices"));
     }
   }, []);
 

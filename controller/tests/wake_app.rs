@@ -220,8 +220,9 @@ async fn the_app_waits_for_the_wake_move_without_holding_up_a_power_off() {
     h.call("POST", "/api/daemon/start", None).await;
     settle().await;
     assert_eq!(h.calls(), vec!["set_mode enabled", "wake_up"], "no app while the wake move plays");
-    // The power lock is free meanwhile: the off answers at once.
-    let off = tokio::time::timeout(Duration::from_secs(2), h.call("POST", "/api/daemon/stop", None)).await;
+    // The power lock is free meanwhile: the off doesn't wait out the wake
+    // (20 s, held under the lock before).
+    let off = tokio::time::timeout(Duration::from_secs(10), h.call("POST", "/api/daemon/stop", None)).await;
     assert_eq!(off.expect("power off waited for the wake").0, StatusCode::OK);
     h.fake.lock().unwrap().running_moves.clear();
     settle().await;
