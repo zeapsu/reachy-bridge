@@ -23,9 +23,10 @@ pub struct AppState {
     pub daemon: Daemon,
     /// Held by every action that powers, wakes or sleeps the robot (#148).
     pub power_lock: tokio::sync::Mutex<()>,
-    /// Bumped, under `power_lock`, each time the controller switches the
-    /// robot on, wakes it or switches it off: what was decided for one
-    /// power-on doesn't carry over to the next (#334).
+    /// Bumped each time the controller switches the robot on, wakes it or
+    /// switches it off (under `power_lock`), changes target, or lets the
+    /// motors go (which doesn't wait for that lock): what was decided for
+    /// one power-on doesn't carry over (#334).
     pub power_epoch: std::sync::atomic::AtomicU64,
     pub apps: DaemonApps,
     /// The app catalog listings (#126).

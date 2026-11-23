@@ -166,8 +166,8 @@ listens as soon as it has woken, without anyone starting an app, so leave it off
 surprise people near the robot. It starts the way a tap on Start would: not while another app, an
 expression or a drive session has the robot, and not for someone whose profile doesn't include the
 app. If it can't start, the robot stays awake with no app and the controller log says why (System ›
-Diagnostics). Switching the robot off, or its motors off, before the app has started cancels the
-start. If the app starts and then stops with an error, the robot goes to sleep as after any app
+Diagnostics). Switching the robot off, or letting its motors go (motors off or gravity
+compensation), before the app has started cancels the start. If the app starts and then stops with an error, the robot goes to sleep as after any app
 that ends by itself; turn the switch off if that happens at every power-on. Switching the robot off
 stops the app as it stops any app, and removing the app switches this off. The row is dimmed with
 an Install button until the app is installed; Install opens the Apps tab, where Get apps lists it.
@@ -223,7 +223,8 @@ can't see can't be approved by mistake), give it a name if you like, and choose 
 browser: it leaves the card, and only the command on the robot can approve it.
 
 **Make admin** on a browser turns it into an admin browser after a confirmation. Its person
-becomes an admin, so their profile stops limiting their other browsers too. To take the admin
+becomes an admin, so their profile stops limiting their other browsers too. If that browser was in
+control of the robot, it gives control up and can take it again. To take the admin
 role away again, revoke the browser and approve it again for a profile.
 
 **Removing a browser.** Revoke it under System › Access, or run `reachy-bridge devices revoke <n>`. A browser

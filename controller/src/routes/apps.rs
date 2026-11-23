@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 
 use crate::apps::APP_CONTROL_TIMEOUT;
 use crate::auth::AuthContext;
+use crate::daemon::{motor_mode, robot_state};
 use crate::error::{ApiError, ApiResult};
 use crate::routes::power::{ensure_awake, settle_idle_reset};
 use crate::state::Shared;
@@ -182,7 +183,12 @@ fn app_allowed(ctx: Option<&Extension<AuthContext>>, name: &str) -> ApiResult<()
 /// Start `name` with the controller's guards: no second app, no expression
 /// or drive session, the idle reset waited out, a crashed app cleared, the
 /// robot awake. `Err` is a refusal to show. Call with `power_lock` held.
-pub async fn start_locked(state: &Shared, name: &str) -> ApiResult<Result<(), String>> {
+///
+/// `wake`: wake a robot that is asleep or off first, as a person's start
+/// does. Without it (the wake app's start, which nobody is pressing a button
+/// for) a robot that isn't on with its motors enabled is refused: that start
+/// never switches the motors on or moves the robot itself.
+pub async fn start_locked(state: &Shared, name: &str, wake: bool) -> ApiResult<Result<(), String>> {
     let daemon = &state.daemon;
     let refuse = |why: &str| Ok(Err(why.to_string()));
     // A drive session claims the robot under this lock, so this check
@@ -230,10 +236,13 @@ pub async fn start_locked(state: &Shared, name: &str) -> ApiResult<Result<(), St
             return refuse("An app is already running");
         }
     }
-    ensure_awake(state).await?;
-    // The wait for the wake move is long enough for an expression to begin.
-    if state.player.active() {
-        return refuse("Robot busy");
+    if wake {
+        ensure_awake(state).await?;
+    } else {
+        let awake = |s: &Value| robot_state(s) == "running" && motor_mode(s) == Some("enabled");
+        if !daemon.status().await.is_some_and(|s| awake(&s)) {
+            return refuse("Robot not awake");
+        }
     }
     match daemon.post_slow(&format!("apps/start-app/{name}"), APP_CONTROL_TIMEOUT).await {
         Ok(_) => Ok(Ok(())),
@@ -260,7 +269,7 @@ async fn start(
     }
     let started = {
         let _power = state.power_lock.lock().await;
-        start_locked(&state, &name).await?
+        start_locked(&state, &name, true).await?
     };
     if let Err(why) = started {
         return Ok(refused(&name, why, "refused"));

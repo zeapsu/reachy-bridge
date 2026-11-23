@@ -47,6 +47,8 @@ interface Props {
   /** The admin using this browser: an admin device approved here is theirs. */
   person: string | null;
   waiting: WaitingDevice[];
+  /** Access is showing: the list keeps itself current. Not otherwise: a hidden page must go quiet, which is how its hold on the robot ends. */
+  live: boolean;
 }
 
 /**
@@ -55,7 +57,7 @@ interface Props {
  * browser is approved by typing the code its own screen shows, then choosing
  * who it is for; the code never comes from the controller.
  */
-export function AccessPanel({ installed, person, waiting }: Props) {
+export function AccessPanel({ installed, person, waiting, live }: Props) {
   const [profiles, setProfiles] = useState<ProfileItem[]>([]);
   const [devices, setDevices] = useState<PairedDevice[]>([]);
   const [editing, setEditing] = useState<ProfileItem | "new" | null>(null);
@@ -83,7 +85,7 @@ export function AccessPanel({ installed, person, waiting }: Props) {
     }
   }, []);
 
-  usePoll(reload, LIST_POLL_MS, true);
+  usePoll(reload, LIST_POLL_MS, live);
 
   if (editing) {
     return (
@@ -146,7 +148,8 @@ export function AccessPanel({ installed, person, waiting }: Props) {
   const list = accessList(profiles, devices);
   const now = Date.now();
   const members = profiles.filter((p) => !p.admin);
-  const shown = hint ?? (loadError ? { text: loadError, error: true } : null);
+  // A failed load shows over an old "Approved", not under it.
+  const shown = hint?.error || !loadError ? hint : { text: loadError, error: true };
 
   const deviceRow = (device: PairedDevice, nested: boolean, lead: ReactNode) => (
     <li className={`acc-row${nested ? " nested" : ""}`} key={device.id}>

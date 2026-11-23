@@ -127,6 +127,26 @@ test("an admin approves another admin, adds a profile and makes its device an ad
   expect((await ipad.page.request.get("/api/logs/sources")).status()).toBe(200);
   await expect(makeAdmin).toBeHidden();
 
+  // Away from Access the list stops asking: a page that isn't showing it has to go quiet,
+  // which is how a hidden page's hold on the robot ends. The waiting poll, which carries on
+  // while System shows, is the clock: two of them are two of the list's intervals.
+  const path = (url: string) => new URL(url).pathname;
+  const waitingPoll = () => page.waitForRequest((r) => path(r.url()) === "/api/auth/pending");
+  const listReads: string[] = [];
+  const onRequest = (r: { url(): string }) => {
+    if (/^\/api\/auth\/(devices|profiles)$/.test(path(r.url()))) listReads.push(path(r.url()));
+  };
+  await page.getByRole("tab", { name: "Settings", exact: true }).click();
+  await waitingPoll(); // a read sent just before the switch has gone out by now
+  page.on("request", onRequest);
+  await waitingPoll();
+  await waitingPoll();
+  expect(listReads).toEqual([]);
+  // Back on Access it asks again at once.
+  await page.getByRole("tab", { name: "Access" }).click();
+  await expect.poll(() => listReads.length).toBeGreaterThan(0);
+  page.off("request", onRequest);
+
   // The list fits a phone.
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(row("iPad")).toBeVisible();

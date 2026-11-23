@@ -129,13 +129,16 @@ async fn power_on_epoch_locked(state: &Shared, wake: bool) -> ApiResult<(Value, 
     if let Some(robot @ ("running" | "starting")) = robot.as_deref() {
         return Ok((json!({"status": robot}), None));
     }
+    // Before the daemon calls: motors let go while they run count as later
+    // than this power-on. A power-on that then fails leaves a bump nobody
+    // minds.
+    let epoch = state.power_epoch.fetch_add(1, Ordering::SeqCst) + 1;
     let result = if robot.as_deref() == Some("asleep") {
         daemon.post("motors/set_mode/enabled", &[]).await?;
         daemon.post("move/play/wake_up", &[]).await?
     } else {
         daemon.post("daemon/start", &[("wake_up", if wake { "true" } else { "false" })]).await?
     };
-    let epoch = state.power_epoch.fetch_add(1, Ordering::SeqCst) + 1;
     // The wake-up move ends at the home pose; expressions are gated on the
     // daemon reporting running until then.
     state.player.set_needs_home(!wake);

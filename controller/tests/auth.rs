@@ -840,8 +840,22 @@ async fn an_approval_nobody_collected_ends_with_its_approver() {
     assert_eq!(r.status, StatusCode::NO_CONTENT);
     assert_eq!(h.poll(&id, LAN3, &pair).await.status, StatusCode::NOT_FOUND);
     assert_eq!(h.poll(&kept, LAN3, &kept_pair).await.body["status"], "approved");
-    let admins = h.state.auth.device_names().len();
-    assert_eq!(admins, 3, "the admin, Mia's ipad and the one the admin approved: {:?}", h.state.auth.device_names());
+    let devices = h.state.auth.device_names();
+    assert_eq!(devices.len(), 3, "the admin, Mia's ipad and the one the admin approved: {devices:?}");
+}
+
+#[tokio::test]
+async fn before_an_admin_an_approval_also_ends_with_its_approver() {
+    let h = harness(lan()).await;
+    let device = h.paired(LAN).await;
+    let (id, code, pair_cookie) = h.pair(LAN2).await;
+    assert_eq!(h.approve(&code, LAN, &[("cookie", &device)]).await.status, StatusCode::OK);
+    // The approving browser logs out before the approved one logged in.
+    let own = h.state.auth.device_names().into_keys().next().unwrap();
+    let r = h.call("DELETE", &format!("/api/auth/devices/{own}"), LAN, &[("cookie", &device)], None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.poll(&id, LAN2, &pair_cookie).await.status, StatusCode::NOT_FOUND);
+    assert!(h.state.auth.device_names().is_empty());
 }
 
 #[tokio::test]

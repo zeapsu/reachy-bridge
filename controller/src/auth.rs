@@ -1206,7 +1206,8 @@ async fn approve(
                 person: body.person.as_deref(),
                 role: body.role,
                 shared: body.shared,
-                approver: ctx.device.as_deref(),
+                // The local key approves in its own right, whatever cookie came with it.
+                approver: if ctx.local { None } else { ctx.device.as_deref() },
             },
             &by,
             ctx.local,
@@ -1369,6 +1370,13 @@ async fn set_role(
         return Err(ApiError::new(403, "only an admin can change a device's role"));
     }
     let mut devices = auth.devices.lock().unwrap();
+    // Checked again here: the request's role was read before its body
+    // arrived, and the caller may have been revoked or demoted since.
+    let still_admin = |d: &Device| ctx.device.as_deref() == Some(d.id.as_str()) && d.role == Role::Admin;
+    if !ctx.local && !devices.iter().any(still_admin) {
+        tracing::warn!("auth: role change refused for {by}: no longer an admin");
+        return Err(ApiError::new(403, "only an admin can change a device's role"));
+    }
     let Some(index) = devices.iter().position(|d| d.id == id) else {
         return Err(ApiError::new(404, "unknown device"));
     };

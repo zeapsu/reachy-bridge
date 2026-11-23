@@ -110,7 +110,8 @@ browsers you approve, LAN mode or not, make your own browser the admin: open the
 `reachy-bridge pair --admin --person=<you> <code> [name]`. Only the CLI on the robot can approve the
 first admin. After that an admin browser can approve another browser as an admin, with its code, or
 make an approved one an admin (System › Access), so a stolen admin browser can add admins of its own:
-revoke a lost device from another admin browser or from the robot.
+revoke a lost device from another admin browser or from the robot, and with it any browser it
+approved or made an admin (the controller log names them).
 
 Browsers paired before that are logged out, since anyone could approve them. From then on
 every browser logs in, Tailscale visitors included, and open streams and drive sessions from

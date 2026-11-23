@@ -7,7 +7,9 @@
 //! on power-on. Setting it on a running backend arms an antenna watcher
 //! instead, which checks the daemon's app slot and none of the controller's
 //! guards (docs/daemon-contract.md, "Apps" and rule 9). So the choice is
-//! kept here, and the app starts the way a start from the Apps tab does.
+//! kept here, and the app starts the way a start from the Apps tab does,
+//! except that this start never wakes the robot or switches its motors on:
+//! the power-on did that, and whoever let the motors go since meant it.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -76,22 +78,8 @@ fn view(state: &Shared, installed: Option<bool>) -> Json<Value> {
     }))
 }
 
-/// The app is gone (removed here, or by a session the controller didn't
-/// see): it must not start by itself once it is back.
-fn switch_off(state: &Shared) {
-    if enabled(state)
-        && let Err(error) = save(state, false)
-    {
-        tracing::error!(%error, "could not switch the wake app off");
-    }
-}
-
 async fn read(State(state): State<Shared>) -> Json<Value> {
-    let installed = installed(&state).await;
-    if installed == Some(false) {
-        switch_off(&state);
-    }
-    view(&state, installed)
+    view(&state, installed(&state).await)
 }
 
 async fn write(State(state): State<Shared>, body: Bytes) -> ApiResult<Json<Value>> {
@@ -115,33 +103,41 @@ async fn write(State(state): State<Shared>, body: Bytes) -> ApiResult<Json<Value
     Ok(view(&state, installed))
 }
 
-/// The app is being removed.
+/// The app is being removed: it must not start by itself once it is back.
+/// Only here, where someone asked for the removal: an app that is merely
+/// not listed (an update reinstalls it) isn't started, and the switch stays.
 pub fn removed(state: &Shared, name: &str) {
-    if name == state.wake_app {
-        switch_off(state);
+    if name == state.wake_app
+        && enabled(state)
+        && let Err(error) = save(state, false)
+    {
+        tracing::error!(%error, "could not switch the wake app off");
     }
 }
 
 /// The dashboard's power-on woke the robot: start the app once it is up.
 /// A profile the app is off for (#297) doesn't get it by powering on.
-/// `epoch` is `power_epoch` after that power-on: the start is dropped if the
-/// robot was switched off, made limp or switched on again since, so it never
-/// acts for a later power-on, which may be someone else's.
+/// `epoch` is the `power_epoch` that power-on made: the start is dropped if
+/// the robot was switched off, had its motors let go or was switched on
+/// again since, so it never acts for a later power-on, which may be someone
+/// else's.
 pub fn after_power_on(state: &Shared, ctx: Option<&AuthContext>, epoch: u64) {
     let name = state.wake_app.clone();
     if !enabled(state) || ctx.is_some_and(|c| !c.access.allows_app(&name)) {
         return;
     }
+    let device = ctx.and_then(|c| c.device.clone());
     let state = state.clone();
     tokio::spawn(async move {
-        match start_when_awake(&state, &name, epoch).await {
+        match start_when_awake(&state, &name, epoch, device.as_deref()).await {
             Ok(()) => tracing::info!("started {name} on wake"),
             Err(why) => tracing::warn!("{name} not started on wake: {why}"),
         }
     });
 }
 
-async fn start_when_awake(state: &Shared, name: &str, epoch: u64) -> Result<(), String> {
+/// `device`: the paired device that powered the robot on, if it was one.
+async fn start_when_awake(state: &Shared, name: &str, epoch: u64, device: Option<&str>) -> Result<(), String> {
     let daemon = &state.daemon;
     let on = || async { daemon.status().await.is_some_and(|s| robot_state(&s) == "running") };
     let same_power_on = || state.power_epoch.load(Ordering::SeqCst) == epoch;
@@ -157,23 +153,30 @@ async fn start_when_awake(state: &Shared, name: &str, epoch: u64) -> Result<(), 
         !same_power_on() || daemon.running_moves().await.is_some_and(|m| m.is_empty())
     })
     .await;
+    let stale = "the robot was switched off, had its motors let go or was switched on again meanwhile";
+    // Before queueing on the locks: a start nobody wants any more holds nothing up.
+    if !same_power_on() {
+        return Err(stale.into());
+    }
     // As a request's action: a switch to or from the simulation waits for it.
     let _switch = state.sim.acting().await;
     let _power = state.power_lock.lock().await;
-    // Powered off or made limp since (starting the app would switch the
-    // motors back on), or on again by someone else.
     if !same_power_on() || !on().await {
-        return Err("the robot was switched off, made limp or switched on again meanwhile".into());
+        return Err(stale.into());
     }
     if !enabled(state) {
         return Err("switched off meanwhile".into());
     }
+    // Revoked, or the app taken off its profile, during the wake.
+    if device.is_some_and(|id| !state.auth.access_for_device(id).allows_app(name)) {
+        return Err("the device that switched the robot on may no longer start it".into());
+    }
     let installed = state.apps.installed_names().await.map_err(|_| "robot service down")?;
     if !installed.iter().any(|n| n == name) {
-        switch_off(state);
         return Err("not installed".into());
     }
-    let started = start_locked(state, name).await.map_err(|error| error.detail)?;
+    // Never waking: a robot whose motors were let go a moment ago stays as it is.
+    let started = start_locked(state, name, false).await.map_err(|error| error.detail)?;
     state.apps.refresh_active().await;
     started
 }
