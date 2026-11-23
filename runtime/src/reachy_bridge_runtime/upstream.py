@@ -248,7 +248,12 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         "Daemon.acquire_media() takes the camera and microphone back after a release",
         lambda: (
             _coroutine(_DAEMON, "Daemon.acquire_media")(),
-            _source_mentions(_DAEMON, "Daemon.acquire_media", "_media_released", "_media_server.start()")(),
+            # 1.15 counts a release as media down and starts the server off
+            # the event loop (asyncio.to_thread), raising if it fails to start.
+            _source_mentions(
+                _DAEMON, "Daemon.acquire_media", "self._media_down()", "self._media_server.start", "_media_released"
+            )(),
+            _source_mentions(_DAEMON, "Daemon._media_down", "self._media_released")(),
         ),
     ),
     Requirement(
@@ -782,8 +787,9 @@ def media_released(daemon: Any) -> bool:
 
 async def acquire_media(daemon: Any) -> None:
     """Restart the daemon's media server after an app released it (a no-op
-    when it isn't released). Only for a running daemon: it starts the
-    pipeline without the backend hookup that ``Daemon.start`` does."""
+    when it is up). Only for a running daemon: it starts the pipeline without
+    the backend hookup that ``Daemon.start`` does. Raises if the pipeline
+    doesn't start (e.g. the camera is still held); media then stays down."""
     await daemon.acquire_media()
 
 
