@@ -157,11 +157,18 @@ test("an admin approves another admin, adds a profile, makes its device an admin
   await tab(ipad.page, "System").click();
   await expect(ipad.page.getByRole("region", { name: "System" })).toBeVisible();
   const demote = (name: string) => row(name).getByRole("button", { name: `Demote ${name}` });
-  page.once("dialog", (dialog) => {
-    asked = dialog.message();
-    void dialog.dismiss();
-  });
-  await demote("iPad").click();
+  // The iPad takes control: once this page has seen that, Demote also says the robot may move.
+  expect((await ipad.page.request.post("/api/control/take")).status()).toBe(200);
+  await expect
+    .poll(async () => {
+      page.once("dialog", (dialog) => {
+        asked = dialog.message();
+        void dialog.dismiss();
+      });
+      await demote("iPad").click();
+      return asked;
+    })
+    .toContain("iPad is in control: the robot may move back home.");
   expect(asked).toContain("Demote iPad?");
   expect(asked).toContain("Mia's profile applies to every device of Mia's again.");
   expect(asked).not.toContain("Only another admin");

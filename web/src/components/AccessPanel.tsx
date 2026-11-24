@@ -8,6 +8,7 @@ import {
   demoteQuestion,
   isLastAdmin,
   makeAdminQuestion,
+  motionWarning,
   waitingText,
   type WaitingDevice,
 } from "../logic/access.ts";
@@ -146,7 +147,7 @@ export function AccessPanel({ installed, person, waiting, live, holder }: Props)
 
   const revoke = (device: PairedDevice) => {
     const question = device.current ? `Log this browser (${device.name}) out? It will need a new code to log in.` : `Revoke ${device.name}?`;
-    if (!window.confirm(question)) return;
+    if (!window.confirm(question + motionWarning(holder, device))) return;
     void act("Revoke failed", async () => {
       await apiJson(paths.authDevice(device.id), { method: "DELETE" });
       if (device.current) window.location.reload();
@@ -169,14 +170,12 @@ export function AccessPanel({ installed, person, waiting, live, holder }: Props)
     });
 
   const makeAdmin = (device: PairedDevice, profile: ProfileItem) => {
-    if (!window.confirm(makeAdminQuestion(device, profile.name, limits(profile)))) return;
+    if (!window.confirm(makeAdminQuestion(device, profile.name, limits(profile), motionWarning(holder, device)))) return;
     void setRole(device, "admin", "Couldn't make it an admin");
   };
 
   const demote = (device: PairedDevice, profile: ProfileItem, own: PairedDevice[]) => {
-    // Control names the device and its person, not the device's id.
-    const driving = holder?.device === device.name && holder.person === profile.name;
-    if (!window.confirm(demoteQuestion(device, profile.name, isLastAdmin(own, device), driving))) return;
+    if (!window.confirm(demoteQuestion(device, profile.name, isLastAdmin(own, device), motionWarning(holder, device)))) return;
     void setRole(device, "member", "Couldn't demote it");
   };
 
