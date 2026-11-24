@@ -31,7 +31,7 @@ import threading
 import time
 
 import httpx
-from websockets.exceptions import InvalidStatus
+from websockets.exceptions import InvalidStatus, WebSocketException
 from websockets.sync.client import connect as ws_connect
 
 DAEMON = os.getenv("SIM_DAEMON", "http://127.0.0.1:8100")
@@ -124,13 +124,16 @@ TS_ORIGIN = f"https://{TS_HOST}"
 
 def ws_seen(proxy_port: int, host: str, origin: str) -> dict | str:
     """Open the app's ``/ws`` through the proxy under ``host`` and ``origin``:
-    what the app saw, or the refusal's HTTP status."""
-    sock = socket.create_connection(("127.0.0.1", proxy_port), timeout=5)
+    what the app saw, the refusal's HTTP status, or what else went wrong (a
+    FAIL line, not a traceback)."""
     try:
+        sock = socket.create_connection(("127.0.0.1", proxy_port), timeout=5)
         with ws_connect(f"ws://{host}/ws", sock=sock, origin=origin, open_timeout=5) as ws:
             return json.loads(ws.recv(timeout=5))
     except InvalidStatus as e:
         return f"HTTP {e.response.status_code}"
+    except (OSError, WebSocketException, ValueError) as e:
+        return f"{type(e).__name__}: {e}"
 
 
 def app_proxy_local_guard(port: int, proxy_port: int | None) -> None:

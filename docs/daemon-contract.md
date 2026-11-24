@@ -424,8 +424,8 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   WebSocket upgrades.
 - Apps on reachy-mini >= 1.15.0 serve their UI behind upstream's
   `LocalNetworkGuardMiddleware`: a `Host` that isn't an IP address,
-  `localhost` or a `.local` name gets 400 (every `*.ts.net`, MagicDNS short
-  name and other LAN name), and a write or WebSocket whose `Origin` isn't a
+  `localhost` or a `.local` name gets 400, or 403 on a WebSocket (every
+  `*.ts.net`, MagicDNS short name and other LAN name), and a write or WebSocket whose `Origin` isn't a
   local name or a loopback, private or link-local address gets 403 or close
   1008 (a tailnet `100.64.0.0/10` address isn't private). A request without
   `Origin` passes. An app can pull that reachy-mini into `apps_venv` before
@@ -436,8 +436,9 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
   (`X-Forwarded-Proto`, `X-Forwarded-For` and `Referer` pass as before), and
   a `Location` pointing at `http(s)://127.0.0.1:<port>` comes back as a
   path. Without a login, the proxy refuses a loopback request whose Host
-  isn't loopback, `localhost` or `*.ts.net` (DNS rebinding), as the
-  dashboard does, since the app's own check no longer sees that Host. An
+  isn't loopback, `localhost` or `*.ts.net` (DNS rebinding): the dashboard's
+  Host rule, applied to every request rather than only API calls and
+  WebSockets, since the app's own check no longer sees that Host. An
   app that builds absolute URLs in its pages from `Host` instead of
   `X-Forwarded-Host` links to `127.0.0.1`.
 - App processes get a scrubbed environment (`GST_*`, `PYTHONPATH`, `GI_*`,

@@ -181,9 +181,11 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
     };
     // A DNS-rebinding page reaches the loopback listener same-origin under
     // its own name; without a login nothing else stops it, and the app's own
-    // Host check no longer sees the browser's Host (`to_loopback`). Same rule
-    // as the dashboard's (`auth::guard`). In LAN mode, trusted loopback
-    // already needs such a Host, and a device cookie never goes to another name.
+    // Host check no longer sees the browser's Host (`to_loopback`). The
+    // dashboard's Host rule (`auth::guard`), but on every request, where the
+    // dashboard applies it to API calls and upgrades. In LAN mode, trusted
+    // loopback already needs such a Host, and a device cookie never goes to
+    // another name.
     if loopback
         && matches!(credential, Credential::Trusted)
         && parts.headers.contains_key(header::HOST)
@@ -467,7 +469,8 @@ fn to_loopback(headers: &mut HeaderMap) {
 /// `http(s)://127.0.0.1:<port>`, which the browser can't reach: keep only the
 /// path, which the browser resolves against the address it used. A path
 /// starting `//` or `/\` is left alone: as a Location it would name another
-/// host.
+/// host. So is one with a tab, which browsers delete from a URL before
+/// reading it (`/\t/evil.example` is `//evil.example` to them).
 fn relative_location(headers: &mut HeaderMap, port: u16) {
     let Some(location) = headers.get(header::LOCATION).and_then(|v| v.to_str().ok()) else {
         return;
@@ -477,7 +480,8 @@ fn relative_location(headers: &mut HeaderMap, port: u16) {
         let rest = location.strip_prefix(scheme)?.strip_prefix(authority.as_str())?;
         matches!(rest.bytes().next(), None | Some(b'/' | b'?' | b'#')).then_some(rest)
     });
-    let Some(rest) = rest.filter(|rest| !rest.starts_with("//") && !rest.starts_with("/\\")) else {
+    let Some(rest) = rest.filter(|rest| !rest.starts_with("//") && !rest.starts_with("/\\") && !rest.contains('\t'))
+    else {
         return;
     };
     let path = if rest.starts_with('/') { rest.to_string() } else { format!("/{rest}") };
@@ -630,6 +634,8 @@ mod tests {
         // Never a path that names another host.
         assert_eq!(location("http://127.0.0.1:8042//evil.example/"), "http://127.0.0.1:8042//evil.example/");
         assert_eq!(location("http://127.0.0.1:8042/\\evil.example/"), "http://127.0.0.1:8042/\\evil.example/");
+        assert_eq!(location("http://127.0.0.1:8042/\t/evil.example/"), "http://127.0.0.1:8042/\t/evil.example/");
+        assert_eq!(location("http://127.0.0.1:8042/\t\\evil.example/"), "http://127.0.0.1:8042/\t\\evil.example/");
     }
 
     #[test]
