@@ -66,6 +66,23 @@ else
 fi
 has() { grep -Eq "$1" <<<"$changed"; }
 
+# test_cli and test_uninstall need bash 4.4+, and macOS's /bin/bash is 3.2
+# (#336, #338): use the first bash on PATH or from Homebrew that is new enough.
+# PRECHECK_BASHES overrides the candidates (for tests).
+# shellcheck disable=SC2329  # called through step
+bash44() {
+    local b
+    for b in ${PRECHECK_BASHES:-bash /opt/homebrew/bin/bash /usr/local/bin/bash}; do
+        if command -v "$b" >/dev/null &&
+            "$b" -c '((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4)))' 2>/dev/null; then
+            "$(command -v "$b")" "$@"
+            return
+        fi
+    done
+    echo "$1 needs bash 4.4+, and none was found (macOS's /bin/bash is 3.2): brew install bash"
+    return 1
+}
+
 failed=()
 step() {
     local name=$1; shift
@@ -99,8 +116,8 @@ if has '^(deploy/|tools/.*\.sh$)'; then
     scripts=()
     while IFS= read -r f; do scripts+=("$f"); done < <(git ls-files 'deploy/*.sh' deploy/reachy-bridge 'tools/*.sh')
     step "shellcheck" run shellcheck "${scripts[@]}"
-    has '^deploy/' && step "test_cli" bash tools/test_cli.sh
-    has '^deploy/' && step "test_uninstall" bash tools/test_uninstall.sh
+    has '^deploy/' && step "test_cli" bash44 tools/test_cli.sh
+    has '^deploy/' && step "test_uninstall" bash44 tools/test_uninstall.sh
     has '^tools/(test_)?review_gate\.sh$' && step "test_review_gate" bash tools/test_review_gate.sh
     has '^tools/(test_)?catchup_check\.sh$' && step "test_catchup_check" bash tools/test_catchup_check.sh
     has '^tools/(test_)?precheck\.sh$' && step "test_precheck" bash tools/test_precheck.sh
