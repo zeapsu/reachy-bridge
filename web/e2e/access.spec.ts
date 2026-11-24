@@ -1,11 +1,15 @@
 import { readFileSync } from "node:fs";
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
+import { expect, test, type Browser, type Page, type Route } from "@playwright/test";
+import { watchErrors } from "./helpers.ts";
 
 // System › Access for an admin (#334), against a controller of its own:
-// making an admin can't be undone, and the other tests need one without.
+// admin mode can't be turned off again, and the other tests need a controller without it.
 // One test: each step builds on the devices the one before it paired.
 
 const WRONG_CODE = "no pending pairing request has that code";
+const LAST_ADMIN = "this is the last admin device";
+const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa", "best-practice"];
 
 /** A browser nobody has approved: its page and the code its login screen shows. */
 async function newBrowser(browser: Browser, baseURL: string): Promise<{ page: Page; code: string }> {
@@ -19,11 +23,29 @@ async function newBrowser(browser: Browser, baseURL: string): Promise<{ page: Pa
 
 const whoAmI = async (page: Page) => (await page.request.get("/api/auth/status")).json();
 
-test("an admin approves another admin, adds a profile and makes its device an admin", async ({ page, browser, request, baseURL }) => {
+// Desktop shows the tabs at the top, a phone at the bottom: whichever shows.
+const tab = (page: Page, name: string) => page.getByRole("tab", { name }).locator("visible=true").first();
+
+/** What the Access section must hold at any size: no axe violation, no control too small to tap, nothing wider than the screen. */
+async function auditAccess(page: Page): Promise<void> {
+  const { violations } = await new AxeBuilder({ page }).withTags(AXE_TAGS).include("#system-access").analyze();
+  expect(violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`)).toEqual([]);
+  const small = await page.locator("#system-access").evaluate((pane) =>
+    [...pane.querySelectorAll("button, input")]
+      .map((el) => ({ name: el.getAttribute("aria-label") || el.textContent || "", box: el.getBoundingClientRect() }))
+      .filter(({ box }) => box.width > 0 && (box.width < 24 || box.height < 24))
+      .map(({ name, box }) => `${name} (${Math.round(box.width)}×${Math.round(box.height)})`),
+  );
+  expect(small).toEqual([]);
+  // Polled: the tab bars' sliding selection moves to its new place after a resize.
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+}
+
+test("an admin approves another admin, adds a profile, makes its device an admin and demotes admins", async ({ page, browser, request, baseURL }) => {
   test.setTimeout(180_000);
   const key = readFileSync(process.env.SIM_ADMIN_KEY!, "utf8").trim();
   const access = async () => {
-    await page.getByRole("tab", { name: "System" }).locator("visible=true").first().click();
+    await tab(page, "System").click();
     await page.getByRole("tab", { name: "Access" }).click();
   };
 
@@ -89,9 +111,11 @@ test("an admin approves another admin, adds a profile and makes its device an ad
   expect((await whoAmI(phone.page)).person).toBe("Sam");
   await expect(row("Phone")).toContainText("Admin");
   await expect(waiting).toBeHidden();
-  // With two admins, either can be revoked.
+  // With two admins, either can be revoked or demoted.
   await expect(row("Laptop").getByRole("button", { name: "Log out Laptop" })).toBeVisible();
   await expect(row("Phone").getByRole("button", { name: "Revoke Phone" })).toBeVisible();
+  await expect(row("Laptop").getByRole("button", { name: "Demote Laptop" })).toBeVisible();
+  await expect(row("Phone").getByRole("button", { name: "Demote Phone" })).toBeVisible();
 
   // A third browser, for someone new: add the profile, then approve for it.
   const ipad = await newBrowser(browser, baseURL!);
@@ -111,7 +135,7 @@ test("an admin approves another admin, adds a profile and makes its device an ad
   expect((await ipad.page.request.get("/api/logs/sources")).status()).toBe(403);
 
   // Make admin asks first, and says what it lifts.
-  const makeAdmin = row("iPad").getByRole("button", { name: "Make iPad an admin" });
+  const makeAdmin = row("iPad").getByRole("button", { name: "Make admin: iPad" });
   let asked = "";
   page.once("dialog", (dialog) => {
     asked = dialog.message();
@@ -126,6 +150,63 @@ test("an admin approves another admin, adds a profile and makes its device an ad
   await expect.poll(async () => (await whoAmI(ipad.page)).role).toBe("admin");
   expect((await ipad.page.request.get("/api/logs/sources")).status()).toBe(200);
   await expect(makeAdmin).toBeHidden();
+
+  // Demote asks first, and says whose profile applies again. The iPad has System open meanwhile.
+  const errors = { laptop: watchErrors(page), ipad: watchErrors(ipad.page) };
+  await expect(tab(ipad.page, "System")).toBeEnabled();
+  await tab(ipad.page, "System").click();
+  await expect(ipad.page.getByRole("region", { name: "System" })).toBeVisible();
+  const demote = (name: string) => row(name).getByRole("button", { name: `Demote ${name}` });
+  page.once("dialog", (dialog) => {
+    asked = dialog.message();
+    void dialog.dismiss();
+  });
+  await demote("iPad").click();
+  expect(asked).toContain("Demote iPad?");
+  expect(asked).toContain("Mia's profile applies to every device of Mia's again.");
+  expect(asked).not.toContain("Only another admin");
+  expect((await whoAmI(ipad.page)).role).toBe("admin");
+  page.once("dialog", (dialog) => void dialog.accept());
+  await demote("iPad").click();
+  await expect.poll(async () => (await whoAmI(ipad.page)).role).toBe("member");
+  expect((await ipad.page.request.get("/api/logs/sources")).status()).toBe(403);
+  // The row offers the way back, and Mia's profile is hers to edit again.
+  await expect(makeAdmin).toBeVisible();
+  await expect(demote("iPad")).toBeHidden();
+  await expect(list.getByRole("button", { name: "Edit Mia" })).toBeVisible();
+  // The iPad leaves System by itself.
+  await expect(tab(ipad.page, "System")).toBeDisabled();
+  await expect(ipad.page.getByRole("region", { name: "System" })).toBeHidden();
+  expect(errors.ipad).toEqual([]);
+
+  // A list that is behind: the Phone stopped being an admin after this page last read it, so the
+  // Laptop is the last one while its row still offers Demote. The controller refuses, the page
+  // says so and reads the list again.
+  const LIST = /\/api\/auth\/(devices|profiles)$/;
+  const held: Route[] = [];
+  let hold = true;
+  await page.route(LIST, (route) => (hold ? void held.push(route) : route.continue()));
+  // A read held: the one before it has landed, so nothing newer than what shows can.
+  await expect.poll(() => held.length).toBeGreaterThan(0);
+  const devices: { id: string; name: string }[] = (await (await page.request.get("/api/auth/devices")).json()).devices;
+  const phoneRole = `/api/auth/devices/${devices.find((d) => d.name === "Phone")!.id}/role`;
+  expect((await page.request.put(phoneRole, { data: { role: "member" } })).status()).toBe(200);
+  page.once("dialog", (dialog) => void dialog.accept());
+  await demote("Laptop").click();
+  await expect(list.getByRole("alert")).toContainText(LAST_ADMIN);
+  expect((await whoAmI(page)).role).toBe("admin");
+  hold = false;
+  for (const route of held) await route.continue();
+  await page.unroute(LIST);
+  // The last admin device has no button the controller would refuse.
+  await expect(row("Laptop").getByRole("button")).toHaveCount(0);
+  await expect(row("Laptop")).toContainText("This browser");
+  // The Phone is an admin again for what follows.
+  page.once("dialog", (dialog) => void dialog.accept());
+  await row("Phone").getByRole("button", { name: "Make admin: Phone" }).click();
+  await expect(demote("Phone")).toBeVisible();
+  await expect(demote("Laptop")).toBeVisible();
+  await auditAccess(page);
 
   // Away from Access the list stops asking: a page that isn't showing it has to go quiet,
   // which is how a hidden page's hold on the robot ends. The waiting poll, which carries on
@@ -147,9 +228,40 @@ test("an admin approves another admin, adds a profile and makes its device an ad
   await expect.poll(() => listReads.length).toBeGreaterThan(0);
   page.off("request", onRequest);
 
-  // The list fits a phone.
+  // The list fits a phone, Demote and Revoke under the name they belong to.
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(row("iPad")).toBeVisible();
-  // Polled: the tab bars' sliding selection moves to its new place after the resize.
-  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+  await expect(demote("Phone")).toBeInViewport();
+  await expect(row("Phone").getByRole("button", { name: "Revoke Phone" })).toBeInViewport();
+  await auditAccess(page);
+
+  // Demoting this browser says it can't be undone from here. Declined, nothing changes.
+  page.once("dialog", (dialog) => {
+    asked = dialog.message();
+    void dialog.dismiss();
+  });
+  await demote("Laptop").click();
+  expect(asked).toContain("Demote this browser (Laptop)?");
+  expect(asked).toContain("Only another admin can make it an admin again.");
+  // Sam has another admin device: nobody's profile comes back.
+  expect(asked).not.toContain("profile applies");
+  expect((await whoAmI(page)).role).toBe("admin");
+  // Accepted, the page starts over at once as Sam's member browser: System is closed to it.
+  const reloaded = page.waitForEvent("load");
+  page.once("dialog", (dialog) => void dialog.accept());
+  await demote("Laptop").click();
+  await reloaded;
+  await expect(tab(page, "System")).toBeDisabled();
+  await expect(tab(page, "Robot")).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("region", { name: "System" })).toBeHidden();
+  expect((await whoAmI(page)).role).toBe("member");
+  expect((await page.request.get("/api/logs/sources")).status()).toBe(403);
+  expect(errors.laptop).toEqual([]);
+  // The Phone, the admin that is left, sees it as any other browser of Sam's.
+  await expect(tab(phone.page, "System")).toBeEnabled();
+  await tab(phone.page, "System").click();
+  await phone.page.getByRole("tab", { name: "Access" }).click();
+  const phoneRow = (name: string) => phone.page.locator("#access-panel").getByRole("listitem").filter({ hasText: name });
+  await expect(phoneRow("Laptop").getByRole("button", { name: "Make admin: Laptop" })).toBeVisible();
+  await expect(phoneRow("Phone").getByRole("button")).toHaveCount(0);
 });

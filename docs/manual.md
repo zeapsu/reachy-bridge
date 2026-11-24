@@ -224,14 +224,20 @@ browser: it leaves the card, and only the command on the robot can approve it.
 
 **Make admin** on a browser turns it into an admin browser after a confirmation. Its person
 becomes an admin, so their profile stops limiting their other browsers too. If that browser was in
-control of the robot, it gives control up and can take it again. To take the admin
-role away again, revoke the browser and approve it again for a profile.
+control of the robot, it gives control up and can take it again.
+
+**Demote** on an admin browser takes the admin role away again after a confirmation. The browser
+can no longer open System, approve browsers or install apps, and it gives up control of the robot
+if it had it. If it was its person's only admin browser, their profile applies to all their
+browsers again. A browser it had approved that hasn't logged in yet has to ask again. You can
+demote the browser you are using: its page reloads without System, and only another admin can
+make it an admin again.
 
 **Removing a browser.** Revoke it under System › Access, or run `reachy-bridge devices revoke <n>`. A browser
 it had approved that hasn't logged in yet has to ask again. A browser
 unused for 30 days is logged out. The dashboard keeps the last admin browser: it has no Revoke
-button. If you lose every admin browser, pair a new one with `reachy-bridge pair --admin` on the
-robot.
+or Demote button. If you lose every admin browser, pair a new one with `reachy-bridge pair --admin`
+on the robot.
 
 ## Profiles
 

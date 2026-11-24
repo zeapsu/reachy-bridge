@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PairedDevice, ProfileItem } from "./auth.ts";
-import { accessList, approveAdminQuestion, isLastAdmin, isWaitingList, makeAdminQuestion, waitingText } from "./access.ts";
+import { accessList, approveAdminQuestion, demoteQuestion, isLastAdmin, isOnlyAdminOf, isWaitingList, makeAdminQuestion, waitingText } from "./access.ts";
 
 const device = (id: string, extra: Partial<PairedDevice> = {}): PairedDevice => ({
   id,
@@ -83,5 +83,36 @@ describe("makeAdminQuestion", () => {
       "Make Mia's iPad an admin? It can then open System, approve devices and install apps.",
     );
     expect(makeAdminQuestion(ipad, "Mia", true)).toContain("Mia's profile stops limiting every device of Mia's.");
+  });
+});
+
+describe("isOnlyAdminOf", () => {
+  test("the one admin device among a person's own", () => {
+    const [laptop, phone, spare] = [device("laptop", { role: "admin" }), device("phone", { role: "admin" }), device("spare")];
+    expect(isOnlyAdminOf([laptop, spare], laptop)).toBe(true);
+    expect(isOnlyAdminOf([laptop, spare], spare)).toBe(false);
+    expect(isOnlyAdminOf([laptop, phone, spare], laptop)).toBe(false);
+  });
+});
+
+describe("demoteQuestion", () => {
+  const cant = "It can no longer open System, approve devices or install apps.";
+
+  test("names what the device loses", () => {
+    expect(demoteQuestion(device("Phone", { role: "admin" }), "Sam", false)).toBe(`Demote Phone? ${cant}`);
+  });
+
+  test("says when the person's profile applies again", () => {
+    expect(demoteQuestion(device("Mia's iPad", { role: "admin" }), "Mia", true)).toBe(
+      `Demote Mia's iPad? ${cant} Mia's profile applies to every device of Mia's again.`,
+    );
+  });
+
+  test("its own browser can't undo it", () => {
+    const laptop = device("Laptop", { role: "admin", current: true });
+    expect(demoteQuestion(laptop, "Sam", false)).toBe(`Demote this browser (Laptop)? ${cant} Only another admin can make it an admin again.`);
+    expect(demoteQuestion(laptop, "Sam", true)).toBe(
+      `Demote this browser (Laptop)? ${cant} Sam's profile applies to every device of Sam's again. Only another admin can make it an admin again.`,
+    );
   });
 });

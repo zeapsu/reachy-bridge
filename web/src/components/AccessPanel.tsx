@@ -1,8 +1,17 @@
 import { Fragment, useCallback, useRef, useState, type ReactNode } from "react";
 import { apiJson, errorText, paths } from "../api.ts";
 import { usePoll } from "../hooks/usePoll.ts";
-import { accessList, approveAdminQuestion, isLastAdmin, makeAdminQuestion, waitingText, type WaitingDevice } from "../logic/access.ts";
-import { normalizeCode, seenText, type PairedDevice, type ProfileItem } from "../logic/auth.ts";
+import {
+  accessList,
+  approveAdminQuestion,
+  demoteQuestion,
+  isLastAdmin,
+  isOnlyAdminOf,
+  makeAdminQuestion,
+  waitingText,
+  type WaitingDevice,
+} from "../logic/access.ts";
+import { normalizeCode, seenText, type PairedDevice, type ProfileItem, type Role } from "../logic/auth.ts";
 import { ALL_CAN, appsText } from "../logic/profile.ts";
 import { Panel } from "./Panel.tsx";
 import { Avatar, ProfileEditor, type InstalledApp } from "./Profiles.tsx";
@@ -25,6 +34,12 @@ const ICONS = {
   shield: (
     <svg {...stroke} strokeWidth={2.2}>
       <path d="M12 3 5 6v5.5c0 4.5 3 7.8 7 9.5 4-1.7 7-5 7-9.5V6l-7-3Z" />
+    </svg>
+  ),
+  shieldMinus: (
+    <svg {...stroke} strokeWidth={2.2}>
+      <path d="M12 3 5 6v5.5c0 4.5 3 7.8 7 9.5 4-1.7 7-5 7-9.5V6l-7-3Z" />
+      <path d="M9.5 11.5h5" />
     </svg>
   ),
   plus: (
@@ -137,12 +152,28 @@ export function AccessPanel({ installed, person, waiting, live }: Props) {
     });
   };
 
+  const setRole = (device: PairedDevice, role: Role, failed: string) =>
+    act(failed, async () => {
+      try {
+        await apiJson(paths.authDeviceRole(device.id), { method: "PUT", body: JSON.stringify({ role }) });
+      } catch (err) {
+        // Refused: the list was behind (by now it is the last admin, say). Show it as it is.
+        void reload();
+        throw err;
+      }
+      // This browser is no admin any more: it starts over, without System.
+      if (device.current && role === "member") window.location.reload();
+      else await reload();
+    });
+
   const makeAdmin = (device: PairedDevice, profile: ProfileItem) => {
     if (!window.confirm(makeAdminQuestion(device, profile.name, limits(profile)))) return;
-    void act("Couldn't make it an admin", async () => {
-      await apiJson(paths.authDeviceRole(device.id), { method: "PUT", body: JSON.stringify({ role: "admin" }) });
-      await reload();
-    });
+    void setRole(device, "admin", "Couldn't make it an admin");
+  };
+
+  const demote = (device: PairedDevice, profile: ProfileItem, own: PairedDevice[]) => {
+    if (!window.confirm(demoteQuestion(device, profile.name, isOnlyAdminOf(own, device)))) return;
+    void setRole(device, "member", "Couldn't demote it");
   };
 
   const list = accessList(profiles, devices);
@@ -173,14 +204,22 @@ export function AccessPanel({ installed, person, waiting, live }: Props) {
     </li>
   );
 
-  const ownRow = (device: PairedDevice, profile: ProfileItem) =>
+  const ownRow = (device: PairedDevice, profile: ProfileItem, own: PairedDevice[]) =>
     deviceRow(
       device,
       !list.solo,
       device.role === "admin" ? (
-        list.solo ? ADMIN_TAG : null
+        <>
+          {list.solo ? ADMIN_TAG : null}
+          {/* The last admin device stays one, as it stays paired. */}
+          {isLastAdmin(devices, device) ? null : (
+            <button className="btn press" type="button" aria-label={`Demote ${device.name}`} disabled={busy} onClick={() => demote(device, profile, own)}>
+              {ICONS.shieldMinus}Demote
+            </button>
+          )}
+        </>
       ) : (
-        <button className="btn press" type="button" aria-label={`Make ${device.name} an admin`} disabled={busy} onClick={() => makeAdmin(device, profile)}>
+        <button className="btn press" type="button" aria-label={`Make admin: ${device.name}`} disabled={busy} onClick={() => makeAdmin(device, profile)}>
           {ICONS.shield}Make admin
         </button>
       ),
@@ -258,7 +297,7 @@ export function AccessPanel({ installed, person, waiting, live }: Props) {
                   </span>
                 </li>
               )}
-              {own.map((device) => ownRow(device, profile))}
+              {own.map((device) => ownRow(device, profile, own))}
             </Fragment>
           ))}
           {list.shared.map((device) => deviceRow(device, false, <span className="role-tag plain">Shared</span>))}

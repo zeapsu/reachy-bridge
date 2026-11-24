@@ -63,3 +63,19 @@ export function makeAdminQuestion(device: PairedDevice, person: string, limited:
   const lifts = limited ? ` ${person}'s profile stops limiting every device of ${person}'s.` : "";
   return `Make ${device.name} an admin? ${ADMIN_CAN}${lifts}`;
 }
+
+/** The only admin device among one person's: demoting it ends that person being an admin. */
+export function isOnlyAdminOf(own: PairedDevice[], device: PairedDevice): boolean {
+  return device.role === "admin" && own.filter((d) => d.role === "admin").length === 1;
+}
+
+/**
+ * What Demote asks before it acts. `only`: the person's only admin device, so
+ * their profile applies again. Its own browser can't undo it.
+ */
+export function demoteQuestion(device: PairedDevice, person: string, only: boolean): string {
+  const which = device.current ? `this browser (${device.name})` : device.name;
+  const profile = only ? ` ${person}'s profile applies to every device of ${person}'s again.` : "";
+  const own = device.current ? " Only another admin can make it an admin again." : "";
+  return `Demote ${which}? It can no longer open System, approve devices or install apps.${profile}${own}`;
+}

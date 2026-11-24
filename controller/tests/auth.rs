@@ -878,6 +878,51 @@ async fn a_role_change_gives_up_control() {
 }
 
 #[tokio::test]
+async fn an_admin_demotes_its_own_device_and_cannot_undo_it() {
+    let (h, admin, sam, _mia) = family_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    let as_sam = [("cookie", sam.as_str())];
+    assert_eq!(h.put_profile(&as_admin, "Sam", limited_profile()).await.status, StatusCode::OK);
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &as_admin, None).await.body["devices"].clone();
+    let id_of = |person: &str| {
+        devices.as_array().unwrap().iter().find(|d| d["person"] == person).unwrap()["id"].as_str().unwrap().to_string()
+    };
+    let (admin_role, sam_role) =
+        (format!("/api/auth/devices/{}/role", id_of("Andry")), format!("/api/auth/devices/{}/role", id_of("Sam")));
+    let r = h.call("PUT", &sam_role, LOOPBACK, &as_admin, Some(json!({"role": "admin"}))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    // What Sam's device has as an admin: control, and a stream.
+    assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+    let response = reachy_controller::app(h.state.clone())
+        .oneshot(request("GET", "/telemetry/state-stream", LAN, &as_sam, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut stream = response.into_body().into_data_stream();
+
+    // With another admin left, it makes itself a member again: the request that asks is its last as an admin.
+    let r = h.call("PUT", &sam_role, LAN, &as_sam, Some(json!({"role": "member"}))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!((r.body["role"].clone(), r.body["person"].clone()), (json!("member"), json!("Sam")));
+    let status = h.status_of(LAN, &sam).await;
+    assert_eq!((status["role"].clone(), status["profile"]["admin"].clone()), (json!("member"), json!(false)));
+    // Sam's profile limits it again, and System is closed to it.
+    assert_eq!(status["profile"]["can"]["power"], false);
+    assert_eq!(h.call("GET", "/api/logs/sources", LAN, &as_sam, None).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(h.view(LOOPBACK, &admin).await["holder"], Value::Null);
+    let ended = tokio::time::timeout(Duration::from_secs(2), async { while stream.next().await.is_some() {} }).await;
+    assert!(ended.is_ok(), "the stream Sam's device opened as an admin is still open");
+    // It can't take the role back, for itself or by demoting the admin that is left.
+    for (path, to) in [(&sam_role, "admin"), (&admin_role, "member")] {
+        let r = h.call("PUT", path, LAN, &as_sam, Some(json!({"role": to}))).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{:?}", r.body);
+    }
+    // The admin that is left is the last one: it can't follow.
+    let r = h.call("PUT", &admin_role, LOOPBACK, &as_admin, Some(json!({"role": "member"}))).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
+}
+
+#[tokio::test]
 async fn a_shared_tablet_is_never_made_an_admin() {
     let (h, admin, _sam, _mia) = family_harness().await;
     let as_admin = [("cookie", admin.as_str())];
