@@ -1,6 +1,6 @@
 {
   "env": {
-    "REACHY_PRECHECK_MODE": "observe"
+    "REACHY_PRECHECK_MODE": "enforce"
   },
   "hooks": {
     "PreToolUse": [
