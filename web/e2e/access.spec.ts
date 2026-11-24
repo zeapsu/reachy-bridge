@@ -191,10 +191,13 @@ test("an admin approves another admin, adds a profile, makes its device an admin
   const devices: { id: string; name: string }[] = (await (await page.request.get("/api/auth/devices")).json()).devices;
   const phoneRole = `/api/auth/devices/${devices.find((d) => d.name === "Phone")!.id}/role`;
   expect((await page.request.put(phoneRole, { data: { role: "member" } })).status()).toBe(200);
+  const before = held.length;
   page.once("dialog", (dialog) => void dialog.accept());
   await demote("Laptop").click();
   await expect(list.getByRole("alert")).toContainText(LAST_ADMIN);
   expect((await whoAmI(page)).role).toBe("admin");
+  // The refusal itself reads the list again, not only the next poll.
+  await expect.poll(() => held.length).toBeGreaterThan(before);
   hold = false;
   for (const route of held) await route.continue();
   await page.unroute(LIST);

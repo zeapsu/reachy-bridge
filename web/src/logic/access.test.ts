@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PairedDevice, ProfileItem } from "./auth.ts";
-import { accessList, approveAdminQuestion, demoteQuestion, isLastAdmin, isOnlyAdminOf, isWaitingList, makeAdminQuestion, waitingText } from "./access.ts";
+import { accessList, approveAdminQuestion, demoteQuestion, isLastAdmin, isWaitingList, makeAdminQuestion, waitingText } from "./access.ts";
 
 const device = (id: string, extra: Partial<PairedDevice> = {}): PairedDevice => ({
   id,
@@ -86,12 +86,12 @@ describe("makeAdminQuestion", () => {
   });
 });
 
-describe("isOnlyAdminOf", () => {
+describe("isLastAdmin among a person's own devices", () => {
   test("the one admin device among a person's own", () => {
     const [laptop, phone, spare] = [device("laptop", { role: "admin" }), device("phone", { role: "admin" }), device("spare")];
-    expect(isOnlyAdminOf([laptop, spare], laptop)).toBe(true);
-    expect(isOnlyAdminOf([laptop, spare], spare)).toBe(false);
-    expect(isOnlyAdminOf([laptop, phone, spare], laptop)).toBe(false);
+    expect(isLastAdmin([laptop, spare], laptop)).toBe(true);
+    expect(isLastAdmin([laptop, spare], spare)).toBe(false);
+    expect(isLastAdmin([laptop, phone, spare], laptop)).toBe(false);
   });
 });
 
@@ -105,6 +105,12 @@ describe("demoteQuestion", () => {
   test("says when the person's profile applies again", () => {
     expect(demoteQuestion(device("Mia's iPad", { role: "admin" }), "Mia", true)).toBe(
       `Demote Mia's iPad? ${cant} Mia's profile applies to every device of Mia's again.`,
+    );
+  });
+
+  test("warns that the robot moves when the device holds control", () => {
+    expect(demoteQuestion(device("Phone", { role: "admin" }), "Sam", false, true)).toBe(
+      `Demote Phone? ${cant} It loses control, and the robot moves back home.`,
     );
   });
 

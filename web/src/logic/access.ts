@@ -46,7 +46,11 @@ export function accessList(profiles: ProfileItem[], devices: PairedDevice[]): Ac
   return { solo, people, shared };
 }
 
-/** The controller won't revoke or demote the last admin device from a dashboard. */
+/**
+ * The last admin device in `devices`: among all of them, the controller won't
+ * revoke or demote it from a dashboard; among one person's own, demoting it
+ * ends that person being an admin.
+ */
 export function isLastAdmin(devices: PairedDevice[], device: PairedDevice): boolean {
   return device.role === "admin" && devices.filter((d) => d.role === "admin").length === 1;
 }
@@ -64,18 +68,15 @@ export function makeAdminQuestion(device: PairedDevice, person: string, limited:
   return `Make ${device.name} an admin? ${ADMIN_CAN}${lifts}`;
 }
 
-/** The only admin device among one person's: demoting it ends that person being an admin. */
-export function isOnlyAdminOf(own: PairedDevice[], device: PairedDevice): boolean {
-  return device.role === "admin" && own.filter((d) => d.role === "admin").length === 1;
-}
-
 /**
  * What Demote asks before it acts. `only`: the person's only admin device, so
- * their profile applies again. Its own browser can't undo it.
+ * their profile applies again. `driving`: it holds control, which it loses,
+ * and the robot goes home. Its own browser can't undo it.
  */
-export function demoteQuestion(device: PairedDevice, person: string, only: boolean): string {
+export function demoteQuestion(device: PairedDevice, person: string, only: boolean, driving = false): string {
   const which = device.current ? `this browser (${device.name})` : device.name;
+  const control = driving ? " It loses control, and the robot moves back home." : "";
   const profile = only ? ` ${person}'s profile applies to every device of ${person}'s again.` : "";
   const own = device.current ? " Only another admin can make it an admin again." : "";
-  return `Demote ${which}? It can no longer open System, approve devices or install apps.${profile}${own}`;
+  return `Demote ${which}? It can no longer open System, approve devices or install apps.${control}${profile}${own}`;
 }

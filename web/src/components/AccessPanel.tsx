@@ -1,12 +1,12 @@
 import { Fragment, useCallback, useRef, useState, type ReactNode } from "react";
 import { apiJson, errorText, paths } from "../api.ts";
+import type { ControlHolder } from "../api/control.ts";
 import { usePoll } from "../hooks/usePoll.ts";
 import {
   accessList,
   approveAdminQuestion,
   demoteQuestion,
   isLastAdmin,
-  isOnlyAdminOf,
   makeAdminQuestion,
   waitingText,
   type WaitingDevice,
@@ -64,6 +64,8 @@ interface Props {
   waiting: WaitingDevice[];
   /** Access is showing: the list keeps itself current. Not otherwise: a hidden page must go quiet, which is how its hold on the robot ends. */
   live: boolean;
+  /** Who holds control of the robot, if anyone. */
+  holder: ControlHolder | null;
 }
 
 /**
@@ -72,7 +74,7 @@ interface Props {
  * browser is approved by typing the code its own screen shows, then choosing
  * who it is for; the code never comes from the controller.
  */
-export function AccessPanel({ installed, person, waiting, live }: Props) {
+export function AccessPanel({ installed, person, waiting, live, holder }: Props) {
   const [profiles, setProfiles] = useState<ProfileItem[]>([]);
   const [devices, setDevices] = useState<PairedDevice[]>([]);
   const [editing, setEditing] = useState<ProfileItem | "new" | null>(null);
@@ -157,7 +159,7 @@ export function AccessPanel({ installed, person, waiting, live }: Props) {
       try {
         await apiJson(paths.authDeviceRole(device.id), { method: "PUT", body: JSON.stringify({ role }) });
       } catch (err) {
-        // Refused: the list was behind (by now it is the last admin, say). Show it as it is.
+        // Refused or failed: the list may be behind (by now it is the last admin, say). Show it as it is.
         void reload();
         throw err;
       }
@@ -172,7 +174,9 @@ export function AccessPanel({ installed, person, waiting, live }: Props) {
   };
 
   const demote = (device: PairedDevice, profile: ProfileItem, own: PairedDevice[]) => {
-    if (!window.confirm(demoteQuestion(device, profile.name, isOnlyAdminOf(own, device)))) return;
+    // Control names the device and its person, not the device's id.
+    const driving = holder?.device === device.name && holder.person === profile.name;
+    if (!window.confirm(demoteQuestion(device, profile.name, isLastAdmin(own, device), driving))) return;
     void setRole(device, "member", "Couldn't demote it");
   };
 
