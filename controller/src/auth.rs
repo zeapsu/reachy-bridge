@@ -1353,6 +1353,20 @@ struct RoleBody {
     role: Role,
 }
 
+/// The devices whose drive a role change or revoke of `device` ends
+/// (#341): the device itself and, unless it is a shared tablet, its
+/// person's member devices and the tablets that picked them, whose
+/// credentials the change renews. Another admin device of theirs keeps its
+/// credential, and its drive.
+fn drives_ended(auth: &Auth, devices: &[Device], device: &Device) -> Vec<String> {
+    let mut ids = vec![device.id.clone()];
+    if !device.shared {
+        let admin = |id: &String| devices.iter().any(|d| d.id == *id && d.role == Role::Admin);
+        ids.extend(auth.devices_of_in(devices, &person_of(device)).into_iter().filter(|id| !admin(id)));
+    }
+    ids
+}
+
 /// Who a device acts as: its person, or its name when it has none.
 fn person_of(device: &Device) -> String {
     if device.person.is_empty() { device.name.clone() } else { device.person.clone() }
@@ -1431,8 +1445,7 @@ async fn set_role(
                 return Err(ApiError::new(409, "this is the last admin device; make another device an admin first"));
             }
             if !ctx.local && !motion.ok() {
-                let mut affected = auth.devices_of_in(&devices, &person);
-                affected.push(id.clone());
+                let affected = drives_ended(auth, &devices, &devices[index]);
                 if let Some(refusal) = motion_refusal(holder, &devices, &affected) {
                     return Err(refusal);
                 }
@@ -1524,10 +1537,12 @@ async fn revoke(
         let person = person_of(&devices[index]);
         let shared = devices[index].shared;
         if !ctx.local && !motion.ok() {
-            let mut affected = vec![id.clone()];
-            if !shared {
-                affected.extend(auth.devices_of_in(&devices, &person));
+            // Before admin mode a drive has no holder to name: any open one
+            // may be this browser's.
+            if !admin_mode && state.player.drive_open() {
+                return Err(ApiError::new(428, "A drive is open: the robot may move back home."));
             }
+            let affected = drives_ended(auth, &devices, &devices[index]);
             if let Some(refusal) = motion_refusal(holder, &devices, &affected) {
                 return Err(refusal);
             }

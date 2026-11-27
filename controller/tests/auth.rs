@@ -921,6 +921,62 @@ async fn a_change_that_would_end_a_drive_waits_until_the_admin_was_told() {
 }
 
 #[tokio::test]
+async fn before_an_admin_a_revoke_waits_while_a_drive_is_open() {
+    // Before admin mode a drive has no holder, so any open one may be the
+    // revoked browser's (#341).
+    let h = harness(AuthConfig::default()).await;
+    let ids = |h: &Harness| h.state.auth.device_names().into_keys().collect::<Vec<_>>();
+    let phone = h.paired(LAN).await;
+    let phone_id = ids(&h)[0].clone();
+    let tablet = h.paired(LAN2).await;
+    let tablet_id = ids(&h).into_iter().find(|id| *id != phone_id).unwrap();
+    let revoke = format!("/api/auth/devices/{phone_id}");
+    let epoch = h.state.player.start_drive().await.expect("a drive starts");
+    let r = h.call("DELETE", &revoke, LAN, &[("cookie", &phone)], None).await;
+    assert_eq!(r.status, StatusCode::PRECONDITION_REQUIRED, "{:?}", r.body);
+    assert_eq!(r.body["detail"], "A drive is open: the robot may move back home.");
+    assert!(h.state.player.driving(epoch));
+    let r = h.call("DELETE", &format!("{revoke}?motion=ok"), LAN, &[("cookie", &phone)], None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{:?}", r.body);
+    // With no drive open, a revoke needs no telling.
+    h.state.player.abort_drive();
+    let r = h.call("DELETE", &format!("/api/auth/devices/{tablet_id}"), LAN2, &[("cookie", &tablet)], None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{:?}", r.body);
+}
+
+#[tokio::test]
+async fn demoting_one_admin_device_leaves_the_persons_other_admin_drive_alone() {
+    let (h, admin, sam, _mia) = family_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    // Sam has two devices, both made admins; the first drives.
+    h.paired_as(LAN3, &as_admin, json!({"name": "tablet", "person": "Sam"})).await;
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &as_admin, None).await.body["devices"].clone();
+    let id_of = |name: &str| {
+        devices.as_array().unwrap().iter().find(|d| d["name"] == name).unwrap()["id"].as_str().unwrap().to_string()
+    };
+    let (phone_id, tablet_id) = (id_of("phone"), id_of("tablet"));
+    for id in [&phone_id, &tablet_id] {
+        let path = format!("/api/auth/devices/{id}/role");
+        let r = h.call("PUT", &path, LOOPBACK, &as_admin, Some(json!({"role": "admin"}))).await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    }
+    assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+    // Demoting the tablet renews member credentials only: the phone, an
+    // admin, keeps its drive, so nothing needs telling.
+    let r = h
+        .call(
+            "PUT",
+            &format!("/api/auth/devices/{tablet_id}/role"),
+            LOOPBACK,
+            &as_admin,
+            Some(json!({"role": "member"})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(h.view(LAN, &sam).await["holder"]["device"], "phone");
+}
+
+#[tokio::test]
 async fn an_admin_demotes_its_own_device_and_cannot_undo_it() {
     let (h, admin, sam, _mia) = family_harness().await;
     let as_admin = [("cookie", admin.as_str())];

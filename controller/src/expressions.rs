@@ -170,6 +170,12 @@ impl ExpressionPlayer {
         Ok(epoch)
     }
 
+    /// A drive session is open (#341: before admin mode it has no holder to
+    /// name, so revoking a browser can't tell whose it is).
+    pub fn drive_open(&self) -> bool {
+        matches!(&*self.session.lock().unwrap(), Some(Session { phase: Phase::Driving, .. }))
+    }
+
     /// True while the drive session started in `epoch` may keep moving the robot.
     pub fn driving(&self, epoch: u64) -> bool {
         self.mode_epoch.load(Ordering::SeqCst) == epoch
