@@ -390,3 +390,18 @@ async fn a_drive_whose_browser_lost_its_trust_while_waiting_never_starts() {
     assert_eq!(h.fake.lock().unwrap().gotos, 0);
     assert!(!h.state.player.needs_home());
 }
+
+#[tokio::test]
+async fn a_cancelled_drive_leaves_no_session_and_no_return_home() {
+    // A drive whose browser lost its trust between the claim and the check
+    // after it is dropped before anything was sent (#341).
+    let h = harness(Some("enabled")).await;
+    let epoch = h.state.player.start_drive().await.expect("a drive starts");
+    // Another epoch's cancel leaves this drive alone.
+    h.state.player.cancel_drive(epoch + 1);
+    assert!(h.state.player.driving(epoch));
+    h.state.player.cancel_drive(epoch);
+    assert!(!h.state.player.active());
+    assert!(!h.state.player.needs_home());
+    assert_eq!(h.fake.lock().unwrap().gotos, 0);
+}

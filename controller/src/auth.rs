@@ -1553,14 +1553,16 @@ async fn revoke(
             tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
             return Err(ApiError::new(500, "could not save the device list"));
         }
-        drop(devices);
-        auth.picks.lock().unwrap().remove(&id);
         // The person's rights may change with it (their last admin device, or
         // their last device a tablet's pick needs): their other devices and
-        // those tablets reconnect under the new rules.
+        // those tablets reconnect under the new rules. Before the list
+        // unlocks, so a drive claimed after the check above fails its
+        // credential check (drive.rs) rather than start on the old rules.
         if !shared {
-            auth.rules_changed(&auth.devices_of(&person));
+            auth.rules_changed(&auth.devices_of_in(&devices, &person));
         }
+        drop(devices);
+        auth.picks.lock().unwrap().remove(&id);
         Ok((removed, Some(id.clone())))
     })?;
     auth.revoked.send_modify(|n| *n += 1);
