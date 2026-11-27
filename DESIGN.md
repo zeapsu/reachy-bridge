@@ -82,7 +82,7 @@ breakpoints:
 
 # DESIGN.md — Reachy Bridge
 
-> **Purpose:** Single source of truth for the `reachy-bridge` visual language, interaction philosophy, tokens, and UI constraints. Coding agents and contributors should read this before proposing mockups or changing anything in `web/`.
+> **Purpose:** The reference for the `reachy-bridge` visual language, interaction philosophy, tokens, and UI constraints. Coding agents and contributors should read this before proposing mockups or changing anything in `web/`. Where it and the code disagree, the code (the `source_of_truth` files above) wins and this file is corrected.
 
 ---
 
