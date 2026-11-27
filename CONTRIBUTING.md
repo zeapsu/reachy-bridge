@@ -155,7 +155,7 @@ Commits have a short subject and a body that says what changed and why.
 ## Releases and updates
 
 Pushing a `vX.Y.Z` tag runs CI and then publishes a GitHub Release with the source
-archive, `uv.lock`, the prebuilt webrtcsink plugin, `SHA256SUMS` and, once the repo is public, a build attestation.
+archive, `uv.lock`, the prebuilt webrtcsink plugin, `SHA256SUMS` and a build attestation.
 `-rcN` tags are prereleases (nightlies). Notes come from `docs/releases/<tag>.md` when that file
 exists. A device moves to a tag with `reachy-bridge deploy <tag>`, which reinstalls the
 previous version if the new one doesn't come up healthy. The on-device updater and its
