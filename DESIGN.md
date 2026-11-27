@@ -10,7 +10,8 @@ source_of_truth:
   ux_ratchets: "web/e2e/ux.spec.ts"
   a11y_ratchets: "web/e2e/a11y.spec.ts"
 theme:
-  default: "dark"
+  default: "auto"
+  fallback: "dark"
   modes: ["auto", "dark", "light"]
   default_accent: "amber"
 colors:
@@ -92,7 +93,7 @@ breakpoints:
 - **Material personality:** Translucent, optically grounded glass controls (frosted backdrop, directional specular rim, subtle chromatic refraction on desktop Chromium) floating over a quiet, low-noise studio gradient or user-chosen wallpaper.
 - **State over sentences (Direction B):** The interface communicates state visually—dimming what is unavailable, lighting up what is active, and offering the single obvious next action (for example, a dimmed sleeping 3D robot with a `Power on` button at the base of the stage). Users should never have to read explanatory paragraphs to operate the robot.
 - **Calm, uncluttered density:** One surface per job. Control panels stay scannable and tactile; explanations, troubleshooting, and quirks live in `docs/manual.md` (linked from `System`), never inline as justification copy.
-- **Dark by default, light first-class:** Defaults to deep studio slate (`#0b0f14`) with warm amber (`#ffb547`) highlights; follows `prefers-color-scheme` in `auto` mode and supports explicit `light` and `dark` overrides applied before first paint.
+- **Follows the system, dark at heart:** With nothing saved the mode is `auto`, which follows `prefers-color-scheme`; dark (deep studio slate `#0b0f14` with warm amber `#ffb547`) is the CSS fallback. Explicit `light` and `dark` overrides are saved and applied before first paint.
 
 ---
 
@@ -183,7 +184,7 @@ User-selectable in `System › Settings › Appearance` (`web/src/logic/appearan
 Shared primitives live in `web/src/styles/base.css`; panel-specific layout lives next to each component (`ComponentName.css`).
 
 ### Glass Sheets (`.glass.sheet`)
-- `border-radius: 28px` (`--r-sheet`), `padding: 20px` (`16px` on `≤480px`), `display: flex; flex-direction: column; gap: 16px` (`18px` in `System`).
+- `border-radius: 28px` (`--r-sheet`), `padding: 20px` (System's `.sheet.sys` drops to `16px` on `≤480px`), `display: flex; flex-direction: column; gap: 16px` (`18px` in `System`).
 - Header bar: `min-height: 32px`, uppercase `12px` `h2` pushed left (`margin-right: auto`), optional action/chip on the right.
 
 ### Buttons (`.btn`, always paired with `.press` for tactile feedback)
@@ -224,7 +225,7 @@ Shared primitives live in `web/src/styles/base.css`; panel-specific layout lives
 - **Manual Drive (`.pane.drive`):** Two tactile thumb pads (`max-width: 128px` on phone) with spring-return knobs (turning `--accent` when held), antenna sliders, and a `Hold` pin button next to `Home`.
 - **Voice Panel (`.voice`):** One-line chips with icons (`Listen`, `Talk`, `Apps`). Active Talk chip fills horizontally with the live mic level (`--level`); mic picker appears whenever Talk is active (amber when silent).
 - **Compact App Rows (`.app-row`):** `44px` gradient monogram tile (`border-radius: 13px`), expandable title/status copy, star pin toggle (`36×36px`), and Start/Stop/Open action buttons separated by `--hair` dividers.
-- **Access & Waiting Card (`.acc-waiting`, `.role-tag`):** Recessed `22px` card inside `System › Access` listing waiting browsers (address + age, never the pairing code) with an inline mono code field (`17px/600`, `0.06em` tracking) and confirmation-gated `Approve as Admin` / `Make admin` / `Demote` / `Revoke` controls.
+- **Access & Waiting Card (`.acc-waiting`, `.role-tag`):** Recessed `22px` card inside `System › Access` listing waiting browsers (address + age, never the pairing code) with an inline mono code field (`17px/600`, `0.06em` tracking) and the approval choices (`Approve as Admin`, a profile, `Shared`). Existing devices in the list below carry `Make admin` and `Revoke`, each confirmation-gated; the last admin device has no `Revoke`.
 
 ---
 
@@ -243,7 +244,7 @@ Shared primitives live in `web/src/styles/base.css`; panel-specific layout lives
   - *Apps & System views (`.view.list`):* Centered single column, `max-width: 760px`, `margin-inline: auto`.
   - *Diagnostics (`.diag-grid`):* Two equal columns (`gap: 20px 28px`) for board gauges beside audio EQ, with logs spanning full width (`.wide`, `grid-column: 1 / -1`) underneath.
 - **Spacing Rhythm:** Built on a `4px` base unit (`6px` tight chip gaps, `8–12px` control/row gaps, `16px` sheet internal rhythm, `20px` sheet padding, `24px` stage-to-sidebar separation).
-- **In-App App View:** Third-party HF Spaces app UIs open inside an overlay on mobile/tablet (dimmed dashboard on desktop, full-screen on phones) with controller chrome to close, pop out, or stop the app.
+- **In-App App View (`.app-view`, `AppView.css`):** Third-party HF Spaces app UIs open in an overlay at every width, with controller chrome to close, pop out, or stop the app. Below `900px` it is full-screen; from `900px` it is an inset panel over the dimmed dashboard. This `900px` breakpoint is its own, separate from the `860px` layout one.
 - **CSS Architecture:** Put shared tokens and controls in `web/src/styles/base.css`; keep each panel's layout in its own colocated `ComponentName.css` file.
 
 ---
@@ -254,14 +255,14 @@ Liquid glass is a **strictly layered optical system**, not decorative blur:
 
 1. **Layer 0 — Ambient Wallpaper (`.wall`, `z-index: 0`):** Fixed full-bleed studio gradient or dimmed photo behind everything.
 2. **Layer 1 — Content Layer (`.stage`, camera feed, 3D robot, log output):** Sits directly on the wallpaper with **no glass effect**.
-3. **Layer 2 — Control Layer (`.glass`, `z-index: 1`):** Sheets, top navigation pill, status pill, power button, and modal/stage notices:
+3. **Layer 2 — Control Layer (`.glass`; its children sit at `z-index: 1` above the rim and glare pseudo-elements):** Sheets, top navigation pill, status pill, power button, and modal/stage notices:
    - Translucent vertical gradient (`--tint-strong` → `--tint`).
    - Backdrop frost: `backdrop-filter: blur(var(--frost, 18px)) saturate(185%) brightness(1.04)` (`--frost: 22px` for nav pills, `14px` for compact status pills).
    - Multi-layer elevation shadow: `0 18px 40px -12px var(--shadow)`, `0 2px 6px -2px var(--shadow)`, plus top and bottom inset highlights.
    - Directional specular rim (`.glass::before`): `1.2px` masked `conic-gradient` rotating with `--ang`.
    - Pointer-tracked glare (`.glass::after`): soft `radial-gradient` at `(--lx, --ly)` using `mix-blend-mode: plus-lighter`.
-   - Desktop Chromium refraction (`.refract .glass[data-lens]` via `web/src/glass.ts`): per-element SVG `feDisplacementMap` with RGB channel dispersion (`1.0 / 0.92 / 0.84`).
-4. **Layer 2b — Recessed Wells (`.well`):** Inner groupings inside a glass sheet (segmented tracks, input fields, waiting cards, control strips) recess inward with `background: var(--well)` and `inset 0 1px 2px` shadow. **Never nest `.glass` inside `.glass`.**
+   - Refraction (`.refract .glass[data-lens]` via `web/src/glass.ts`): per-element SVG `feDisplacementMap` with RGB channel dispersion (`1.0 / 0.92 / 0.84`). It runs only where `lensCapable` is true: a hover-capable fine pointer (`(hover: hover) and (pointer: fine)`) in a Chromium that supports SVG backdrop filters. That test is separate from the `860px` layout breakpoint.
+4. **Layer 2b — Recessed Wells (the `--well` token):** Inner groupings inside a glass sheet (segmented tracks, input fields, waiting cards, control strips) recess inward with `background: var(--well)` and an `inset 0 1px 2px` shadow, set on each component's own selector; there is no `.well` class. **Never nest `.glass` inside `.glass`.**
 5. **Floating Overlays (`z-index` ladder):**
    - `20`: `.phone-tabs` fixed bottom navigation pill.
    - `50`: `.app-view` embedded app overlay.
@@ -269,7 +270,7 @@ Liquid glass is a **strictly layered optical system**, not decorative blur:
 
 ### Performance & Accessibility Degradation
 - **Touch / coarse-pointer devices:** Lower `--frost` to `12px`, disable `.glass::after` glare, and skip SVG refraction (`lensCapable` is desktop Chromium only) to protect mobile compositor frame rates.
-- **`prefers-reduced-transparency: reduce`:** Drops `backdrop-filter` entirely and switches `.glass` to opaque `color-mix(in srgb, var(--ground) 92%, var(--ink) 8%)`.
+- **`prefers-reduced-transparency: reduce`:** Switches `.glass` to opaque `color-mix(in srgb, var(--ground) 92%, var(--ink) 8%)` and drops its `backdrop-filter`. Known exception: `.refract .glass[data-lens]` is more specific, so a lens-capable element keeps its refraction filter.
 - **`prefers-reduced-motion: reduce`:** Collapses transitions to `0.01ms` and disables keyframe animations.
 
 ---
@@ -285,7 +286,7 @@ Liquid glass is a **strictly layered optical system**, not decorative blur:
 
 ### Copy & UX (Direction B — State Over Sentences)
 - **Do** show state through UI affordances: dim unavailable controls (`opacity: 0.35–0.45`, `grayscale(1)`), surface the single obvious next action (`Power on`), and pair icons with short names in the top bar.
-- **Do** keep visible UI copy to **≤ 12 words** per element (enforced as a CI ratchet in `web/e2e/ux.spec.ts`).
+- **Do** keep visible UI copy to **≤ 12 words** per element. `web/e2e/ux.spec.ts` counts longer text (an element's own text, on the elements it scans) against a baseline that may only go down; today's baseline allows 3 findings per viewport.
 - **Don't** write justification text, filler explanations, or status sentences in the dashboard; move explanations and quirks to `docs/manual.md` in the same PR.
 - **Do** keep text where it protects people: warnings before the robot moves or goes limp, security notes, the `Take over` prompt, pairing commands, confirmation prompts for privilege/destructive changes, and real errors.
 - **Do** say **"Robot service down"** (never "daemon") in user-facing text and API error messages.
@@ -311,10 +312,10 @@ Liquid glass is a **strictly layered optical system**, not decorative blur:
 | `≤ 420px` (Narrow Phone) | Status pill and Release button tighten (`padding: 7px 11px; font-size: 12px`). |
 
 ### Automated Accessibility & UX Guardrails
-Enforced in `web/e2e/a11y.spec.ts` and `web/e2e/ux.spec.ts` (with ratchet baselines in `web/e2e/baselines/` that may only go down):
-- **WCAG compliance:** `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`, and `best-practice` via `axe-core` across every tab with the robot off and on.
+Checked in `web/e2e/a11y.spec.ts` and `web/e2e/ux.spec.ts`. Most checks are ratchets: findings are counted against baselines in `web/e2e/baselines/` that may only go down.
+- **axe-core violations (ratchet):** `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`, and `best-practice` across every tab with the robot off and on, counted per rule against the baseline.
 - **Zero horizontal overflow:** `documentElement.scrollWidth <= clientWidth` on desktop and phone (hard failure).
-- **Touch targets:** Hard minimum `24×24px` (WCAG 2.5.8 ratchet); target `36×36px` for standard buttons/stars and `44×44px` for primary circular actions like `.power`.
+- **Touch targets (ratchet):** controls under `24×24px` (WCAG 2.5.8) are counted against the baseline. Aim for `36×36px` for standard buttons and stars, and `44×44px` for primary circular actions like `.power`.
 - **Keyboard focus:** Visible `2px solid var(--accent)` outline with `3px` offset (`:focus-visible`) on all interactive controls.
 - **Reduced motion & transparency:** Full CSS media-query support in `base.css`.
 
