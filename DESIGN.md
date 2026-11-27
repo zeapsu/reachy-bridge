@@ -187,7 +187,7 @@ Shared primitives live in `web/src/styles/base.css`; panel-specific layout lives
 - `border-radius: 28px` (`--r-sheet`), `padding: 20px` (System's `.sheet.sys` drops to `16px` on `≤480px`), `display: flex; flex-direction: column; gap: 16px` (`18px` in `System`).
 - Header bar: `min-height: 32px`, uppercase `12px` `h2` pushed left (`margin-right: auto`), optional action/chip on the right.
 
-### Buttons (`.btn`, always paired with `.press` for tactile feedback)
+### Buttons (`.btn`; add `.press` for tactile feedback)
 - **Geometry:** Pill (`border-radius: 999px`), `min-height: 36px`, `padding: 7px 16px`, `font-size: 13.5px`, `font-weight: 600`, `gap: 6px`, `16×16px` icon.
 - **Variants:**
   - *Default:* `background: var(--tint-strong)` with top rim highlight and soft shadow.
@@ -208,7 +208,7 @@ Shared primitives live in `web/src/styles/base.css`; panel-specific layout lives
 
 ### Range Sliders (`.slider` + `input[type="range"]`)
 - `6px` rounded track filled to `--fill` with `var(--accent)`.
-- `34×24px` pill thumb that scales to `(1.18, 1.1)` while dragging (`var(--spring)`).
+- `34×24px` pill thumb; in WebKit/Blink (`::-webkit-slider-thumb`) it scales to `(1.18, 1.1)` while dragging (`var(--spring)`).
 - Label row above with `tabular-nums` mono `<output>` right-aligned.
 
 ### Text Fields (`.field`)
@@ -220,12 +220,12 @@ Shared primitives live in `web/src/styles/base.css`; panel-specific layout lives
 
 ### Signature Domain Components
 - **Top Bar & Power Button (`.top`, `.power`):** 3-column desktop grid (`brand | centered glass tabs | status + release + power`). `.power` is a `44×44px` circular glass button that fills with a radial `--accent` glow when `.running` and breathes (`opacity` pulse `1.6s`) while `.starting`/`.stopping`.
-- **Robot Stage (`.stage`):** Live camera (`#05070a` frame) or interactive Three.js 3D Reachy standing directly on the wallpaper (never wrapped in glass). When offline, `#robot-3d.offline` transitions to `opacity: 0.35; filter: grayscale(1)` and reveals a normal-sized `.btn.primary.stage-power` at `bottom: 32px`.
+- **Robot Stage (`.stage`):** Live camera (`#05070a` frame) or interactive Three.js 3D Reachy standing directly on the wallpaper (never wrapped in glass). When offline, `#robot-3d.offline` transitions to `opacity: 0.35; filter: grayscale(1)` and, when a power action is available, shows a `.btn.primary.stage-power` at `bottom: 32px` (with its own larger padding and text).
 - **Expression Carousel (`.carousel`):** Horizontal snap track (`72×72px` emoji tiles) passing beneath a centered `88×88px` `.lensring` (`border-radius: 26px`); dims to `grayscale(1) opacity(0.35)` when robot is off.
 - **Manual Drive (`.pane.drive`):** Two tactile thumb pads (`max-width: 128px` on phone) with spring-return knobs (turning `--accent` when held), antenna sliders, and a `Hold` pin button next to `Home`.
 - **Voice Panel (`.voice`):** One-line switch rows with icons (`VoicePanel.tsx`). A sending switch shows the live mic level (`--level`) while its mic track is live. The mic picker's conditions (named inputs, the session, robot power) live in that component; read it rather than restating them.
 - **Compact App Rows (`.app-row`):** `44px` gradient monogram tile (`border-radius: 13px`), expandable title/status copy, star pin toggle (`36×36px`), and Start/Stop/Open action buttons separated by `--hair` dividers.
-- **Access & Waiting Card (`.acc-waiting`, `.role-tag`):** Recessed `22px` card inside `System › Access` listing waiting browsers (address + age, never the pairing code) with an inline mono code field (`17px/600`, `0.06em` tracking) and the approval choices (a profile, `Shared`, then `Approve as Admin`, which asks first). In the list below, a profile's non-admin devices offer `Make admin`; every device offers `Revoke` (`Log out` for this browser), except the last admin device. Each asks first. `AccessPanel.tsx` and `docs/manual.md` hold the exact rules.
+- **Access & Waiting Card (`.acc-waiting`, `.role-tag`):** Recessed `22px` card inside `System › Access` listing waiting browsers (address + age, never the pairing code) with an inline mono code field (`17px/600`, `0.06em` tracking) and the approval choices (`Approve as Admin`, which asks first, a profile, or `Shared`). In the list below, a profile's non-admin devices offer `Make admin`; every device offers `Revoke` (`Log out` for this browser), except the last admin device. Each asks first. `AccessPanel.tsx` and `docs/manual.md` hold the exact rules.
 
 ---
 
