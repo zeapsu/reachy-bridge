@@ -16,10 +16,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use reachy_controller::audio;
-use reachy_controller::auth::AuthConfig;
-use reachy_controller::control::AWAY_AFTER;
+use reachy_controller::auth::{AuthConfig, AuthContext, Role};
+use reachy_controller::control::{self, AWAY_AFTER};
 use reachy_controller::daemon::Daemon;
 use reachy_controller::logs::LogBroker;
+use reachy_controller::profiles::Access;
 use reachy_controller::state::{AppState, Shared};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -2229,4 +2230,34 @@ async fn a_browser_approved_for_a_profile_follows_its_rename_or_asks_again() {
     let r = h.call("DELETE", "/api/auth/profiles/Leo", LOOPBACK, &as_admin, None).await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
     assert_ne!(h.poll(&id, LAN2, &pair_cookie).await.body["status"], "approved");
+}
+
+#[tokio::test]
+async fn a_take_read_as_an_admin_before_a_demotion_counts_as_a_members() {
+    // The login check read the role before the demotion landed (#341): the
+    // take uses the device's role now, so it can't take the admin's control.
+    let (h, admin, _sam) = control_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    let phone = h.state.auth.device_names().into_iter().find(|(_, name)| name == "phone").unwrap().0;
+    let role = format!("/api/auth/devices/{phone}/role");
+    assert_eq!(h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": "admin"}))).await.status, StatusCode::OK);
+    // What the take's login check read while the phone was an admin.
+    let read = AuthContext {
+        peer: None,
+        authenticated: true,
+        device: Some(phone.clone()),
+        person: Some("Sam".into()),
+        role: Some(Role::Admin),
+        access: Access::Full,
+        shared: false,
+        local: false,
+        credential: None,
+        https: false,
+    };
+    assert_eq!(h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": "member"}))).await.status, StatusCode::OK);
+    assert_eq!(h.control(LOOPBACK, &admin, "take", None).await.status, StatusCode::OK);
+    let take = control::router().with_state(h.state.clone()).layer(axum::Extension(read));
+    let r = take.oneshot(Request::post("/api/control/take").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(h.view(LOOPBACK, &admin).await["holder"]["you"], true);
 }

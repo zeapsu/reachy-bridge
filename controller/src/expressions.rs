@@ -178,7 +178,9 @@ impl ExpressionPlayer {
 
     /// Drop the drive session started in `epoch` before it sent anything
     /// (#341): the robot hasn't moved, so its pose is still home and nothing
-    /// needs a return home.
+    /// needs a return home. The epoch names the motor mode, not the session:
+    /// call it only under the power lock taken for that claim, so the session
+    /// it finds is the one just claimed.
     pub fn cancel_drive(&self, epoch: u64) {
         let mut session = self.session.lock().unwrap();
         if matches!(&*session, Some(Session { phase: Phase::Driving, epoch: e, .. }) if *e == epoch) {

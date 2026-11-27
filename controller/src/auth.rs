@@ -606,6 +606,11 @@ impl Auth {
         self.devices.lock().unwrap().iter().any(|d| d.id == id)
     }
 
+    /// The device's role now, or `None` once it's revoked.
+    pub fn role_of(&self, id: &str) -> Option<Role> {
+        self.devices.lock().unwrap().iter().find(|d| d.id == id).map(|d| d.role)
+    }
+
     /// Loopback (tailscale serve) logs in without a device: only before an
     /// admin exists, and unless `CONTROLLER_TRUST_TAILNET=0`.
     fn trusts_loopback(&self) -> bool {

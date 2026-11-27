@@ -410,9 +410,13 @@ async fn take(
         // Under the control lock, so a revoke (which forgets the device under
         // the same lock, after removing it) can't be undone by a take that
         // passed the login check just before it.
-        if !state.auth.has_device(&device) {
+        let Some(role) = state.auth.role_of(&device) else {
             return Err(ApiError::new(401, "this browser was logged out"));
-        }
+        };
+        // The role the login check read may be stale: a demotion (made under
+        // this lock) lands before this take or after it (#341). A promotion
+        // in between counts from the next request.
+        let admin = admin && role == Role::Admin;
         if let Some(holder) = &inner.holder {
             if holder.device == device {
                 return Ok(());
