@@ -40,7 +40,19 @@ export interface RobotState {
   control_mode?: string | null;
 }
 
+/** GET/PUT /api/system/wake-app: the app started when the robot wakes (#334). */
+export interface WakeApp {
+  /** The app's package name. */
+  app: string;
+  /** A readable name made from the package name. */
+  name: string;
+  /** Null while the robot service can't say. */
+  installed: boolean | null;
+  enabled: boolean;
+}
+
 export const systemPaths = {
+  wakeApp: "/api/system/wake-app",
   logSources: "/api/logs/sources",
   logStream: (source: string) => `/api/logs/stream?source=${encodeURIComponent(source)}`,
   statsStream: "/api/system/stats-stream",

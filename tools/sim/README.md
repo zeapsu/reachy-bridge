@@ -83,11 +83,24 @@ because stock MuJoCo sim hides bugs 1 and 2:
 - `sim_ui_app`: serves a page on `127.0.0.1:18742`, starting the server
   `SIM_UI_DELAY` seconds (default 3) after the process, as real app UIs come
   up late.
+  It applies reachy-mini 1.15's `LocalNetworkGuardMiddleware` rules to
+  every request (restated, since the test apps don't install reachy-mini),
+  and `POST /echo` and the WebSocket at `/ws` answer with the Host, Origin
+  and X-Forwarded-Host it saw. The `[#340]` checks reach it through the
+  controller's app proxy under a `*.ts.net` Host and Origin.
 - `sim_crash_app`: no UI; exits with code 1 after a second.
 
 `run.py` installs them with `uv pip install` into the apps venv rather than
 through the daemon's install API, which would also install the latest
 `reachy-mini` from PyPI into it.
+
+## The admin controller
+
+`run.py` also starts a second controller on the same sim daemon, with a
+state directory of its own (`SIM_ADMIN_CONTROLLER`, and `SIM_ADMIN_KEY` for
+the path of its local key). The browser test that makes an admin
+(`web/e2e/access.spec.ts`, #334) runs against it: admin mode stays on for
+good, and every other test needs a controller without an admin.
 
 ## Against servers you started yourself
 

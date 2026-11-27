@@ -1,0 +1,46 @@
+/* System (#334): one sheet, a section per tab. */
+.sys { gap: 18px; }
+.sys .pane { gap: 20px; }
+
+/* A device is waiting for approval (#334). */
+.seg .seg-badge {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 7px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+/* A titled group inside the sheet (Panel, inset). */
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+}
+.group-head .field { padding-block: 6px; }
+
+.manual-link { margin-top: -8px; border-top: 1px solid var(--hair); }
+
+/* Diagnostics: the board beside the audio path, the logs under both. */
+.diag-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px 28px;
+}
+.diag-grid > .wide { grid-column: 1 / -1; }
+.diag-grid .panel-inset { gap: 14px; }
+.diag-grid > :first-child .gauges { flex: 1; align-content: center; }
+.diag-grid .gauge svg { width: 96px; height: 96px; }
+.diag-grid .eq { height: 84px; }
+
+@media (max-width: 860px) {
+  .diag-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 480px) {
+  .sheet.sys { padding: 16px; }
+  .diag-grid .gauge svg { width: 72px; height: 72px; }
+}

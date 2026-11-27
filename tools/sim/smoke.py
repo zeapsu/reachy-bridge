@@ -23,6 +23,7 @@ checks passed.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import sys
@@ -30,6 +31,8 @@ import threading
 import time
 
 import httpx
+from websockets.exceptions import InvalidStatus, WebSocketException
+from websockets.sync.client import connect as ws_connect
 
 DAEMON = os.getenv("SIM_DAEMON", "http://127.0.0.1:8100")
 CTRL = os.getenv("SIM_CONTROLLER", "http://127.0.0.1:7862")
@@ -112,6 +115,64 @@ def answers_on(address: str, port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+# A tailnet browser's request as tailscale serve passes it on to the app proxy.
+TS_HOST = "robot.tail1234.ts.net:8043"
+TS_ORIGIN = f"https://{TS_HOST}"
+
+
+def ws_seen(proxy_port: int, host: str, origin: str) -> dict | str:
+    """Open the app's ``/ws`` through the proxy under ``host`` and ``origin``:
+    what the app saw, the refusal's HTTP status, or what else went wrong (a
+    FAIL line, not a traceback)."""
+    try:
+        sock = socket.create_connection(("127.0.0.1", proxy_port), timeout=5)
+        with ws_connect(f"ws://{host}/ws", sock=sock, origin=origin, open_timeout=5) as ws:
+            return json.loads(ws.recv(timeout=5))
+    except InvalidStatus as e:
+        return f"HTTP {e.response.status_code}"
+    except (OSError, WebSocketException, ValueError) as e:
+        return f"{type(e).__name__}: {e}"
+
+
+def app_proxy_local_guard(port: int, proxy_port: int | None) -> None:
+    """[#340] The app enforces reachy-mini 1.15's LocalNetworkGuardMiddleware
+    rules; a tailnet browser still gets through the controller's app proxy,
+    which talks to the app as loopback, and a cross-site one still doesn't."""
+    direct = f"http://127.0.0.1:{port}"
+    r = httpx.get(f"{direct}/", headers={"Host": TS_HOST}, timeout=5)
+    check("[#340] app refuses a tailnet Host directly (guard live)", r.status_code == 400, f"HTTP {r.status_code}")
+    r = httpx.post(f"{direct}/echo", headers={"Origin": "http://100.101.102.103:7863"}, timeout=5)
+    check("[#340] app refuses a tailnet IP Origin directly (guard live)", r.status_code == 403, f"HTTP {r.status_code}")
+    if proxy_port is None:
+        check("[#340] app proxy listening", False, "no proxy_port")
+        return
+    proxy = f"http://127.0.0.1:{proxy_port}"
+    browser = {"Host": TS_HOST, "Origin": TS_ORIGIN, "Sec-Fetch-Site": "same-origin"}
+    r = httpx.get(f"{proxy}/", headers=browser, timeout=5)
+    check("[#340] tailnet GET through the app proxy", r.status_code == 200, f"HTTP {r.status_code}")
+    r = httpx.post(f"{proxy}/echo", headers=browser, content=b"x", timeout=5)
+    seen = r.json() if r.status_code == 200 else {}
+    check(
+        "[#340] tailnet POST through the app proxy reaches the app as loopback",
+        seen == {"host": f"127.0.0.1:{port}", "origin": None, "forwarded_host": TS_HOST},
+        f"HTTP {r.status_code} {seen}",
+    )
+    seen = ws_seen(proxy_port, TS_HOST, TS_ORIGIN)
+    check(
+        "[#340] tailnet WebSocket through the app proxy reaches the app as loopback",
+        isinstance(seen, dict) and seen.get("host") == f"127.0.0.1:{port}" and seen.get("origin") is None,
+        str(seen),
+    )
+    r = httpx.post(f"{proxy}/echo", headers={"Host": TS_HOST, "Origin": "https://evil.example"}, timeout=5)
+    check(
+        "[#340] cross-site POST still refused by the controller",
+        r.status_code == 403 and r.text == "cross-site request refused",
+        f"HTTP {r.status_code} {r.text[:80]}",
+    )
+    seen = ws_seen(proxy_port, TS_HOST, "https://evil.example")
+    check("[#340] cross-site WebSocket still refused by the controller", seen == "HTTP 403", str(seen))
 
 
 def crash_to_sleep() -> None:
@@ -267,6 +328,8 @@ check(
     port is not None and (lan is None or not answers_on(lan, port)),
     f"port={port} lan={lan}",
 )
+if port is not None:
+    app_proxy_local_guard(port, ui(APP).get("proxy_port"))
 
 # 10. power on from asleep wakes the robot in place
 crash_to_sleep()
@@ -303,6 +366,51 @@ if crash_and_catch_idle_reset():
         s.changes(),
     )
     check("[#292] app start after the idle reset runs on an awake robot", daemon_state() == AWAKE, str(daemon_state()))
+
+# 13. [#334] the wake app: with its switch on, a power-on starts it, the way
+# a start from the Apps tab would; with it off, power-on starts nothing.
+stop_any_app()
+c.post("/api/daemon/stop")
+wait(lambda: daemon_state()[0] == "stopped", 40)
+wake = c.get("/api/system/wake-app").json()
+if wake.get("installed"):
+    r = c.put("/api/system/wake-app", json={"enabled": True})
+    check("[#334] wake app switch turns on", r.status_code == 200 and r.json().get("enabled") is True, r.text)
+    c.post("/api/daemon/start")
+    ok = wait(lambda: app_state() == "running", 60)
+    name = ((current_app() or {}).get("info") or {}).get("name")
+    check("[#334] power on starts the wake app", ok and name == wake["app"], f"{name} {app_state()}")
+    check("[#334] the wake app runs on an awake robot", daemon_state() == AWAKE, str(daemon_state()))
+    r = c.put("/api/system/wake-app", json={"enabled": False})
+    check("[#334] wake app switch turns off", r.status_code == 200 and r.json().get("enabled") is False, r.text)
+    c.post("/api/daemon/stop")
+    wait(lambda: daemon_state()[0] == "stopped", 40)
+    c.post("/api/daemon/start")
+    ok = wait(lambda: daemon_state() == AWAKE, 40)
+    app_came = wait(lambda: app_state() in ("starting", "running"), 5)
+    check("[#334] switch off: power on starts no app", ok and not app_came, f"{daemon_state()} app={app_state()}")
+else:
+    # Servers started by hand without REACHY_WAKE_APP: the Conversation app isn't in the sim.
+    r = c.put("/api/system/wake-app", json={"enabled": True})
+    check(
+        "[#334] wake app can't be switched on while it isn't installed", r.status_code == 409, f"HTTP {r.status_code}"
+    )
+
+# 14. [#334] a browser asking for a login shows in the waiting list with its
+# address and age, never its code; and without an admin no device is made one.
+with httpx.Client(base_url=CTRL, timeout=10) as browser:
+    asked = browser.post("/api/auth/pair").json()
+    waiting = c.get("/api/auth/pending")
+    listed = waiting.json().get("pending", []) if waiting.status_code == 200 else []
+    check(
+        "[#334] a waiting browser is listed by address and age only",
+        len(listed) == 1 and set(listed[0]) == {"peer", "age"} and asked["code"] not in waiting.text,
+        waiting.text,
+    )
+    r = c.post("/api/auth/approve", json={"code": asked["code"], "role": "admin"})
+    check("[#334] no admin from the dashboard before the first one", r.status_code == 403, f"HTTP {r.status_code}")
+    r = c.put("/api/auth/devices/none/role", json={"role": "admin"})
+    check("[#334] no role change before the first admin", r.status_code == 409, f"HTTP {r.status_code}")
 
 # --- leave the sim off -------------------------------------------------
 stop_any_app()

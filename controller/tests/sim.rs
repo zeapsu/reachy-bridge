@@ -247,3 +247,22 @@ async fn the_test_sound_plays_in_the_browser_in_sim_mode() {
     let (status, _) = s.h.call("POST", "/api/media/play_sound", Some(json!({"file": "/home/x/a.wav"}))).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
+
+#[tokio::test]
+async fn the_sim_has_its_own_wake_app_switch() {
+    // The fake daemons both have hello_world installed.
+    let mut s = sim_harness(|_| {}).await;
+    Arc::get_mut(&mut s.h.state).unwrap().wake_app = "hello_world".into();
+    let uri = "/api/system/wake-app";
+    let file = |name: &str| s.h._dir.path().join(name);
+    assert_eq!(s.h.call("POST", "/api/sim/enter", None).await.0, StatusCode::OK);
+    assert_eq!(s.h.call("PUT", uri, Some(json!({"enabled": true}))).await.0, StatusCode::OK);
+    assert!(file("wake-app-sim.json").exists());
+    assert!(!file("wake-app.json").exists(), "the robot's switch is untouched");
+    assert_eq!(s.h.call("POST", "/api/sim/exit", None).await.0, StatusCode::OK);
+    assert_eq!(s.h.call("GET", uri, None).await.1["enabled"], false, "on for the sim only");
+    // A power-on of the robot starts nothing.
+    s.h.call("POST", "/api/daemon/start", None).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(calls(&s.robot), vec!["start wake=true"]);
+}

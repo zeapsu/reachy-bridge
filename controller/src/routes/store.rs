@@ -306,6 +306,7 @@ async fn idle_installed(state: &Shared, name: &str) -> ApiResult<()> {
 async fn remove(State(state): State<Shared>, UrlPath(name): UrlPath<String>) -> ApiResult<Json<Value>> {
     idle_installed(&state, &name).await?;
     let started = state.daemon.post(&format!("apps/remove/{name}"), &[]).await?;
+    crate::routes::wake_app::removed(&state, &name);
     state.apps.forget_installed().await;
     job_started(started)
 }

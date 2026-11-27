@@ -1,0 +1,55 @@
+/* Settings rows (#334): an icon, a name, and the control on the right. */
+.set-list { list-style: none; margin: 0; padding: 0; }
+.set-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  min-height: 52px;
+  padding: 8px 2px;
+  border-top: 1px solid var(--hair);
+  font-size: 14.5px;
+  color: inherit;
+  text-decoration: none;
+}
+.set-row:first-child { border-top: 0; }
+.set-ico {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--well);
+  color: var(--ink-2);
+}
+.set-ico svg { width: 18px; height: 18px; }
+.set-label { min-width: 0; font-weight: 500; }
+.set-sub { display: block; font-size: 13px; font-weight: 400; color: var(--ink-3); }
+/* A warning as the second line: the sign in the warning colour, the words in ink. */
+.set-sub.warn { color: var(--ink-2); }
+.set-sub.warn svg { width: 13px; height: 13px; margin-right: 5px; vertical-align: -2px; color: var(--warn); }
+.set-ico > .app-tile { width: 32px; height: 32px; font-size: 15px; border-radius: 10px; }
+.set-trail { display: flex; align-items: center; gap: 10px; justify-self: end; min-width: 0; }
+.set-trail .out { font-size: 15px; color: var(--ink-3); padding-right: 1px; }
+.set-row.off > .set-ico,
+.set-row.off > .set-label > .set-name { opacity: 0.45; }
+
+/* Appearance's controls, one per row. */
+.set-row .seg { width: 228px; }
+.set-row .accents { gap: 12px; padding: 5px 5px 5px 0; }
+.set-row .accent { width: 26px; height: 26px; }
+.set-row .walls { display: flex; gap: 8px; }
+.set-row .swatch { width: 38px; border-radius: 12px; }
+.set-row .swatch.add { font-size: 20px; }
+.set-dim { display: flex; align-items: center; gap: 12px; }
+.set-dim output { font: 500 13px var(--mono); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.set-dim input { width: 190px; }
+
+@media (max-width: 480px) {
+  .set-row.stack { grid-template-columns: 32px minmax(0, 1fr); row-gap: 8px; padding-block: 10px; }
+  .set-row.stack > .set-trail { grid-column: 2; justify-self: stretch; }
+  .set-row .seg { width: 100%; }
+  .set-row .swatch { width: 36px; }
+  .set-dim { flex: 1; }
+  .set-dim input { flex: 1; width: auto; }
+}

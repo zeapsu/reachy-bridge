@@ -30,7 +30,7 @@ export interface SimView {
   hint: string;
 }
 
-/** The System tab's sim card. Entering needs the robot off. */
+/** The Simulation switch in System's Settings. Entering needs the robot off. */
 export function simView(target: Target | null, switching: boolean, robotOff: boolean): SimView {
   if (switching) {
     return { action: target === "sim" ? "Stopping…" : "Starting…", disabled: true, hint: "" };

@@ -1,0 +1,89 @@
+/* System › Access (#334): devices and profiles in one list. */
+.acc-list { list-style: none; margin: 0; padding: 0; }
+.acc-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  column-gap: 12px;
+  align-items: center;
+  min-height: 54px;
+  padding: 7px 2px;
+  border-top: 1px solid var(--hair);
+}
+.acc-row:first-child { border-top: 0; }
+.acc-row.nested { min-height: 44px; padding-block: 3px; border-top: 0; }
+.acc-row.nested + .acc-row:not(.nested) { margin-top: 6px; }
+.acc-name { font-weight: 600; overflow-wrap: anywhere; }
+.acc-row.nested .acc-name { font-weight: 500; }
+.acc-meta { display: block; font-size: 13px; font-weight: 400; color: var(--ink-3); }
+.acc-ico { justify-self: center; display: grid; place-items: center; color: var(--ink-2); }
+.acc-ico svg { width: 20px; height: 20px; }
+.acc-ico.round { width: 40px; height: 40px; border-radius: 50%; background: var(--well); }
+.acc-row.nested .acc-ico { color: var(--ink-3); }
+.acc-trail { display: flex; align-items: center; gap: 8px; justify-self: end; }
+.acc-trail .btn svg, .acc-actions .btn svg { width: 15px; height: 15px; margin-right: 6px; vertical-align: -2px; }
+
+.role-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px 3px 7px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  white-space: nowrap;
+}
+.role-tag svg { width: 13px; height: 13px; }
+.role-tag.plain { padding-left: 10px; background: var(--well); color: var(--ink-2); }
+
+.acc-add {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  color: var(--ink-2);
+  font-weight: 600;
+  font-size: 14.5px;
+}
+.acc-add .plus {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1.5px dashed var(--ink-3);
+}
+.acc-add .plus svg { width: 18px; height: 18px; }
+
+/* Browsers waiting for approval: who asks, the code to type, who it is for. */
+.acc-waiting {
+  display: grid;
+  gap: 12px;
+  padding: 14px 14px 14px 16px;
+  border-radius: 22px;
+  background: var(--well);
+}
+.acc-waiting ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.acc-waiting li { display: grid; grid-template-columns: 32px minmax(0, 1fr); column-gap: 12px; align-items: center; }
+.acc-waiting .set-ico { background: var(--tint-strong); }
+.acc-fields { display: flex; flex-wrap: wrap; gap: 8px; }
+.acc-fields .field { flex: 1 1 150px; background: var(--tint-strong); }
+.acc-fields .acc-code { flex: 0 1 150px; font: 600 17px var(--mono); letter-spacing: 0.06em; font-variant-numeric: tabular-nums; }
+.acc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.acc-actions .or { font-size: 13px; color: var(--ink-3); padding-inline: 4px 0; }
+.acc-actions .who { display: inline-flex; align-items: center; gap: 8px; padding: 5px 14px 5px 6px; }
+.acc-actions .who .acc-ico { width: 24px; height: 24px; border-radius: 50%; background: var(--tint-strong); }
+.acc-actions .who .acc-ico svg { width: 14px; height: 14px; margin: 0; }
+
+@media (max-width: 480px) {
+  .acc-meta .peer { display: none; }
+  .acc-waiting { padding: 14px; }
+  .acc-actions .primary { flex: 1 1 100%; }
+  .acc-actions .or { flex: 1 1 100%; padding: 2px 2px 0; }
+  .acc-row:has(.acc-trail > .btn + .btn) { grid-template-columns: 40px minmax(0, 1fr); row-gap: 6px; padding-bottom: 8px; }
+  .acc-row:has(.acc-trail > .btn + .btn) > .acc-trail { grid-column: 2; justify-self: start; }
+}

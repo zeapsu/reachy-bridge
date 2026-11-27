@@ -27,6 +27,53 @@ test("loads without errors and keeps the tab across a reload", async ({ page }) 
   expect(errors).toEqual([]);
 });
 
+test("System's sections switch and keep their place across a reload", async ({ page }) => {
+  await tab(page, "System");
+  const section = (name: string) => page.getByRole("tab", { name });
+  const simulation = page.getByRole("switch", { name: "Simulation" });
+  await expect(section("Settings")).toHaveAttribute("aria-selected", "true");
+  await expect(simulation).toBeVisible();
+  await expect(page.getByRole("link", { name: "User manual" })).toBeVisible();
+  await section("Access").click();
+  await expect(page.getByRole("heading", { name: "Devices" })).toBeVisible();
+  await expect(simulation).toBeHidden();
+  await section("Diagnostics").click();
+  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
+  await expect(page.getByRole("log")).toBeVisible();
+  await page.reload();
+  await expect(section("Diagnostics")).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("log")).toBeVisible();
+});
+
+test("the wake switch starts its app when the robot powers on", async ({ page }) => {
+  test.setTimeout(180_000);
+  const settings = async () => {
+    await tab(page, "System");
+    await page.getByRole("tab", { name: "Settings" }).click();
+  };
+  // The sim stack names a test app (REACHY_WAKE_APP); on the robot it is the Conversation app.
+  const wake = page.getByRole("switch", { name: "Sim Ui on wake" });
+  const warning = page.getByText("Reachy moves and listens as soon as it wakes");
+  await settings();
+  await expect(wake).toHaveAttribute("aria-checked", "false");
+  await expect(warning).toBeHidden();
+  try {
+    await wake.click();
+    await expect(wake).toHaveAttribute("aria-checked", "true");
+    await expect(warning).toBeVisible();
+    await setPower(page, true);
+    await tab(page, "Apps");
+    await expect(page.getByRole("button", { name: /^Sim Ui App Running/ })).toBeVisible({ timeout: 60_000 });
+    await settings();
+    await wake.click();
+    await expect(wake).toHaveAttribute("aria-checked", "false");
+    await expect(warning).toBeHidden();
+  } finally {
+    // Left on, every later test's power-on would start the app.
+    await page.request.put("/api/system/wake-app", { data: { enabled: false } });
+  }
+});
+
 test("the robot's controls follow its power", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Power on" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Play" })).toBeDisabled();
