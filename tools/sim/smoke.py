@@ -476,45 +476,51 @@ if ADMIN_CTRL and ADMIN_KEY:
                 target[0] = out
                 return wait(lambda: abs(antennas()[0] - out[0]) < 0.1, 5, 0.25)
 
-            moved = reaches([0.5, -0.5])
-            check("[#341] the drive moves the antennas", ready.get("type") == "ready" and moved, str(antennas()))
-            role = f"/api/auth/devices/{phone_id}/role"
-            r = laptop.put(role, json={"role": "member"})
-            # The drive still moves the robot: a new target gets there.
-            still_driving = reaches([-0.4, 0.4])
-            check(
-                "[#341] an untold demotion of the driving phone is refused, the drive kept",
-                r.status_code == 428 and "phone is in control" in r.text and still_driving,
-                f"HTTP {r.status_code} {r.text} driving={still_driving} {antennas()}",
-            )
-            r = laptop.put(f"{role}?motion=ok", json={"role": "member"})
-            # Still sending, so only the demotion can end the drive (not the
-            # silence limit): with a logout or a loss of control. The error
-            # frame comes before the close, so reading drains it either way.
-            why = None
-            deadline = time.monotonic() + 5
-            while why is None and time.monotonic() < deadline:
-                try:
-                    message = json.loads(drive.recv(timeout=0.5))
-                except TimeoutError:
-                    continue
-                except WebSocketException as error:
-                    why = f"closed: {error}"
-                    break
-                if message.get("type") == "error":
-                    why = message.get("detail")
-            sending.clear()
-            sender.join(5)
+            why, closed_by_robot = None, False
+            try:
+                moved = reaches([0.5, -0.5])
+                check("[#341] the drive moves the antennas", ready.get("type") == "ready" and moved, str(antennas()))
+                role = f"/api/auth/devices/{phone_id}/role"
+                r = laptop.put(role, json={"role": "member"})
+                # The drive still moves the robot: a new target gets there.
+                still_driving = reaches([-0.4, 0.4])
+                check(
+                    "[#341] an untold demotion of the driving phone is refused, the drive kept",
+                    r.status_code == 428 and "phone is in control" in r.text and still_driving,
+                    f"HTTP {r.status_code} {r.text} driving={still_driving} {antennas()}",
+                )
+                r = laptop.put(f"{role}?motion=ok", json={"role": "member"})
+                # Still sending, so only the demotion can end the drive (not
+                # the silence limit). The controller sends its reason, then
+                # closes: both are read here, before this side closes anything.
+                deadline = time.monotonic() + 5
+                while not closed_by_robot and time.monotonic() < deadline:
+                    try:
+                        message = json.loads(drive.recv(timeout=0.5))
+                    except TimeoutError:
+                        continue
+                    except WebSocketException:
+                        closed_by_robot = True
+                        break
+                    if message.get("type") == "error" and why is None:
+                        why = message.get("detail")
+            finally:
+                sending.clear()
+                sender.join(5)
             check(
                 "[#341] a told demotion ends the drive",
-                r.status_code == 200 and why in ("Logged out", "Control ended"),
-                f"HTTP {r.status_code} ended with {why}",
+                r.status_code == 200
+                and why in ("Logged out", "Control ended")
+                and closed_by_robot
+                and not sender.is_alive(),
+                f"HTTP {r.status_code} ended with {why}, closed by the controller: {closed_by_robot}",
             )
         # Once the return home has finished, the antennas are parked at ±10°
         # (HOME in controller/src/expressions.rs).
         idle = wait(lambda: laptop.get("/api/expressions/current").json().get("active") is False, 15)
-        home = idle and all(abs(a - h) < 0.05 for a, h in zip(antennas(), [-0.1745, 0.1745]))
-        check("[#341] the robot returns home after the drive ends", home, f"idle={idle} {antennas()}")
+        parked = antennas()
+        home = idle and len(parked) == 2 and all(abs(a - h) < 0.05 for a, h in zip(parked, [-0.1745, 0.1745]))
+        check("[#341] the robot returns home after the drive ends", home, f"idle={idle} {parked}")
 
 # --- leave the sim off -------------------------------------------------
 stop_any_app()
