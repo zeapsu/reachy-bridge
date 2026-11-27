@@ -256,10 +256,7 @@ export function AccessPanel({ installed, person, waiting, live, holder }: Props)
             <input className="field" aria-label="Device name (optional)" placeholder="name" maxLength={64} value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div className="acc-actions">
-            <button className="btn primary press" type="button" disabled={!typed || busy} onClick={() => approve({ role: "admin", person: person ?? undefined })}>
-              {ICONS.shield}Approve as Admin
-            </button>
-            <span className="or">or for</span>
+            <span className="or">Approve for</span>
             {members.map((p) => (
               <button className="btn press who" type="button" key={p.name} disabled={!typed || busy} onClick={() => approve({ person: p.name })}>
                 <Avatar name={p.name} size={24} />
@@ -274,6 +271,17 @@ export function AccessPanel({ installed, person, waiting, live, holder }: Props)
             <button className="btn press who" type="button" disabled={!typed || busy} onClick={() => approve({ shared: true })}>
               <span className="acc-ico">{ICONS.tablet}</span>
               Shared
+            </button>
+            {/* Last and plain, not highlighted: most new browsers are someone's, and an admin can do everything. */}
+            <span className="or">or</span>
+            <button
+              className="btn press"
+              type="button"
+              aria-label="Approve as Admin"
+              disabled={!typed || busy}
+              onClick={() => approve({ role: "admin", person: person ?? undefined })}
+            >
+              {ICONS.shield}Admin
             </button>
           </div>
         </form>

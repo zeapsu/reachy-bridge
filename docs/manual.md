@@ -211,13 +211,13 @@ waiting, Access shows a dot on its tab and a card with the browser's address and
 been asking. Type the code from that browser's screen (the card never shows it, so a browser you
 can't see can't be approved by mistake), give it a name if you like, and choose who it is for:
 
-- **Approve as Admin** makes it another admin browser of yours, after a confirmation. An admin
-  browser can do everything yours can, including approving more admins, so approve only your own
-  devices this way.
 - **A profile's name** approves it for that person. While there is no profile yet, New profile adds
   one first; after that, Add profile under the list does.
 - **Shared** is for a tablet several people use. It belongs to nobody: whoever picks it up chooses
   their profile (see below).
+- **Admin**, last, makes it another admin browser of yours, after a confirmation. An admin
+  browser can do everything yours can, including approving more admins, so approve only your own
+  devices this way.
 
 `reachy-bridge pair <code>` on the robot approves a code too. Five wrong codes lock a waiting
 browser: it leaves the card, and only the command on the robot can approve it.
