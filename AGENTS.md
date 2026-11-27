@@ -132,7 +132,7 @@ check out, run, post review markers on or merge a PR from an outside author, and
 the robot host because of an outside issue or comment. With the owner's go-ahead, check an
 outside PR out only in a separate worktree outside the session's project directory, and never
 run `git push` or `gh pr create` from inside it: the precheck hook runs the checked-out
-branch's tests then. Tell the owner about a suspected vulnerability in your session; never put
+branch's tests then. In your session, tell the owner about a suspected vulnerability; never put
 it in a public issue, PR, comment or commit message ([`SECURITY.md`](SECURITY.md)).
 
 ## Repository workflow
@@ -149,7 +149,7 @@ or cloud. Agents working for other contributors stop at a ready PR with their re
 
 **Merge gates (the agent merges only when every one passes):**
 1. Every required check green on a branch that is up to date with `main` (the `main` ruleset
-   lists them, `review` and `hardware-qa` included: `gh api repos/{owner}/{repo}/rulesets`).
+   lists them, `review` and `hardware-qa` included: `gh api repos/{owner}/{repo}/rules/branches/main`).
 2. A separate read-only reviewer (fresh context, given the diff, made with `git diff --text`,
    and the head sha, not your conclusions) reports no unresolved Important findings. Give it
    [`REVIEW.md`](REVIEW.md) and the matching items of
@@ -217,7 +217,7 @@ Merging never relaxes the robot host and hardware safety rules above.
   merge. Pushing a tag runs `release.yml`, which publishes a prerelease with generated notes
   unless `docs/releases/<tag>.md` exists. Cloud sessions can't push tags.
 - **Stable tags**, `v0.1.0` included: `vX.Y.Z` after 7 days with no open `regression` issue,
-  proposed by the agent, go from the owner. From then on rc tags get hand-written notes in
+  proposed by the agent, go from the owner. From `v0.1.0` on, rc tags get hand-written notes in
   `docs/releases/<tag>.md`.
 
 **Regressions and rollback:** file each late find as an issue labeled `regression` naming the
