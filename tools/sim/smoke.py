@@ -455,53 +455,66 @@ if ADMIN_CTRL and ADMIN_KEY:
         ws_url = ADMIN_CTRL.replace("http", "ws", 1) + "/api/drive/ws"
         with ws_connect(ws_url, additional_headers={"cookie": phone_cookie}, open_timeout=10) as drive:
             ready = json.loads(drive.recv(timeout=10))
+            # A sender of its own, as the dashboard's: the drive ends a browser
+            # silent for 3 s, and the HTTP calls below mustn't make that gap.
+            target = [[0.5, -0.5]]
+            sending = threading.Event()
+            sending.set()
 
-            def drive_to(out: list[float]) -> bool:
-                """Send `out` until the antennas get there (the drive ends a silent browser after 3 s)."""
-                for _ in range(20):
-                    drive.send(json.dumps({"antennas": out}))
+            def keep_sending() -> None:
+                while sending.is_set():
+                    try:
+                        drive.send(json.dumps({"antennas": target[0]}))
+                    except WebSocketException:
+                        return
                     time.sleep(0.25)
-                    if abs(antennas()[0] - out[0]) < 0.1:
-                        return True
-                return False
 
-            moved = drive_to([0.5, -0.5])
+            sender = threading.Thread(target=keep_sending, daemon=True)
+            sender.start()
+
+            def reaches(out: list[float]) -> bool:
+                target[0] = out
+                return wait(lambda: abs(antennas()[0] - out[0]) < 0.1, 5, 0.25)
+
+            moved = reaches([0.5, -0.5])
             check("[#341] the drive moves the antennas", ready.get("type") == "ready" and moved, str(antennas()))
             role = f"/api/auth/devices/{phone_id}/role"
             r = laptop.put(role, json={"role": "member"})
             # The drive still moves the robot: a new target gets there.
-            try:
-                still_driving = drive_to([-0.4, 0.4])
-            except WebSocketException:
-                still_driving = False
+            still_driving = reaches([-0.4, 0.4])
             check(
                 "[#341] an untold demotion of the driving phone is refused, the drive kept",
                 r.status_code == 428 and "phone is in control" in r.text and still_driving,
                 f"HTTP {r.status_code} {r.text} driving={still_driving} {antennas()}",
             )
             r = laptop.put(f"{role}?motion=ok", json={"role": "member"})
-            # Kept talking, so only the demotion can end the drive (not the
-            # 3 s silence limit): it ends with a logout or a loss of control.
+            # Still sending, so only the demotion can end the drive (not the
+            # silence limit): with a logout or a loss of control. The error
+            # frame comes before the close, so reading drains it either way.
             why = None
             deadline = time.monotonic() + 5
             while why is None and time.monotonic() < deadline:
                 try:
-                    drive.send(json.dumps({"antennas": [-0.4, 0.4]}))
-                    message = json.loads(drive.recv(timeout=0.25))
-                    if message.get("type") == "error":
-                        why = message.get("detail")
+                    message = json.loads(drive.recv(timeout=0.5))
                 except TimeoutError:
                     continue
                 except WebSocketException as error:
                     why = f"closed: {error}"
+                    break
+                if message.get("type") == "error":
+                    why = message.get("detail")
+            sending.clear()
+            sender.join(5)
             check(
                 "[#341] a told demotion ends the drive",
                 r.status_code == 200 and why in ("Logged out", "Control ended"),
                 f"HTTP {r.status_code} ended with {why}",
             )
-        # The return home parks the antennas at ±10° (HOME in controller/src/expressions.rs).
-        home = wait(lambda: all(abs(a - h) < 0.05 for a, h in zip(antennas(), [-0.1745, 0.1745])), 15)
-        check("[#341] the robot returns home after the drive ends", home, str(antennas()))
+        # Once the return home has finished, the antennas are parked at ±10°
+        # (HOME in controller/src/expressions.rs).
+        idle = wait(lambda: laptop.get("/api/expressions/current").json().get("active") is False, 15)
+        home = idle and all(abs(a - h) < 0.05 for a, h in zip(antennas(), [-0.1745, 0.1745]))
+        check("[#341] the robot returns home after the drive ends", home, f"idle={idle} {antennas()}")
 
 # --- leave the sim off -------------------------------------------------
 stop_any_app()

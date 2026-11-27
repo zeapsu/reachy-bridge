@@ -136,7 +136,7 @@ export function AccessPanel({ installed, person, waiting, live, holder }: Props)
 
   const typed = normalizeCode(code);
   const approve = (as: { role?: "admin"; person?: string; shared?: boolean }) => {
-    // The one choice that can't be narrowed afterwards, next to the profile buttons.
+    // Admin asks first: it opens System, approvals and installs to that browser.
     if (as.role === "admin" && !window.confirm(approveAdminQuestion(name.trim()))) return;
     void act("Approval failed", async () => {
       await apiJson(paths.authApprove, { method: "POST", body: JSON.stringify({ code: typed, name: name.trim() || undefined, ...as }) });
