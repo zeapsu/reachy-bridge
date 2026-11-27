@@ -49,7 +49,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::control::Control;
 use crate::error::{ApiError, ApiResult};
 use crate::profiles::{self, Access, Profile};
 use crate::state::Shared;
@@ -1354,6 +1353,11 @@ struct RoleBody {
     role: Role,
 }
 
+/// Who a device acts as: its person, or its name when it has none.
+fn person_of(device: &Device) -> String {
+    if device.person.is_empty() { device.name.clone() } else { device.person.clone() }
+}
+
 /// `?motion=ok` on a role change or revoke: the admin was told it may end a
 /// drive, so the robot may move back home (#341).
 #[derive(Deserialize, Default)]
@@ -1373,12 +1377,12 @@ impl MotionQuery {
 /// holder (428), so the dashboard can ask again with that warning. Checked
 /// here, as the change is made, rather than by the dashboard beforehand:
 /// control can change while its question is open (#341).
-fn motion_refusal(control: &Control, devices: &[Device], affected: &[String]) -> Option<ApiError> {
-    let holder = control.holder_device()?;
-    if !affected.contains(&holder) {
+fn motion_refusal(holder: Option<&str>, devices: &[Device], affected: &[String]) -> Option<ApiError> {
+    let holder = holder?;
+    if !affected.iter().any(|id| id == holder) {
         return None;
     }
-    let name = devices.iter().find(|d| d.id == holder).map_or(holder.as_str(), |d| d.name.as_str());
+    let name = devices.iter().find(|d| d.id == holder).map_or(holder, |d| d.name.as_str());
     Some(ApiError::new(428, format!("{name} is in control: the robot may move back home.")))
 }
 
@@ -1402,45 +1406,49 @@ async fn set_role(
         tracing::warn!("auth: role change refused for {by}: not an admin");
         return Err(ApiError::new(403, "only an admin can change a device's role"));
     }
-    let mut devices = auth.devices.lock().unwrap();
-    // Checked again here: the request's role was read before its body
-    // arrived, and the caller may have been revoked or demoted since.
-    let still_admin = |d: &Device| ctx.device.as_deref() == Some(d.id.as_str()) && d.role == Role::Admin;
-    if !ctx.local && !devices.iter().any(still_admin) {
-        tracing::warn!("auth: role change refused for {by}: no longer an admin");
-        return Err(ApiError::new(403, "only an admin can change a device's role"));
-    }
-    let Some(index) = devices.iter().position(|d| d.id == id) else {
-        return Err(ApiError::new(404, "unknown device"));
-    };
-    let was = devices[index].role;
-    if was != role {
-        if devices[index].shared {
-            return Err(ApiError::new(400, "a shared device can't be an admin"));
+    // Under the control lock (#341): who holds control is checked, and the
+    // change made, with nobody taking control in between.
+    let (device, was) = state.control.change_under(|holder| {
+        let mut devices = auth.devices.lock().unwrap();
+        // Checked again here: the request's role was read before its body
+        // arrived, and the caller may have been revoked or demoted since.
+        let still_admin = |d: &Device| ctx.device.as_deref() == Some(d.id.as_str()) && d.role == Role::Admin;
+        if !ctx.local && !devices.iter().any(still_admin) {
+            tracing::warn!("auth: role change refused for {by}: no longer an admin");
+            return Err(ApiError::new(403, "only an admin can change a device's role"));
         }
-        let admins = devices.iter().filter(|d| d.role == Role::Admin).count();
-        if was == Role::Admin && admins == 1 && !ctx.local {
-            return Err(ApiError::new(409, "this is the last admin device; make another device an admin first"));
-        }
-        if !ctx.local && !motion.ok() {
-            let d = &devices[index];
-            let mut affected = auth.devices_of_in(&devices, if d.person.is_empty() { &d.name } else { &d.person });
-            affected.push(id.clone());
-            if let Some(refusal) = motion_refusal(&state.control, &devices, &affected) {
-                return Err(refusal);
+        let Some(index) = devices.iter().position(|d| d.id == id) else {
+            return Err(ApiError::new(404, "unknown device"));
+        };
+        let was = devices[index].role;
+        let person = person_of(&devices[index]);
+        if was != role {
+            if devices[index].shared {
+                return Err(ApiError::new(400, "a shared device can't be an admin"));
+            }
+            let admins = devices.iter().filter(|d| d.role == Role::Admin).count();
+            if was == Role::Admin && admins == 1 && !ctx.local {
+                return Err(ApiError::new(409, "this is the last admin device; make another device an admin first"));
+            }
+            if !ctx.local && !motion.ok() {
+                let mut affected = auth.devices_of_in(&devices, &person);
+                affected.push(id.clone());
+                if let Some(refusal) = motion_refusal(holder, &devices, &affected) {
+                    return Err(refusal);
+                }
+            }
+            devices[index].role = role;
+            if let Err(error) = auth.save(&devices) {
+                devices[index].role = was;
+                tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
+                return Err(ApiError::new(500, "could not save the device list"));
             }
         }
-        devices[index].role = role;
-        if let Err(error) = auth.save(&devices) {
-            devices[index].role = was;
-            tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
-            return Err(ApiError::new(500, "could not save the device list"));
+        let device = devices[index].clone();
+        drop(devices);
+        if was == role {
+            return Ok(((device, was), None));
         }
-    }
-    let device = devices[index].clone();
-    drop(devices);
-    let person = if device.person.is_empty() { device.name.clone() } else { device.person.clone() };
-    if was != role {
         // The person's rights change with it (an admin's devices are never
         // limited by a profile): their devices, and tablets that picked
         // them, reconnect under the new rules. A demoted device's own
@@ -1452,7 +1460,10 @@ async fn set_role(
         auth.rules_changed(&affected);
         // Control is held as an admin or as a member (only an admin takes it
         // from an admin): the device takes it again under its new role.
-        state.control.forget(&id);
+        Ok(((device, was), Some(id.clone())))
+    })?;
+    let person = person_of(&device);
+    if was != role {
         tracing::info!("auth: device {id} ({}) is now {role:?}, changed by {by}", device.name);
     }
     Ok(Json(json!({"id": device.id, "name": device.name, "person": person, "role": role})))
@@ -1494,46 +1505,49 @@ async fn revoke(
     if !own && !ctx.manages_devices(admin_mode) {
         return Err(ApiError::new(403, "only an admin can revoke other devices"));
     }
-    let mut devices = auth.devices.lock().unwrap();
-    let Some(index) = devices.iter().position(|d| d.id == id) else {
-        return Err(ApiError::new(404, "unknown device"));
-    };
-    // The dashboard can't lock everyone out; the CLI can (and re-pairs).
-    let admins = devices.iter().filter(|d| d.role == Role::Admin).count();
-    if devices[index].role == Role::Admin && admins == 1 && !ctx.local {
-        return Err(ApiError::new(
-            409,
-            "this is the last admin device; pair another admin first, or revoke it with `reachy-bridge devices revoke` on the robot",
-        ));
-    }
-    if !ctx.local && !motion.ok() {
-        let d = &devices[index];
-        let mut affected = vec![id.clone()];
-        if !d.shared {
-            affected.extend(auth.devices_of_in(&devices, if d.person.is_empty() { &d.name } else { &d.person }));
+    // Under the control lock (#341), as in `set_role`. A revoked browser
+    // can't drive any more: it gives up control there, so nobody waits for
+    // it to go silent.
+    let removed = state.control.change_under(|holder| {
+        let mut devices = auth.devices.lock().unwrap();
+        let Some(index) = devices.iter().position(|d| d.id == id) else {
+            return Err(ApiError::new(404, "unknown device"));
+        };
+        // The dashboard can't lock everyone out; the CLI can (and re-pairs).
+        let admins = devices.iter().filter(|d| d.role == Role::Admin).count();
+        if devices[index].role == Role::Admin && admins == 1 && !ctx.local {
+            return Err(ApiError::new(
+                409,
+                "this is the last admin device; pair another admin first, or revoke it with `reachy-bridge devices revoke` on the robot",
+            ));
         }
-        if let Some(refusal) = motion_refusal(&state.control, &devices, &affected) {
-            return Err(refusal);
+        let person = person_of(&devices[index]);
+        let shared = devices[index].shared;
+        if !ctx.local && !motion.ok() {
+            let mut affected = vec![id.clone()];
+            if !shared {
+                affected.extend(auth.devices_of_in(&devices, &person));
+            }
+            if let Some(refusal) = motion_refusal(holder, &devices, &affected) {
+                return Err(refusal);
+            }
         }
-    }
-    let removed = devices.remove(index);
-    if let Err(error) = auth.save(&devices) {
-        devices.insert(index, removed);
-        tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
-        return Err(ApiError::new(500, "could not save the device list"));
-    }
-    drop(devices);
-    // A revoked browser can't drive any more: it gives up control now, so
-    // nobody waits for it to go silent.
-    state.control.forget(&id);
-    auth.picks.lock().unwrap().remove(&id);
-    // The person's rights may change with it (their last admin device, or
-    // their last device a tablet's pick needs): their other devices and
-    // those tablets reconnect under the new rules.
-    let person = if removed.person.is_empty() { removed.name.clone() } else { removed.person.clone() };
-    if !removed.shared {
-        auth.rules_changed(&auth.devices_of(&person));
-    }
+        let removed = devices.remove(index);
+        if let Err(error) = auth.save(&devices) {
+            devices.insert(index, removed);
+            tracing::error!("auth: cannot save {DEVICES_FILE} ({error})");
+            return Err(ApiError::new(500, "could not save the device list"));
+        }
+        drop(devices);
+        auth.picks.lock().unwrap().remove(&id);
+        // The person's rights may change with it (their last admin device, or
+        // their last device a tablet's pick needs): their other devices and
+        // those tablets reconnect under the new rules.
+        if !shared {
+            auth.rules_changed(&auth.devices_of(&person));
+        }
+        Ok((removed, Some(id.clone())))
+    })?;
     auth.revoked.send_modify(|n| *n += 1);
     let by = ctx.by();
     tracing::info!("auth: device {id} ({}) revoked by {by}", removed.name);

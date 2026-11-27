@@ -78,6 +78,18 @@ struct Inner {
 }
 
 impl Inner {
+    /// See [`Control::forget`].
+    fn forget(&mut self, device: &str) {
+        if self.holder.as_ref().is_some_and(|h| h.device == device) {
+            tracing::info!("control: {device} lost control: revoked or its role changed");
+            self.holder = None;
+        }
+        if self.away.as_ref().is_some_and(|h| h.device == device) {
+            self.away = None;
+        }
+        self.seen.remove(device);
+    }
+
     /// Apply the clock: end the holder's control when it went silent, and
     /// forget an away holder gone too long. Returns whether the holder
     /// changed.
@@ -191,16 +203,24 @@ impl Control {
     /// A revoked device, or one whose role changed: it loses control, and
     /// with it any claim to come back.
     pub fn forget(&self, device: &str) {
+        self.with(|inner, _| inner.forget(device));
+    }
+
+    /// A role change or revoke (#341): runs `f` under the control lock with
+    /// the holder's device id, then the device it returns loses control (as
+    /// [`Control::forget`]) before the lock is released. So the change checks
+    /// who holds control, and is made, with nobody taking control in between.
+    /// `f` may lock the device list and the picks: the order `take` uses
+    /// (control, then devices). It must not call back into `Control`.
+    pub fn change_under<T, E>(&self, f: impl FnOnce(Option<&str>) -> Result<(T, Option<String>), E>) -> Result<T, E> {
         self.with(|inner, _| {
-            if inner.holder.as_ref().is_some_and(|h| h.device == device) {
-                tracing::info!("control: {device} lost control: revoked or its role changed");
-                inner.holder = None;
+            let holder = inner.holder.as_ref().map(|h| h.device.clone());
+            let (result, forget) = f(holder.as_deref())?;
+            if let Some(device) = forget {
+                inner.forget(&device);
             }
-            if inner.away.as_ref().is_some_and(|h| h.device == device) {
-                inner.away = None;
-            }
-            inner.seen.remove(device);
-        });
+            Ok(result)
+        })
     }
 
     /// Record a robot action (or an open drive or voice session) from
@@ -211,11 +231,6 @@ impl Control {
                 holder.active = now;
             }
         });
-    }
-
-    /// The device holding control, if any (#341).
-    pub fn holder_device(&self) -> Option<String> {
-        self.with(|inner, _| inner.holder.as_ref().map(|h| h.device.clone()))
     }
 
     pub fn holds(&self, device: &str) -> bool {
