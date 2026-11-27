@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { apiJson, errorText, paths } from "../api.ts";
+import { sendTold } from "../api/auth.ts";
 import { devicesView, normalizeCode, seenText, type AuthStatus, type DevicesView, type PairedDevice } from "../logic/auth.ts";
 import { PairCode } from "./Login.tsx";
 import { Panel } from "./Panel.tsx";
@@ -82,7 +83,9 @@ export function DevicesPanel({ inset }: { inset?: boolean }) {
       : `Revoke ${device.name}?`;
     if (!window.confirm(question)) return;
     try {
-      await apiJson(paths.authDevice(device.id), { method: "DELETE" });
+      // Asks again if it would end a drive (#341).
+      const ask = (warning: string) => window.confirm(`${question} ${warning}`);
+      if (!(await sendTold(paths.authDevice(device.id), { method: "DELETE" }, false, ask))) return;
       setHint({ text: `Revoked ${device.name}.`, error: false });
       if (device.current) window.location.reload();
       else await reload();

@@ -170,6 +170,24 @@ impl ExpressionPlayer {
         Ok(epoch)
     }
 
+    /// A drive session is open (#341: before admin mode it has no holder to
+    /// name, so revoking a browser can't tell whose it is).
+    pub fn drive_open(&self) -> bool {
+        matches!(&*self.session.lock().unwrap(), Some(Session { phase: Phase::Driving, .. }))
+    }
+
+    /// Drop the drive session started in `epoch` before it sent anything
+    /// (#341): the robot hasn't moved, so its pose is still home and nothing
+    /// needs a return home. The epoch names the motor mode, not the session:
+    /// call it only under the power lock taken for that claim, so the session
+    /// it finds is the one just claimed.
+    pub fn cancel_drive(&self, epoch: u64) {
+        let mut session = self.session.lock().unwrap();
+        if matches!(&*session, Some(Session { phase: Phase::Driving, epoch: e, .. }) if *e == epoch) {
+            *session = None;
+        }
+    }
+
     /// True while the drive session started in `epoch` may keep moving the robot.
     pub fn driving(&self, epoch: u64) -> bool {
         self.mode_epoch.load(Ordering::SeqCst) == epoch

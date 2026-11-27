@@ -412,6 +412,116 @@ with httpx.Client(base_url=CTRL, timeout=10) as browser:
     r = c.put("/api/auth/devices/none/role", json={"role": "admin"})
     check("[#334] no role change before the first admin", r.status_code == 409, f"HTTP {r.status_code}")
 
+# 15. [#341] a demotion that ends an open drive asks first. On the admin
+# controller (admin mode stays on for good there): the phone, an admin, drives
+# the antennas out; demoting it is refused (428) until told, with the drive
+# still open, and once told the drive ends and the robot returns home.
+ADMIN_CTRL = os.getenv("SIM_ADMIN_CONTROLLER")
+ADMIN_KEY = os.getenv("SIM_ADMIN_KEY")
+
+
+def paired(client: httpx.Client, key: dict, name: str, person: str) -> str:
+    """Pair `client` as an admin device; return its cookie header."""
+    asked = client.post("/api/auth/pair").json()
+    client.post(
+        "/api/auth/approve", headers=key, json={"code": asked["code"], "role": "admin", "name": name, "person": person}
+    )
+    client.get(f"/api/auth/pair/{asked['id']}")
+    return f"rb_device={client.cookies.get('rb_device')}"
+
+
+def antennas() -> list[float]:
+    return d.get("/api/state/present_antenna_joint_positions").json()
+
+
+if ADMIN_CTRL and ADMIN_KEY:
+    key = {"x-reachy-bridge-key": open(ADMIN_KEY).read().strip()}
+    with (
+        httpx.Client(base_url=ADMIN_CTRL, timeout=30) as laptop,
+        httpx.Client(base_url=ADMIN_CTRL, timeout=30) as phone,
+    ):
+        paired(laptop, key, "laptop", "Sam")
+        phone_cookie = paired(phone, key, "phone", "Mia")
+        # The phone's own row: a reused --work-dir keeps earlier runs' phones.
+        phone_id = next(dv["id"] for dv in phone.get("/api/auth/devices").json()["devices"] if dv["current"])
+        laptop.post("/api/daemon/start?wake_up=true", headers=key)
+        awake = wait(lambda: daemon_state() == AWAKE, 40)
+        took = phone.post("/api/control/take").status_code
+        check(
+            "[#341] the admin phone wakes the robot and takes control",
+            awake and took == 200,
+            f"{daemon_state()} {took}",
+        )
+        ws_url = ADMIN_CTRL.replace("http", "ws", 1) + "/api/drive/ws"
+        with ws_connect(ws_url, additional_headers={"cookie": phone_cookie}, open_timeout=10) as drive:
+            ready = json.loads(drive.recv(timeout=10))
+            # A sender of its own, as the dashboard's: the drive ends a browser
+            # silent for 3 s, and the HTTP calls below mustn't make that gap.
+            target = [[0.5, -0.5]]
+            sending = threading.Event()
+            sending.set()
+
+            def keep_sending() -> None:
+                while sending.is_set():
+                    try:
+                        drive.send(json.dumps({"antennas": target[0]}))
+                    except WebSocketException:
+                        return
+                    time.sleep(0.25)
+
+            sender = threading.Thread(target=keep_sending, daemon=True)
+            sender.start()
+
+            def reaches(out: list[float]) -> bool:
+                target[0] = out
+                return wait(lambda: abs(antennas()[0] - out[0]) < 0.1, 5, 0.25)
+
+            why, closed_by_robot = None, False
+            try:
+                moved = reaches([0.5, -0.5])
+                check("[#341] the drive moves the antennas", ready.get("type") == "ready" and moved, str(antennas()))
+                role = f"/api/auth/devices/{phone_id}/role"
+                r = laptop.put(role, json={"role": "member"})
+                # The drive still moves the robot: a new target gets there.
+                still_driving = reaches([-0.4, 0.4])
+                check(
+                    "[#341] an untold demotion of the driving phone is refused, the drive kept",
+                    r.status_code == 428 and "phone is in control" in r.text and still_driving,
+                    f"HTTP {r.status_code} {r.text} driving={still_driving} {antennas()}",
+                )
+                r = laptop.put(f"{role}?motion=ok", json={"role": "member"})
+                # Still sending, so only the demotion can end the drive (not
+                # the silence limit). The controller sends its reason, then
+                # closes: both are read here, before this side closes anything.
+                deadline = time.monotonic() + 5
+                while not closed_by_robot and time.monotonic() < deadline:
+                    try:
+                        message = json.loads(drive.recv(timeout=0.5))
+                    except TimeoutError:
+                        continue
+                    except WebSocketException:
+                        closed_by_robot = True
+                        break
+                    if message.get("type") == "error" and why is None:
+                        why = message.get("detail")
+            finally:
+                sending.clear()
+                sender.join(5)
+            check(
+                "[#341] a told demotion ends the drive",
+                r.status_code == 200
+                and why in ("Logged out", "Control ended")
+                and closed_by_robot
+                and not sender.is_alive(),
+                f"HTTP {r.status_code} ended with {why}, closed by the controller: {closed_by_robot}",
+            )
+        # Once the return home has finished, the antennas are parked at ±10°
+        # (HOME in controller/src/expressions.rs).
+        idle = wait(lambda: laptop.get("/api/expressions/current").json().get("active") is False, 15)
+        parked = antennas()
+        home = idle and len(parked) == 2 and all(abs(a - h) < 0.05 for a, h in zip(parked, [-0.1745, 0.1745]))
+        check("[#341] the robot returns home after the drive ends", home, f"idle={idle} {parked}")
+
 # --- leave the sim off -------------------------------------------------
 stop_any_app()
 c.post("/api/daemon/stop")

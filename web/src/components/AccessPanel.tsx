@@ -1,8 +1,19 @@
 import { Fragment, useCallback, useRef, useState, type ReactNode } from "react";
 import { apiJson, errorText, paths } from "../api.ts";
+import { sendTold } from "../api/auth.ts";
+import type { ControlHolder } from "../api/control.ts";
 import { usePoll } from "../hooks/usePoll.ts";
-import { accessList, approveAdminQuestion, isLastAdmin, makeAdminQuestion, waitingText, type WaitingDevice } from "../logic/access.ts";
-import { normalizeCode, seenText, type PairedDevice, type ProfileItem } from "../logic/auth.ts";
+import {
+  accessList,
+  approveAdminQuestion,
+  demoteQuestion,
+  isLastAdmin,
+  makeAdminQuestion,
+  motionWarning,
+  waitingText,
+  type WaitingDevice,
+} from "../logic/access.ts";
+import { normalizeCode, seenText, type PairedDevice, type ProfileItem, type Role } from "../logic/auth.ts";
 import { ALL_CAN, appsText } from "../logic/profile.ts";
 import { Panel } from "./Panel.tsx";
 import { Avatar, ProfileEditor, type InstalledApp } from "./Profiles.tsx";
@@ -27,6 +38,12 @@ const ICONS = {
       <path d="M12 3 5 6v5.5c0 4.5 3 7.8 7 9.5 4-1.7 7-5 7-9.5V6l-7-3Z" />
     </svg>
   ),
+  shieldMinus: (
+    <svg {...stroke} strokeWidth={2.2}>
+      <path d="M12 3 5 6v5.5c0 4.5 3 7.8 7 9.5 4-1.7 7-5 7-9.5V6l-7-3Z" />
+      <path d="M9.5 11.5h5" />
+    </svg>
+  ),
   plus: (
     <svg {...stroke}>
       <path d="M12 5v14M5 12h14" />
@@ -49,6 +66,8 @@ interface Props {
   waiting: WaitingDevice[];
   /** Access is showing: the list keeps itself current. Not otherwise: a hidden page must go quiet, which is how its hold on the robot ends. */
   live: boolean;
+  /** Who holds control of the robot, if anyone. */
+  holder: ControlHolder | null;
 }
 
 /**
@@ -57,7 +76,7 @@ interface Props {
  * browser is approved by typing the code its own screen shows, then choosing
  * who it is for; the code never comes from the controller.
  */
-export function AccessPanel({ installed, person, waiting, live }: Props) {
+export function AccessPanel({ installed, person, waiting, live, holder }: Props) {
   const [profiles, setProfiles] = useState<ProfileItem[]>([]);
   const [devices, setDevices] = useState<PairedDevice[]>([]);
   const [editing, setEditing] = useState<ProfileItem | "new" | null>(null);
@@ -117,7 +136,7 @@ export function AccessPanel({ installed, person, waiting, live }: Props) {
 
   const typed = normalizeCode(code);
   const approve = (as: { role?: "admin"; person?: string; shared?: boolean }) => {
-    // The one choice that can't be narrowed afterwards, next to the profile buttons.
+    // Admin asks first: it opens System, approvals and installs to that browser.
     if (as.role === "admin" && !window.confirm(approveAdminQuestion(name.trim()))) return;
     void act("Approval failed", async () => {
       await apiJson(paths.authApprove, { method: "POST", body: JSON.stringify({ code: typed, name: name.trim() || undefined, ...as }) });
@@ -127,23 +146,45 @@ export function AccessPanel({ installed, person, waiting, live }: Props) {
     });
   };
 
+  // `holder` is from the last poll: the question warns when it already shows
+  // someone driving, and the controller refuses a change that would end a drive
+  // the question didn't name, so `sendTold` asks again with its warning (#341).
   const revoke = (device: PairedDevice) => {
     const question = device.current ? `Log this browser (${device.name}) out? It will need a new code to log in.` : `Revoke ${device.name}?`;
-    if (!window.confirm(question)) return;
+    const motion = motionWarning(holder, device);
+    if (!window.confirm(question + motion)) return;
     void act("Revoke failed", async () => {
-      await apiJson(paths.authDevice(device.id), { method: "DELETE" });
+      const ask = (warning: string) => window.confirm(`${question} ${warning}`);
+      if (!(await sendTold(paths.authDevice(device.id), { method: "DELETE" }, motion !== "", ask))) return;
       if (device.current) window.location.reload();
       else await reload();
     });
   };
 
-  const makeAdmin = (device: PairedDevice, profile: ProfileItem) => {
-    if (!window.confirm(makeAdminQuestion(device, profile.name, limits(profile)))) return;
-    void act("Couldn't make it an admin", async () => {
-      await apiJson(paths.authDeviceRole(device.id), { method: "PUT", body: JSON.stringify({ role: "admin" }) });
-      await reload();
+  const setRole = (device: PairedDevice, role: Role, failed: string, question: (motion: string) => string) => {
+    const motion = motionWarning(holder, device);
+    if (!window.confirm(question(motion))) return;
+    void act(failed, async () => {
+      const ask = (warning: string) => window.confirm(question(` ${warning}`));
+      const body = { method: "PUT", body: JSON.stringify({ role }) };
+      try {
+        if (!(await sendTold(paths.authDeviceRole(device.id), body, motion !== "", ask))) return;
+      } catch (err) {
+        // Refused or failed: the list may be behind (by now it is the last admin, say). Show it as it is.
+        void reload();
+        throw err;
+      }
+      // This browser is no admin any more: it starts over, without System.
+      if (device.current && role === "member") window.location.reload();
+      else await reload();
     });
   };
+
+  const makeAdmin = (device: PairedDevice, profile: ProfileItem) =>
+    setRole(device, "admin", "Couldn't make it an admin", (motion) => makeAdminQuestion(device, profile.name, limits(profile), motion));
+
+  const demote = (device: PairedDevice, profile: ProfileItem, own: PairedDevice[]) =>
+    setRole(device, "member", "Couldn't demote it", (motion) => demoteQuestion(device, profile.name, isLastAdmin(own, device), motion));
 
   const list = accessList(profiles, devices);
   const now = Date.now();
@@ -173,14 +214,22 @@ export function AccessPanel({ installed, person, waiting, live }: Props) {
     </li>
   );
 
-  const ownRow = (device: PairedDevice, profile: ProfileItem) =>
+  const ownRow = (device: PairedDevice, profile: ProfileItem, own: PairedDevice[]) =>
     deviceRow(
       device,
       !list.solo,
       device.role === "admin" ? (
-        list.solo ? ADMIN_TAG : null
+        <>
+          {list.solo ? ADMIN_TAG : null}
+          {/* The last admin device stays one, as it stays paired. */}
+          {isLastAdmin(devices, device) ? null : (
+            <button className="btn press" type="button" aria-label={`Demote ${device.name}`} disabled={busy} onClick={() => demote(device, profile, own)}>
+              {ICONS.shieldMinus}Demote
+            </button>
+          )}
+        </>
       ) : (
-        <button className="btn press" type="button" aria-label={`Make ${device.name} an admin`} disabled={busy} onClick={() => makeAdmin(device, profile)}>
+        <button className="btn press" type="button" aria-label={`Make admin: ${device.name}`} disabled={busy} onClick={() => makeAdmin(device, profile)}>
           {ICONS.shield}Make admin
         </button>
       ),
@@ -214,10 +263,7 @@ export function AccessPanel({ installed, person, waiting, live }: Props) {
             <input className="field" aria-label="Device name (optional)" placeholder="name" maxLength={64} value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div className="acc-actions">
-            <button className="btn primary press" type="button" disabled={!typed || busy} onClick={() => approve({ role: "admin", person: person ?? undefined })}>
-              {ICONS.shield}Approve as Admin
-            </button>
-            <span className="or">or for</span>
+            <span className="or">Approve for</span>
             {members.map((p) => (
               <button className="btn press who" type="button" key={p.name} disabled={!typed || busy} onClick={() => approve({ person: p.name })}>
                 <Avatar name={p.name} size={24} />
@@ -232,6 +278,17 @@ export function AccessPanel({ installed, person, waiting, live }: Props) {
             <button className="btn press who" type="button" disabled={!typed || busy} onClick={() => approve({ shared: true })}>
               <span className="acc-ico">{ICONS.tablet}</span>
               Shared
+            </button>
+            {/* Last and plain, not highlighted: most new browsers are someone's, and an admin can do everything. */}
+            <span className="or">or</span>
+            <button
+              className="btn press"
+              type="button"
+              aria-label="Approve as Admin"
+              disabled={!typed || busy}
+              onClick={() => approve({ role: "admin", person: person ?? undefined })}
+            >
+              {ICONS.shield}Admin
             </button>
           </div>
         </form>
@@ -258,7 +315,7 @@ export function AccessPanel({ installed, person, waiting, live }: Props) {
                   </span>
                 </li>
               )}
-              {own.map((device) => ownRow(device, profile))}
+              {own.map((device) => ownRow(device, profile, own))}
             </Fragment>
           ))}
           {list.shared.map((device) => deviceRow(device, false, <span className="role-tag plain">Shared</span>))}

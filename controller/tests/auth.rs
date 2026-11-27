@@ -16,10 +16,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use reachy_controller::audio;
-use reachy_controller::auth::AuthConfig;
-use reachy_controller::control::AWAY_AFTER;
+use reachy_controller::auth::{AuthConfig, AuthContext, Role};
+use reachy_controller::control::{self, AWAY_AFTER};
 use reachy_controller::daemon::Daemon;
 use reachy_controller::logs::LogBroker;
+use reachy_controller::profiles::Access;
 use reachy_controller::state::{AppState, Shared};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -870,11 +871,155 @@ async fn a_role_change_gives_up_control() {
     for (to, holds_as_admin) in [("admin", false), ("member", true)] {
         assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
         assert_eq!(h.view(LAN, &sam).await["holder"]["admin"], holds_as_admin);
-        assert_eq!(h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": to}))).await.status, StatusCode::OK);
+        // It would end Sam's drive: refused until the admin was told (#341),
+        // and nothing changed.
+        let r = h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": to}))).await;
+        assert_eq!(r.status, StatusCode::PRECONDITION_REQUIRED, "{:?}", r.body);
+        assert!(r.body["detail"].as_str().unwrap().ends_with(" is in control: the robot may move back home."));
+        assert_eq!(h.view(LAN, &sam).await["holder"]["admin"], holds_as_admin);
+        let told = format!("{role}?motion=ok");
+        assert_eq!(h.call("PUT", &told, LOOPBACK, &as_admin, Some(json!({"role": to}))).await.status, StatusCode::OK);
         // Held under the old role, it would keep (or miss) an admin's hold
         // against Sam's other device.
         assert_eq!(h.view(LAN3, &spare).await["holder"], Value::Null, "after becoming {to}");
     }
+}
+
+#[tokio::test]
+async fn a_change_that_would_end_a_drive_waits_until_the_admin_was_told() {
+    let (h, admin, sam, _mia) = family_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    let spare = h.paired_as(LAN3, &as_admin, json!({"name": "spare", "person": "Sam"})).await;
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &as_admin, None).await.body["devices"].clone();
+    let id_of = |name: &str| {
+        devices.as_array().unwrap().iter().find(|d| d["name"] == name).unwrap()["id"].as_str().unwrap().to_string()
+    };
+    let (spare_id, mia_id) = (id_of("spare"), id_of("ipad"));
+    // Sam drives from the first device; the spare is Sam's too, so changing it
+    // reconnects the one driving (#341).
+    assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+    let holder = h.view(LAN, &sam).await["holder"]["device"].as_str().unwrap().to_string();
+    for (method, path, body) in [
+        ("PUT", format!("/api/auth/devices/{spare_id}/role"), Some(json!({"role": "admin"}))),
+        ("DELETE", format!("/api/auth/devices/{spare_id}"), None),
+    ] {
+        let r = h.call(method, &path, LOOPBACK, &as_admin, body).await;
+        assert_eq!(r.status, StatusCode::PRECONDITION_REQUIRED, "{method} {path}: {:?}", r.body);
+        assert_eq!(r.body["detail"], format!("{holder} is in control: the robot may move back home."));
+    }
+    // Nothing changed: the spare is still a member device, and Sam still drives.
+    assert!(h.state.auth.device_names().iter().any(|(id, _)| *id == spare_id));
+    assert_eq!(h.status_of(LAN3, &spare).await["role"], "member");
+    assert_eq!(h.view(LAN, &sam).await["holder"]["device"], holder.as_str());
+    // Mia's iPad is someone else's: changing it leaves Sam's drive alone.
+    let mia_role = format!("/api/auth/devices/{mia_id}/role");
+    let r = h.call("PUT", &mia_role, LOOPBACK, &as_admin, Some(json!({"role": "admin"}))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(h.view(LAN, &sam).await["holder"]["device"], holder.as_str());
+    // Told, the change goes through.
+    let r = h.call("DELETE", &format!("/api/auth/devices/{spare_id}?motion=ok"), LOOPBACK, &as_admin, None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{:?}", r.body);
+}
+
+#[tokio::test]
+async fn before_an_admin_a_revoke_waits_while_a_drive_is_open() {
+    // Before admin mode a drive has no holder, so any open one may be the
+    // revoked browser's (#341).
+    let h = harness(AuthConfig::default()).await;
+    let ids = |h: &Harness| h.state.auth.device_names().into_keys().collect::<Vec<_>>();
+    let phone = h.paired(LAN).await;
+    let phone_id = ids(&h)[0].clone();
+    let tablet = h.paired(LAN2).await;
+    let tablet_id = ids(&h).into_iter().find(|id| *id != phone_id).unwrap();
+    let revoke = format!("/api/auth/devices/{phone_id}");
+    let epoch = h.state.player.start_drive().await.expect("a drive starts");
+    let r = h.call("DELETE", &revoke, LAN, &[("cookie", &phone)], None).await;
+    assert_eq!(r.status, StatusCode::PRECONDITION_REQUIRED, "{:?}", r.body);
+    assert_eq!(r.body["detail"], "A drive is open: the robot may move back home.");
+    assert!(h.state.player.driving(epoch));
+    let r = h.call("DELETE", &format!("{revoke}?motion=ok"), LAN, &[("cookie", &phone)], None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{:?}", r.body);
+    // With no drive open, a revoke needs no telling.
+    h.state.player.abort_drive();
+    let r = h.call("DELETE", &format!("/api/auth/devices/{tablet_id}"), LAN2, &[("cookie", &tablet)], None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{:?}", r.body);
+}
+
+#[tokio::test]
+async fn demoting_one_admin_device_leaves_the_persons_other_admin_drive_alone() {
+    let (h, admin, sam, _mia) = family_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    // Sam has two devices, both made admins; the first drives.
+    h.paired_as(LAN3, &as_admin, json!({"name": "tablet", "person": "Sam"})).await;
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &as_admin, None).await.body["devices"].clone();
+    let id_of = |name: &str| {
+        devices.as_array().unwrap().iter().find(|d| d["name"] == name).unwrap()["id"].as_str().unwrap().to_string()
+    };
+    let (phone_id, tablet_id) = (id_of("phone"), id_of("tablet"));
+    for id in [&phone_id, &tablet_id] {
+        let path = format!("/api/auth/devices/{id}/role");
+        let r = h.call("PUT", &path, LOOPBACK, &as_admin, Some(json!({"role": "admin"}))).await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    }
+    assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+    // Demoting the tablet renews member credentials only: the phone, an
+    // admin, keeps its drive, so nothing needs telling.
+    let r = h
+        .call(
+            "PUT",
+            &format!("/api/auth/devices/{tablet_id}/role"),
+            LOOPBACK,
+            &as_admin,
+            Some(json!({"role": "member"})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(h.view(LAN, &sam).await["holder"]["device"], "phone");
+}
+
+#[tokio::test]
+async fn an_admin_demotes_its_own_device_and_cannot_undo_it() {
+    let (h, admin, sam, _mia) = family_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    let as_sam = [("cookie", sam.as_str())];
+    assert_eq!(h.put_profile(&as_admin, "Sam", limited_profile()).await.status, StatusCode::OK);
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &as_admin, None).await.body["devices"].clone();
+    let id_of = |person: &str| {
+        devices.as_array().unwrap().iter().find(|d| d["person"] == person).unwrap()["id"].as_str().unwrap().to_string()
+    };
+    let (admin_role, sam_role) =
+        (format!("/api/auth/devices/{}/role", id_of("Andry")), format!("/api/auth/devices/{}/role", id_of("Sam")));
+    let r = h.call("PUT", &sam_role, LOOPBACK, &as_admin, Some(json!({"role": "admin"}))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    // What Sam's device has as an admin: control, and a stream.
+    assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+    let response = reachy_controller::app(h.state.clone())
+        .oneshot(request("GET", "/telemetry/state-stream", LAN, &as_sam, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut stream = response.into_body().into_data_stream();
+
+    // With another admin left, it makes itself a member again: the request that asks is its last as an admin.
+    let r = h.call("PUT", &format!("{sam_role}?motion=ok"), LAN, &as_sam, Some(json!({"role": "member"}))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!((r.body["role"].clone(), r.body["person"].clone()), (json!("member"), json!("Sam")));
+    let status = h.status_of(LAN, &sam).await;
+    assert_eq!((status["role"].clone(), status["profile"]["admin"].clone()), (json!("member"), json!(false)));
+    // Sam's profile limits it again, and System is closed to it.
+    assert_eq!(status["profile"]["can"]["power"], false);
+    assert_eq!(h.call("GET", "/api/logs/sources", LAN, &as_sam, None).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(h.view(LOOPBACK, &admin).await["holder"], Value::Null);
+    let ended = tokio::time::timeout(Duration::from_secs(2), async { while stream.next().await.is_some() {} }).await;
+    assert!(ended.is_ok(), "the stream Sam's device opened as an admin is still open");
+    // It can't take the role back, for itself or by demoting the admin that is left.
+    for (path, to) in [(&sam_role, "admin"), (&admin_role, "member")] {
+        let r = h.call("PUT", path, LAN, &as_sam, Some(json!({"role": to}))).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{:?}", r.body);
+    }
+    // The admin that is left is the last one: it can't follow.
+    let r = h.call("PUT", &admin_role, LOOPBACK, &as_admin, Some(json!({"role": "member"}))).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
 }
 
 #[tokio::test]
@@ -1219,9 +1364,14 @@ async fn one_person_drives_at_a_time_and_revoking_the_browser_ends_control() {
     assert_eq!(h.view(LAN, &kim).await["you"]["can_take"], true);
     assert_eq!(h.control(LAN, &kim, "take?if_free=true", None).await.status, StatusCode::OK);
     assert_eq!(h.act(LAN, &kim).await.status, StatusCode::OK);
-    // Revoking Kim's browser frees the robot at once.
+    // Revoking Kim's browser frees the robot at once. It would end Kim's
+    // drive, so it is refused until the admin was told (#341).
     let id = h.state.auth.device_names().into_iter().find(|(_, name)| name == "tablet").unwrap().0;
     let r = h.call("DELETE", &format!("/api/auth/devices/{id}"), LOOPBACK, &[("cookie", &admin)], None).await;
+    assert_eq!(r.status, StatusCode::PRECONDITION_REQUIRED, "{:?}", r.body);
+    assert_eq!(r.body["detail"], "tablet is in control: the robot may move back home.");
+    assert_eq!(h.view(LAN, &sam).await["holder"]["device"], "tablet");
+    let r = h.call("DELETE", &format!("/api/auth/devices/{id}?motion=ok"), LOOPBACK, &[("cookie", &admin)], None).await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
     assert_eq!(h.view(LAN, &sam).await["holder"], Value::Null);
     assert_eq!(h.control(LAN, &sam, "take?if_free=true", None).await.status, StatusCode::OK);
@@ -1679,7 +1829,9 @@ async fn audio_ends_when_its_browser_is_revoked_or_closes_it() {
         .unwrap()
         .to_string();
     assert_eq!(
-        h.call("DELETE", &format!("/api/auth/devices/{id}"), LOOPBACK, &[("cookie", &admin)], None).await.status,
+        h.call("DELETE", &format!("/api/auth/devices/{id}?motion=ok"), LOOPBACK, &[("cookie", &admin)], None)
+            .await
+            .status,
         StatusCode::NO_CONTENT
     );
     assert!(gone(2).await, "a revoked browser's audio session stayed open");
@@ -2078,4 +2230,67 @@ async fn a_browser_approved_for_a_profile_follows_its_rename_or_asks_again() {
     let r = h.call("DELETE", "/api/auth/profiles/Leo", LOOPBACK, &as_admin, None).await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
     assert_ne!(h.poll(&id, LAN2, &pair_cookie).await.body["status"], "approved");
+}
+
+#[tokio::test]
+async fn a_take_read_as_an_admin_before_a_demotion_counts_as_a_members() {
+    // The login check read the role before the demotion landed (#341): the
+    // take uses the device's role now, so it can't take the admin's control.
+    let (h, admin, _sam) = control_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    let phone = h.state.auth.device_names().into_iter().find(|(_, name)| name == "phone").unwrap().0;
+    let role = format!("/api/auth/devices/{phone}/role");
+    assert_eq!(h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": "admin"}))).await.status, StatusCode::OK);
+    // What the take's login check read while the phone was an admin.
+    let read = AuthContext {
+        peer: None,
+        authenticated: true,
+        device: Some(phone.clone()),
+        person: Some("Sam".into()),
+        role: Some(Role::Admin),
+        access: Access::Full,
+        shared: false,
+        local: false,
+        credential: None,
+        https: false,
+    };
+    assert_eq!(h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": "member"}))).await.status, StatusCode::OK);
+    assert_eq!(h.control(LOOPBACK, &admin, "take", None).await.status, StatusCode::OK);
+    let take = control::router().with_state(h.state.clone()).layer(axum::Extension(read));
+    let r = take.oneshot(Request::post("/api/control/take").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(h.view(LOOPBACK, &admin).await["holder"]["you"], true);
+}
+
+#[tokio::test]
+async fn a_take_read_as_a_member_before_a_promotion_holds_control_as_an_admin() {
+    // The promotion's counterpart (#341): the holder is recorded with the
+    // device's role now, so the person's member device can't take control
+    // from it (and end its drive).
+    let (h, admin, _sam) = control_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    let laptop = h.paired_as(LAN, &as_admin, json!({"name": "laptop", "person": "Sam"})).await;
+    let phone = h.state.auth.device_names().into_iter().find(|(_, name)| name == "phone").unwrap().0;
+    // What the take's login check read while the phone was a member.
+    let read = AuthContext {
+        peer: None,
+        authenticated: true,
+        device: Some(phone.clone()),
+        person: Some("Sam".into()),
+        role: Some(Role::Member),
+        access: Access::Full,
+        shared: false,
+        local: false,
+        credential: None,
+        https: false,
+    };
+    let role = format!("/api/auth/devices/{phone}/role");
+    assert_eq!(h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": "admin"}))).await.status, StatusCode::OK);
+    let take = control::router().with_state(h.state.clone()).layer(axum::Extension(read));
+    let r = take.oneshot(Request::post("/api/control/take").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(h.view(LAN, &laptop).await["holder"]["admin"], true);
+    let r = h.control(LAN, &laptop, "take", None).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert_eq!(h.view(LAN, &laptop).await["holder"]["admin"], true);
 }

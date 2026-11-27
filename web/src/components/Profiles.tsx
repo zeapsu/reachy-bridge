@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { apiJson, errorText, paths } from "../api.ts";
+import { sendTold } from "../api/auth.ts";
 import { useLens } from "../glass.ts";
 import { appHue, appInitial } from "../logic/apps.ts";
 import type { Can, PairedDevice, ProfileItem, ProfileView } from "../logic/auth.ts";
@@ -297,7 +298,9 @@ export function ProfileEditor({ initial, installed, devices, onDone, onChanged }
   const logOut = async (device: PairedDevice) => {
     if (!window.confirm(`Log out ${device.name}?`)) return;
     try {
-      await apiJson(paths.authDevice(device.id), { method: "DELETE" });
+      // Asks again if it would end a drive (#341).
+      const ask = (warning: string) => window.confirm(`Log out ${device.name}? ${warning}`);
+      if (!(await sendTold(paths.authDevice(device.id), { method: "DELETE" }, false, ask))) return;
       await onChanged();
     } catch (err) {
       setError(errorText(err, "Couldn't log the device out"));

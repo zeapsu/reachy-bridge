@@ -99,7 +99,7 @@ export function SystemView({ family, person, installed, daemonOnline, live, sim,
         </a>
       </div>
       <div className="pane" id="system-access" role="tabpanel" aria-label="Access" hidden={pane !== "access"}>
-        {family ? <AccessPanel installed={installed} person={person} waiting={waiting} live={live && pane === "access"} /> : <DevicesPanel inset />}
+        {family ? <AccessPanel installed={installed} person={person} waiting={waiting} live={live && pane === "access"} holder={control.view?.holder ?? null} /> : <DevicesPanel inset />}
       </div>
       <div className="pane" id="system-diagnostics" role="tabpanel" aria-label="Diagnostics" hidden={pane !== "diagnostics"}>
         <Diagnostics daemonOnline={daemonOnline} live={live && pane === "diagnostics"} />

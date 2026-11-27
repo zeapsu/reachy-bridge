@@ -78,6 +78,18 @@ struct Inner {
 }
 
 impl Inner {
+    /// See [`Control::forget`].
+    fn forget(&mut self, device: &str) {
+        if self.holder.as_ref().is_some_and(|h| h.device == device) {
+            tracing::info!("control: {device} lost control: revoked or its role changed");
+            self.holder = None;
+        }
+        if self.away.as_ref().is_some_and(|h| h.device == device) {
+            self.away = None;
+        }
+        self.seen.remove(device);
+    }
+
     /// Apply the clock: end the holder's control when it went silent, and
     /// forget an away holder gone too long. Returns whether the holder
     /// changed.
@@ -191,16 +203,28 @@ impl Control {
     /// A revoked device, or one whose role changed: it loses control, and
     /// with it any claim to come back.
     pub fn forget(&self, device: &str) {
+        self.with(|inner, _| inner.forget(device));
+    }
+
+    /// A role change or revoke (#341): runs `f` under the control lock with
+    /// the holder's device id, then the device it returns loses control (as
+    /// [`Control::forget`]) before the lock is released. So the change checks
+    /// who holds control, and is made, with nobody taking control in between.
+    /// `f` may lock the device list and the picks: the order `take` uses
+    /// (control, then devices). It must not call back into `Control`. It
+    /// holds up every request that checks control while it runs, so keep it
+    /// to the change itself (a small file write is the most it does). On
+    /// `Err` nothing is forgotten and nothing is rolled back: `f` leaves the
+    /// state as it found it.
+    pub fn change_under<T, E>(&self, f: impl FnOnce(Option<&str>) -> Result<(T, Option<String>), E>) -> Result<T, E> {
         self.with(|inner, _| {
-            if inner.holder.as_ref().is_some_and(|h| h.device == device) {
-                tracing::info!("control: {device} lost control: revoked or its role changed");
-                inner.holder = None;
+            let holder = inner.holder.as_ref().map(|h| h.device.clone());
+            let (result, forget) = f(holder.as_deref())?;
+            if let Some(device) = forget {
+                inner.forget(&device);
             }
-            if inner.away.as_ref().is_some_and(|h| h.device == device) {
-                inner.away = None;
-            }
-            inner.seen.remove(device);
-        });
+            Ok(result)
+        })
     }
 
     /// Record a robot action (or an open drive or voice session) from
@@ -386,9 +410,16 @@ async fn take(
         // Under the control lock, so a revoke (which forgets the device under
         // the same lock, after removing it) can't be undone by a take that
         // passed the login check just before it.
-        if !state.auth.has_device(&device) {
+        let Some(role) = state.auth.role_of(&device) else {
             return Err(ApiError::new(401, "this browser was logged out"));
-        }
+        };
+        // The role the login check read may be stale: a role change (made
+        // under this lock) lands before this take or after it (#341). Whom
+        // it may take control from goes by the lesser of the two roles; the
+        // holder is recorded with the role it has now, so a promotion in
+        // between can't leave an admin held to a member's rules.
+        let now_admin = role == Role::Admin;
+        let admin = admin && now_admin;
         if let Some(holder) = &inner.holder {
             if holder.device == device {
                 return Ok(());
@@ -403,7 +434,7 @@ async fn take(
         let previous = inner.holder.replace(Holder {
             device: device.clone(),
             person: person.clone(),
-            admin,
+            admin: now_admin,
             since: now,
             active: now,
         });

@@ -82,8 +82,7 @@
 @media (max-width: 480px) {
   .acc-meta .peer { display: none; }
   .acc-waiting { padding: 14px; }
-  .acc-actions .primary { flex: 1 1 100%; }
-  .acc-actions .or { flex: 1 1 100%; padding: 2px 2px 0; }
+  .acc-actions .or:first-child { flex: 1 1 100%; padding: 2px 2px 0; }
   .acc-row:has(.acc-trail > .btn + .btn) { grid-template-columns: 40px minmax(0, 1fr); row-gap: 6px; padding-bottom: 8px; }
   .acc-row:has(.acc-trail > .btn + .btn) > .acc-trail { grid-column: 2; justify-self: start; }
 }
