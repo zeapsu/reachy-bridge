@@ -655,7 +655,15 @@ impl Auth {
     pub(crate) fn still_counts(&self, credential: &Credential) -> bool {
         match credential {
             Credential::Local => true,
-            Credential::Device(id, Some(generation)) => self.has_device(id) && *generation == self.generation(id),
+            // A member's: it counts while the device is still a member under
+            // the rules it opened with. The role is checked too because the
+            // login reads the role and the generation one after the other: a
+            // promotion between them leaves a member's credential on an admin
+            // device, which a later rules change would end unwarned (#341).
+            Credential::Device(id, Some(generation)) => {
+                let devices = self.devices.lock().unwrap();
+                devices.iter().any(|d| d.id == *id && d.role != Role::Admin) && *generation == self.generation(id)
+            }
             // Issued to an admin device: it counts while the device is one (#334).
             Credential::Device(id, None) => {
                 self.devices.lock().unwrap().iter().any(|d| d.id == *id && d.role == Role::Admin)
@@ -1863,6 +1871,20 @@ mod tests {
             h.insert(LOCAL_KEY_HEADER, key.parse().unwrap());
         }
         h
+    }
+
+    #[test]
+    fn a_members_credential_stops_counting_when_its_device_becomes_an_admin() {
+        // Read as a member, with the generation from after the promotion (#341).
+        let (auth, dir) = lan_auth(true);
+        let member = Credential::Device("d1".into(), Some(auth.generation("d1")));
+        assert!(auth.still_counts(&member));
+        auth.devices.lock().unwrap()[0].role = Role::Admin;
+        auth.rules_changed(&["d1".into()]);
+        let straddling = Credential::Device("d1".into(), Some(auth.generation("d1")));
+        assert!(!auth.still_counts(&straddling));
+        assert!(auth.still_counts(&Credential::Device("d1".into(), None)));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
