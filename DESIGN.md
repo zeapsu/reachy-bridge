@@ -316,7 +316,7 @@ Checked in `web/e2e/a11y.spec.ts` and `web/e2e/ux.spec.ts`. Most checks are ratc
 - **axe-core violations (ratchet):** `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`, and `best-practice` across the audited views with the robot off and on, counted per rule against the baseline.
 - **Zero horizontal overflow:** `documentElement.scrollWidth <= clientWidth` on the audited views, desktop and phone (hard failure).
 - **Touch targets (ratchet):** controls under `24×24px` (WCAG 2.5.8) are counted against the baseline. Aim for `36×36px` for standard buttons and stars, and `44×44px` for primary circular actions like `.power`.
-- **Keyboard focus:** By default a visible `2px solid var(--accent)` outline with `3px` offset (`:focus-visible`); a few controls adjust it (the expression track uses a `-2px` offset, the selected accent swatch an ink outline).
+- **Keyboard focus:** By default a visible `2px solid var(--accent)` outline with `3px` offset (`:focus-visible`); the expression track insets it (`-2px` offset). Separately, the selected accent button (`.accent[aria-pressed="true"]`) carries a `2px` `--ink` outline as its selected state, not a focus ring.
 - **Reduced motion & transparency:** Full CSS media-query support in `base.css`.
 
 ---
