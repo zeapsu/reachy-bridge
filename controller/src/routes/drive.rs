@@ -173,11 +173,23 @@ async fn upgrade(
         if let Some(refusal) = refusal(&state).await {
             return Err(refusal.error());
         }
-        match state.player.start_drive().await {
+        // The browser may have been revoked while this waited (#341): checked
+        // again around the claim, so a revoke either sees the drive open
+        // (and asks first) or the drive never starts.
+        if !state.auth.still_counts(&credential) {
+            return Err(ApiError::new(401, "logged out"));
+        }
+        let epoch = match state.player.start_drive().await {
             Ok(epoch) => epoch,
             Err(PlayError::Busy(detail)) => return Err(ApiError::new(409, detail)),
             Err(_) => return Err(ApiError::unavailable()),
+        };
+        if !state.auth.still_counts(&credential) {
+            // Nothing was sent: the robot is still home.
+            state.player.cancel_drive(epoch);
+            return Err(ApiError::new(401, "logged out"));
         }
+        epoch
     };
     let session = Session { player: state.player.clone(), epoch, home: true };
     Ok(ws.on_upgrade(move |socket| drive(state, socket, upstream, session, credential, holder)))

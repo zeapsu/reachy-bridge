@@ -647,7 +647,7 @@ impl Auth {
         (loopback && self.trusts_loopback() && loopback_host(headers)).then_some(Credential::Trusted)
     }
 
-    fn still_counts(&self, credential: &Credential) -> bool {
+    pub(crate) fn still_counts(&self, credential: &Credential) -> bool {
         match credential {
             Credential::Local => true,
             Credential::Device(id, Some(generation)) => self.has_device(id) && *generation == self.generation(id),

@@ -211,7 +211,11 @@ impl Control {
     /// [`Control::forget`]) before the lock is released. So the change checks
     /// who holds control, and is made, with nobody taking control in between.
     /// `f` may lock the device list and the picks: the order `take` uses
-    /// (control, then devices). It must not call back into `Control`.
+    /// (control, then devices). It must not call back into `Control`. It
+    /// holds up every request that checks control while it runs, so keep it
+    /// to the change itself (a small file write is the most it does). On
+    /// `Err` nothing is forgotten and nothing is rolled back: `f` leaves the
+    /// state as it found it.
     pub fn change_under<T, E>(&self, f: impl FnOnce(Option<&str>) -> Result<(T, Option<String>), E>) -> Result<T, E> {
         self.with(|inner, _| {
             let holder = inner.holder.as_ref().map(|h| h.device.clone());

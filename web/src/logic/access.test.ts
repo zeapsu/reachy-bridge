@@ -124,7 +124,7 @@ describe("demoteQuestion", () => {
 });
 
 describe("motionWarning", () => {
-  const holder = (device: string, person: string) => ({ device, person, admin: false, since: 0, you: false });
+  const holder = (device: string, person: string, admin = false) => ({ device, person, admin, since: 0, you: false });
   const warns = (name: string) => ` ${name} is in control: the robot may move back home.`;
 
   test("nobody in control: no warning", () => {
@@ -137,6 +137,9 @@ describe("motionWarning", () => {
     // Sam's tablet drives: changing Sam's phone reconnects it too.
     expect(motionWarning(holder("Tablet", "Sam"), phone)).toBe(warns("Tablet"));
     expect(motionWarning(holder("iPad", "Mia"), phone)).toBe("");
+    // Sam's admin laptop keeps its credential, and its drive, when the phone changes.
+    expect(motionWarning(holder("Laptop", "Sam", true), phone)).toBe("");
+    expect(motionWarning(holder("Phone", "Sam", true), phone)).toBe(warns("Phone"));
   });
 
   test("a device without a person acts as its own name", () => {

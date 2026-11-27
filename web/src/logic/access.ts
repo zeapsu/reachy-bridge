@@ -73,7 +73,8 @@ export function approveAdminQuestion(name: string): string {
 export function motionWarning(holder: ControlHolder | null | undefined, device: PairedDevice): string {
   if (!holder) return "";
   const person = device.person || device.name;
-  const affected = holder.device === device.name || (!device.shared && holder.person === person);
+  // Another device of the person: only a member's drive ends (its credential renews); an admin's goes on.
+  const affected = holder.device === device.name || (!device.shared && !holder.admin && holder.person === person);
   return affected ? ` ${holder.device || holder.person} is in control: the robot may move back home.` : "";
 }
 

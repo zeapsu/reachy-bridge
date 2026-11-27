@@ -23,6 +23,8 @@ struct Fake {
     gotos: usize,
     running: Vec<String>,
     stops: usize,
+    /// Drive sockets the controller opened to the daemon.
+    upstreams: usize,
 }
 
 type FakeState = Arc<Mutex<Fake>>;
@@ -30,6 +32,7 @@ type FakeState = Arc<Mutex<Fake>>;
 async fn fake_daemon(fake: FakeState) -> String {
     async fn set_target(State(fake): State<FakeState>, ws: WebSocketUpgrade) -> axum::response::Response {
         ws.on_upgrade(move |mut socket| async move {
+            fake.lock().unwrap().upstreams += 1;
             while let Some(Ok(Message::Text(text))) = socket.recv().await {
                 fake.lock().unwrap().targets.push(serde_json::from_str(&text).unwrap());
             }
@@ -101,9 +104,12 @@ struct Harness {
 }
 
 async fn harness(motors: Option<&str>) -> Harness {
+    harness_in(motors, std::env::temp_dir().join(format!("rc-drive-{}", std::process::id()))).await
+}
+
+async fn harness_in(motors: Option<&str>, dir: std::path::PathBuf) -> Harness {
     let fake = Arc::new(Mutex::new(Fake { motors: motors.map(str::to_string), ..Default::default() }));
     let url = fake_daemon(fake.clone()).await;
-    let dir = std::env::temp_dir().join(format!("rc-drive-{}", std::process::id()));
     let state =
         AppState::new(Daemon::new(&url, Duration::from_secs(2)), LogBroker::new(), dir, Duration::from_millis(10));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -338,4 +344,49 @@ async fn a_mode_change_mid_expression_keeps_the_pose_untrusted() {
     h.wait("the return home", |f| f.gotos == 1).await;
     h.wait_idle().await;
     assert!(h.state.player.needs_home());
+}
+
+#[tokio::test]
+async fn a_drive_whose_browser_lost_its_trust_while_waiting_never_starts() {
+    // #341: the credential is checked again at the claim, so a revoke (here:
+    // admin mode starting, which ends this loopback browser's trust) while
+    // the drive waits either sees it open or keeps it from starting at all.
+    let dir = std::env::temp_dir().join(format!("rc-drive-{}-trust", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let h = harness_in(Some("enabled"), dir).await;
+    let power = h.state.power_lock.lock().await;
+    let controller = h.controller.clone();
+    let drive = tokio::spawn(async move {
+        match tokio_tungstenite::connect_async(format!("ws://{controller}/api/drive/ws")).await {
+            Ok(_) => 101,
+            Err(tungstenite::Error::Http(response)) => response.status().as_u16(),
+            Err(error) => panic!("{error}"),
+        }
+    });
+    // It connected to the daemon: next it waits for the power lock.
+    h.wait("the drive's daemon socket", |f| f.upstreams == 1).await;
+    // The first admin pairs: loopback browsers aren't trusted any more.
+    let http = reqwest::Client::new();
+    let r = http.post(format!("http://{}/api/auth/pair", h.controller)).send().await.unwrap();
+    let cookie = r.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
+    let pair: Value = r.json().await.unwrap();
+    let approve = reachy_controller::auth::ApproveAs {
+        name: Some("laptop"),
+        person: Some("Andry"),
+        role: reachy_controller::auth::Role::Admin,
+        shared: false,
+        approver: None,
+    };
+    h.state.auth.approve_code(pair["code"].as_str().unwrap(), approve, "test", true).unwrap();
+    let id = pair["id"].as_str().unwrap();
+    let r =
+        http.get(format!("http://{}/api/auth/pair/{id}", h.controller)).header("cookie", cookie).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(h.state.auth.admin_mode());
+    drop(power);
+    assert_eq!(drive.await.unwrap(), 401);
+    // No session, no return home, and the pose is still trusted.
+    assert!(!h.state.player.active());
+    assert_eq!(h.fake.lock().unwrap().gotos, 0);
+    assert!(!h.state.player.needs_home());
 }

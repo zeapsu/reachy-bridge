@@ -176,6 +176,16 @@ impl ExpressionPlayer {
         matches!(&*self.session.lock().unwrap(), Some(Session { phase: Phase::Driving, .. }))
     }
 
+    /// Drop the drive session started in `epoch` before it sent anything
+    /// (#341): the robot hasn't moved, so its pose is still home and nothing
+    /// needs a return home.
+    pub fn cancel_drive(&self, epoch: u64) {
+        let mut session = self.session.lock().unwrap();
+        if matches!(&*session, Some(Session { phase: Phase::Driving, epoch: e, .. }) if *e == epoch) {
+            *session = None;
+        }
+    }
+
     /// True while the drive session started in `epoch` may keep moving the robot.
     pub fn driving(&self, epoch: u64) -> bool {
         self.mode_epoch.load(Ordering::SeqCst) == epoch
