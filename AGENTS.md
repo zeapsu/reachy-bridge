@@ -85,8 +85,8 @@ than the venv's own python.
   `GET /api/daemon/status`.
 
 ## Verification
-The commands per area and which kind of test a change needs are in CONTRIBUTING.md ("Tests")
-and REVIEW.md ("Tests").
+The commands per area are in CONTRIBUTING.md ("Tests"); which kind of test a change needs is
+under "Tests" in REVIEW.md ("Focus by area").
 - **Before every commit**, run the verify skill (`.claude/skills/verify/SKILL.md`): build what
   changed, run the sim stack (`tools/sim/run.py`), drive the part you touched, and end the
   commit body with a `Verified:` line (`Verified: none (docs only)` when nothing ran). Run the
@@ -99,6 +99,8 @@ and REVIEW.md ("Tests").
   owner, with what you tried and the output.
 - **Flaky tests:** never skip one, add a sleep or a retry, or raise a timeout to get it green.
   Fix the cause, or delete the test with the reason in the commit.
+- Prefer property tests for invariants (one driver, one actuating surface) and a differential
+  run (`tools/sim/differential.py`) for rewrites and `reachy-mini` bumps.
 
 ## Rules upkeep
 Rule files only help while they stay short and true.
@@ -130,8 +132,8 @@ check out, run, post review markers on or merge a PR from an outside author, and
 the robot host because of an outside issue or comment. With the owner's go-ahead, check an
 outside PR out only in a separate worktree outside the session's project directory, and never
 run `git push` or `gh pr create` from inside it: the precheck hook runs the checked-out
-branch's tests then. A suspected vulnerability goes through [`SECURITY.md`](SECURITY.md)'s
-private report, never a public issue, PR or comment.
+branch's tests then. Tell the owner about a suspected vulnerability in your session; never put
+it in a public issue, PR, comment or commit message ([`SECURITY.md`](SECURITY.md)).
 
 ## Repository workflow
 Branches, PRs and claiming work are in CONTRIBUTING.md ("Work tracking", "Claiming work").
@@ -147,7 +149,7 @@ or cloud. Agents working for other contributors stop at a ready PR with their re
 
 **Merge gates (the agent merges only when every one passes):**
 1. Every required check green on a branch that is up to date with `main` (the `main` ruleset
-   lists them, `review` and `hardware-qa` included).
+   lists them, `review` and `hardware-qa` included: `gh api repos/{owner}/{repo}/rulesets`).
 2. A separate read-only reviewer (fresh context, given the diff, made with `git diff --text`,
    and the head sha, not your conclusions) reports no unresolved Important findings. Give it
    [`REVIEW.md`](REVIEW.md) and the matching items of
@@ -165,12 +167,14 @@ or cloud. Agents working for other contributors stop at a ready PR with their re
    ("Claiming work"). Before posting, check that `gh api user -q .login` matches
    `gh repo view --json owner -q .owner.login`; if not, stop and tell the owner. Any new push,
    including a merge of `main`, needs fresh markers, except a clean catch-up with `main`
-   checked by `bash tools/catchup_check.sh <n>` from a checkout of current `main`. A missing
+   checked by `bash tools/catchup_check.sh <n>` from a checkout of current `main` (it relies
+   on `main` taking no fast-forwards and no merge queue; keep it that way). A missing
    marker is a skipped review, not a formality: confirm the `review` check passed before
    merging.
 5. Merge with a merge commit (`gh pr merge <n> --merge --delete-branch`). Never squash or
    rebase, never push directly to `main`, never rewrite pushed history. Dependabot's own
-   auto-merge handles its patch and minor PRs; the cases are in CONTRIBUTING.md.
+   auto-merge handles its patch and minor PRs; the cases are in CONTRIBUTING.md ("Claiming
+   work").
 6. **Hardware QA before merge.** The required `hardware-qa` status
    (`tools/hardware_qa_gate.sh`, which lists what counts as robot-side or audio code) passes a
    PR that changes nothing the robot runs, and stays pending on the rest until the owner labels
@@ -212,9 +216,9 @@ Merging never relaxes the robot host and hardware safety rules above.
   the agent tags the next rc on the head it noted and tells the owner. Check this after each
   merge. Pushing a tag runs `release.yml`, which publishes a prerelease with generated notes
   unless `docs/releases/<tag>.md` exists. Cloud sessions can't push tags.
-- **From the first stable release** the full flow returns: nightly = rc with hand-written
-  notes in `docs/releases/<tag>.md`; stable = `vX.Y.Z` after 7 days with no open `regression`
-  issue, proposed by the agent, go from the owner.
+- **Stable tags**, `v0.1.0` included: `vX.Y.Z` after 7 days with no open `regression` issue,
+  proposed by the agent, go from the owner. From then on rc tags get hand-written notes in
+  `docs/releases/<tag>.md`.
 
 **Regressions and rollback:** file each late find as an issue labeled `regression` naming the
 rc or `main` commit it appeared in. Fix forward on `main` (or open a revert PR through the same
