@@ -36,7 +36,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Path as UrlPath, Request, State};
+use axum::extract::{ConnectInfo, Path as UrlPath, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -49,6 +49,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::control::Control;
 use crate::error::{ApiError, ApiResult};
 use crate::profiles::{self, Access, Profile};
 use crate::state::Shared;
@@ -678,10 +679,13 @@ impl Auth {
 
     /// The devices acting as `person`: its own, and shared ones it picked.
     fn devices_of(&self, person: &str) -> Vec<String> {
-        let mut ids: Vec<String> = self
-            .devices
-            .lock()
-            .unwrap()
+        let devices = self.devices.lock().unwrap().clone();
+        self.devices_of_in(&devices, person)
+    }
+
+    /// [`Auth::devices_of`] for a device list the caller holds locked.
+    fn devices_of_in(&self, devices: &[Device], person: &str) -> Vec<String> {
+        let mut ids: Vec<String> = devices
             .iter()
             .filter(|d| !d.shared && (d.person == person || (d.person.is_empty() && d.name == person)))
             .map(|d| d.id.clone())
@@ -1350,6 +1354,34 @@ struct RoleBody {
     role: Role,
 }
 
+/// `?motion=ok` on a role change or revoke: the admin was told it may end a
+/// drive, so the robot may move back home (#341).
+#[derive(Deserialize, Default)]
+struct MotionQuery {
+    motion: Option<String>,
+}
+
+impl MotionQuery {
+    fn ok(&self) -> bool {
+        self.motion.as_deref() == Some("ok")
+    }
+}
+
+/// A role change or revoke reconnects `affected`; one of them holding
+/// control loses its drive session, and the robot moves back home. Unless the
+/// request says the admin was told (`?motion=ok`), it is refused naming the
+/// holder (428), so the dashboard can ask again with that warning. Checked
+/// here, as the change is made, rather than by the dashboard beforehand:
+/// control can change while its question is open (#341).
+fn motion_refusal(control: &Control, devices: &[Device], affected: &[String]) -> Option<ApiError> {
+    let holder = control.holder_device()?;
+    if !affected.contains(&holder) {
+        return None;
+    }
+    let name = devices.iter().find(|d| d.id == holder).map_or(holder.as_str(), |d| d.name.as_str());
+    Some(ApiError::new(428, format!("{name} is in control: the robot may move back home.")))
+}
+
 /// Make a paired device an admin, or a member again (#334). An admin's (or
 /// the CLI's) only, and only once an admin exists: the first one pairs from
 /// the robot. The dashboard can't demote the last admin; the CLI can.
@@ -1357,6 +1389,7 @@ async fn set_role(
     State(state): State<Shared>,
     Extension(ctx): Extension<AuthContext>,
     UrlPath(id): UrlPath<String>,
+    Query(motion): Query<MotionQuery>,
     body: Result<Json<RoleBody>, axum::extract::rejection::JsonRejection>,
 ) -> ApiResult<Json<Value>> {
     let Json(RoleBody { role }) = body.map_err(|_| ApiError::bad_body())?;
@@ -1388,6 +1421,14 @@ async fn set_role(
         let admins = devices.iter().filter(|d| d.role == Role::Admin).count();
         if was == Role::Admin && admins == 1 && !ctx.local {
             return Err(ApiError::new(409, "this is the last admin device; make another device an admin first"));
+        }
+        if !ctx.local && !motion.ok() {
+            let d = &devices[index];
+            let mut affected = auth.devices_of_in(&devices, if d.person.is_empty() { &d.name } else { &d.person });
+            affected.push(id.clone());
+            if let Some(refusal) = motion_refusal(&state.control, &devices, &affected) {
+                return Err(refusal);
+            }
         }
         devices[index].role = role;
         if let Err(error) = auth.save(&devices) {
@@ -1445,6 +1486,7 @@ async fn revoke(
     State(state): State<Shared>,
     Extension(ctx): Extension<AuthContext>,
     UrlPath(id): UrlPath<String>,
+    Query(motion): Query<MotionQuery>,
 ) -> ApiResult<StatusCode> {
     let auth = &state.auth;
     let admin_mode = auth.admin_mode();
@@ -1463,6 +1505,16 @@ async fn revoke(
             409,
             "this is the last admin device; pair another admin first, or revoke it with `reachy-bridge devices revoke` on the robot",
         ));
+    }
+    if !ctx.local && !motion.ok() {
+        let d = &devices[index];
+        let mut affected = vec![id.clone()];
+        if !d.shared {
+            affected.extend(auth.devices_of_in(&devices, if d.person.is_empty() { &d.name } else { &d.person }));
+        }
+        if let Some(refusal) = motion_refusal(&state.control, &devices, &affected) {
+            return Err(refusal);
+        }
     }
     let removed = devices.remove(index);
     if let Err(error) = auth.save(&devices) {

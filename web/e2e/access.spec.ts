@@ -161,41 +161,37 @@ test("an admin approves another admin, adds a profile, makes its device an admin
   await tab(ipad.page, "System").click();
   await expect(ipad.page.getByRole("region", { name: "System" })).toBeVisible();
   const demote = (name: string) => row(name).getByRole("button", { name: `Demote ${name}` });
-  // Control is read again after a yes: the iPad takes it while the question is open, so Demote asks
-  // again, now with the warning. Declined, nothing changes.
+  // The iPad takes control while Demote's question is open. The question named nobody, so the
+  // controller refuses the change (#341) and Demote asks again with its warning. Declined,
+  // nothing changes.
   const asks: string[] = [];
-  const answer = (dialog: Dialog) => {
+  let took = 0;
+  const takeThenAccept = (dialog: Dialog) => {
     asks.push(dialog.message());
-    if (asks.length === 1) void ipad.page.request.post("/api/control/take").then(() => dialog.accept());
-    else void dialog.dismiss();
+    if (asks.length > 1) return void dialog.dismiss();
+    void ipad.page.request
+      .post("/api/control/take")
+      .then((r) => (took = r.status()))
+      .finally(() => dialog.accept());
   };
-  page.on("dialog", answer);
+  page.on("dialog", takeThenAccept);
   await demote("iPad").click();
   await expect.poll(() => asks.length).toBe(2);
-  page.off("dialog", answer);
+  page.off("dialog", takeThenAccept);
+  expect(took).toBe(200);
   expect(asks[0]).toContain("Demote iPad?");
   expect(asks[0]).not.toContain("is in control");
+  expect(asks[1]).toContain("Demote iPad?");
+  expect(asks[1]).toContain("Mia's profile applies to every device of Mia's again.");
   expect(asks[1]).toContain("iPad is in control: the robot may move back home.");
+  expect(asks[1]).not.toContain("Only another admin");
   expect((await whoAmI(ipad.page)).role).toBe("admin");
-  // The iPad takes control: once this page has seen that, Demote also says the robot may move.
-  expect((await ipad.page.request.post("/api/control/take")).status()).toBe(200);
-  await expect
-    .poll(async () => {
-      page.once("dialog", (dialog) => {
-        asked = dialog.message();
-        void dialog.dismiss();
-      });
-      await demote("iPad").click();
-      return asked;
-    })
-    .toContain("iPad is in control: the robot may move back home.");
-  expect(asked).toContain("Demote iPad?");
-  expect(asked).toContain("Mia's profile applies to every device of Mia's again.");
-  expect(asked).not.toContain("Only another admin");
-  expect((await whoAmI(ipad.page)).role).toBe("admin");
-  page.once("dialog", (dialog) => void dialog.accept());
+  // Told, it goes through, whichever question carries the warning.
+  const accept = (dialog: Dialog) => void dialog.accept();
+  page.on("dialog", accept);
   await demote("iPad").click();
   await expect.poll(async () => (await whoAmI(ipad.page)).role).toBe("member");
+  page.off("dialog", accept);
   expect((await ipad.page.request.get("/api/logs/sources")).status()).toBe(403);
   // The row offers the way back, and Mia's profile is hers to edit again.
   await expect(makeAdmin).toBeVisible();

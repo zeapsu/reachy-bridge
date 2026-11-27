@@ -213,6 +213,11 @@ impl Control {
         });
     }
 
+    /// The device holding control, if any (#341).
+    pub fn holder_device(&self) -> Option<String> {
+        self.with(|inner, _| inner.holder.as_ref().map(|h| h.device.clone()))
+    }
+
     pub fn holds(&self, device: &str) -> bool {
         self.with(|inner, _| inner.holder.as_ref().is_some_and(|h| h.device == device))
     }

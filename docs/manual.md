@@ -233,6 +233,11 @@ browsers again. A browser it had approved that hasn't logged in yet has to ask a
 demote the browser you are using: its page reloads without System, and only another admin can
 make it an admin again.
 
+Make admin, Demote and Revoke reconnect every browser of that person. If one of them is driving,
+its drive ends and the robot moves back home, so the question says who is in control. If someone
+takes control while the question is open, the dashboard asks again with that warning before
+anything changes.
+
 **Removing a browser.** Revoke it under System › Access, or run `reachy-bridge devices revoke <n>`. A browser
 it had approved that hasn't logged in yet has to ask again. A browser
 unused for 30 days is logged out. The dashboard keeps the last admin browser: it has no Revoke

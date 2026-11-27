@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useRef, useState, type ReactNode } from "react";
 import { apiJson, errorText, paths } from "../api.ts";
-import type { ControlHolder, ControlView } from "../api/control.ts";
+import { sendTold } from "../api/auth.ts";
+import type { ControlHolder } from "../api/control.ts";
 import { usePoll } from "../hooks/usePoll.ts";
 import {
   accessList,
@@ -145,36 +146,29 @@ export function AccessPanel({ installed, person, waiting, live, holder }: Props)
     });
   };
 
-  // `holder` is from the last poll, and control can change while the question is open. So the
-  // holder is read again after a yes, and if the change would now end a drive the warning didn't
-  // name, the question is asked again with it.
-  const confirmMotion = async (device: PairedDevice, question: (motion: string) => string): Promise<boolean> => {
-    const shown = motionWarning(holder, device);
-    if (!window.confirm(question(shown))) return false;
-    let now: ControlHolder | null = null;
-    try {
-      now = (await apiJson<ControlView>(paths.control, {}, { take: false })).holder ?? null;
-    } catch {
-      return true; // The change itself will fail the same way and say so.
-    }
-    const fresh = motionWarning(now, device);
-    return !fresh || fresh === shown || window.confirm(question(fresh));
-  };
-
-  const revoke = async (device: PairedDevice) => {
+  // `holder` is from the last poll: the question warns when it already shows
+  // someone driving, and the controller refuses a change that would end a drive
+  // the question didn't name, so `sendTold` asks again with its warning (#341).
+  const revoke = (device: PairedDevice) => {
     const question = device.current ? `Log this browser (${device.name}) out? It will need a new code to log in.` : `Revoke ${device.name}?`;
-    if (!(await confirmMotion(device, (motion) => question + motion))) return;
+    const motion = motionWarning(holder, device);
+    if (!window.confirm(question + motion)) return;
     void act("Revoke failed", async () => {
-      await apiJson(paths.authDevice(device.id), { method: "DELETE" });
+      const ask = (warning: string) => window.confirm(`${question} ${warning}`);
+      if (!(await sendTold(paths.authDevice(device.id), { method: "DELETE" }, motion !== "", ask))) return;
       if (device.current) window.location.reload();
       else await reload();
     });
   };
 
-  const setRole = (device: PairedDevice, role: Role, failed: string) =>
-    act(failed, async () => {
+  const setRole = (device: PairedDevice, role: Role, failed: string, question: (motion: string) => string) => {
+    const motion = motionWarning(holder, device);
+    if (!window.confirm(question(motion))) return;
+    void act(failed, async () => {
+      const ask = (warning: string) => window.confirm(question(` ${warning}`));
+      const body = { method: "PUT", body: JSON.stringify({ role }) };
       try {
-        await apiJson(paths.authDeviceRole(device.id), { method: "PUT", body: JSON.stringify({ role }) });
+        if (!(await sendTold(paths.authDeviceRole(device.id), body, motion !== "", ask))) return;
       } catch (err) {
         // Refused or failed: the list may be behind (by now it is the last admin, say). Show it as it is.
         void reload();
@@ -184,16 +178,13 @@ export function AccessPanel({ installed, person, waiting, live, holder }: Props)
       if (device.current && role === "member") window.location.reload();
       else await reload();
     });
-
-  const makeAdmin = async (device: PairedDevice, profile: ProfileItem) => {
-    if (!(await confirmMotion(device, (motion) => makeAdminQuestion(device, profile.name, limits(profile), motion)))) return;
-    void setRole(device, "admin", "Couldn't make it an admin");
   };
 
-  const demote = async (device: PairedDevice, profile: ProfileItem, own: PairedDevice[]) => {
-    if (!(await confirmMotion(device, (motion) => demoteQuestion(device, profile.name, isLastAdmin(own, device), motion)))) return;
-    void setRole(device, "member", "Couldn't demote it");
-  };
+  const makeAdmin = (device: PairedDevice, profile: ProfileItem) =>
+    setRole(device, "admin", "Couldn't make it an admin", (motion) => makeAdminQuestion(device, profile.name, limits(profile), motion));
+
+  const demote = (device: PairedDevice, profile: ProfileItem, own: PairedDevice[]) =>
+    setRole(device, "member", "Couldn't demote it", (motion) => demoteQuestion(device, profile.name, isLastAdmin(own, device), motion));
 
   const list = accessList(profiles, devices);
   const now = Date.now();
@@ -215,7 +206,7 @@ export function AccessPanel({ installed, person, waiting, live, holder }: Props)
         {lead}
         {/* The controller keeps the last admin device: no button that it would refuse. */}
         {isLastAdmin(devices, device) ? null : (
-          <button className="btn danger press" type="button" aria-label={`${device.current ? "Log out" : "Revoke"} ${device.name}`} disabled={busy} onClick={() => void revoke(device)}>
+          <button className="btn danger press" type="button" aria-label={`${device.current ? "Log out" : "Revoke"} ${device.name}`} disabled={busy} onClick={() => revoke(device)}>
             {device.current ? "Log out" : "Revoke"}
           </button>
         )}
@@ -232,13 +223,13 @@ export function AccessPanel({ installed, person, waiting, live, holder }: Props)
           {list.solo ? ADMIN_TAG : null}
           {/* The last admin device stays one, as it stays paired. */}
           {isLastAdmin(devices, device) ? null : (
-            <button className="btn press" type="button" aria-label={`Demote ${device.name}`} disabled={busy} onClick={() => void demote(device, profile, own)}>
+            <button className="btn press" type="button" aria-label={`Demote ${device.name}`} disabled={busy} onClick={() => demote(device, profile, own)}>
               {ICONS.shieldMinus}Demote
             </button>
           )}
         </>
       ) : (
-        <button className="btn press" type="button" aria-label={`Make admin: ${device.name}`} disabled={busy} onClick={() => void makeAdmin(device, profile)}>
+        <button className="btn press" type="button" aria-label={`Make admin: ${device.name}`} disabled={busy} onClick={() => makeAdmin(device, profile)}>
           {ICONS.shield}Make admin
         </button>
       ),

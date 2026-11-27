@@ -870,11 +870,54 @@ async fn a_role_change_gives_up_control() {
     for (to, holds_as_admin) in [("admin", false), ("member", true)] {
         assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
         assert_eq!(h.view(LAN, &sam).await["holder"]["admin"], holds_as_admin);
-        assert_eq!(h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": to}))).await.status, StatusCode::OK);
+        // It would end Sam's drive: refused until the admin was told (#341),
+        // and nothing changed.
+        let r = h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": to}))).await;
+        assert_eq!(r.status, StatusCode::PRECONDITION_REQUIRED, "{:?}", r.body);
+        assert!(r.body["detail"].as_str().unwrap().ends_with(" is in control: the robot may move back home."));
+        assert_eq!(h.view(LAN, &sam).await["holder"]["admin"], holds_as_admin);
+        let told = format!("{role}?motion=ok");
+        assert_eq!(h.call("PUT", &told, LOOPBACK, &as_admin, Some(json!({"role": to}))).await.status, StatusCode::OK);
         // Held under the old role, it would keep (or miss) an admin's hold
         // against Sam's other device.
         assert_eq!(h.view(LAN3, &spare).await["holder"], Value::Null, "after becoming {to}");
     }
+}
+
+#[tokio::test]
+async fn a_change_that_would_end_a_drive_waits_until_the_admin_was_told() {
+    let (h, admin, sam, _mia) = family_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    let spare = h.paired_as(LAN3, &as_admin, json!({"name": "spare", "person": "Sam"})).await;
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &as_admin, None).await.body["devices"].clone();
+    let id_of = |name: &str| {
+        devices.as_array().unwrap().iter().find(|d| d["name"] == name).unwrap()["id"].as_str().unwrap().to_string()
+    };
+    let (spare_id, mia_id) = (id_of("spare"), id_of("ipad"));
+    // Sam drives from the first device; the spare is Sam's too, so changing it
+    // reconnects the one driving (#341).
+    assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+    let holder = h.view(LAN, &sam).await["holder"]["device"].as_str().unwrap().to_string();
+    for (method, path, body) in [
+        ("PUT", format!("/api/auth/devices/{spare_id}/role"), Some(json!({"role": "admin"}))),
+        ("DELETE", format!("/api/auth/devices/{spare_id}"), None),
+    ] {
+        let r = h.call(method, &path, LOOPBACK, &as_admin, body).await;
+        assert_eq!(r.status, StatusCode::PRECONDITION_REQUIRED, "{method} {path}: {:?}", r.body);
+        assert_eq!(r.body["detail"], format!("{holder} is in control: the robot may move back home."));
+    }
+    // Nothing changed: the spare is still a member device, and Sam still drives.
+    assert!(h.state.auth.device_names().iter().any(|(id, _)| *id == spare_id));
+    assert_eq!(h.status_of(LAN3, &spare).await["role"], "member");
+    assert_eq!(h.view(LAN, &sam).await["holder"]["device"], holder.as_str());
+    // Mia's iPad is someone else's: changing it leaves Sam's drive alone.
+    let mia_role = format!("/api/auth/devices/{mia_id}/role");
+    let r = h.call("PUT", &mia_role, LOOPBACK, &as_admin, Some(json!({"role": "admin"}))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(h.view(LAN, &sam).await["holder"]["device"], holder.as_str());
+    // Told, the change goes through.
+    let r = h.call("DELETE", &format!("/api/auth/devices/{spare_id}?motion=ok"), LOOPBACK, &as_admin, None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{:?}", r.body);
 }
 
 #[tokio::test]
@@ -901,7 +944,7 @@ async fn an_admin_demotes_its_own_device_and_cannot_undo_it() {
     let mut stream = response.into_body().into_data_stream();
 
     // With another admin left, it makes itself a member again: the request that asks is its last as an admin.
-    let r = h.call("PUT", &sam_role, LAN, &as_sam, Some(json!({"role": "member"}))).await;
+    let r = h.call("PUT", &format!("{sam_role}?motion=ok"), LAN, &as_sam, Some(json!({"role": "member"}))).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!((r.body["role"].clone(), r.body["person"].clone()), (json!("member"), json!("Sam")));
     let status = h.status_of(LAN, &sam).await;
@@ -1264,9 +1307,14 @@ async fn one_person_drives_at_a_time_and_revoking_the_browser_ends_control() {
     assert_eq!(h.view(LAN, &kim).await["you"]["can_take"], true);
     assert_eq!(h.control(LAN, &kim, "take?if_free=true", None).await.status, StatusCode::OK);
     assert_eq!(h.act(LAN, &kim).await.status, StatusCode::OK);
-    // Revoking Kim's browser frees the robot at once.
+    // Revoking Kim's browser frees the robot at once. It would end Kim's
+    // drive, so it is refused until the admin was told (#341).
     let id = h.state.auth.device_names().into_iter().find(|(_, name)| name == "tablet").unwrap().0;
     let r = h.call("DELETE", &format!("/api/auth/devices/{id}"), LOOPBACK, &[("cookie", &admin)], None).await;
+    assert_eq!(r.status, StatusCode::PRECONDITION_REQUIRED, "{:?}", r.body);
+    assert_eq!(r.body["detail"], "tablet is in control: the robot may move back home.");
+    assert_eq!(h.view(LAN, &sam).await["holder"]["device"], "tablet");
+    let r = h.call("DELETE", &format!("/api/auth/devices/{id}?motion=ok"), LOOPBACK, &[("cookie", &admin)], None).await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
     assert_eq!(h.view(LAN, &sam).await["holder"], Value::Null);
     assert_eq!(h.control(LAN, &sam, "take?if_free=true", None).await.status, StatusCode::OK);
@@ -1724,7 +1772,9 @@ async fn audio_ends_when_its_browser_is_revoked_or_closes_it() {
         .unwrap()
         .to_string();
     assert_eq!(
-        h.call("DELETE", &format!("/api/auth/devices/{id}"), LOOPBACK, &[("cookie", &admin)], None).await.status,
+        h.call("DELETE", &format!("/api/auth/devices/{id}?motion=ok"), LOOPBACK, &[("cookie", &admin)], None)
+            .await
+            .status,
         StatusCode::NO_CONTENT
     );
     assert!(gone(2).await, "a revoked browser's audio session stayed open");
