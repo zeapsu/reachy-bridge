@@ -363,6 +363,18 @@ Source: `apps/manager.py`; endpoints: `daemon/app/routers/apps.py`.
     after the stop when torque is on and the mode says `disabled`. Written
     for 1.13.0's `enable_motors()` path, which left the mode as it was;
     `reset_to_init()` sets it, so this no longer triggers there.
+- **Startup app** (`GET` and `PUT /api/apps/startup-app`, saved in the
+  user's `reachy_mini/daemon_config.json`, which the robot's daemon and a
+  sim daemon of the same user share). **A power-on over REST never starts
+  it.** The daemon arms it at boot only with `--autostart`, and
+  `daemon/start` builds each backend without a wake hook. Checked on
+  1.14.0 in the sim: with the startup app set while the robot is off, and
+  again set while it is on and then powered off and on, no app started.
+  A `PUT` on a running backend arms that backend's next `wake_up()` only,
+  and starts the antenna watcher described under "Robot slot", which acts
+  without the controller. The bridge doesn't call these routes: the
+  controller keeps its own switch and starts the app after its power-on
+  (rule 9, #334).
 - The app's UI address is `extra.custom_app_url` in the app metadata (for
   example `0.0.0.0:8042` for radio, `:7860` for conversation). The UI server
   comes up 1–3 s after the process starts, so the bridge polls it before
@@ -477,3 +489,10 @@ These follow from the sections above. The first four are the bugs found in
    stop waits only for an `error` app or one it can't read: a running app
    holds the robot, and with no app or a `done` one the daemon stops
    nothing. After any wait, read the app again before acting on it.
+9. To start an app when the robot wakes, start it from the controller after
+   its own power-on, through the same guards as any app start (rule 3, rule
+   8), and only on a robot that is still on with its motors enabled: that
+   start must not wake the robot or switch the motors on itself. Don't set the daemon's startup app: it doesn't start on a REST
+   power-on, and once armed its antenna watcher checks only the daemon's
+   own app and robot slot, which the controller's expressions and drive
+   sessions don't hold.

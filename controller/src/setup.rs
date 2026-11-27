@@ -361,6 +361,7 @@ async fn confirm(
             person: Some(&proposal.person),
             role: Role::Admin,
             shared: false,
+            approver: None,
         },
         "the setup page (confirmed on the terminal)",
         true,

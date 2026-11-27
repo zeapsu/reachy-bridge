@@ -7,6 +7,9 @@ export const authPaths = {
   authApprove: "/api/auth/approve",
   authDevices: "/api/auth/devices",
   authDevice: (id: string) => `/api/auth/devices/${encodeURIComponent(id)}`,
+  // Admin approval from the dashboard (#334).
+  authPending: "/api/auth/pending",
+  authDeviceRole: (id: string) => `/api/auth/devices/${encodeURIComponent(id)}/role`,
   // Profiles (#297).
   authProfiles: "/api/auth/profiles",
   authProfile: (name: string) => `/api/auth/profiles/${encodeURIComponent(name)}`,

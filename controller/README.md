@@ -21,7 +21,8 @@ Without `web/dist` the binary still builds and serves the API; `/` then says to 
 | `CONTROLLER_HOST` / `CONTROLLER_PORT` | `127.0.0.1` / `7861` | listen address; only loopback unless `CONTROLLER_LAN=1` |
 | `CONTROLLER_APP_PORT` | `7863` | app UI proxy port, always on `127.0.0.1` |
 | `REACHY_DAEMON_UNIT` | `reachy-bridge.service` | user unit whose journal feeds the `daemon` log source |
-| `REACHY_BRIDGE_STATE_DIR` | `$XDG_STATE_HOME/reachy-bridge` | favorites and `logs/controller.log` |
+| `REACHY_BRIDGE_STATE_DIR` | `$XDG_STATE_HOME/reachy-bridge` | favorites, the wake switch and `logs/controller.log` |
+| `REACHY_WAKE_APP` | `reachy_mini_conversation_app` | the app the wake switch starts (#334); the sim stack sets a test app |
 | `RUST_LOG` | `info` | log filter |
 
 ## Tests

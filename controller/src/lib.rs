@@ -53,6 +53,7 @@ pub fn app(state: Shared) -> Router {
         .merge(control::router())
         .merge(sim::router())
         .merge(routes::sounds::router())
+        .merge(routes::wake_app::router())
         .merge(setup::router())
         .fallback(routes::assets::serve)
         .layer(middleware::from_fn_with_state(state.clone(), sim::guard))

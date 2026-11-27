@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { apiJson, errorText, paths } from "../api.ts";
 import { useLens } from "../glass.ts";
 import { appHue, appInitial } from "../logic/apps.ts";
 import type { Can, PairedDevice, ProfileItem, ProfileView } from "../logic/auth.ts";
-import { ALL_CAN, NEW_CAN, appsText, profileHue, profileInitial } from "../logic/profile.ts";
+import { NEW_CAN, appsText, profileHue, profileInitial } from "../logic/profile.ts";
+import { Panel } from "./Panel.tsx";
 import "./Profiles.css";
 
 const stroke = { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true } as const;
@@ -229,8 +230,7 @@ interface EditorProps {
 }
 
 /** The admin's editor for one profile; changes save as they're made. */
-function ProfileEditor({ initial, installed, devices, onDone, onChanged }: EditorProps) {
-  const sheet = useLens<HTMLElement>();
+export function ProfileEditor({ initial, installed, devices, onDone, onChanged }: EditorProps) {
   const [saved, setSaved] = useState<string | null>(initial?.name ?? null);
   const [name, setName] = useState(initial?.name ?? "");
   const [can, setCan] = useState<Can>(initial?.can ?? NEW_CAN);
@@ -313,14 +313,20 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
   };
 
   return (
-    <section className="glass sheet profile-editor" data-lens ref={sheet} aria-labelledby="profile-edit-title">
-      <header>
-        <h2 id="profile-edit-title">Profile</h2>
-        {busy ? <span className="spin" aria-hidden="true"></span> : null}
-        <button className="btn quiet press" type="button" onClick={onDone}>
-          Done
-        </button>
-      </header>
+    <Panel
+      inset
+      className="profile-editor"
+      title="Profile"
+      titleId="profile-edit-title"
+      aside={
+        <>
+          {busy ? <span className="spin" aria-hidden="true"></span> : null}
+          <button className="btn quiet press" type="button" onClick={onDone}>
+            Done
+          </button>
+        </>
+      }
+    >
       <form
         className="profile-edit-head"
         onSubmit={(event) => {
@@ -434,81 +440,6 @@ function ProfileEditor({ initial, installed, devices, onDone, onChanged }: Edito
           </div>
         </>
       ) : null}
-    </section>
-  );
-}
-
-/** Everyone's profile, for the admin in System (#297). */
-export function ProfilesPanel({ installed }: { installed: InstalledApp[] }) {
-  const sheet = useLens<HTMLElement>();
-  const [profiles, setProfiles] = useState<ProfileItem[]>([]);
-  const [devices, setDevices] = useState<PairedDevice[]>([]);
-  const [editing, setEditing] = useState<ProfileItem | "new" | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const reload = useCallback(async () => {
-    try {
-      const [p, d] = await Promise.all([
-        apiJson<{ profiles: ProfileItem[] }>(paths.authProfiles),
-        apiJson<{ devices: PairedDevice[] }>(paths.authDevices),
-      ]);
-      setProfiles(p.profiles);
-      setDevices(d.devices);
-      setError(null);
-    } catch (err) {
-      setError(errorText(err, "Couldn't load profiles"));
-    }
-  }, []);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  if (editing) {
-    return (
-      <ProfileEditor
-        key={editing === "new" ? "new" : editing.name}
-        initial={editing === "new" ? null : editing}
-        installed={installed}
-        devices={devices}
-        onDone={() => {
-          setEditing(null);
-          void reload();
-        }}
-        onChanged={reload}
-      />
-    );
-  }
-
-  const deviceName = (id: string) => devices.find((d) => d.id === id)?.name ?? id;
-  return (
-    <section className="glass sheet" data-lens ref={sheet} aria-labelledby="profiles-title">
-      <header>
-        <h2 id="profiles-title">Profiles</h2>
-        <button className="btn press" type="button" onClick={() => setEditing("new")}>
-          Add
-        </button>
-      </header>
-      <ul className="profiles-list">
-        {profiles.map((p) => (
-          <li key={p.name}>
-            <Avatar name={p.name} size={40} />
-            <span className="profiles-name">{p.name}</span>
-            <span className="profiles-meta">
-              {p.admin ? <span className="profile-tag">Admin</span> : null}
-              {[...(p.devices ?? []).map(deviceName), appsText(p.admin ? null : p.apps)].join(" · ")}
-            </span>
-            {p.admin ? null : (
-              <button className="btn press" type="button" onClick={() => setEditing({ ...p, can: p.can ?? ALL_CAN })}>
-                Edit
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
-      <p className="note error" role="alert">
-        {error}
-      </p>
-    </section>
+    </Panel>
   );
 }

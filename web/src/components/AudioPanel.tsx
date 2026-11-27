@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { paths } from "../api.ts";
-import { useLens } from "../glass.ts";
 import { readEventPayload, useEventSource } from "../hooks/useEventSource.ts";
 import { reduceMotion } from "../hooks/reduceMotion.ts";
+import { Panel } from "./Panel.tsx";
 import { EqModel, NBARS, audioLevelsFromPayload, formatPeak, formatSampleRate, type AudioLevels } from "../logic/audio.ts";
 
 type MicStatus = "waiting" | "listening" | "reconnecting" | "unavailable";
@@ -13,12 +13,12 @@ const micDot = (status: MicStatus) =>
 const BAR_INDEXES = Array.from({ length: NBARS }, (_, i) => i);
 
 /**
- * Microphone spectrum. The 10 Hz meter is painted imperatively from EqModel,
+ * Microphone spectrum, then where the robot's sound goes (`card`, `sink`,
+ * from the board's stats). The 10 Hz meter is painted imperatively from EqModel,
  * with per-element change guards so a settled quiet stream does no DOM writes.
  */
-export function AudioPanel({ daemonOnline, live }: { daemonOnline: boolean; live: boolean }) {
+export function AudioPanel({ daemonOnline, live, card, sink }: { daemonOnline: boolean; live: boolean; card: string; sink: string }) {
   const [status, setStatus] = useState<MicStatus>("waiting");
-  const sheet = useLens<HTMLElement>();
   const eq = useRef<HTMLDivElement>(null);
   const rmsEl = useRef<HTMLDivElement>(null);
   const inputEl = useRef<HTMLSpanElement>(null);
@@ -121,14 +121,17 @@ export function AudioPanel({ daemonOnline, live }: { daemonOnline: boolean; live
   });
 
   return (
-    <section className="glass sheet" data-lens ref={sheet} aria-labelledby="audio-title">
-      <header>
-        <h2 id="audio-title">Microphone</h2>
+    <Panel
+      inset
+      title="Audio"
+      titleId="audio-title"
+      aside={
         <span className="chip">
           <span className={micDot(status)} id="mic-dot"></span>
           <span id="mic-state">{status}</span>
         </span>
-      </header>
+      }
+    >
       <div className="eq" id="eq" ref={eq} aria-hidden="true">
         {BAR_INDEXES.map((i) => (
           <div className="bar" key={i}></div>
@@ -151,6 +154,16 @@ export function AudioPanel({ daemonOnline, live }: { daemonOnline: boolean; live
           rate <span className="v" id="eq-rate" ref={rateEl}>16 kHz</span>
         </span>
       </div>
-    </section>
+      <div className="route">
+        <div className="row">
+          <span>reachy alsa card</span>
+          <span id="v-card">{card}</span>
+        </div>
+        <div className="row">
+          <span>pipewire sink</span>
+          <span id="v-sink">{sink}</span>
+        </div>
+      </div>
+    </Panel>
   );
 }

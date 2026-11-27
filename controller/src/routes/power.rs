@@ -8,25 +8,28 @@
 //! same observed state.
 
 use std::future::Future;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use reqwest::Method;
 use serde_json::{Value, json};
 
 use crate::apps::APP_CONTROL_TIMEOUT;
+use crate::auth::AuthContext;
 use crate::daemon::{DaemonError, backend_up, motor_mode, robot_state};
 use crate::error::{ApiError, ApiResult};
+use crate::routes::wake_app;
 use crate::state::Shared;
 
 /// How long power off waits for stopped moves to leave the daemon.
 const MOVES_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 /// The sleep move takes about 5 s, then the daemon tears the backend down.
 pub const POWER_OFF_TIMEOUT: Duration = Duration::from_secs(40);
-const WAKE_TIMEOUT: Duration = Duration::from_secs(20);
+pub const WAKE_TIMEOUT: Duration = Duration::from_secs(20);
 /// The idle reset waits 1.5 s (15 s after a remote hand-off), then takes about
 /// 5-8 s to put the robot to sleep (daemon-contract.md, "Idle reset").
 pub const IDLE_RESET_TIMEOUT: Duration = Duration::from_secs(30);
@@ -115,11 +118,21 @@ pub async fn ensure_awake(state: &Shared) -> ApiResult<()> {
 /// without the wake move, so the motors stay limp and the robot comes back
 /// asleep.
 pub async fn power_on_locked(state: &Shared, wake: bool) -> ApiResult<Value> {
+    Ok(power_on_epoch_locked(state, wake).await?.0)
+}
+
+/// [`power_on_locked`], with the `power_epoch` this power-on made; none for
+/// a robot already on or coming up, which isn't woken again.
+async fn power_on_epoch_locked(state: &Shared, wake: bool) -> ApiResult<(Value, Option<u64>)> {
     let daemon = &state.daemon;
     let robot = daemon.status().await.map(|s| robot_state(&s));
     if let Some(robot @ ("running" | "starting")) = robot.as_deref() {
-        return Ok(json!({"status": robot}));
+        return Ok((json!({"status": robot}), None));
     }
+    // Before the daemon calls: motors let go while they run count as later
+    // than this power-on. A power-on that then fails leaves a bump nobody
+    // minds.
+    let epoch = state.power_epoch.fetch_add(1, Ordering::SeqCst) + 1;
     let result = if robot.as_deref() == Some("asleep") {
         daemon.post("motors/set_mode/enabled", &[]).await?;
         daemon.post("move/play/wake_up", &[]).await?
@@ -129,13 +142,14 @@ pub async fn power_on_locked(state: &Shared, wake: bool) -> ApiResult<Value> {
     // The wake-up move ends at the home pose; expressions are gated on the
     // daemon reporting running until then.
     state.player.set_needs_home(!wake);
-    Ok(result)
+    Ok((result, Some(epoch)))
 }
 
 /// Stop any app, play the sleep move and release torque; call with
 /// `power_lock` held.
 pub async fn power_off_locked(state: &Shared) -> ApiResult<Value> {
     let daemon = &state.daemon;
+    state.power_epoch.fetch_add(1, Ordering::SeqCst);
     // No drive targets during the sleep move.
     state.player.abort_drive();
     // An app that exited on its own (or a dropped remote session) leaves the
@@ -200,9 +214,18 @@ async fn status(State(state): State<Shared>) -> Json<Value> {
 }
 
 /// Switch the robot on. A backend that is up but asleep is woken in place.
-async fn start(State(state): State<Shared>) -> ApiResult<Json<Value>> {
+/// A power-on that wakes the robot also starts the wake app, if its switch
+/// is on (#334).
+async fn start(State(state): State<Shared>, ctx: Option<Extension<AuthContext>>) -> ApiResult<Json<Value>> {
     let _power = state.power_lock.lock().await;
-    Ok(Json(power_on_locked(&state, true).await?))
+    let (result, woke) = power_on_epoch_locked(&state, true).await?;
+    // The epoch this power-on made, not the one read afterwards: going limp
+    // moves it without the power lock, and must end this start, not pass for
+    // a power-on.
+    if let Some(epoch) = woke {
+        wake_app::after_power_on(&state, ctx.as_ref().map(|Extension(c)| c), epoch);
+    }
+    Ok(Json(result))
 }
 
 async fn stop(State(state): State<Shared>) -> ApiResult<Json<Value>> {

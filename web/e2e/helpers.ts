@@ -15,6 +15,23 @@ export async function tab(page: Page, name: TabName): Promise<void> {
   await page.getByRole("tab", { name }).locator("visible=true").first().click();
 }
 
+/** Every view the audits visit: each tab, and each of System's sections (#334). */
+export const VIEWS = [
+  { tab: "Robot" },
+  { tab: "Apps" },
+  { tab: "System", section: "Settings" },
+  { tab: "System", section: "Access" },
+  { tab: "System", section: "Diagnostics" },
+] as const satisfies readonly { tab: TabName; section?: string }[];
+export type View = (typeof VIEWS)[number];
+
+export const viewName = (v: View): string => ("section" in v ? `${v.tab} › ${v.section}` : v.tab);
+
+export async function view(page: Page, v: View): Promise<void> {
+  await tab(page, v.tab);
+  if ("section" in v) await page.getByRole("tab", { name: v.section }).click();
+}
+
 export function power(page: Page) {
   return page.getByRole("button", { name: /^Switch robot (on|off)$/ });
 }

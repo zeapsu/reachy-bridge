@@ -94,6 +94,14 @@ because stock MuJoCo sim hides bugs 1 and 2:
 through the daemon's install API, which would also install the latest
 `reachy-mini` from PyPI into it.
 
+## The admin controller
+
+`run.py` also starts a second controller on the same sim daemon, with a
+state directory of its own (`SIM_ADMIN_CONTROLLER`, and `SIM_ADMIN_KEY` for
+the path of its local key). The browser test that makes an admin
+(`web/e2e/access.spec.ts`, #334) runs against it: admin mode stays on for
+good, and every other test needs a controller without an admin.
+
 ## Against servers you started yourself
 
 `smoke.py` alone runs against `SIM_DAEMON` and `SIM_CONTROLLER` (default
