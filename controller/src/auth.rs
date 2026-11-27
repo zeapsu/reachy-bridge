@@ -792,7 +792,7 @@ pub fn cross_site(headers: &HeaderMap, loopback: bool) -> bool {
 
 /// Loopback trust needs a Host a DNS-rebinding page can't produce: a
 /// loopback address, `localhost`, or a tailnet (`*.ts.net`) name.
-fn loopback_host(headers: &HeaderMap) -> bool {
+pub fn loopback_host(headers: &HeaderMap) -> bool {
     let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else {
         return false;
     };

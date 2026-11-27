@@ -23,6 +23,7 @@ checks passed.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import sys
@@ -30,6 +31,8 @@ import threading
 import time
 
 import httpx
+from websockets.exceptions import InvalidStatus, WebSocketException
+from websockets.sync.client import connect as ws_connect
 
 DAEMON = os.getenv("SIM_DAEMON", "http://127.0.0.1:8100")
 CTRL = os.getenv("SIM_CONTROLLER", "http://127.0.0.1:7862")
@@ -112,6 +115,64 @@ def answers_on(address: str, port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+# A tailnet browser's request as tailscale serve passes it on to the app proxy.
+TS_HOST = "robot.tail1234.ts.net:8043"
+TS_ORIGIN = f"https://{TS_HOST}"
+
+
+def ws_seen(proxy_port: int, host: str, origin: str) -> dict | str:
+    """Open the app's ``/ws`` through the proxy under ``host`` and ``origin``:
+    what the app saw, the refusal's HTTP status, or what else went wrong (a
+    FAIL line, not a traceback)."""
+    try:
+        sock = socket.create_connection(("127.0.0.1", proxy_port), timeout=5)
+        with ws_connect(f"ws://{host}/ws", sock=sock, origin=origin, open_timeout=5) as ws:
+            return json.loads(ws.recv(timeout=5))
+    except InvalidStatus as e:
+        return f"HTTP {e.response.status_code}"
+    except (OSError, WebSocketException, ValueError) as e:
+        return f"{type(e).__name__}: {e}"
+
+
+def app_proxy_local_guard(port: int, proxy_port: int | None) -> None:
+    """[#340] The app enforces reachy-mini 1.15's LocalNetworkGuardMiddleware
+    rules; a tailnet browser still gets through the controller's app proxy,
+    which talks to the app as loopback, and a cross-site one still doesn't."""
+    direct = f"http://127.0.0.1:{port}"
+    r = httpx.get(f"{direct}/", headers={"Host": TS_HOST}, timeout=5)
+    check("[#340] app refuses a tailnet Host directly (guard live)", r.status_code == 400, f"HTTP {r.status_code}")
+    r = httpx.post(f"{direct}/echo", headers={"Origin": "http://100.101.102.103:7863"}, timeout=5)
+    check("[#340] app refuses a tailnet IP Origin directly (guard live)", r.status_code == 403, f"HTTP {r.status_code}")
+    if proxy_port is None:
+        check("[#340] app proxy listening", False, "no proxy_port")
+        return
+    proxy = f"http://127.0.0.1:{proxy_port}"
+    browser = {"Host": TS_HOST, "Origin": TS_ORIGIN, "Sec-Fetch-Site": "same-origin"}
+    r = httpx.get(f"{proxy}/", headers=browser, timeout=5)
+    check("[#340] tailnet GET through the app proxy", r.status_code == 200, f"HTTP {r.status_code}")
+    r = httpx.post(f"{proxy}/echo", headers=browser, content=b"x", timeout=5)
+    seen = r.json() if r.status_code == 200 else {}
+    check(
+        "[#340] tailnet POST through the app proxy reaches the app as loopback",
+        seen == {"host": f"127.0.0.1:{port}", "origin": None, "forwarded_host": TS_HOST},
+        f"HTTP {r.status_code} {seen}",
+    )
+    seen = ws_seen(proxy_port, TS_HOST, TS_ORIGIN)
+    check(
+        "[#340] tailnet WebSocket through the app proxy reaches the app as loopback",
+        isinstance(seen, dict) and seen.get("host") == f"127.0.0.1:{port}" and seen.get("origin") is None,
+        str(seen),
+    )
+    r = httpx.post(f"{proxy}/echo", headers={"Host": TS_HOST, "Origin": "https://evil.example"}, timeout=5)
+    check(
+        "[#340] cross-site POST still refused by the controller",
+        r.status_code == 403 and r.text == "cross-site request refused",
+        f"HTTP {r.status_code} {r.text[:80]}",
+    )
+    seen = ws_seen(proxy_port, TS_HOST, "https://evil.example")
+    check("[#340] cross-site WebSocket still refused by the controller", seen == "HTTP 403", str(seen))
 
 
 def crash_to_sleep() -> None:
@@ -267,6 +328,8 @@ check(
     port is not None and (lan is None or not answers_on(lan, port)),
     f"port={port} lan={lan}",
 )
+if port is not None:
+    app_proxy_local_guard(port, ui(APP).get("proxy_port"))
 
 # 10. power on from asleep wakes the robot in place
 crash_to_sleep()

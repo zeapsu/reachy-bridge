@@ -19,6 +19,16 @@
 //! HTTP bodies stream both ways (SSE and downloads are never buffered).
 //! WebSocket upgrades are accepted here and piped message by message to a
 //! client connection to the app.
+//!
+//! The app is talked to as a loopback client (#340): once the controller's
+//! own login, Host and cross-site checks have passed on the browser's
+//! request, the upstream request carries `Host: 127.0.0.1:<port>` and no
+//! `Origin`. Apps on reachy-mini >= 1.15 run upstream's
+//! `LocalNetworkGuardMiddleware`, which refuses a `Host` that isn't an IP,
+//! `localhost` or `*.local` (so every `*.ts.net` request) and a write or
+//! WebSocket whose `Origin` isn't local (so a tailnet IP's). The browser's
+//! host stays in `X-Forwarded-Host`, and a redirect the app makes to its
+//! loopback address is turned back into a path.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -36,7 +46,7 @@ use serde_json::Value;
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use crate::auth::{Credential, cross_site, end_with, strip_credential_cookies, strip_credentials};
+use crate::auth::{Credential, cross_site, end_with, loopback_host, strip_credential_cookies, strip_credentials};
 use crate::control;
 use crate::state::Shared;
 
@@ -169,6 +179,21 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
     else {
         return login_required(dashboard.as_deref());
     };
+    // A DNS-rebinding page reaches the loopback listener same-origin under
+    // its own name; without a login nothing else stops it, and the app's own
+    // Host check no longer sees the browser's Host (`to_loopback`). The
+    // dashboard's Host rule (`auth::guard`), but on every request, where the
+    // dashboard applies it to API calls and upgrades. In LAN mode, trusted
+    // loopback already needs such a Host, and a device cookie never goes to
+    // another name.
+    if loopback
+        && matches!(credential, Credential::Trusted)
+        && parts.headers.contains_key(header::HOST)
+        && !loopback_host(&parts.headers)
+    {
+        tracing::warn!("app proxy: refused {} {} under an untrusted Host", parts.method, parts.uri.path());
+        return (StatusCode::FORBIDDEN, "untrusted Host").into_response();
+    }
     // Control (#221): watchers load the app's pages, only the holder acts.
     let (device, local) = match &credential {
         Credential::Device(id, _) => (Some(id.clone()), false),
@@ -202,6 +227,7 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
         return (StatusCode::FORBIDDEN, "this app is off for this profile").into_response();
     }
     add_forwarded(&mut headers, &parts.headers, peer);
+    to_loopback(&mut headers);
     let path = parts.uri.path_and_query().map_or("/", |pq| pq.as_str()).to_string();
 
     if is_upgrade(&parts.headers) {
@@ -224,6 +250,7 @@ async fn forward(State(proxy): State<Proxy>, request: Request) -> Response {
                 *out_headers = response.headers().clone();
                 strip_hop_by_hop(out_headers);
                 strip_credential_cookies(out_headers);
+                relative_location(out_headers, port);
             }
             let out = out
                 .body(Body::from_stream(response.bytes_stream()))
@@ -258,8 +285,8 @@ async fn websocket(
     for name in WS_HANDSHAKE {
         headers.remove(name);
     }
-    // Keep the browser's Host (the app sees the same origin it was loaded
-    // from); the client request has already set the rest of the handshake.
+    // The client request has set Host (from the URL) and the rest of the
+    // handshake; `headers` carries neither Host nor Origin (`to_loopback`).
     for name in headers.keys() {
         request.headers_mut().remove(name);
     }
@@ -428,6 +455,41 @@ fn add_forwarded(headers: &mut HeaderMap, incoming: &HeaderMap, peer: Option<Soc
     }
 }
 
+/// Talk to the app as a loopback client (see the module docs): drop the
+/// browser's Host, which the HTTP and WebSocket clients then set from the
+/// `127.0.0.1:<port>` URL, and its Origin. Only after the controller's own
+/// checks ran on the browser's headers and `add_forwarded` kept the host.
+fn to_loopback(headers: &mut HeaderMap) {
+    headers.remove(header::HOST);
+    headers.remove(header::ORIGIN);
+}
+
+/// An app that builds an absolute redirect from the Host it got (Starlette's
+/// trailing-slash and static-directory redirects do) points at
+/// `http(s)://127.0.0.1:<port>`, which the browser can't reach: keep only the
+/// path, which the browser resolves against the address it used. A path
+/// starting `//` or `/\` is left alone: as a Location it would name another
+/// host. So is one with a tab, which browsers delete from a URL before
+/// reading it (`/\t/evil.example` is `//evil.example` to them).
+fn relative_location(headers: &mut HeaderMap, port: u16) {
+    let Some(location) = headers.get(header::LOCATION).and_then(|v| v.to_str().ok()) else {
+        return;
+    };
+    let authority = format!("127.0.0.1:{port}");
+    let rest = ["http://", "https://"].iter().find_map(|scheme| {
+        let rest = location.strip_prefix(scheme)?.strip_prefix(authority.as_str())?;
+        matches!(rest.bytes().next(), None | Some(b'/' | b'?' | b'#')).then_some(rest)
+    });
+    let Some(rest) = rest.filter(|rest| !rest.starts_with("//") && !rest.starts_with("/\\") && !rest.contains('\t'))
+    else {
+        return;
+    };
+    let path = if rest.starts_with('/') { rest.to_string() } else { format!("/{rest}") };
+    if let Ok(value) = HeaderValue::from_str(&path) {
+        headers.insert(header::LOCATION, value);
+    }
+}
+
 /// The host name the browser used, without its port, if it is a plain name
 /// or address (it ends up in the 503 page's link). X-Forwarded-Host is only
 /// believed from loopback (tailscale serve).
@@ -539,6 +601,41 @@ mod tests {
     fn links_back_to_the_dashboard_the_visitor_can_reach() {
         assert_eq!(dashboard_url("robot.example", true, 7861), "//robot.example:10000/");
         assert_eq!(dashboard_url("192.168.1.5", false, 7861), "http://192.168.1.5:7861/");
+    }
+
+    #[test]
+    fn the_app_sees_a_loopback_client() {
+        let mut headers = with_host("robot.tail1234.ts.net:8043");
+        headers.insert(header::ORIGIN, HeaderValue::from_static("https://robot.tail1234.ts.net:8043"));
+        headers.insert(header::REFERER, HeaderValue::from_static("https://robot.tail1234.ts.net:8043/"));
+        to_loopback(&mut headers);
+        assert!(!headers.contains_key(header::HOST));
+        assert!(!headers.contains_key(header::ORIGIN));
+        assert!(headers.contains_key(header::REFERER));
+    }
+
+    #[test]
+    fn redirects_to_the_apps_loopback_address_become_paths() {
+        let location = |value: &'static str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::LOCATION, HeaderValue::from_static(value));
+            relative_location(&mut headers, 8042);
+            headers[header::LOCATION].to_str().unwrap().to_string()
+        };
+        assert_eq!(location("http://127.0.0.1:8042/static/"), "/static/");
+        assert_eq!(location("https://127.0.0.1:8042/a?b=1#c"), "/a?b=1#c");
+        assert_eq!(location("http://127.0.0.1:8042"), "/");
+        assert_eq!(location("http://127.0.0.1:8042?x"), "/?x");
+        // Anything else is the app's business.
+        assert_eq!(location("http://127.0.0.1:80420/x"), "http://127.0.0.1:80420/x");
+        assert_eq!(location("http://127.0.0.1:8043/x"), "http://127.0.0.1:8043/x");
+        assert_eq!(location("https://example.com/x"), "https://example.com/x");
+        assert_eq!(location("/elsewhere"), "/elsewhere");
+        // Never a path that names another host.
+        assert_eq!(location("http://127.0.0.1:8042//evil.example/"), "http://127.0.0.1:8042//evil.example/");
+        assert_eq!(location("http://127.0.0.1:8042/\\evil.example/"), "http://127.0.0.1:8042/\\evil.example/");
+        assert_eq!(location("http://127.0.0.1:8042/\t/evil.example/"), "http://127.0.0.1:8042/\t/evil.example/");
+        assert_eq!(location("http://127.0.0.1:8042/\t\\evil.example/"), "http://127.0.0.1:8042/\t\\evil.example/");
     }
 
     #[test]
