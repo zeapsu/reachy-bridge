@@ -58,7 +58,7 @@ export function isLastAdmin(devices: PairedDevice[], device: PairedDevice): bool
 
 const ADMIN_CAN = "It can then open System, approve devices and install apps.";
 
-/** What Approve as Admin asks before it acts. `name`: what the admin typed for the device, if anything. */
+/** What the waiting card's Admin button ("Approve as Admin") asks before it acts. `name`: what the admin typed for the device, if anything. */
 export function approveAdminQuestion(name: string): string {
   return `Approve ${name || "this device"} as an admin? ${ADMIN_CAN}`;
 }

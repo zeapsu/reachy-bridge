@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Browser, type Page, type Route } from "@playwright/test";
+import { expect, test, type Browser, type Dialog, type Page, type Route } from "@playwright/test";
 import { watchErrors } from "./helpers.ts";
 
 // System › Access for an admin (#334), against a controller of its own:
@@ -82,6 +82,10 @@ test("an admin approves another admin, adds a profile, makes its device an admin
   expect(shown).not.toContain(`${phone.code.slice(0, 3)} ${phone.code.slice(3)}`);
   const asAdmin = waiting.getByRole("button", { name: "Approve as Admin" });
   await expect(asAdmin).toBeDisabled();
+  // Admin comes last and plain: the profiles and Shared come first.
+  await expect(waiting.getByRole("button").last()).toHaveAccessibleName("Approve as Admin");
+  await expect(asAdmin).toHaveText(/^\s*Admin\s*$/);
+  await expect(asAdmin).not.toHaveClass(/\bprimary\b/);
 
   // A wrong code approves nothing; the right one makes it an admin of the same person.
   const code = waiting.getByRole("textbox", { name: "Code on the waiting device" });
@@ -157,6 +161,22 @@ test("an admin approves another admin, adds a profile, makes its device an admin
   await tab(ipad.page, "System").click();
   await expect(ipad.page.getByRole("region", { name: "System" })).toBeVisible();
   const demote = (name: string) => row(name).getByRole("button", { name: `Demote ${name}` });
+  // Control is read again after a yes: the iPad takes it while the question is open, so Demote asks
+  // again, now with the warning. Declined, nothing changes.
+  const asks: string[] = [];
+  const answer = (dialog: Dialog) => {
+    asks.push(dialog.message());
+    if (asks.length === 1) void ipad.page.request.post("/api/control/take").then(() => dialog.accept());
+    else void dialog.dismiss();
+  };
+  page.on("dialog", answer);
+  await demote("iPad").click();
+  await expect.poll(() => asks.length).toBe(2);
+  page.off("dialog", answer);
+  expect(asks[0]).toContain("Demote iPad?");
+  expect(asks[0]).not.toContain("is in control");
+  expect(asks[1]).toContain("iPad is in control: the robot may move back home.");
+  expect((await whoAmI(ipad.page)).role).toBe("admin");
   // The iPad takes control: once this page has seen that, Demote also says the robot may move.
   expect((await ipad.page.request.post("/api/control/take")).status()).toBe(200);
   await expect
