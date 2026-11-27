@@ -21,9 +21,10 @@ The dashboard has three tabs:
 
 - **Robot:** the live view of the robot, with panes for Expressions, Drive, Controls and Voice.
 - **Apps:** installed apps, and Get apps to install more from Hugging Face.
-- **System:** the board's stats, logs, paired devices, simulation and appearance. Once the
-  dashboard has an admin, System is the admin's only: other people see it dimmed with a lock (see
-  [Profiles](#profiles)).
+- **System:** three sections. **Settings** has Conversation on wake, the simulation and this
+  browser's appearance, **Access** has paired devices and profiles, and **Diagnostics** has the
+  board's stats, the audio path and the logs. It opens on the section you used last. Once the dashboard has an admin, System
+  is the admin's only: other people see it dimmed with a lock (see [Profiles](#profiles)).
 
 The top bar always shows the robot's status and the power button. The status shows the running app
 or, with a person icon, who is in control. While anyone has an audio session open, a badge shows
@@ -159,41 +160,84 @@ Power off, starting an app and clearing a crashed one wait for that sleep move t
 under 10 seconds, up to about 25 after a remote session. If it takes longer than 30 seconds, starting
 or stopping is refused with "Robot is going to sleep; try again shortly".
 
+**Conversation on wake.** With this switch on (System › Settings), the Conversation app starts each
+time you switch the robot on from the dashboard, from off or from asleep. The robot then moves and
+listens as soon as it has woken, without anyone starting an app, so leave it off if that would
+surprise people near the robot. It starts the way a tap on Start would: not while another app, an
+expression or a drive session has the robot, and not for someone whose profile doesn't include the
+app. If it can't start, the robot stays awake with no app and the controller log says why (System ›
+Diagnostics). Switching the robot off, or letting its motors go (motors off or gravity
+compensation), before the app has started cancels the start. If the app starts and then stops with an error, the robot goes to sleep as after any app
+that ends by itself; turn the switch off if that happens at every power-on. Switching the robot off
+stops the app as it stops any app, and removing the app switches this off. The row is dimmed with
+an Install button until the app is installed; Install opens the Apps tab, where Get apps lists it.
+While the robot service can't be reached, the switch can be turned off but not on. Only the admin
+changes the switch. The simulation has its own switch.
+
 A Hugging Face token is only needed for private Spaces. Create a read token at
 huggingface.co/settings/tokens and sign in under Get apps. The robot keeps the token, and the page
 doesn't show it again.
 
 ## Simulation
 
-System › Simulation lets the dashboard drive a simulated Reachy. The real robot stays off until you
-switch back. To enter, it must be off with no app, expression or drive session running. Starting
-the simulation can take up to a minute and a half.
+The Simulation switch under System › Settings lets the dashboard drive a simulated Reachy. The real
+robot stays off until you switch back. To enter, it must be off with no app, expression or drive
+session running; the switch is dimmed otherwise. Starting the simulation can take up to a minute
+and a half.
 
 The simulated robot has its own apps. It has no camera or Voice pane audio, and its sounds can play
-on your device instead. A Sim badge in the top bar shows when you are driving it.
+on your device instead: the switch under Simulation, dimmed while the simulation is off. A Sim badge
+in the top bar shows when you are driving it.
+
+## Appearance
+
+System › Settings sets light or dark, the accent colour, the background and how much it is dimmed.
+These belong to the browser, not the robot. A photo you pick as the background stays in that
+browser. People without System find the same settings under their chip in the top bar.
 
 ## Devices and logging in
 
 **Admin.** Until an admin exists, anyone who reaches the dashboard can drive the robot. Under
-System › Devices, choose Make this browser the admin, then run the command it shows on the robot.
-Only the command on the robot can approve an admin. After that, every browser logs in, including
-over Tailscale.
+System › Access, choose Make this browser the admin, then run the command it shows on the robot.
+Only the command on the robot can approve the first admin. After that, every browser logs in,
+including over Tailscale.
 
-**Adding a browser.** A new browser shows a 6-digit code, valid for 5 minutes. Approve it from an
-admin's dashboard, or run `reachy-bridge pair <code>` on the robot. Too many wrong tries lock the
-code, so only the command on the robot can approve it.
+**System › Access** is the admin's list of who may use the robot. With only your own admin
+browsers it is a list of devices; once there are other people it shows each profile with its
+browsers under it, then shared tablets.
 
-**Removing a browser.** Revoke it under Devices, or run `reachy-bridge devices revoke <n>`. A browser
-unused for 30 days is logged out.
+**Adding a browser.** A new browser shows a 6-digit code, valid for 5 minutes. While one is
+waiting, Access shows a dot on its tab and a card with the browser's address and how long it has
+been asking. Type the code from that browser's screen (the card never shows it, so a browser you
+can't see can't be approved by mistake), give it a name if you like, and choose who it is for:
 
-**Shared browsers.** Turn on Shared when approving a tablet that several people use. It belongs to
-nobody: whoever picks it up chooses their profile (see below).
+- **Approve as Admin** makes it another admin browser of yours, after a confirmation. An admin
+  browser can do everything yours can, including approving more admins, so approve only your own
+  devices this way.
+- **A profile's name** approves it for that person. While there is no profile yet, New profile adds
+  one first; after that, Add profile under the list does.
+- **Shared** is for a tablet several people use. It belongs to nobody: whoever picks it up chooses
+  their profile (see below).
+
+`reachy-bridge pair <code>` on the robot approves a code too. Five wrong codes lock a waiting
+browser: it leaves the card, and only the command on the robot can approve it.
+
+**Make admin** on a browser turns it into an admin browser after a confirmation. Its person
+becomes an admin, so their profile stops limiting their other browsers too. If that browser was in
+control of the robot, it gives control up and can take it again. To take the admin
+role away again, revoke the browser and approve it again for a profile.
+
+**Removing a browser.** Revoke it under System › Access, or run `reachy-bridge devices revoke <n>`. A browser
+it had approved that hasn't logged in yet has to ask again. A browser
+unused for 30 days is logged out. The dashboard keeps the last admin browser: it has no Revoke
+button. If you lose every admin browser, pair a new one with `reachy-bridge pair --admin` on the
+robot.
 
 ## Profiles
 
 Once the dashboard has an admin, everyone who uses it has a profile: the person each browser was
 approved for. Only the admin sees System, and only the admin manages profiles, under System ›
-Profiles. Everyone else has a chip with their name in the top bar. Tap it for the browser's
+Access. Everyone else has a chip with their name in the top bar. Tap it for the browser's
 appearance and to log this browser out.
 
 **What a profile can do.** Each profile has:
@@ -212,8 +256,7 @@ Changes apply within seconds. That profile's open camera, voice or live views re
 new rules; nobody else's do. Each profile keeps its own pinned apps. The admin's profile always has
 everything, and can't be restricted.
 
-**Adding someone.** Add a profile, then approve their browser with their name as the person
-(upper or lower case doesn't matter). To
+**Adding someone.** Add a profile, then approve their browser for it from the waiting card. To
 move a browser to another profile, log it out and approve it again. A profile with browsers of its own
 can't be removed: log them out first. Renaming a profile moves its browsers with it.
 
@@ -236,5 +279,5 @@ person's own browser. Don't share one between people with different rules if tha
 | The mic shows as unavailable | An app has taken the hardware. Stop it. |
 | An app's interface won't open | Run `reachy-bridge logs controller`. |
 
-`reachy-bridge check` repeats the device check, including the audio parts. System › Logs shows the
-same logs in the dashboard.
+`reachy-bridge check` repeats the device check, including the audio parts. System › Diagnostics
+shows the same logs in the dashboard.

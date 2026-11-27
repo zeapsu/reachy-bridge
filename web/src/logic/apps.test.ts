@@ -7,6 +7,7 @@ import {
   appAction,
   appHue,
   appInitial,
+  wakeLabel,
   appUiUrl,
   cardStatus,
   formatUptime,
@@ -128,6 +129,15 @@ describe("appUiUrl", () => {
   });
   test("defaults to http without a page location", () => {
     expect(appUiUrl("reachy.tailnet")).toBe("http://reachy.tailnet:7863/");
+  });
+});
+
+describe("wakeLabel", () => {
+  test("drops a trailing App from the app's name", () => {
+    expect(wakeLabel("Conversation App")).toBe("Conversation on wake");
+    expect(wakeLabel("Sim Ui App")).toBe("Sim Ui on wake");
+    expect(wakeLabel("Radio")).toBe("Radio on wake");
+    expect(wakeLabel("App")).toBe("App on wake");
   });
 });
 

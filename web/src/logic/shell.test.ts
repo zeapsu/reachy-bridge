@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { INITIAL_POWER, type PowerView } from "./power.ts";
-import { parseTab, robotStatus, stageNote } from "./shell.ts";
+import { parseSystemPane, parseTab, robotStatus, stageNote } from "./shell.ts";
 
 const view = (v: Partial<PowerView>): PowerView => ({ ...INITIAL_POWER, ...v });
 
@@ -9,6 +9,11 @@ describe("shell", () => {
     expect(parseTab("apps")).toBe("apps");
     expect(parseTab("nope")).toBe("robot");
     expect(parseTab(null)).toBe("robot");
+  });
+  test("unknown saved System sections open Settings", () => {
+    expect(parseSystemPane("diagnostics")).toBe("diagnostics");
+    expect(parseSystemPane("devices")).toBe("settings");
+    expect(parseSystemPane(null)).toBe("settings");
   });
   test("robot status names the state, and the app that owns the robot", () => {
     expect(robotStatus(view({ powerClass: "running" }), true, null)).toEqual({ text: "On", dot: "ok" });
