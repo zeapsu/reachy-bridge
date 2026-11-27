@@ -2261,3 +2261,36 @@ async fn a_take_read_as_an_admin_before_a_demotion_counts_as_a_members() {
     assert_eq!(r.status(), StatusCode::CONFLICT);
     assert_eq!(h.view(LOOPBACK, &admin).await["holder"]["you"], true);
 }
+
+#[tokio::test]
+async fn a_take_read_as_a_member_before_a_promotion_holds_control_as_an_admin() {
+    // The promotion's counterpart (#341): the holder is recorded with the
+    // device's role now, so the person's member device can't take control
+    // from it (and end its drive).
+    let (h, admin, _sam) = control_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    let laptop = h.paired_as(LAN, &as_admin, json!({"name": "laptop", "person": "Sam"})).await;
+    let phone = h.state.auth.device_names().into_iter().find(|(_, name)| name == "phone").unwrap().0;
+    // What the take's login check read while the phone was a member.
+    let read = AuthContext {
+        peer: None,
+        authenticated: true,
+        device: Some(phone.clone()),
+        person: Some("Sam".into()),
+        role: Some(Role::Member),
+        access: Access::Full,
+        shared: false,
+        local: false,
+        credential: None,
+        https: false,
+    };
+    let role = format!("/api/auth/devices/{phone}/role");
+    assert_eq!(h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": "admin"}))).await.status, StatusCode::OK);
+    let take = control::router().with_state(h.state.clone()).layer(axum::Extension(read));
+    let r = take.oneshot(Request::post("/api/control/take").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(h.view(LAN, &laptop).await["holder"]["admin"], true);
+    let r = h.control(LAN, &laptop, "take", None).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert_eq!(h.view(LAN, &laptop).await["holder"]["admin"], true);
+}

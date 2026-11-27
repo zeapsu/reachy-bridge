@@ -413,10 +413,13 @@ async fn take(
         let Some(role) = state.auth.role_of(&device) else {
             return Err(ApiError::new(401, "this browser was logged out"));
         };
-        // The role the login check read may be stale: a demotion (made under
-        // this lock) lands before this take or after it (#341). A promotion
-        // in between counts from the next request.
-        let admin = admin && role == Role::Admin;
+        // The role the login check read may be stale: a role change (made
+        // under this lock) lands before this take or after it (#341). Whom
+        // it may take control from goes by the lesser of the two roles; the
+        // holder is recorded with the role it has now, so a promotion in
+        // between can't leave an admin held to a member's rules.
+        let now_admin = role == Role::Admin;
+        let admin = admin && now_admin;
         if let Some(holder) = &inner.holder {
             if holder.device == device {
                 return Ok(());
@@ -431,7 +434,7 @@ async fn take(
         let previous = inner.holder.replace(Holder {
             device: device.clone(),
             person: person.clone(),
-            admin,
+            admin: now_admin,
             since: now,
             active: now,
         });
