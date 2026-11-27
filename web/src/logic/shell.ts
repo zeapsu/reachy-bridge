@@ -8,6 +8,15 @@ export function parseTab(value: string | null): Tab {
   return TABS.includes(value as Tab) ? (value as Tab) : "robot";
 }
 
+/** System's sections (#334), one sheet with a tab each. */
+export const SYSTEM_PANES = ["settings", "access", "diagnostics"] as const;
+export type SystemPane = (typeof SYSTEM_PANES)[number];
+export const SYSTEM_PANE_KEY = "reachy-system-pane";
+
+export function parseSystemPane(value: string | null): SystemPane {
+  return SYSTEM_PANES.includes(value as SystemPane) ? (value as SystemPane) : "settings";
+}
+
 export interface RobotStatus {
   text: string;
   dot: "ok" | "live" | "loading" | "error" | "";

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { apiJson, errorText, paths } from "../api.ts";
-import { useLens } from "../glass.ts";
 import { devicesView, normalizeCode, seenText, type AuthStatus, type DevicesView, type PairedDevice } from "../logic/auth.ts";
 import { PairCode } from "./Login.tsx";
+import { Panel } from "./Panel.tsx";
 import "./Login.css";
 import "./DevicesPanel.css";
 
@@ -11,9 +11,9 @@ import "./DevicesPanel.css";
  * this browser the admin; an admin approves login codes and revokes
  * devices; a member sees and can log out its own device. Renders nothing
  * when there's nothing to offer (the CLI's key, or an older controller
- * without LAN mode).
+ * without LAN mode). `inset`: a group of System's Access section, not a sheet.
  */
-export function DevicesPanel() {
+export function DevicesPanel({ inset }: { inset?: boolean }) {
   const [view, setView] = useState<DevicesView>("hidden");
   const [devices, setDevices] = useState<PairedDevice[]>([]);
   const [code, setCode] = useState("");
@@ -26,7 +26,6 @@ export function DevicesPanel() {
   // No admin yet (LAN mode can manage devices before one exists).
   const [noAdmin, setNoAdmin] = useState(false);
   const [settingUp, setSettingUp] = useState(false);
-  const sheet = useLens<HTMLElement>();
 
   const reload = useCallback(async () => {
     try {
@@ -97,10 +96,7 @@ export function DevicesPanel() {
   const admins = devices.filter((device) => device.role === "admin").length;
   const lastAdmin = (device: PairedDevice) => device.role === "admin" && admins === 1;
   return (
-    <section className="glass sheet devices-panel" data-lens ref={sheet} id="devices-panel" aria-labelledby="devices-title">
-      <header>
-        <h2 id="devices-title">Devices</h2>
-      </header>
+    <Panel inset={inset} className="devices-panel" id="devices-panel" title="Devices" titleId="devices-title">
       {noAdmin && (
         <div className="devices-setup">
           <p className="note">
@@ -192,6 +188,6 @@ export function DevicesPanel() {
             ))}
           </ul>
         ))}
-    </section>
+    </Panel>
   );
 }

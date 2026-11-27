@@ -12,7 +12,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Request, StatusCode};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use reachy_controller::audio;
@@ -27,6 +27,7 @@ use tower::ServiceExt;
 const LOOPBACK: &str = "127.0.0.1:50000";
 const LAN: &str = "192.168.1.50:50000";
 const LAN2: &str = "192.168.1.51:50000";
+const LAN3: &str = "192.168.1.52:50000";
 
 // The fake robot's power: ROBOT_OFF, ROBOT_ON, ROBOT_CRASHED (its backend
 // died), ROBOT_STARTING, or ROBOT_SILENT (the daemon doesn't answer).
@@ -35,14 +36,34 @@ const ROBOT_ON: u8 = 1;
 const ROBOT_CRASHED: u8 = 2;
 const ROBOT_STARTING: u8 = 3;
 const ROBOT_SILENT: u8 = 4;
+/// On, with an app started (`apps/start-app`).
+const ROBOT_APP: u8 = 5;
 
-/// A daemon that reports `power`.
+/// A daemon that reports `power`, and switches it on and off and starts an
+/// app when asked (the wake app, #334).
 async fn fake_daemon(power: Arc<AtomicU8>) -> String {
-    let app = Router::new().route(
+    let set = |to: u8| {
+        let power = power.clone();
+        post(move || async move {
+            power.store(to, Ordering::SeqCst);
+            Json(json!({"job_id": "job"}))
+        })
+    };
+    let app = Router::new()
+        .route("/api/daemon/start", set(ROBOT_ON))
+        .route("/api/daemon/stop", set(ROBOT_OFF))
+        .route("/api/apps/start-app/{name}", set(ROBOT_APP))
+        .route(
+            "/api/apps/list-available/installed",
+            get(|| async { Json(json!([{"name": "dance"}, {"name": "dj_reactor"}])) }),
+        )
+        .route("/api/apps/current-app-status", get(|| async { Json(Value::Null) }))
+        .route("/api/move/running", get(|| async { Json(json!([])) }));
+    let app = app.route(
         "/api/daemon/status",
         get(move || async move {
             let (state, backend) = match power.load(Ordering::SeqCst) {
-                ROBOT_ON => ("running", json!({"motor_control_mode": "enabled"})),
+                ROBOT_ON | ROBOT_APP => ("running", json!({"motor_control_mode": "enabled"})),
                 ROBOT_CRASHED => ("error", Value::Null),
                 ROBOT_STARTING => ("starting", Value::Null),
                 ROBOT_SILENT => return Err(StatusCode::SERVICE_UNAVAILABLE),
@@ -593,7 +614,7 @@ async fn lan_mode_forbids_framing() {
 }
 
 #[tokio::test]
-async fn only_the_local_key_approves_an_admin() {
+async fn the_first_admin_needs_the_local_key_and_then_an_admin_approves_admins() {
     let h = harness(AuthConfig::default()).await;
     let (_, code, _) = h.pair(LOOPBACK).await;
     let admin = json!({"code": code, "name": "laptop", "role": "admin"});
@@ -607,18 +628,266 @@ async fn only_the_local_key_approves_an_admin() {
     assert_eq!(r.body["login_required"], true);
     assert_eq!(r.body["role"], "admin");
     assert_eq!(r.body["person"], "Andry");
-    // An admin browser can't mint another admin either.
-    let (_, code, _) = h.pair(LAN).await;
+    // A member can't approve an admin, with the right code or not (#334).
+    let member = h.paired_as(LAN, &[("cookie", &device)], json!({"name": "phone", "person": "Sam"})).await;
+    let (id, code, pair_cookie) = h.pair(LAN2).await;
+    let as_admin = json!({"code": code, "name": "tablet", "person": "Andry", "role": "admin"});
+    let r = h.call("POST", "/api/auth/approve", LAN, &[("cookie", &member)], Some(as_admin.clone())).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    // An admin can't approve one without the code; with it, the new device is an admin.
+    let wrong = if code == "000000" { "000001" } else { "000000" };
+    let guess = json!({"code": wrong, "role": "admin"});
+    assert_eq!(
+        h.call("POST", "/api/auth/approve", LOOPBACK, &[("cookie", &device)], Some(guess)).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    let r = h.call("POST", "/api/auth/approve", LOOPBACK, &[("cookie", &device)], Some(as_admin)).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let tablet = h.poll(&id, LAN2, &pair_cookie).await.cookie("rb_device");
+    let r = h.call("GET", "/api/auth/status", LAN2, &[("cookie", &tablet)], None).await;
+    assert_eq!((r.body["role"].clone(), r.body["person"].clone()), (json!("admin"), json!("Andry")));
+    // The earlier devices stay: only the first admin logs others out.
+    assert_eq!(h.call("GET", "/api/auth/status", LAN, &[("cookie", &member)], None).await.body["role"], "member");
+    assert_eq!(h.call("GET", "/api/logs/sources", LAN2, &[("cookie", &tablet)], None).await.status, StatusCode::OK);
+}
+
+/// A LAN login without an admin: any paired browser approves members, and
+/// none of them can start admin mode.
+#[tokio::test]
+async fn without_an_admin_no_browser_makes_one() {
+    let h = harness(lan()).await;
+    let phone = h.paired(LAN).await;
+    let (_, code, _) = h.pair(LAN2).await;
     let r = h
-        .call(
-            "POST",
-            "/api/auth/approve",
-            LOOPBACK,
-            &[("cookie", &device)],
-            Some(json!({"code": code, "role": "admin"})),
-        )
+        .call("POST", "/api/auth/approve", LAN, &[("cookie", &phone)], Some(json!({"code": code, "role": "admin"})))
         .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
+    let id = h.call("GET", "/api/auth/devices", LAN, &[("cookie", &phone)], None).await.body["devices"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = h
+        .call(
+            "PUT",
+            &format!("/api/auth/devices/{id}/role"),
+            LAN,
+            &[("cookie", &phone)],
+            Some(json!({"role": "admin"})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
+    assert_eq!(h.call("GET", "/api/auth/status", LAN, &[("cookie", &phone)], None).await.body["admin_mode"], false);
+}
+
+#[tokio::test]
+async fn the_waiting_list_is_the_admins_and_never_shows_a_code() {
+    let h = harness(AuthConfig::default()).await;
+    let admin = h.admin(LOOPBACK).await;
+    let member = h.paired_as(LAN, &[("cookie", &admin)], json!({"name": "phone", "person": "Sam"})).await;
+    let as_admin = [("cookie", admin.as_str())];
+    let waiting =
+        || async { h.call("GET", "/api/auth/pending", LOOPBACK, &as_admin, None).await.body["pending"].clone() };
+    assert_eq!(waiting().await, json!([]));
+    let (id, code, _) = h.pair(LAN2).await;
+    let list = waiting().await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["peer"], "192.168.1.51");
+    assert!(list[0]["age"].as_u64().unwrap() < 5, "{list}");
+    // Address and age only: nothing that approves or collects the request.
+    let text = list.to_string();
+    assert!(!text.contains(&code) && !text.contains(&id), "{text}");
+    assert_eq!(list[0].as_object().unwrap().len(), 2, "{list}");
+    // Not for a member, and not without a login.
+    assert_eq!(
+        h.call("GET", "/api/auth/pending", LAN, &[("cookie", &member)], None).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(h.call("GET", "/api/auth/pending", LAN2, &[], None).await.status, StatusCode::UNAUTHORIZED);
+    // A request locked by wrong codes leaves the list (only the CLI approves it), as does an approved one.
+    let wrong = if code == "000000" { "000001" } else { "000000" };
+    for _ in 0..5 {
+        h.call("POST", "/api/auth/approve", LOOPBACK, &as_admin, Some(json!({"code": wrong}))).await;
+    }
+    assert_eq!(waiting().await, json!([]));
+    let (_, code, _) = h.pair(LAN2).await;
+    assert_eq!(waiting().await.as_array().unwrap().len(), 1);
+    assert_eq!(h.approve(&code, LOOPBACK, &as_admin).await.status, StatusCode::OK);
+    assert_eq!(waiting().await, json!([]));
+}
+
+#[tokio::test]
+async fn an_admin_changes_a_devices_role_but_never_the_last_admins() {
+    let (h, admin, sam, mia) = family_harness().await;
+    assert_eq!(h.put_profile(&[("cookie", &admin)], "Mia", limited_profile()).await.status, StatusCode::OK);
+    let as_admin = [("cookie", admin.as_str())];
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &as_admin, None).await.body["devices"].clone();
+    let id_of = |person: &str| {
+        devices.as_array().unwrap().iter().find(|d| d["person"] == person).unwrap()["id"].as_str().unwrap().to_string()
+    };
+    let (admin_id, sam_id, mia_id) = (id_of("Andry"), id_of("Sam"), id_of("Mia"));
+    let role = |id: &str| format!("/api/auth/devices/{id}/role");
+    let put = |id: String, peer: &'static str, cookie: String, to: &'static str| {
+        let h = &h;
+        async move { h.call("PUT", &role(&id), peer, &[("cookie", &cookie)], Some(json!({"role": to}))).await }
+    };
+    // Only an admin: not a member for itself or anyone, and not without a login.
+    assert_eq!(put(sam_id.clone(), LAN, sam.clone(), "admin").await.status, StatusCode::FORBIDDEN);
+    assert_eq!(put(admin_id.clone(), LAN, sam.clone(), "member").await.status, StatusCode::FORBIDDEN);
+    let r = h.call("PUT", &role(&sam_id), LAN, &[], Some(json!({"role": "admin"}))).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(put("nope".into(), LOOPBACK, admin.clone(), "admin").await.status, StatusCode::NOT_FOUND);
+    let r = h.call("PUT", &role(&sam_id), LOOPBACK, &as_admin, Some(json!({"role": "owner"}))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    // The last admin stays one from the dashboard; the CLI's key may demote it.
+    let r = put(admin_id.clone(), LOOPBACK, admin.clone(), "member").await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
+
+    // Mia's profile limits her: no System, no power. As an admin, everything.
+    assert_eq!(h.call("GET", "/api/logs/sources", LAN2, &[("cookie", &mia)], None).await.status, StatusCode::FORBIDDEN);
+    let r = put(mia_id.clone(), LOOPBACK, admin.clone(), "admin").await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!((r.body["role"].clone(), r.body["person"].clone()), (json!("admin"), json!("Mia")));
+    let status = h.status_of(LAN2, &mia).await;
+    assert_eq!((status["role"].clone(), status["profile"]["admin"].clone()), (json!("admin"), json!(true)));
+    assert_eq!(h.call("GET", "/api/logs/sources", LAN2, &[("cookie", &mia)], None).await.status, StatusCode::OK);
+    // Setting the same role again changes nothing and is fine.
+    assert_eq!(put(mia_id.clone(), LOOPBACK, admin.clone(), "admin").await.status, StatusCode::OK);
+
+    // With two admins either can be made a member again; her profile applies again.
+    let r = put(mia_id.clone(), LOOPBACK, admin.clone(), "member").await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(h.call("GET", "/api/logs/sources", LAN2, &[("cookie", &mia)], None).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(h.status_of(LAN2, &mia).await["profile"]["can"]["power"], false);
+    // A new admin can demote the first, and then is the last one itself.
+    assert_eq!(put(sam_id.clone(), LOOPBACK, admin.clone(), "admin").await.status, StatusCode::OK);
+    assert_eq!(put(admin_id.clone(), LAN, sam.clone(), "member").await.status, StatusCode::OK);
+    assert_eq!(put(sam_id.clone(), LAN, sam.clone(), "member").await.status, StatusCode::CONFLICT);
+    assert_eq!(put(mia_id, LOOPBACK, admin.clone(), "admin").await.status, StatusCode::FORBIDDEN);
+    let key = h.key();
+    let r = h
+        .call("PUT", &role(&sam_id), LOOPBACK, &[("x-reachy-bridge-key", &key)], Some(json!({"role": "member"})))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    // Admin mode stays on with no admin left, as after revoking the last one.
+    assert_eq!(h.status_of(LAN, &sam).await["admin_mode"], true);
+}
+
+#[tokio::test]
+async fn a_role_change_ends_what_the_device_had_open() {
+    let (h, admin, sam, _mia) = family_harness().await;
+    let open = |cookie: String| {
+        let state = h.state.clone();
+        async move {
+            let response = reachy_controller::app(state)
+                .oneshot(request("GET", "/telemetry/state-stream", LAN, &[("cookie", &cookie)], None))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            response.into_body().into_data_stream()
+        }
+    };
+    let as_admin = [("cookie", admin.as_str())];
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &as_admin, None).await.body["devices"].clone();
+    let sam_id = devices.as_array().unwrap().iter().find(|d| d["person"] == "Sam").unwrap()["id"].as_str().unwrap();
+    let role = format!("/api/auth/devices/{sam_id}/role");
+    for to in ["admin", "member"] {
+        // Opened as a member, then as an admin: either way it reconnects under the new role.
+        let mut sams = open(sam.clone()).await;
+        let mut admins = open(admin.clone()).await;
+        assert_eq!(h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": to}))).await.status, StatusCode::OK);
+        let ended = tokio::time::timeout(Duration::from_secs(2), async { while sams.next().await.is_some() {} }).await;
+        assert!(ended.is_ok(), "Sam's stream still open after becoming {to}");
+        let admin_open =
+            tokio::time::timeout(Duration::from_millis(300), async { while admins.next().await.is_some() {} }).await;
+        assert!(admin_open.is_err(), "the other admin's stream ended when Sam became {to}");
+    }
+}
+
+#[tokio::test]
+async fn an_approval_nobody_collected_ends_with_its_approver() {
+    let (h, admin, sam, _mia) = family_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    let as_sam = [("cookie", sam.as_str())];
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &as_admin, None).await.body["devices"].clone();
+    let sam_id = devices.as_array().unwrap().iter().find(|d| d["person"] == "Sam").unwrap()["id"].as_str().unwrap();
+    let role = format!("/api/auth/devices/{sam_id}/role");
+    let make_sam = |to: &'static str| h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": to})));
+    let approved_as_admin = |by: &'static str| {
+        let (h, as_admin, as_sam) = (&h, &as_admin, &as_sam);
+        async move {
+            let (id, code, pair) = h.pair(LAN3).await;
+            let approver = if by == "sam" { &as_sam[..] } else { &as_admin[..] };
+            let body = json!({"code": code, "name": "new laptop", "person": "Sam", "role": "admin"});
+            let r = h.call("POST", "/api/auth/approve", LAN, approver, Some(body)).await;
+            assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+            (id, pair)
+        }
+    };
+    assert_eq!(make_sam("admin").await.status, StatusCode::OK);
+
+    // Sam, an admin, approves a browser as an admin and it doesn't log in
+    // yet. Sam is made a member again: the approval is gone with the role.
+    let (id, pair) = approved_as_admin("sam").await;
+    assert_eq!(make_sam("member").await.status, StatusCode::OK);
+    assert_eq!(h.poll(&id, LAN3, &pair).await.status, StatusCode::NOT_FOUND);
+
+    // The same when Sam's device is revoked.
+    assert_eq!(make_sam("admin").await.status, StatusCode::OK);
+    let (id, pair) = approved_as_admin("sam").await;
+    // What another admin approved stays.
+    let (kept, kept_pair) = approved_as_admin("admin").await;
+    let r = h.call("DELETE", &format!("/api/auth/devices/{sam_id}"), LOOPBACK, &as_admin, None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.poll(&id, LAN3, &pair).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(h.poll(&kept, LAN3, &kept_pair).await.body["status"], "approved");
+    let devices = h.state.auth.device_names();
+    assert_eq!(devices.len(), 3, "the admin, Mia's ipad and the one the admin approved: {devices:?}");
+}
+
+#[tokio::test]
+async fn before_an_admin_an_approval_also_ends_with_its_approver() {
+    let h = harness(lan()).await;
+    let device = h.paired(LAN).await;
+    let (id, code, pair_cookie) = h.pair(LAN2).await;
+    assert_eq!(h.approve(&code, LAN, &[("cookie", &device)]).await.status, StatusCode::OK);
+    // The approving browser logs out before the approved one logged in.
+    let own = h.state.auth.device_names().into_keys().next().unwrap();
+    let r = h.call("DELETE", &format!("/api/auth/devices/{own}"), LAN, &[("cookie", &device)], None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.poll(&id, LAN2, &pair_cookie).await.status, StatusCode::NOT_FOUND);
+    assert!(h.state.auth.device_names().is_empty());
+}
+
+#[tokio::test]
+async fn a_role_change_gives_up_control() {
+    let (h, admin, sam, _mia) = family_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &as_admin, None).await.body["devices"].clone();
+    let sam_id = devices.as_array().unwrap().iter().find(|d| d["person"] == "Sam").unwrap()["id"].as_str().unwrap();
+    let role = format!("/api/auth/devices/{sam_id}/role");
+    // Sam's second device, a member's.
+    let spare = h.paired_as(LAN3, &as_admin, json!({"name": "spare", "person": "Sam"})).await;
+    for (to, holds_as_admin) in [("admin", false), ("member", true)] {
+        assert_eq!(h.control(LAN, &sam, "take", None).await.status, StatusCode::OK);
+        assert_eq!(h.view(LAN, &sam).await["holder"]["admin"], holds_as_admin);
+        assert_eq!(h.call("PUT", &role, LOOPBACK, &as_admin, Some(json!({"role": to}))).await.status, StatusCode::OK);
+        // Held under the old role, it would keep (or miss) an admin's hold
+        // against Sam's other device.
+        assert_eq!(h.view(LAN3, &spare).await["holder"], Value::Null, "after becoming {to}");
+    }
+}
+
+#[tokio::test]
+async fn a_shared_tablet_is_never_made_an_admin() {
+    let (h, admin, _sam, _mia) = family_harness().await;
+    let as_admin = [("cookie", admin.as_str())];
+    h.paired_as(LAN3, &as_admin, json!({"name": "kitchen tablet", "shared": true})).await;
+    let devices = h.call("GET", "/api/auth/devices", LOOPBACK, &as_admin, None).await.body["devices"].clone();
+    let id = devices.as_array().unwrap().iter().find(|d| d["shared"] == true).unwrap()["id"].as_str().unwrap();
+    let r = h
+        .call("PUT", &format!("/api/auth/devices/{id}/role"), LOOPBACK, &as_admin, Some(json!({"role": "admin"})))
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
 }
 
 #[tokio::test]
@@ -833,6 +1102,7 @@ async fn only_an_admin_installs_apps_or_changes_the_token() {
         ("PUT", "/api/hf/token"),
         ("DELETE", "/api/hf/token"),
         ("PUT", "/api/daemon/kinematics"),
+        ("PUT", "/api/system/wake-app"),
     ] {
         let r = h.call(method, uri, LAN, &[("cookie", &member)], Some(json!({}))).await;
         assert_eq!(r.status, StatusCode::FORBIDDEN, "{method} {uri}");
@@ -1528,6 +1798,8 @@ async fn a_profile_limits_what_its_devices_do() {
         ("GET", "/api/apps/dj_reactor/ui"),
         ("GET", "/api/logs/sources"),
         ("GET", "/api/system/stats"),
+        ("GET", "/api/system/wake-app"),
+        ("PUT", "/api/system/wake-app"),
         ("POST", "/api/sim/enter"),
     ] {
         let r = h.call(method, uri, LAN2, &as_mia, Some(json!({}))).await;
@@ -1545,6 +1817,37 @@ async fn a_profile_limits_what_its_devices_do() {
     let id = h.status_of(LAN2, &mia).await["device"].as_str().unwrap().to_string();
     let access = h.state.auth.access_for_device(&id);
     assert!(access.allows_app("dance") && !access.allows_app("dj_reactor"));
+}
+
+#[tokio::test]
+async fn powering_on_starts_the_wake_app_only_for_a_profile_that_has_it() {
+    let (mut h, admin, _sam, mia) = family_harness().await;
+    Arc::get_mut(&mut h.state).unwrap().wake_app = "dj_reactor".into();
+    let mut profile = limited_profile();
+    profile["can"]["power"] = json!(true);
+    assert_eq!(h.put_profile(&[("cookie", &admin)], "Mia", profile).await.status, StatusCode::OK);
+    let as_admin = [("cookie", admin.as_str())];
+    let as_mia = [("cookie", mia.as_str())];
+    let r = h.call("PUT", "/api/system/wake-app", LOOPBACK, &as_admin, Some(json!({"enabled": true}))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+
+    // Mia's list has no dj_reactor: her power-on wakes the robot and no more.
+    assert_eq!(h.control(LAN2, &mia, "take", None).await.status, StatusCode::OK);
+    assert_eq!(h.call("POST", "/api/daemon/start", LAN2, &as_mia, None).await.status, StatusCode::OK);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(h.robot.load(Ordering::SeqCst), ROBOT_ON);
+    assert_eq!(h.call("POST", "/api/daemon/stop", LAN2, &as_mia, None).await.status, StatusCode::OK);
+
+    // The admin's does start it.
+    assert_eq!(h.control(LOOPBACK, &admin, "take", None).await.status, StatusCode::OK);
+    assert_eq!(h.call("POST", "/api/daemon/start", LOOPBACK, &as_admin, None).await.status, StatusCode::OK);
+    for _ in 0..200 {
+        if h.robot.load(Ordering::SeqCst) == ROBOT_APP {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(h.robot.load(Ordering::SeqCst), ROBOT_APP);
 }
 
 #[tokio::test]

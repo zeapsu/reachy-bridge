@@ -168,6 +168,14 @@ pub fn router() -> Router<Shared> {
     Router::new().route("/api/sim", get(status)).route("/api/sim/enter", post(enter)).route("/api/sim/exit", post(exit))
 }
 
+impl SimMode {
+    /// Held by an action that runs outside a request (the wake app's start),
+    /// as [`guard`] holds it for a request's: a switch waits for it.
+    pub async fn acting(&self) -> tokio::sync::RwLockReadGuard<'_, ()> {
+        self.switch.read().await
+    }
+}
+
 async fn switch_lock(state: &Shared) -> ApiResult<tokio::sync::RwLockWriteGuard<'_, ()>> {
     tokio::time::timeout(SWITCH_WAIT, state.sim.switch.write())
         .await
@@ -233,6 +241,8 @@ async fn enter(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     state.player.abort_drive();
     state.daemon.retarget(&sim.sim_url);
     sim.active.store(true, Ordering::SeqCst);
+    // Nothing still to start for a power-on of the robot may run on the sim.
+    state.power_epoch.fetch_add(1, Ordering::SeqCst);
     state.apps.forget_installed().await;
     tracing::info!("sim mode on: the controller drives the sim daemon at {}", sim.sim_url);
     Ok(Json(json!({"active": true, "target": "sim"})))
@@ -260,6 +270,8 @@ async fn exit(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     state.player.halt(MOVES_STOP_TIMEOUT).await;
     state.daemon.retarget(&sim.robot_url);
     sim.active.store(false, Ordering::SeqCst);
+    // Nothing still to start for a power-on of the sim may run on the robot.
+    state.power_epoch.fetch_add(1, Ordering::SeqCst);
     // The robot's pose is unknown to the player: no expression before a
     // power-on (or a return home) puts it somewhere known.
     state.player.set_needs_home(true);

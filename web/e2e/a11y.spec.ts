@@ -1,9 +1,9 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test } from "@playwright/test";
-import { TABS, open, setPower, tab } from "./helpers.ts";
+import { VIEWS, open, setPower, view, viewName } from "./helpers.ts";
 import { ratchet } from "./ratchet.ts";
 
-// axe-core on every tab, with the robot off and on. Violations are counted per
+// axe-core on every tab and each of System's sections, with the robot off and on. Violations are counted per
 // rule (one per offending element) against e2e/baselines/, so new ones fail
 // and existing ones are tracked until they're fixed.
 
@@ -15,14 +15,22 @@ for (const power of ["off", "on"] as const) {
     await setPower(page, power === "on");
     const counts: Record<string, number> = {};
     const details: Record<string, unknown[]> = {};
-    for (const name of TABS) {
-      await tab(page, name);
+    // An element a tab shows in each of its sections (its own panel) counts once.
+    const seen = new Set<string>();
+    for (const v of VIEWS) {
+      const name = viewName(v);
+      await view(page, v);
       // The app UIs are third-party pages; only the dashboard is ours.
       const { violations } = await new AxeBuilder({ page }).withTags(TAGS).exclude("iframe").analyze();
-      for (const v of violations) {
-        counts[v.id] = (counts[v.id] ?? 0) + v.nodes.length;
-        (details[v.id] ??= []).push(
-          ...v.nodes.map((node) => ({ tab: name, impact: v.impact, help: v.help, target: node.target.join(" "), html: node.html.slice(0, 200) })),
+      for (const violation of violations) {
+        const nodes = violation.nodes.filter((node) => {
+          const key = `${v.tab} ${violation.id} ${node.target.join(" ")}`;
+          return !seen.has(key) && Boolean(seen.add(key));
+        });
+        if (nodes.length === 0) continue;
+        counts[violation.id] = (counts[violation.id] ?? 0) + nodes.length;
+        (details[violation.id] ??= []).push(
+          ...nodes.map((node) => ({ tab: name, impact: violation.impact, help: violation.help, target: node.target.join(" "), html: node.html.slice(0, 200) })),
         );
       }
     }

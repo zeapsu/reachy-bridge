@@ -158,6 +158,9 @@ export function appUiUrl(
 export const APP_UI_WAIT_ATTEMPTS = 60;
 export const APP_UI_WAIT_INTERVAL_MS = 500;
 
+/** The wake switch's label from the app's display name: "Conversation App" → "Conversation on wake". */
+export const wakeLabel = (display: string): string => `${display.replace(/ App$/i, "") || display} on wake`;
+
 /** A stable hue (0..359) for an app's monogram tile, from its name. */
 export function appHue(name: string): number {
   let hash = 0;

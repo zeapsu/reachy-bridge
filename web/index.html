@@ -12,7 +12,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <script>
     // Restore the saved accent and light/dark choice before first paint (no
-    // flash). The controls live in System · Appearance (logic/appearance.ts).
+    // flash). The controls live in System · Settings (logic/appearance.ts).
     try {
       document.documentElement.dataset.scheme = localStorage.getItem("reachy-theme") || "amber";
       var mode = localStorage.getItem("reachy-mode");

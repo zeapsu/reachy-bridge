@@ -388,7 +388,7 @@ function MakeAdmin({ onContinue, onError }: { onContinue: () => void } & StepPro
         <p className="login-lead">Your dashboard is the admin.</p>
         <p className="login-note">
           It logs in within a few seconds. From now on every other browser needs a code you approve from that dashboard
-          (System · devices).
+          (System · Access).
         </p>
         <div className="setup-actions">
           <button className="btn primary press" type="button" onClick={onContinue}>
@@ -421,7 +421,7 @@ function MakeAdmin({ onContinue, onError }: { onContinue: () => void } & StepPro
       <p className="login-note">
         On the computer or phone you'll use, open the dashboard at the address the robot's terminal printed (your
         tailnet, or this network in LAN mode). It shows a pairing code
-        (on its login screen, or under System · devices · Make this browser the admin). Type that code here, then
+        (on its login screen, or under System · Access · Make this browser the admin). Type that code here, then
         confirm on the robot's terminal.
       </p>
       <input

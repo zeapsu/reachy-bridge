@@ -9,3 +9,4 @@ pub mod power;
 pub mod sounds;
 pub mod store;
 pub mod telemetry;
+pub mod wake_app;

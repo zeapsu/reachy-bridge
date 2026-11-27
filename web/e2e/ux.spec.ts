@@ -1,8 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
-import { TABS, open, power, tab } from "./helpers.ts";
+import { VIEWS, open, power, view, viewName } from "./helpers.ts";
 import { ratchet } from "./ratchet.ts";
 
-// Layout and copy checks on every tab. Horizontal overflow fails outright;
+// Layout and copy checks on every tab and each of System's sections. Horizontal overflow fails outright;
 // the rest are counted against e2e/baselines/ so they can only go down:
 // - small-target: a control smaller than 24×24 px (WCAG 2.5.8), easy to miss
 //   with a thumb;
@@ -63,8 +63,9 @@ test("layout and copy", async ({ page }, info) => {
 
   const findings: Finding[] = [];
   const overflows: string[] = [];
-  for (const name of TABS) {
-    await tab(page, name);
+  for (const v of VIEWS) {
+    const name = viewName(v);
+    await view(page, v);
     const result = await audit(page, name);
     if (result.overflow > 0) overflows.push(`${name}: ${result.overflow}px wider than the screen`);
     findings.push(...result.findings);

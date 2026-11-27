@@ -304,6 +304,51 @@ if crash_and_catch_idle_reset():
     )
     check("[#292] app start after the idle reset runs on an awake robot", daemon_state() == AWAKE, str(daemon_state()))
 
+# 13. [#334] the wake app: with its switch on, a power-on starts it, the way
+# a start from the Apps tab would; with it off, power-on starts nothing.
+stop_any_app()
+c.post("/api/daemon/stop")
+wait(lambda: daemon_state()[0] == "stopped", 40)
+wake = c.get("/api/system/wake-app").json()
+if wake.get("installed"):
+    r = c.put("/api/system/wake-app", json={"enabled": True})
+    check("[#334] wake app switch turns on", r.status_code == 200 and r.json().get("enabled") is True, r.text)
+    c.post("/api/daemon/start")
+    ok = wait(lambda: app_state() == "running", 60)
+    name = ((current_app() or {}).get("info") or {}).get("name")
+    check("[#334] power on starts the wake app", ok and name == wake["app"], f"{name} {app_state()}")
+    check("[#334] the wake app runs on an awake robot", daemon_state() == AWAKE, str(daemon_state()))
+    r = c.put("/api/system/wake-app", json={"enabled": False})
+    check("[#334] wake app switch turns off", r.status_code == 200 and r.json().get("enabled") is False, r.text)
+    c.post("/api/daemon/stop")
+    wait(lambda: daemon_state()[0] == "stopped", 40)
+    c.post("/api/daemon/start")
+    ok = wait(lambda: daemon_state() == AWAKE, 40)
+    app_came = wait(lambda: app_state() in ("starting", "running"), 5)
+    check("[#334] switch off: power on starts no app", ok and not app_came, f"{daemon_state()} app={app_state()}")
+else:
+    # Servers started by hand without REACHY_WAKE_APP: the Conversation app isn't in the sim.
+    r = c.put("/api/system/wake-app", json={"enabled": True})
+    check(
+        "[#334] wake app can't be switched on while it isn't installed", r.status_code == 409, f"HTTP {r.status_code}"
+    )
+
+# 14. [#334] a browser asking for a login shows in the waiting list with its
+# address and age, never its code; and without an admin no device is made one.
+with httpx.Client(base_url=CTRL, timeout=10) as browser:
+    asked = browser.post("/api/auth/pair").json()
+    waiting = c.get("/api/auth/pending")
+    listed = waiting.json().get("pending", []) if waiting.status_code == 200 else []
+    check(
+        "[#334] a waiting browser is listed by address and age only",
+        len(listed) == 1 and set(listed[0]) == {"peer", "age"} and asked["code"] not in waiting.text,
+        waiting.text,
+    )
+    r = c.post("/api/auth/approve", json={"code": asked["code"], "role": "admin"})
+    check("[#334] no admin from the dashboard before the first one", r.status_code == 403, f"HTTP {r.status_code}")
+    r = c.put("/api/auth/devices/none/role", json={"role": "admin"})
+    check("[#334] no role change before the first admin", r.status_code == 409, f"HTTP {r.status_code}")
+
 # --- leave the sim off -------------------------------------------------
 stop_any_app()
 c.post("/api/daemon/stop")

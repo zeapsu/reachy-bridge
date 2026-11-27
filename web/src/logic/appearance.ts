@@ -1,5 +1,5 @@
 /**
- * Appearance preferences (System · Appearance): light or dark, the accent
+ * Appearance preferences (System · Settings): light or dark, the accent
  * colour, and the wallpaper. They are per browser, kept in localStorage, and
  * work with the daemon offline. index.html applies the saved mode and accent
  * before first paint.

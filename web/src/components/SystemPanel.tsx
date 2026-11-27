@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { apiJson, paths, type PlatformInfo, type SystemStats } from "../api.ts";
-import { useLens } from "../glass.ts";
 import { readEventPayload, useEventSource } from "../hooks/useEventSource.ts";
 import { reduceMotion } from "../hooks/reduceMotion.ts";
 import {
@@ -22,6 +21,8 @@ import {
   type GaugeValue,
   type StatsDisplay,
 } from "../logic/stats.ts";
+import { AudioPanel } from "./AudioPanel.tsx";
+import { Panel } from "./Panel.tsx";
 import "./SystemPanel.css";
 
 const RADIUS = 34;
@@ -113,16 +114,6 @@ function StatsView({ stats }: { stats: StatsDisplay }) {
           <span id="bar-mem" style={{ width: stats.memWidth }}></span>
         </div>
       </div>
-      <div className="route">
-        <div className="row">
-          <span>reachy alsa card</span>
-          <span id="v-card">{stats.card}</span>
-        </div>
-        <div className="row">
-          <span>pipewire sink</span>
-          <span id="v-sink">{stats.sink}</span>
-        </div>
-      </div>
     </>
   );
 }
@@ -208,7 +199,7 @@ function useLogs(active: boolean) {
   return { log, selectSource };
 }
 
-function LogsView({ log, onSource }: { log: LogState; onSource: (source: string) => void }) {
+function LogsView({ log }: { log: LogState }) {
   const scroll = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
   const followRef = useRef(true);
@@ -227,15 +218,6 @@ function LogsView({ log, onSource }: { log: LogState; onSource: (source: string)
 
   return (
     <>
-      <div className="log-bar">
-        <select className="field" id="log-source" aria-label="Log source" value={log.source} onChange={(e) => onSource(e.target.value)}>
-          {log.sources.map((id) => (
-            <option key={id} value={id}>
-              {id}
-            </option>
-          ))}
-        </select>
-      </div>
       <div className="log-body">
         <div
           className="log-scroll"
@@ -286,45 +268,56 @@ function LogsView({ log, onSource }: { log: LogState; onSource: (source: string)
   );
 }
 
-/** Board stats: CPU, GPU, temperature, memory and the audio route. */
-export function StatsPanel({ daemonOnline, live }: { daemonOnline: boolean; live: boolean }) {
-  const sheet = useLens<HTMLElement>();
+/** Diagnostics (#334): the board, the audio path and the logs. */
+export function Diagnostics({ daemonOnline, live }: { daemonOnline: boolean; live: boolean }) {
   const stats = useStats(daemonOnline, live);
   const board = platformLabel(usePlatform(daemonOnline));
-  return (
-    <section className="glass sheet" data-lens ref={sheet} id="system-panel" aria-labelledby="stats-title">
-      <header>
-        <h2 id="stats-title">Board</h2>
-        <span className="chip" id="stats-pill">
-          <span className={`dot ${daemonOnline ? "ok" : "error"}`} id="stats-dot"></span>
-          <span id="v-host" title={board?.title}>
-            {daemonOnline && board ? board.text : stats.host}
-          </span>
-        </span>
-      </header>
-      <StatsView stats={stats} />
-    </section>
-  );
-}
-
-/** The live log of the daemon, the controller or an app. */
-export function LogsPanel({ live }: { live: boolean }) {
-  const sheet = useLens<HTMLElement>();
   const { log, selectSource } = useLogs(live);
   const logDisplay = logStatusDisplay(log.status);
   return (
-    <section className="glass sheet" data-lens ref={sheet} aria-labelledby="logs-title">
-      <header>
-        <h2 id="logs-title">Logs</h2>
-        <span className="chip" id="logs-pill">
-          <span className={`dot ${logDisplay.dot}`} id="log-dot"></span>
-          <span id="log-state">{logDisplay.text}</span>
-        </span>
-      </header>
-      <LogsView log={log} onSource={selectSource} />
-      <a className="btn quiet press" href="https://github.com/zeapsu/reachy-bridge/blob/main/docs/manual.md" target="_blank" rel="noopener noreferrer">
-        User manual ↗
-      </a>
-    </section>
+    <div className="diag-grid">
+      <Panel
+        inset
+        title="Board"
+        titleId="stats-title"
+        id="system-panel"
+        aside={
+          <span className="chip" id="stats-pill">
+            <span className={`dot ${daemonOnline ? "ok" : "error"}`} id="stats-dot"></span>
+            <span id="v-host" title={board?.title}>
+              {daemonOnline && board ? board.text : stats.host}
+            </span>
+          </span>
+        }
+      >
+        <StatsView stats={stats} />
+      </Panel>
+      <AudioPanel daemonOnline={daemonOnline} live={live} card={stats.card} sink={stats.sink} />
+      <Panel
+        inset
+        className="wide"
+        title="Logs"
+        titleId="logs-title"
+        aside={
+          <>
+            <span className="log-pick">
+              <select className="field" id="log-source" aria-label="Log source" value={log.source} onChange={(e) => selectSource(e.target.value)}>
+                {log.sources.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            </span>
+            <span className="chip" id="logs-pill">
+              <span className={`dot ${logDisplay.dot}`} id="log-dot"></span>
+              <span id="log-state">{logDisplay.text}</span>
+            </span>
+          </>
+        }
+      >
+        <LogsView log={log} />
+      </Panel>
+    </div>
   );
 }
