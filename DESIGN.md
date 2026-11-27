@@ -103,7 +103,7 @@ All colors are defined as CSS custom properties in `web/src/styles/base.css`. Ne
 
 ### Core Surfaces & Ink
 
-| Token | Dark (default) | Light (`data-theme="light"`) | Role |
+| Token | Dark (fallback) | Light (`data-theme="light"`) | Role |
 |---|---|---|---|
 | `--ground` | `#0b0f14` | `#e9eef2` | Root viewport canvas and `theme-color` fallback |
 | `--wall` | `radial-gradient(90% 70% at 40% 35%, #222a35, #0b0e13 75%)` | `radial-gradient(90% 70% at 40% 35%, #fbfcfd, #d6dce3 75%)` | Default "Studio" ambient wallpaper behind glass |
@@ -223,9 +223,9 @@ Shared primitives live in `web/src/styles/base.css`; panel-specific layout lives
 - **Robot Stage (`.stage`):** Live camera (`#05070a` frame) or interactive Three.js 3D Reachy standing directly on the wallpaper (never wrapped in glass). When offline, `#robot-3d.offline` transitions to `opacity: 0.35; filter: grayscale(1)` and reveals a normal-sized `.btn.primary.stage-power` at `bottom: 32px`.
 - **Expression Carousel (`.carousel`):** Horizontal snap track (`72×72px` emoji tiles) passing beneath a centered `88×88px` `.lensring` (`border-radius: 26px`); dims to `grayscale(1) opacity(0.35)` when robot is off.
 - **Manual Drive (`.pane.drive`):** Two tactile thumb pads (`max-width: 128px` on phone) with spring-return knobs (turning `--accent` when held), antenna sliders, and a `Hold` pin button next to `Home`.
-- **Voice Panel (`.voice`):** One-line chips with icons (`Listen`, `Talk`, `Apps`). Active Talk chip fills horizontally with the live mic level (`--level`); mic picker appears whenever Talk is active (amber when silent).
+- **Voice Panel (`.voice`):** One-line switch rows with icons (`VoicePanel.tsx`). A sending switch shows the live mic level (`--level`) while its mic track is live. The mic picker's conditions (named inputs, the session, robot power) live in that component; read it rather than restating them.
 - **Compact App Rows (`.app-row`):** `44px` gradient monogram tile (`border-radius: 13px`), expandable title/status copy, star pin toggle (`36×36px`), and Start/Stop/Open action buttons separated by `--hair` dividers.
-- **Access & Waiting Card (`.acc-waiting`, `.role-tag`):** Recessed `22px` card inside `System › Access` listing waiting browsers (address + age, never the pairing code) with an inline mono code field (`17px/600`, `0.06em` tracking) and the approval choices (`Approve as Admin`, a profile, `Shared`). Existing devices in the list below carry `Make admin` and `Revoke`, each confirmation-gated; the last admin device has no `Revoke`.
+- **Access & Waiting Card (`.acc-waiting`, `.role-tag`):** Recessed `22px` card inside `System › Access` listing waiting browsers (address + age, never the pairing code) with an inline mono code field (`17px/600`, `0.06em` tracking) and the approval choices (a profile, `Shared`, then `Approve as Admin`, which asks first). In the list below, a profile's non-admin devices offer `Make admin`; every device offers `Revoke` (`Log out` for this browser), except the last admin device. Each asks first. `AccessPanel.tsx` and `docs/manual.md` hold the exact rules.
 
 ---
 
@@ -262,14 +262,14 @@ Liquid glass is a **strictly layered optical system**, not decorative blur:
    - Directional specular rim (`.glass::before`): `1.2px` masked `conic-gradient` rotating with `--ang`.
    - Pointer-tracked glare (`.glass::after`): soft `radial-gradient` at `(--lx, --ly)` using `mix-blend-mode: plus-lighter`.
    - Refraction (`.refract .glass[data-lens]` via `web/src/glass.ts`): per-element SVG `feDisplacementMap` with RGB channel dispersion (`1.0 / 0.92 / 0.84`). It runs only where `lensCapable` is true: a hover-capable fine pointer (`(hover: hover) and (pointer: fine)`) in a Chromium that supports SVG backdrop filters. That test is separate from the `860px` layout breakpoint.
-4. **Layer 2b — Recessed Wells (the `--well` token):** Inner groupings inside a glass sheet (segmented tracks, input fields, waiting cards, control strips) recess inward with `background: var(--well)` and an `inset 0 1px 2px` shadow, set on each component's own selector; there is no `.well` class. **Never nest `.glass` inside `.glass`.**
+4. **Layer 2b — Recessed Wells (the `--well` token):** Inner groupings inside a glass sheet (segmented tracks, input fields, waiting cards, control strips) recess with `background: var(--well)`, set on each component's own selector; there is no `.well` class. Tracks and fields usually add an `inset 0 1px 2px` shadow; some wells (the waiting card, control strips) don't. **Never nest `.glass` inside `.glass`.**
 5. **Floating Overlays (`z-index` ladder):**
    - `20`: `.phone-tabs` fixed bottom navigation pill.
    - `50`: `.app-view` embedded app overlay.
    - `60`: `.control-toast` transient control-handoff pill (`top: 84px`, `max-width: calc(100% - 32px)`).
 
 ### Performance & Accessibility Degradation
-- **Touch / coarse-pointer devices:** Lower `--frost` to `12px`, disable `.glass::after` glare, and skip SVG refraction (`lensCapable` is desktop Chromium only) to protect mobile compositor frame rates.
+- **Touch devices (`(hover: none) and (pointer: coarse)`):** `--frost` drops to `12px` by default (a component's own `--frost` can override it) and the `.glass::after` glare is off. Pointer-tracked glare needs `(hover: hover) and (pointer: fine)`; refraction needs that plus `lensCapable` (Chromium with SVG backdrop filters) and a `data-lens` element. None of these follow the `860px` layout breakpoint.
 - **`prefers-reduced-transparency: reduce`:** Switches `.glass` to opaque `color-mix(in srgb, var(--ground) 92%, var(--ink) 8%)` and drops its `backdrop-filter`. Known exception: `.refract .glass[data-lens]` is more specific, so a lens-capable element keeps its refraction filter.
 - **`prefers-reduced-motion: reduce`:** Collapses transitions to `0.01ms` and disables keyframe animations.
 
@@ -306,17 +306,17 @@ Liquid glass is a **strictly layered optical system**, not decorative blur:
 
 | Breakpoint | Layout & Component Adaptations |
 |---|---|
-| `> 860px` (Desktop, tested at `1280×800`) | Centered top glass tabs; 2-column Robot stage + `320–380px` control sheet; 2-column Diagnostics grid; desktop Chromium lens refraction + pointer glare active. |
+| `> 860px` (Desktop, tested at `1280×800`) | Centered top glass tabs; 2-column Robot stage + `320–380px` control sheet; 2-column Diagnostics grid. (Glare and refraction follow pointer and browser capability, not width: see Depth & Elevation.) |
 | `≤ 860px` (Tablet / Phone, tested on Pixel 7) | Top bar collapses to `auto minmax(0, 1fr)`; top tabs hide and fixed bottom `.phone-tabs` pill appears (`width: min(360px, calc(100% - 32px))`); Robot stacks `stage` above `side` (`46vh` stage, shrinking to `34dvh` in `.driving` mode so robot + thumb pads fit one screen); Drive pads cap at `128px` and antennas sit 2-up; Diagnostics stacks to 1 column. |
 | `≤ 480px` (Compact Phone) | Brand wordmark hides when `.voice-badge` is active to keep who-is-listening + status legible; `.sheet.sys` padding drops to `16px`; Diagnostics gauges shrink `96px → 72px`; App tiles shrink `44px → 40px` and details flush-left; Access peer IP hides and multi-button action rows wrap cleanly below the label. |
 | `≤ 420px` (Narrow Phone) | Status pill and Release button tighten (`padding: 7px 11px; font-size: 12px`). |
 
 ### Automated Accessibility & UX Guardrails
 Checked in `web/e2e/a11y.spec.ts` and `web/e2e/ux.spec.ts`. Most checks are ratchets: findings are counted against baselines in `web/e2e/baselines/` that may only go down.
-- **axe-core violations (ratchet):** `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`, and `best-practice` across every tab with the robot off and on, counted per rule against the baseline.
-- **Zero horizontal overflow:** `documentElement.scrollWidth <= clientWidth` on desktop and phone (hard failure).
+- **axe-core violations (ratchet):** `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`, and `best-practice` across the audited views with the robot off and on, counted per rule against the baseline.
+- **Zero horizontal overflow:** `documentElement.scrollWidth <= clientWidth` on the audited views, desktop and phone (hard failure).
 - **Touch targets (ratchet):** controls under `24×24px` (WCAG 2.5.8) are counted against the baseline. Aim for `36×36px` for standard buttons and stars, and `44×44px` for primary circular actions like `.power`.
-- **Keyboard focus:** Visible `2px solid var(--accent)` outline with `3px` offset (`:focus-visible`) on all interactive controls.
+- **Keyboard focus:** By default a visible `2px solid var(--accent)` outline with `3px` offset (`:focus-visible`); a few controls adjust it (the expression track uses a `-2px` offset, the selected accent swatch an ink outline).
 - **Reduced motion & transparency:** Full CSS media-query support in `base.css`.
 
 ---
@@ -334,7 +334,8 @@ Use this quick checklist whenever designing or implementing UI in `reachy-bridge
    - Replace status sentences with visual state (dimmed controls, status chip dot, obvious next-action button).
    - Update `docs/manual.md` in the same PR whenever visible UI behavior changes.
 3. **Verification before commit:**
-   - Typecheck & unit tests: `cd web && bun run typecheck && bun test && bun run build`
+   - Follow the verify skill (`.claude/skills/verify/SKILL.md`). Typecheck and unit tests: `cd web && bun run typecheck && bun test`.
+   - Build `web` first, then the release controller (`cd controller && cargo build --release`): the controller embeds `web/dist` when it compiles, so the old order tests a stale dashboard.
    - Sim + Playwright E2E (desktop + phone + axe + UX ratchets):
      `uv run python tools/sim/run.py -- bash -c 'cd web && bunx playwright test'`
    - Visual review: capture screenshots in headless Chromium (scratch profile) against the sim stack in both dark and light modes, desktop (`1280×800`) and phone (`Pixel 7`).
