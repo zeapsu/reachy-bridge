@@ -31,7 +31,9 @@ async fn serve(router: Router) -> u16 {
 }
 
 /// A fake app UI: `/` names it, `/echo` reflects the request, `/stream`
-/// sends one chunk and then holds the response open, `/ws` echoes.
+/// sends one chunk and then holds the response open, `/ws` echoes,
+/// `/ws-headers` sends the upgrade's Host and Origin, `/absolute` redirects
+/// to an absolute URL built from the Host it got (as Starlette does).
 async fn fake_app(label: &'static str) -> u16 {
     async fn echo(method: Method, uri: Uri, headers: HeaderMap, body: Bytes) -> Json<Value> {
         let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -39,6 +41,8 @@ async fn fake_app(label: &'static str) -> u16 {
             "method": method.as_str(),
             "uri": uri.to_string(),
             "host": header("host"),
+            "origin": header("origin"),
+            "referer": header("referer"),
             "proto": header("x-forwarded-proto"),
             "forwarded_host": header("x-forwarded-host"),
             "forwarded_for": header("x-forwarded-for"),
@@ -68,6 +72,17 @@ async fn fake_app(label: &'static str) -> u16 {
             }
         })
     }
+    async fn ws_headers(upgrade: WebSocketUpgrade, headers: HeaderMap) -> impl IntoResponse {
+        let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+        let seen = json!({"host": header("host"), "origin": header("origin")}).to_string();
+        upgrade.on_upgrade(|mut socket| async move {
+            let _ = socket.send(Message::Text(seen.into())).await;
+        })
+    }
+    async fn absolute(headers: HeaderMap) -> impl IntoResponse {
+        let host = headers.get("host").and_then(|v| v.to_str().ok()).unwrap_or_default();
+        (StatusCode::TEMPORARY_REDIRECT, [("location", format!("http://{host}/static/"))])
+    }
     serve(
         Router::new()
             .route("/", get(move || async move { label }))
@@ -78,6 +93,8 @@ async fn fake_app(label: &'static str) -> u16 {
                 get(|| async { [("set-cookie", "rb_device=evil; Path=/"), ("set-cookie", "app=1; Path=/")] }),
             )
             .route("/redirect", get(|| async { (StatusCode::FOUND, [("location", "/elsewhere")]) }))
+            .route("/absolute", get(absolute))
+            .route("/ws-headers", get(ws_headers))
             .route("/ws", get(ws)),
     )
     .await
@@ -110,6 +127,8 @@ struct Harness {
     current: Current,
     proxy: String,
     proxy_port: u16,
+    /// App A's UI port.
+    app_port: u16,
     dir: std::path::PathBuf,
 }
 
@@ -133,7 +152,7 @@ impl Harness {
             auth,
         );
         let proxy_port = serve(reachy_controller::app_proxy::router(state, own, &[own])).await;
-        Self { current, proxy: format!("http://127.0.0.1:{proxy_port}"), proxy_port, dir }
+        Self { current, proxy: format!("http://127.0.0.1:{proxy_port}"), proxy_port, app_port: ports[0], dir }
     }
 
     async fn switch(&self, app: Value) {
@@ -153,7 +172,7 @@ async fn forwards_method_path_query_headers_and_body() {
     let client = reqwest::Client::new();
     let response = client
         .post(format!("{}/echo?x=1&y=two", h.proxy))
-        .header("host", "robot.example:8043")
+        .header("host", "robot.tail1234.ts.net:8043")
         .header("x-forwarded-proto", "https")
         .header("cookie", "session=1; rb_device=secret; rb_pair=pending")
         .header("connection", "x-private")
@@ -166,9 +185,9 @@ async fn forwards_method_path_query_headers_and_body() {
     let echoed: Value = response.json().await.unwrap();
     assert_eq!(echoed["method"], "POST");
     assert_eq!(echoed["uri"], "/echo?x=1&y=two");
-    assert_eq!(echoed["host"], "robot.example:8043");
+    assert_eq!(echoed["host"], format!("127.0.0.1:{}", h.app_port), "the app is talked to as loopback (#340)");
     assert_eq!(echoed["proto"], "https");
-    assert_eq!(echoed["forwarded_host"], "robot.example:8043");
+    assert_eq!(echoed["forwarded_host"], "robot.tail1234.ts.net:8043");
     assert_eq!(echoed["forwarded_for"], "127.0.0.1");
     assert_eq!(echoed["cookie"], "session=1", "the dashboard's login cookies stay with the controller");
     assert_eq!(echoed["private"], Value::Null);
@@ -317,4 +336,140 @@ async fn cross_site_writes_through_the_proxy_are_refused() {
     let read = client.get(format!("{}/echo", h.proxy)).header("sec-fetch-site", "cross-site").send().await.unwrap();
     assert_eq!(read.status(), StatusCode::OK);
     assert_eq!(client.post(format!("{}/echo", h.proxy)).body("x").send().await.unwrap().status(), StatusCode::OK);
+}
+
+/// A tailnet browser's request as tailscale serve passes it on (#340).
+const TS_HOST: &str = "robot.tail1234.ts.net:8043";
+const TS_ORIGIN: &str = "https://robot.tail1234.ts.net:8043";
+
+#[tokio::test]
+async fn tailnet_host_and_origin_reach_the_app_as_a_loopback_client() {
+    let h = Harness::new(running("app_a")).await;
+    let client = reqwest::Client::new();
+    let loopback = format!("127.0.0.1:{}", h.app_port);
+    for method in [Method::GET, Method::POST] {
+        let response = client
+            .request(method.clone(), format!("{}/echo", h.proxy))
+            .header("host", TS_HOST)
+            .header("origin", TS_ORIGIN)
+            .header("referer", format!("{TS_ORIGIN}/"))
+            .header("sec-fetch-site", "same-origin")
+            .body("x")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{method}");
+        let echoed: Value = response.json().await.unwrap();
+        assert_eq!(echoed["method"], method.as_str());
+        assert_eq!(echoed["host"], loopback.as_str(), "{method}");
+        assert_eq!(echoed["origin"], Value::Null, "{method}");
+        assert_eq!(echoed["forwarded_host"], TS_HOST, "{method}");
+        assert_eq!(echoed["referer"], format!("{TS_ORIGIN}/"), "{method}");
+    }
+}
+
+#[tokio::test]
+async fn tailnet_websocket_reaches_the_app_as_a_loopback_client() {
+    let h = Harness::new(running("app_a")).await;
+    let mut request = format!("ws://127.0.0.1:{}/ws-headers", h.proxy_port).into_client_request().unwrap();
+    request.headers_mut().insert("host", TS_HOST.parse().unwrap());
+    request.headers_mut().insert("origin", TS_ORIGIN.parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let seen = tokio::time::timeout(Duration::from_secs(2), socket.next()).await.unwrap().unwrap().unwrap();
+    let seen: Value = serde_json::from_str(seen.to_text().unwrap()).unwrap();
+    assert_eq!(seen["host"], format!("127.0.0.1:{}", h.app_port));
+    assert_eq!(seen["origin"], Value::Null);
+}
+
+#[tokio::test]
+async fn magicdns_and_tailnet_ip_hosts_reach_the_app_as_a_loopback_client() {
+    // LAN mode, signed in (the local key stands in for a paired device).
+    let auth = AuthConfig { lan: true, trust_loopback: false, ..AuthConfig::default() };
+    let h = Harness::with_auth(running("app_a"), auth).await;
+    let key = std::fs::read_to_string(h.dir.join("controller.key")).unwrap();
+    let client = reqwest::Client::new();
+    for host in ["robot:7863", "robot.lan:7863", "100.101.102.103:7863"] {
+        let response = client
+            .post(format!("{}/echo", h.proxy))
+            .header("host", host)
+            .header("origin", format!("http://{host}"))
+            .header("x-reachy-bridge-key", key.trim())
+            .body("x")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{host}");
+        let echoed: Value = response.json().await.unwrap();
+        assert_eq!(echoed["host"], format!("127.0.0.1:{}", h.app_port), "{host}");
+        assert_eq!(echoed["origin"], Value::Null, "{host}");
+        assert_eq!(echoed["forwarded_host"], host);
+    }
+}
+
+#[tokio::test]
+async fn cross_site_origins_are_still_refused_before_the_app() {
+    let h = Harness::new(running("app_a")).await;
+    let client = reqwest::Client::new();
+    // A browser without Fetch Metadata: the Origin is checked against the browser's Host.
+    for origin in ["https://evil.example", "https://robot.tail1234.ts.net:10000", "null"] {
+        let response = client
+            .post(format!("{}/echo", h.proxy))
+            .header("host", TS_HOST)
+            .header("origin", origin)
+            .body("x")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{origin}");
+        assert_eq!(response.text().await.unwrap(), "cross-site request refused", "{origin}");
+    }
+
+    let mut request = format!("ws://127.0.0.1:{}/ws-headers", h.proxy_port).into_client_request().unwrap();
+    request.headers_mut().insert("host", TS_HOST.parse().unwrap());
+    request.headers_mut().insert("origin", "https://evil.example".parse().unwrap());
+    match tokio_tungstenite::connect_async(request).await {
+        Err(tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert_eq!(response.body().as_deref(), Some(&b"cross-site request refused"[..]));
+        }
+        other => panic!("cross-site WebSocket not refused: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_rebound_host_is_refused_without_a_login() {
+    // No login: a DNS-rebinding page reaches loopback under its own name.
+    let h = Harness::new(running("app_a")).await;
+    let client = reqwest::Client::new();
+    for method in [Method::GET, Method::POST] {
+        let response = client
+            .request(method.clone(), format!("{}/echo", h.proxy))
+            .header("host", "evil.example:7863")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method}");
+        assert_eq!(response.text().await.unwrap(), "untrusted Host");
+    }
+    let mut request = format!("ws://127.0.0.1:{}/ws-headers", h.proxy_port).into_client_request().unwrap();
+    request.headers_mut().insert("host", "evil.example:7863".parse().unwrap());
+    request.headers_mut().insert("origin", "http://evil.example:7863".parse().unwrap());
+    match tokio_tungstenite::connect_async(request).await {
+        Err(tungstenite::Error::Http(response)) => assert_eq!(response.status(), StatusCode::FORBIDDEN),
+        other => panic!("rebound WebSocket not refused: {other:?}"),
+    }
+    // Loopback and tailnet names still go through.
+    for host in ["127.0.0.1:7863", "localhost:7863", "[::1]:7863", TS_HOST] {
+        let response = client.get(format!("{}/", h.proxy)).header("host", host).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{host}");
+    }
+}
+
+#[tokio::test]
+async fn an_absolute_redirect_to_the_apps_loopback_address_becomes_a_path() {
+    let h = Harness::new(running("app_a")).await;
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let response = client.get(format!("{}/absolute", h.proxy)).header("host", TS_HOST).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(response.headers()["location"], "/static/");
 }
